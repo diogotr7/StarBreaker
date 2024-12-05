@@ -7,6 +7,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
 using StarBreaker.Services;
+using static System.Environment;
 
 namespace StarBreaker.Screens;
 
@@ -48,7 +49,7 @@ public sealed partial class SplashWindowViewModel : ViewModelBase
     public async Task PickP4k()
     {
         _logger?.LogTrace("PickP4k enter");
-        var defaultPath = await App.StorageProvider.TryGetFolderFromPathAsync(Constants.DefaultStarCitizenFolder);
+        var defaultPath = await App.StorageProvider.TryGetFolderFromPathAsync($"{Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles)}{Constants.DefaultStarCitizenFolder}");
         var task = App.StorageProvider.OpenFilePickerAsync(Constants.GetP4kFilter(defaultPath));
         var file = await task;
         if (file.Count != 1)
@@ -64,7 +65,24 @@ public sealed partial class SplashWindowViewModel : ViewModelBase
 
     public void LoadDefaultP4kLocations()
     {
-        var p4ks = Directory.GetFiles(Constants.DefaultStarCitizenFolder, Constants.DataP4k, SearchOption.AllDirectories);
+        var currentInstallDirectory = GetInstallDirectory();
+        if (currentInstallDirectory.Length == 0)
+        {
+            GetP4ksFromDirectory($"{Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles)}{Constants.DefaultStarCitizenFolder}");
+        }
+        else
+        {
+            GetP4ksFromDirectory(currentInstallDirectory);
+        }
+    }
+
+    private void GetP4ksFromDirectory(string installationPath)
+    {
+        if (!Directory.Exists(installationPath))
+        {
+            return;
+        }
+        var p4ks = Directory.GetFiles(installationPath, Constants.DataP4k, SearchOption.AllDirectories);
         if (p4ks.Length == 0)
         {
             _logger.LogError("No Data.p4k files found");
@@ -113,6 +131,33 @@ public sealed partial class SplashWindowViewModel : ViewModelBase
     {
         _logger.LogTrace("ClickP4kLocation {Path}", file);
         await LoadP4k(file);
+    }
+
+    /// <summary>
+    /// Checks the RSI Launcher logs for a Star Citizen Install Directory
+    /// </summary>
+    /// <returns>The current Star Citizen install directory</returns>
+    private string GetInstallDirectory()
+    {
+        var launcherPath = $"{Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)}{Constants.DefaultRSILauncherFolder}";
+        if (!File.Exists($"{launcherPath}\\log.log"))
+        {
+            _logger.LogError("Failed to find RSI Launcher log");
+            return String.Empty;
+        }
+        var lines = File.ReadLines($"{launcherPath}\\log.log");
+        foreach (var line in lines)
+        {
+            if (line.Contains("Installing Star Citizen"))
+            {
+                var strstart = line.IndexOf(" at ") + " at ".Length;
+                var strend = line.LastIndexOf("StarCitizen") + "StarCitizen".Length;
+                var installDirectory = line.Substring(strstart, strend - strstart);
+                return installDirectory;
+            }
+        }
+        _logger.LogError("Failed to find SC install directory from launcher log");
+        return String.Empty;
     }
 }
 
