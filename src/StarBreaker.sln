@@ -12,6 +12,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StarBreaker.CryXmlB", "Star
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StarBreaker.Dds", "StarBreaker.Dds\StarBreaker.Dds.csproj", "{0922A256-87A3-250B-C46B-CEBCDA675C96}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StarBreaker.DataCore", "StarBreaker.DataCore\StarBreaker.DataCore.csproj", "{0922A256-87A3-250B-C46B-CEBCDA675C92}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StarBreaker.FileSystem", "StarBreaker.FileSystem\StarBreaker.FileSystem.csproj", "{EA0D5720-0AD4-99B8-6D18-C42488D31213}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StarBreaker.Forge", "StarBreaker.Forge\StarBreaker.Forge.csproj", "{0269BCE2-61CF-94FB-BE70-A695B11617D3}"
