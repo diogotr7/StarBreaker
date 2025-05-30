@@ -63,7 +63,7 @@
                 Margin="10"
                 FontSize="24"
                 HorizontalAlignment="Center"
-                Text="Loading p4k file..." />
+                Text="{Binding LoadingText}" />
             <ProgressBar
                 Minimum="0" Maximum="1"
                 Value="{Binding Progress}" />

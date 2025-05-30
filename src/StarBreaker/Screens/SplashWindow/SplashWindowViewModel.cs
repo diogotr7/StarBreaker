@@ -17,6 +17,7 @@ public sealed partial class SplashWindowViewModel : ViewModelBase
 
     [ObservableProperty] private ObservableCollection<StarCitizenInstallationViewModel> _installations;
     [ObservableProperty] private double? _progress;
+    [ObservableProperty] private string _loadingText;
 
     public SplashWindowViewModel(ILogger<SplashWindowViewModel> logger, IP4kService p4kService)
     {
@@ -37,9 +38,20 @@ public sealed partial class SplashWindowViewModel : ViewModelBase
     private async Task LoadP4k(string path)
     {
         Progress = 0;
-        var progress = new Progress<double>(x => Dispatcher.UIThread.Post(() => Progress = x));
+        LoadingText = "Loading P4k file...";
+        var p4kLoadProgress = new Progress<double>(x => Dispatcher.UIThread.Post(() =>
+        {
+            LoadingText = "Loading P4k file...";
+            Progress = x;
+        }));
 
-        await Task.Run(() => _p4kService.OpenP4k(path, progress));
+        var fileSystemProgress = new Progress<double>(x => Dispatcher.UIThread.Post(() =>
+        {
+            LoadingText = "Loading file system...";
+            Progress = x;
+        }));
+
+        await Task.Run(() => _p4kService.OpenP4k(path, p4kLoadProgress, fileSystemProgress));
 
         OnP4kLoaded();
     }

@@ -13,13 +13,19 @@ public class DesignP4kService : IP4kService
         P4KFileSystem = new P4kFileSystem(new FakeP4kFile(@"C:\This\Is\A\Path", entries));
     }
 
-    public void OpenP4k(string path, IProgress<double> progress)
+    public void OpenP4k(string path, IProgress<double> p4kProgress, IProgress<double> fileSystemProgress)
     {
-        progress.Report(0);
-        Thread.Sleep(500);
-        progress.Report(0.5);
-        Thread.Sleep(500);
-        progress.Report(1);
+        p4kProgress.Report(0);
+        Thread.Sleep(100);
+        p4kProgress.Report(0.5);
+        Thread.Sleep(100);
+        p4kProgress.Report(1);
+        Thread.Sleep(100);
+        fileSystemProgress.Report(0);
+        Thread.Sleep(100);
+        fileSystemProgress.Report(0.5);
+        Thread.Sleep(100);
+        fileSystemProgress.Report(1);
     }
 
     private static P4kEntry[] GetFakeEntries() =>

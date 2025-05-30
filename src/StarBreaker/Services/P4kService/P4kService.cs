@@ -16,7 +16,7 @@ public class P4kService : IP4kService
         _logger = logger;
     }
 
-    public void OpenP4k(string path, IProgress<double> progress)
+    public void OpenP4k(string path, IProgress<double> p4kProgress, IProgress<double> fileSystemProgress)
     {
         if (_p4KFile != null)
         {
@@ -24,6 +24,6 @@ public class P4kService : IP4kService
             return;
         }
 
-        _p4KFile = new P4kFileSystem(P4kFile.FromFile(path, progress));
+        _p4KFile = new P4kFileSystem(P4kFile.FromFile(path, p4kProgress), fileSystemProgress);
     }
 }

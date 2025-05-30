@@ -9,13 +9,20 @@ public class P4kFileSystem : IFileSystem
     public IP4kFile P4kFile { get; }
     public P4kDirectoryNode Root { get; }
 
-    public P4kFileSystem(IP4kFile file)
+    public P4kFileSystem(IP4kFile file, IProgress<double>? progress = null)
     {
+        progress?.Report(0.0);
+        var reportInterval = Math.Max(file.Entries.Length / 50, 1);
         var root = new P4kDirectoryNode(file.Name, null!, file);
 
+        var entriesProcessed = 0;
         foreach (var entry in file.Entries)
         {
             root.Insert(file, entry);
+
+            entriesProcessed++;
+            if (entriesProcessed % reportInterval == 0)
+                progress?.Report(entriesProcessed / (double)file.Entries.Length);
         }
 
         P4kFile = file;
