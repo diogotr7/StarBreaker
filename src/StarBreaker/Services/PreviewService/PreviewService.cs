@@ -33,7 +33,7 @@ public class PreviewService : IPreviewService
     public FilePreviewViewModel GetPreview(P4kFileNode selectedEntry)
     {
         //TODO: move this to a service?
-        using var entryStream = _p4KService.P4KFileSystem.P4kFile.OpenStream(selectedEntry.P4KEntry);
+        using var entryStream = selectedEntry.P4k.OpenStream(selectedEntry.P4KEntry);
 
         FilePreviewViewModel preview;
 

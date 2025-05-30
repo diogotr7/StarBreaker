@@ -9,10 +9,17 @@ public class P4kFileSystem : IFileSystem
     public IP4kFile P4kFile { get; }
     public P4kDirectoryNode Root { get; }
 
-    public P4kFileSystem(IP4kFile p4kFile)
+    public P4kFileSystem(IP4kFile file)
     {
-        P4kFile = p4kFile;
-        Root = p4kFile.Root;
+        var root = new P4kDirectoryNode(file.Name, null!, file);
+
+        foreach (var entry in file.Entries)
+        {
+            root.Insert(file, entry);
+        }
+
+        P4kFile = file;
+        Root = root;
     }
 
     public IEnumerable<string> EnumerateDirectories(string path)
@@ -92,7 +99,6 @@ public class P4kFileSystem : IFileSystem
                 continue;
 
             yield return child.P4KEntry.Name;
-
         }
     }
 

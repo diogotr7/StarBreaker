@@ -9,6 +9,7 @@
         <ProjectReference Include="..\StarBreaker.CryXmlB\StarBreaker.CryXmlB.csproj"/>
         <ProjectReference Include="..\StarBreaker.Dds\StarBreaker.Dds.csproj"/>
         <ProjectReference Include="..\StarBreaker.DataCore\StarBreaker.DataCore.csproj"/>
+        <ProjectReference Include="..\StarBreaker.P4k.Extraction\StarBreaker.P4k.Extraction.csproj" />
         <ProjectReference Include="..\StarBreaker.P4k\StarBreaker.P4k.csproj"/>
         <ProjectReference Include="..\StarBreaker.Wwise\StarBreaker.Wwise.csproj" />
     </ItemGroup>

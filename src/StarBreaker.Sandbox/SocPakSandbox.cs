@@ -1,12 +1,40 @@
 ﻿using System.IO.Compression;
 using StarBreaker.CryChunkFile;
 using StarBreaker.CryXmlB;
+using StarBreaker.P4k;
+using StarBreaker.P4k.Extraction;
 
 namespace StarBreaker.Sandbox;
 
 public static class SocPakSandbox
 {
     public static void Run()
+    {
+        TestP4kFileOnSocPak();
+        // ExtractParts();
+    }
+
+    private static void TestP4kFileOnSocPak()
+    {
+        var socPaks = Directory.EnumerateFiles(@"D:\StarCitizen\P4kSocPak", "*.socpak", SearchOption.AllDirectories);
+        Parallel.ForEach(socPaks,
+            new ParallelOptions { MaxDegreeOfParallelism = 1 },
+            socPak =>
+            {
+                var p4kFile = P4kFile.FromFile(socPak);
+
+                var extractor = new P4kExtractor(p4kFile);
+                var xx = socPak
+                    .Replace(@"D:\StarCitizen\P4kSocPak\", "")
+                    .Replace(".socpak", "");
+                var finalDir = Path.Combine(@"D:\StarCitizen\P4kSocPakOut", xx);
+
+                extractor.ExtractFiltered(finalDir, "*");
+            });
+    }
+
+
+    private static void ExtractParts()
     {
         // extract all socpaks
         var socPaks = Directory.EnumerateFiles(@"D:\StarCitizen\P4kSocPak", "*.socpak", SearchOption.AllDirectories);

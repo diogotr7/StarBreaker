@@ -8,10 +8,7 @@ public static class ZipNodeExtensions
 {
     public static string GetSize(this IP4kNode x)
     {
-        if (x is not P4kFileNode file)
-            return "";
-
-        return ((long?)file.P4KEntry?.UncompressedSize)?.Bytes().ToString() ?? "";
+        return ((long)x.Size).Bytes().Humanize();
     }
 
     public static string GetDate(this IP4kNode x)

@@ -9,7 +9,7 @@ namespace StarBreaker.Sandbox;
 
 public static class P4kSandbox
 {
-    private const string p4k = @"C:\Program Files\Roberts Space Industries\StarCitizen\LIVE\Data.p4k";
+    private const string p4k = @"C:\Program Files\Roberts Space Industries\StarCitizen\PTU\Data.p4k";
 
     public static void Run()
     {

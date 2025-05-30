@@ -4,14 +4,12 @@ namespace StarBreaker;
 
 public class FakeP4kFile : IP4kFile
 {
-    public string P4KPath { get; }
+    public string Name { get; }
     public P4kEntry[] Entries { get; }
-    public P4kDirectoryNode Root { get; }
 
-    public FakeP4kFile(string path, P4kEntry[] entries, P4kDirectoryNode root)
+    public FakeP4kFile(string path, P4kEntry[] entries)
     {
-        P4KPath = path;
-        Root = root;
+        Name = path;
         Entries = entries;
     }
 

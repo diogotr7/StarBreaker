@@ -9,17 +9,33 @@ public sealed class P4kDirectoryNode : IP4kNode
     private readonly IP4kNode? _parent;
     public IP4kNode Parent => _parent ?? throw new InvalidOperationException("You might have tried to get the parent of the root node");
 
+    public IP4kFile P4k { get; }
     public string Name { get; }
     public Dictionary<string, IP4kNode> Children { get; }
 
-    public P4kDirectoryNode(string name, IP4kNode parent)
+    public ulong Size
+    {
+        get
+        {
+            ulong size = 0;
+            foreach (var child in Children.Values)
+            {
+                size += child.Size;
+            }
+
+            return size;
+        }
+    }
+
+    public P4kDirectoryNode(string name, IP4kNode parent, IP4kFile p4kFile)
     {
         Name = name;
         _parent = parent;
+        P4k = p4kFile;
         Children = [];
     }
 
-    public void Insert(P4kEntry p4KEntry)
+    public void Insert(IP4kFile file, P4kEntry p4KEntry)
     {
         var current = this;
         var name = p4KEntry.Name.AsSpan();
@@ -32,13 +48,13 @@ public sealed class P4kDirectoryNode : IP4kNode
             if (range.End.Value == name.Length)
             {
                 // If this is the last part, we're at the file
-                value = new P4kFileNode(p4KEntry, current);
+                value = GetFromEntry(file, p4KEntry, current);
                 return;
             }
 
             if (!existed)
             {
-                value = new P4kDirectoryNode(part.ToString(), current);
+                value = new P4kDirectoryNode(part.ToString(), current, file);
             }
 
             if (value is not P4kDirectoryNode directoryNode)
@@ -67,5 +83,17 @@ public sealed class P4kDirectoryNode : IP4kNode
                     throw new Exception();
             }
         }
+    }
+
+    private IP4kNode GetFromEntry(IP4kFile p4kFile, P4kEntry p4KEntry, P4kDirectoryNode parent)
+    {
+        if (p4KEntry.Name.EndsWith(".socpak", StringComparison.OrdinalIgnoreCase))
+        {
+            var socP4k = P4kFile.FromP4kEntry(p4kFile, p4KEntry);
+
+            return new P4kFileSystem(socP4k).Root;
+        }
+
+        return new P4kFileNode(p4KEntry, parent, p4kFile);
     }
 }

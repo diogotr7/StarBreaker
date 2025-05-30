@@ -31,7 +31,7 @@ public sealed class P4kExtractor
         _p4KFile = p4KFile;
     }
 
-    public void ExtractFiltered(string outputDir, string? filter = null, IProgress<double>? progress = null)
+    public void ExtractFiltered(string outputDir, string? filter = null, IProgress<double>? progress = null, bool forceSequential = false)
     {
         //TODO: if the filter is for *.dds, make sure to include *.dds.N too. Maybe do the pre processing before we filter?
         var filteredEntries = (filter is null
@@ -40,10 +40,13 @@ public sealed class P4kExtractor
 
         Array.Sort(filteredEntries, (a, b) => a.Offset.CompareTo(b.Offset));
 
-        ExtractEntriesParallel(outputDir, filteredEntries, progress);
+        if (forceSequential)
+            ExtractEntriesSequential(outputDir, filteredEntries, progress);
+        else
+            ExtractEntriesParallel(outputDir, filteredEntries, progress);
     }
 
-    public void ExtractRegex(string outputDir, string? regex = null, IProgress<double>? progress = null)
+    public void ExtractRegex(string outputDir, string? regex = null, IProgress<double>? progress = null, bool forceSequential = false)
     {
         var filteredEntries = (regex is null
             ? _p4KFile.Entries.ToArray()
@@ -51,7 +54,10 @@ public sealed class P4kExtractor
 
         Array.Sort(filteredEntries, (a, b) => a.Offset.CompareTo(b.Offset));
 
-        ExtractEntriesParallel(outputDir, filteredEntries, progress);
+        if (forceSequential)
+            ExtractEntriesSequential(outputDir, filteredEntries, progress);
+        else
+            ExtractEntriesParallel(outputDir, filteredEntries, progress);
     }
 
     public void ExtractNode(string outputDir, P4kDirectoryNode directoryNode, IProgress<double>? progress = null)
