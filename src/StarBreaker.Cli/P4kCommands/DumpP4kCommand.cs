@@ -20,7 +20,7 @@ public class DumpP4kCommand : ICommand
     {
         var p4k = P4k.P4kFile.FromFile(P4kFile);
         
-        WriteFileForNode(OutputDirectory, new P4kFileSystem(p4k).Root);
+        WriteFileForNode(OutputDirectory, P4kDirectoryNode.FromP4k(p4k));
 
         return default;
     }

@@ -5,10 +5,10 @@ using StarBreaker.Sandbox;
 
 //SocPakSandbox.Run();
 //DataCoreSandbox.Run();
-//P4kSandbox.Run();
+P4kSandbox.Run();
 //Crc32CSandbox.Run();
 //WwiseSandbox.Run();
-GltfSandbox.Run();
+//GltfSandbox.Run();
 //DdsFile.MergeToFile(@"D:\StarCitizen\P4k\Data\Objects\Characters\Human\heads\shared\tattoos\sc\stormwal\tattoo_stormwal_01_decal.dds", @"D:\StarCitizen\DDS\merged_stormwal.dds");
 //DdsFile.ConvertToPng(@"D:\StarCitizen\DDS\merged_stormwal.dds", @"D:\StarCitizen\DDS\out\stormwal.png");
 

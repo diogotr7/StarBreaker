@@ -52,7 +52,7 @@ public sealed partial class P4kTabViewModel : PageViewModelBase
 
         Source.RowSelection!.SingleSelect = true;
         Source.RowSelection.SelectionChanged += SelectionChanged;
-        Source.Items = GetSortedNodes(_p4KService.P4KFileSystem.Root.Children.Values);
+        Source.Items = GetSortedNodes(_p4KService.P4KFileSystem.Children.Values);
     }
     
     private static int CompareNodes(IP4kNode? a, IP4kNode? b)

@@ -1,7 +1,5 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using StarBreaker.Common;
-using ZstdSharp;
 
 namespace StarBreaker.P4k;
 
@@ -30,7 +28,7 @@ public sealed class P4kEntry
         uint crc32
     )
     {
-        Name = name;
+        Name = name.Replace('/', '\\'); //disgusting
         CompressedSize = compressedSize;
         UncompressedSize = uncompressedSize;
         CompressionMethod = compressionMethod;

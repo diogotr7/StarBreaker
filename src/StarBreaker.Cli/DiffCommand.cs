@@ -116,7 +116,7 @@ public class DiffCommand : ICommand
 
     private static async Task ExtractDataCoreIntoZip(string p4kFile, string zipPath)
     {
-        var p4k = new P4kFileSystem(P4kFile.FromFile(p4kFile));
+        var p4k = P4kDirectoryNode.FromP4k(P4kFile.FromFile(p4kFile));
         Stream? input = null;
         foreach (var file in DataCoreUtils.KnownPaths)
         {

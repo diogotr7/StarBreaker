@@ -23,9 +23,12 @@ public static class P4kSandbox
 
     private static void TimeInit()
     {
-        var sw = Stopwatch.StartNew();
+        var timer = new TimeLogger();
+
         var p4kFile = P4kFile.FromFile(p4k);
-        Console.WriteLine($"Took {sw.ElapsedMilliseconds}ms to load {p4kFile.Entries.Length} entries");
+        timer.LogReset("P4kFile.FromFile");
+        var fs = P4kDirectoryNode.FromP4k(p4kFile);
+        timer.LogReset("P4kDirectoryNode.FromP4k");
     }
 
     private static void AllExtensions()

@@ -7,9 +7,9 @@ namespace StarBreaker.Services;
 public class P4kService : IP4kService
 {
     private readonly ILogger<P4kService> _logger;
-    private P4kFileSystem? _p4KFile;
+    private P4kDirectoryNode? _p4KFile;
 
-    public P4kFileSystem P4KFileSystem => _p4KFile ?? throw new InvalidOperationException("P4k file not open");
+    public P4kDirectoryNode P4KFileSystem => _p4KFile ?? throw new InvalidOperationException("P4k file not open");
 
     public P4kService(ILogger<P4kService> logger)
     {
@@ -24,6 +24,6 @@ public class P4kService : IP4kService
             return;
         }
 
-        _p4KFile = new P4kFileSystem(P4kFile.FromFile(path, p4kProgress), fileSystemProgress);
+        _p4KFile = P4kDirectoryNode.FromP4k(P4kFile.FromFile(path, p4kProgress), fileSystemProgress);
     }
 }

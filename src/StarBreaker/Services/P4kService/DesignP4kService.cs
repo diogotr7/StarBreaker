@@ -1,16 +1,17 @@
+using StarBreaker.FileSystem;
 using StarBreaker.P4k;
 
 namespace StarBreaker.Services;
 
 public class DesignP4kService : IP4kService
 {
-    public P4kFileSystem P4KFileSystem { get; }
+    public P4kDirectoryNode P4KFileSystem { get; }
 
     public DesignP4kService()
     {
         var entries = GetFakeEntries();
 
-        P4KFileSystem = new P4kFileSystem(new FakeP4kFile(@"C:\This\Is\A\Path", entries));
+        P4KFileSystem = P4kDirectoryNode.FromP4k(new FakeP4kFile(@"C:\This\Is\A\Path", entries));
     }
 
     public void OpenP4k(string path, IProgress<double> p4kProgress, IProgress<double> fileSystemProgress)
