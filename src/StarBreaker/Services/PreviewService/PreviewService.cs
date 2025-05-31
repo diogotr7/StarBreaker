@@ -59,13 +59,7 @@ public class PreviewService : IPreviewService
         }
         else if (ddsLodExtensions.Any(p => selectedEntry.GetName().EndsWith(p, StringComparison.InvariantCultureIgnoreCase)))
         {
-            //walk up the tree until we find a parent that is not the same P4k.
-            //when we do, we know that the one right before is the root of the P4k we want to merge with.
-            var target = selectedEntry.Parent;
-            while (target.Parent != null && target.P4k == selectedEntry.P4k)
-                target = target.Parent;
-
-            var ms = DdsFile.MergeToStream(selectedEntry.P4KEntry.Name, target);
+            var ms = DdsFile.MergeToStream(selectedEntry.P4KEntry.Name, selectedEntry.Root.RootNode);
             var pngBytes = DdsFile.ConvertToPng(ms.ToArray());
             _logger.LogInformation("ddsLodExtensions");
             preview = new DdsPreviewViewModel(new Bitmap(pngBytes));
