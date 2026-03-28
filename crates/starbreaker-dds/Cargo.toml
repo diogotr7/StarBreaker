@@ -1,0 +1,11 @@
+[package]
+name = "starbreaker-dds"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+starbreaker-common = { path = "../starbreaker-common" }
+zerocopy = { version = "0.8", features = ["derive"] }
+thiserror = "2"
+bcdec_rs = "0.2"
+image = "0.25"

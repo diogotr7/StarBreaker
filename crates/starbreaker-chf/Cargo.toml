@@ -1,0 +1,19 @@
+[package]
+name = "starbreaker-chf"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+starbreaker-common = { path = "../starbreaker-common" }
+zerocopy = { version = "0.8", features = ["derive"] }
+ruzstd = "0.8"
+crc32c = "0.6"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+hex = "0.4"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

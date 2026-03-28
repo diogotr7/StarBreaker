@@ -1,0 +1,10 @@
+# Copy this file to config.toml and adjust for your system.
+#
+#   cp .cargo/config.toml.example .cargo/config.toml
+
+# Override Star Citizen install paths (used by starbreaker-common discovery).
+# Without these, the default install location is scanned automatically.
+[env]
+SC_DATA_P4K = "C:\\Program Files\\Roberts Space Industries\\StarCitizen\\LIVE\\Data.p4k"
+SC_EXE = "C:\\Program Files\\Roberts Space Industries\\StarCitizen\\LIVE\\Bin64\\StarCitizen.exe"
+

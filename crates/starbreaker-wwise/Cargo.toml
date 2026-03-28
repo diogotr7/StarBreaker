@@ -1,0 +1,18 @@
+[package]
+name = "starbreaker-wwise"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+starbreaker-common = { path = "../starbreaker-common" }
+starbreaker-datacore = { path = "../starbreaker-datacore" }
+starbreaker-cryxml = { path = "../starbreaker-cryxml" }
+starbreaker-p4k = { path = "../starbreaker-p4k" }
+starbreaker-wem = { path = "../starbreaker-wem" }
+quick-xml = "0.37"
+zerocopy = { version = "0.8", features = ["derive"] }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+anyhow = "1"

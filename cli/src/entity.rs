@@ -1,0 +1,158 @@
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+use clap::Subcommand;
+use starbreaker_datacore::database::Database;
+use starbreaker_datacore::loadout::{EntityIndex, LoadoutNode, resolve_loadout_indexed};
+use starbreaker_datacore::types::Record;
+
+use crate::common::{ExportOpts, load_dcb_bytes};
+
+#[derive(Subcommand)]
+pub enum EntityCommand {
+    /// Export entity to GLB
+    Export {
+        /// Entity name (substring, case-insensitive)
+        name: String,
+        /// Output .glb path
+        output: Option<PathBuf>,
+        /// Path to Data.p4k
+        #[arg(long, env = "SC_DATA_P4K")]
+        p4k: Option<PathBuf>,
+        /// Write hierarchy JSON instead of GLB
+        #[arg(long)]
+        dump_hierarchy: bool,
+        #[command(flatten)]
+        opts: ExportOpts,
+    },
+    /// Print entity loadout tree
+    Loadout {
+        /// Entity name (substring, case-insensitive)
+        name: String,
+        /// Path to Data.p4k
+        #[arg(long, env = "SC_DATA_P4K")]
+        p4k: Option<PathBuf>,
+    },
+}
+
+impl EntityCommand {
+    pub fn run(self) -> Result<()> {
+        match self {
+            Self::Export {
+                name,
+                output,
+                p4k,
+                dump_hierarchy,
+                opts,
+            } => export(name, output, p4k, dump_hierarchy, opts),
+            Self::Loadout { name, p4k } => loadout(name, p4k),
+        }
+    }
+}
+
+fn find_candidates<'a>(db: &'a Database, search: &str) -> Result<Vec<&'a Record>> {
+    let search = search.to_lowercase();
+    let entity_si = db
+        .struct_id("EntityClassDefinition")
+        .context("EntityClassDefinition struct not found in DCB")?;
+    let mut candidates: Vec<_> = db
+        .records_of_type(entity_si)
+        .filter(|r| {
+            db.resolve_string2(r.name_offset)
+                .to_lowercase()
+                .contains(&search)
+        })
+        .collect();
+    candidates.sort_by_key(|r| db.resolve_string2(r.name_offset).len());
+    Ok(candidates)
+}
+
+fn export(
+    name: String,
+    output: Option<PathBuf>,
+    p4k_path: Option<PathBuf>,
+    dump_hierarchy: bool,
+    opts: ExportOpts,
+) -> Result<()> {
+    crate::print_mem_stats("start");
+    let (p4k, dcb_bytes) = load_dcb_bytes(p4k_path.as_deref(), None)?;
+    crate::print_mem_stats("after p4k+dcb load");
+    let p4k = p4k.context("P4k required for entity export")?;
+    let db = Database::from_bytes(&dcb_bytes).context("failed to parse DCB")?;
+    crate::print_mem_stats("after db parse");
+
+    let candidates = find_candidates(&db, &name)?;
+    if candidates.is_empty() {
+        anyhow::bail!("no EntityClassDefinition records matching '{name}'");
+    }
+
+    let record = candidates[0];
+    let rname = db.resolve_string2(record.name_offset);
+    if candidates.len() > 1 {
+        eprintln!("Found {} candidates, using shortest match: {rname}", candidates.len());
+    }
+
+    let idx = EntityIndex::new(&db);
+    let export_opts = starbreaker_gltf::ExportOptions::from(&opts);
+    let output = output.unwrap_or_else(|| PathBuf::from(format!("{name}.glb")));
+
+    crate::print_mem_stats("before loadout resolve");
+    let tree = resolve_loadout_indexed(&idx, record);
+    crate::print_mem_stats("after loadout resolve");
+
+    eprintln!("\nLoadout tree for {}:", tree.root.entity_name);
+    for child in &tree.root.children {
+        let g = if child.geometry_path.is_some() { "G" } else { "." };
+        eprintln!("  {g} {} -> {}", child.item_port_name, child.entity_name);
+    }
+
+    if dump_hierarchy {
+        let json = starbreaker_gltf::dump_hierarchy(&db, &p4k, record, &tree);
+        let json_path = output.with_extension("json");
+        std::fs::write(&json_path, &json)?;
+        eprintln!("Hierarchy written to {}", json_path.display());
+        return Ok(());
+    }
+
+    crate::print_mem_stats("before export");
+    let result = starbreaker_gltf::assemble_glb_with_loadout(&db, &p4k, record, &tree, &export_opts)
+        .with_context(|| format!("failed to export {rname}"))?;
+
+    crate::print_mem_stats("after export");
+    eprintln!("Geometry: {}", result.geometry_path);
+    eprintln!("Material: {}", result.material_path);
+    eprintln!("GLB size: {} bytes", result.glb.len());
+    std::fs::write(&output, &result.glb)?;
+    crate::print_mem_stats("after write");
+    eprintln!("Written to {}", output.display());
+    Ok(())
+}
+
+fn loadout(name: String, p4k_path: Option<PathBuf>) -> Result<()> {
+    let (_, dcb_bytes) = load_dcb_bytes(p4k_path.as_deref(), None)?;
+    let db = Database::from_bytes(&dcb_bytes).context("failed to parse DCB")?;
+
+    let candidates = find_candidates(&db, &name)?;
+    if candidates.is_empty() {
+        anyhow::bail!("no EntityClassDefinition records matching '{name}'");
+    }
+
+    let idx = EntityIndex::new(&db);
+    for record in &candidates {
+        let tree = resolve_loadout_indexed(&idx, record);
+        print_loadout_node(&tree.root, 0);
+    }
+    Ok(())
+}
+
+fn print_loadout_node(node: &LoadoutNode, depth: usize) {
+    let indent = "  ".repeat(depth);
+    let geom = node.geometry_path.as_deref().unwrap_or("-");
+    println!(
+        "{indent}{} [{}] geom={geom}",
+        node.entity_name, node.item_port_name
+    );
+    for child in &node.children {
+        print_loadout_node(child, depth + 1);
+    }
+}

@@ -1,0 +1,66 @@
+@import "tailwindcss";
+@import "@catppuccin/tailwindcss/macchiato.css";
+
+/* Semantic tokens — components use these, never ctp- directly.
+   To switch themes, change only this mapping. */
+@theme {
+  --color-bg: var(--color-ctp-base);
+  --color-bg-alt: var(--color-ctp-mantle);
+  --color-bg-deep: var(--color-ctp-crust);
+  --color-surface: var(--color-ctp-surface0);
+  --color-surface-hi: var(--color-ctp-surface1);
+  --color-overlay: var(--color-ctp-overlay0);
+
+  --color-text: var(--color-ctp-text);
+  --color-text-sub: var(--color-ctp-subtext1);
+  --color-text-dim: var(--color-ctp-subtext0);
+  --color-text-faint: var(--color-ctp-overlay1);
+
+  --color-primary: var(--color-ctp-mauve);
+  --color-accent: var(--color-ctp-peach);
+  --color-success: var(--color-ctp-green);
+  --color-warning: var(--color-ctp-yellow);
+  --color-danger: var(--color-ctp-red);
+  --color-info: var(--color-ctp-blue);
+
+  --color-border: var(--color-ctp-surface0);
+  --color-ring: var(--color-ctp-mauve);
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  height: 100vh;
+}
+
+#root {
+  height: 100vh;
+  display: flex;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-surface-hi);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-overlay);
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "StarBreaker",
+  "version": "0.1.0",
+  "identifier": "com.starbreaker.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "StarBreaker",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZFNjU0NTEwREEwNzhBNTYKUldSV2lnZmFFRVZsYm93KzEyWThLQWJidFA2YW9iVkl6Y2h5TUg3TmMrZy9MTjl4MTJ1RVV3SDUK",
+      "endpoints": [
+        "https://github.com/diogotr7/StarBreaker/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

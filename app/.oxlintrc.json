@@ -1,0 +1,7 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedoc/oxlint-schema/main/oxlintrc.schema.json",
+  "rules": {
+    "no-unused-vars": "warn",
+    "no-console": "off"
+  }
+}

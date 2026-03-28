@@ -1,0 +1,10 @@
+[package]
+name = "starbreaker-wem"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+starbreaker-common = { path = "../starbreaker-common" }
+ww2ogg = "0.1"
+zerocopy = { version = "0.8", features = ["derive"] }
+thiserror = "2"
