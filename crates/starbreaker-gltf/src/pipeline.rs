@@ -136,7 +136,7 @@ fn export_entity_payload_cached(
         .unwrap_or_default();
 
     let (mesh, mtl_file, textures, nmc, skeleton_bones, primary_path) =
-        load_geometry_parts(p4k, &geometry_path, &material_path, opts, png_cache)?;
+        load_geometry_parts(p4k, &geometry_path, &material_path, opts, png_cache, false)?;
 
     if !opts.include_materials {
         return Ok((mesh, None, None, nmc, None, primary_path, material_path, skeleton_bones));
@@ -163,7 +163,7 @@ fn export_entity_from_paths(
     material_path: &str,
     opts: &ExportOptions,
 ) -> Result<EntityPayload, Error> {
-    export_entity_from_paths_cached(p4k, geometry_path, material_path, opts, &mut PngCache::new())
+    export_entity_from_paths_cached(p4k, geometry_path, material_path, opts, &mut PngCache::new(), false)
 }
 
 fn export_entity_from_paths_cached(
@@ -172,9 +172,10 @@ fn export_entity_from_paths_cached(
     material_path: &str,
     opts: &ExportOptions,
     png_cache: &mut PngCache,
+    use_model_bbox: bool,
 ) -> Result<EntityPayload, Error> {
     let (mesh, mtl_file, textures, nmc, _skeleton_bones, primary_path) =
-        load_geometry_parts(p4k, geometry_path, material_path, opts, png_cache)?;
+        load_geometry_parts(p4k, geometry_path, material_path, opts, png_cache, use_model_bbox)?;
 
     if !opts.include_materials {
         return Ok((mesh, None, None, nmc, None, primary_path, material_path.to_string(), Vec::new()));
@@ -191,6 +192,7 @@ fn load_geometry_parts(
     material_path: &str,
     opts: &ExportOptions,
     png_cache: &mut PngCache,
+    use_model_bbox: bool,
 ) -> Result<(
     crate::types::Mesh,
     Option<mtl::MtlFile>,
@@ -209,12 +211,12 @@ fn load_geometry_parts(
         .as_deref()
         .unwrap_or(material_path);
     let (mut mesh, mtl_file, textures, nmc) =
-        load_single_mesh(p4k, &primary_path, effective_material, opts, png_cache)?;
+        load_single_mesh(p4k, &primary_path, effective_material, opts, png_cache, use_model_bbox)?;
 
     // Merge additional parts (CA_BONE/CA_SKIN attachments from CDF).
     let no_tex_opts = ExportOptions { include_textures: false, ..opts.clone() };
     for part in &resolved.parts[1..] {
-        match load_single_mesh(p4k, &part.path, material_path, &no_tex_opts, png_cache) {
+        match load_single_mesh(p4k, &part.path, material_path, &no_tex_opts, png_cache, use_model_bbox) {
             Ok((mut extra_mesh, _, _, _)) => {
                 if let Some(ref bone_name) = part.bone_name {
                     if let Some(bone) = skeleton_bones.iter().find(|b| b.name.eq_ignore_ascii_case(bone_name)) {
@@ -342,6 +344,10 @@ pub fn assemble_glb_with_loadout(
 
     // Interior mesh loader: called JIT per unique CGF during GLB packing.
     let mut interior_png_cache = PngCache::new();
+    // Interior CGFs: bake NMC transforms only when the scaling bbox differs from
+    // the model bbox (indicating multi-node vertex quantization). Use absolute
+    // world transforms (no root_inv) because root + child rotations cancel in
+    // the assembled model. When bboxes match, vertices are already correct.
     let mut interior_mesh_loader =
         |entry: &crate::pipeline::InteriorCgfEntry| -> Option<(crate::Mesh, Option<mtl::MtlFile>, Option<crate::nmc::NodeMeshCombo>)> {
             match export_cgf_from_path(
@@ -352,7 +358,15 @@ pub fn assemble_glb_with_loadout(
                 &mut interior_png_cache,
             ) {
                 Ok((mesh, mtl, _tex, nmc, _palette, _, _, _bones)) => {
-                    Some((bake_nmc_into_mesh(mesh, nmc.as_ref()), mtl, nmc))
+                    let needs_bake = mesh.scaling_min.iter().zip(&mesh.model_min)
+                        .chain(mesh.scaling_max.iter().zip(&mesh.model_max))
+                        .any(|(s, m)| (s - m).abs() > 0.01);
+                    let mesh = if needs_bake {
+                        bake_nmc_absolute(mesh, nmc.as_ref())
+                    } else {
+                        mesh
+                    };
+                    Some((mesh, mtl, nmc))
                 }
                 Err(e) => {
                     log::warn!("failed to load CGF {}: {e}", entry.cgf_path);
@@ -970,14 +984,49 @@ fn compute_nmc_world_transforms(nmc: &crate::nmc::NodeMeshCombo) -> Vec<glam::Ma
     world.into_iter().map(|w| w.unwrap()).collect()
 }
 
-/// Bake NMC node transforms into mesh vertex positions.
-/// Used for instanced geometry (interiors) that can't have per-node hierarchy.
-///
-/// Transforms are baked RELATIVE TO THE ROOT NODE — the root's own transform is
-/// factored out. This is critical for IncludedObjects placements: those transforms
-/// are authored for the CGF's original vertex space (which equals the root node's
-/// local space). Baking absolute world transforms would apply the root rotation
-/// twice — once baked, once via the placement matrix.
+/// Bake NMC with absolute world transforms (no root_inv).
+/// Used for interior CGFs where scaling bbox ≠ model bbox.
+fn bake_nmc_absolute(
+    mut mesh: crate::types::Mesh,
+    nmc: Option<&crate::nmc::NodeMeshCombo>,
+) -> crate::types::Mesh {
+    let nmc = match nmc {
+        Some(n) if !n.nodes.is_empty() => n,
+        _ => return mesh,
+    };
+    let world_transforms = compute_nmc_world_transforms(nmc);
+    let mut vert_node: Vec<Option<usize>> = vec![None; mesh.positions.len()];
+    for sub in &mesh.submeshes {
+        let node_idx = sub.node_parent_index as usize;
+        if node_idx >= world_transforms.len() { continue; }
+        let start = sub.first_index as usize;
+        let end = (start + sub.num_indices as usize).min(mesh.indices.len());
+        for &idx in &mesh.indices[start..end] {
+            let vi = idx as usize;
+            if vi < vert_node.len() && vert_node[vi].is_none() {
+                vert_node[vi] = Some(node_idx);
+            }
+        }
+    }
+    for (vi, node_opt) in vert_node.iter().enumerate() {
+        let Some(node_idx) = node_opt else { continue };
+        let xform = world_transforms[*node_idx];
+        if xform == glam::Mat4::IDENTITY { continue; }
+        let v = xform.transform_point3(glam::Vec3::from(mesh.positions[vi]));
+        mesh.positions[vi] = v.into();
+        if let Some(ref mut normals) = mesh.normals {
+            if vi < normals.len() {
+                let normal_mat = xform.inverse().transpose();
+                let n = normal_mat.transform_vector3(glam::Vec3::from(normals[vi])).normalize();
+                normals[vi] = n.into();
+            }
+        }
+    }
+    mesh
+}
+
+/// Bake NMC node transforms into mesh vertex positions (root-relative).
+/// Used for instanced geometry where scaling bbox = model bbox.
 fn bake_nmc_into_mesh(
     mut mesh: crate::types::Mesh,
     nmc: Option<&crate::nmc::NodeMeshCombo>,
@@ -1043,6 +1092,27 @@ fn export_cgf_from_path(
     opts: &ExportOptions,
     png_cache: &mut PngCache,
 ) -> Result<EntityPayload, Error> {
+    export_cgf_from_path_inner(p4k, cgf_path, material_path, opts, png_cache, false)
+}
+
+fn export_cgf_from_path_model_bbox(
+    p4k: &MappedP4k,
+    cgf_path: &str,
+    material_path: Option<&str>,
+    opts: &ExportOptions,
+    png_cache: &mut PngCache,
+) -> Result<EntityPayload, Error> {
+    export_cgf_from_path_inner(p4k, cgf_path, material_path, opts, png_cache, true)
+}
+
+fn export_cgf_from_path_inner(
+    p4k: &MappedP4k,
+    cgf_path: &str,
+    material_path: Option<&str>,
+    opts: &ExportOptions,
+    png_cache: &mut PngCache,
+    use_model_bbox: bool,
+) -> Result<EntityPayload, Error> {
     // Strip "data/" prefix if present (CryXMLB paths sometimes include it)
     let clean_path = cgf_path.replace('\\', "/");
     let geometry_path = clean_path
@@ -1050,7 +1120,7 @@ fn export_cgf_from_path(
         .or_else(|| clean_path.strip_prefix("Data/"))
         .unwrap_or(&clean_path);
     let mtl_path = material_path.unwrap_or("");
-    export_entity_from_paths_cached(p4k, geometry_path, mtl_path, opts, png_cache)
+    export_entity_from_paths_cached(p4k, geometry_path, mtl_path, opts, png_cache, use_model_bbox)
 }
 
 struct P4kSiblingReader<'a> {
@@ -1929,6 +1999,7 @@ fn load_single_mesh(
     material_path: &str,
     opts: &ExportOptions,
     png_cache: &mut PngCache,
+    use_model_bbox: bool,
 ) -> Result<
     (
         crate::Mesh,
@@ -1958,7 +2029,11 @@ fn load_single_mesh(
             .map(|mtl| load_material_textures(p4k, mtl, opts.texture_mip, png_cache, opts.include_normals, opts.experimental_textures))
     };
 
-    let mesh = crate::parse_skin(&mesh_bytes)?;
+    let mesh = if use_model_bbox {
+        crate::parse_skin_model_bbox(&mesh_bytes)?
+    } else {
+        crate::parse_skin(&mesh_bytes)?
+    };
 
     Ok((mesh, mtl_file, textures, nmc))
 }
@@ -2010,7 +2085,15 @@ pub fn socpaks_to_glb(
                 &mut interior_png_cache,
             ) {
                 Ok((mesh, mtl, _tex, nmc, _palette, _, _, _bones)) => {
-                    Some((bake_nmc_into_mesh(mesh, nmc.as_ref()), mtl, nmc))
+                    let needs_bake = mesh.scaling_min.iter().zip(&mesh.model_min)
+                        .chain(mesh.scaling_max.iter().zip(&mesh.model_max))
+                        .any(|(s, m)| (s - m).abs() > 0.01);
+                    let mesh = if needs_bake {
+                        bake_nmc_absolute(mesh, nmc.as_ref())
+                    } else {
+                        mesh
+                    };
+                    Some((mesh, mtl, nmc))
                 }
                 Err(e) => {
                     log::warn!("failed to load CGF {}: {e}", entry.cgf_path);

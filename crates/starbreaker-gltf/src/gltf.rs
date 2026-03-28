@@ -270,6 +270,7 @@ mod tests {
     fn default_opts() -> GlbOptions {
         GlbOptions {
             include_tangents: true,
+            experimental_textures: false,
             metadata: GlbMetadata {
                 entity_name: None,
                 geometry_path: None,

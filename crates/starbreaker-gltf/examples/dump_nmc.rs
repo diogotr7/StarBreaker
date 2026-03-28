@@ -63,29 +63,25 @@ fn main() {
 
     eprintln!("Nodes: {num_nodes} (geom: {_num_geom})");
 
-    // Read per-node: parent_index + geometry_type + BoneToWorld translation
-    let mut node_info: Vec<(u16, u16, [f32; 3])> = Vec::new();
+    // Read per-node: parent_index + geometry_type + full BoneToWorld matrix
+    let mut node_info: Vec<(u16, u16, [[f32; 4]; 3])> = Vec::new();
     for _ in 0..num_nodes {
         r.advance(32).unwrap(); // pre-matrix
         r.advance(48).unwrap(); // WorldToBone
-        // BoneToWorld: read translation (last column of 3x4)
+        // BoneToWorld: 3x4 row-major matrix
         let mut b2w = [[0.0f32; 4]; 3];
         for row in &mut b2w {
             for val in row.iter_mut() {
                 *val = r.read_f32().unwrap();
             }
         }
-        let tx = b2w[0][3];
-        let ty = b2w[1][3];
-        let tz = b2w[2][3];
 
         r.advance(20).unwrap(); // Scale + Id + Unknown
         let parent_index = r.read_u16().unwrap();
         let geometry_type = r.read_u16().unwrap();
-        // Skip BBox(24) + remaining(32) - 2 already read = 54
         r.advance(56).unwrap();
 
-        node_info.push((parent_index, geometry_type, [tx, ty, tz]));
+        node_info.push((parent_index, geometry_type, b2w));
     }
 
     // Footer + indices
@@ -122,7 +118,7 @@ fn main() {
 
     // Print
     for (i, name) in names.iter().enumerate() {
-        let (parent, geom_type, trans) = node_info[i];
+        let (parent, geom_type, b2w) = node_info[i];
         let type_str = match geom_type {
             0 => "GEOM",
             2 => "HELP2",
@@ -134,9 +130,22 @@ fn main() {
         } else {
             format!("{parent}")
         };
+        // Check if rotation is identity
+        let is_identity_rot = (b2w[0][0] - 1.0).abs() < 0.001
+            && (b2w[1][1] - 1.0).abs() < 0.001
+            && (b2w[2][2] - 1.0).abs() < 0.001
+            && b2w[0][1].abs() < 0.001 && b2w[0][2].abs() < 0.001
+            && b2w[1][0].abs() < 0.001 && b2w[1][2].abs() < 0.001
+            && b2w[2][0].abs() < 0.001 && b2w[2][1].abs() < 0.001;
+        let rot_flag = if is_identity_rot { "" } else { " ROT" };
         println!(
-            "{i:4} {type_str:5} parent={parent_str:>5} pos=[{:.2},{:.2},{:.2}] {name}",
-            trans[0], trans[1], trans[2]
+            "{i:4} {type_str:5} parent={parent_str:>5} pos=[{:.2},{:.2},{:.2}]{rot_flag} {name}",
+            b2w[0][3], b2w[1][3], b2w[2][3]
         );
+        if !is_identity_rot {
+            println!("       [{:.3},{:.3},{:.3}]", b2w[0][0], b2w[0][1], b2w[0][2]);
+            println!("       [{:.3},{:.3},{:.3}]", b2w[1][0], b2w[1][1], b2w[1][2]);
+            println!("       [{:.3},{:.3},{:.3}]", b2w[2][0], b2w[2][1], b2w[2][2]);
+        }
     }
 }

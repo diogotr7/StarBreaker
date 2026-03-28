@@ -24,6 +24,14 @@ fn main() {
     eprintln!("File: {}", entry.name);
     let data = p4k.read(entry).expect("extract failed");
     let mesh = starbreaker_gltf::parse_skin(&data).expect("parse failed");
+    eprintln!("model_min: {:?}", mesh.model_min);
+    eprintln!("model_max: {:?}", mesh.model_max);
+    eprintln!("scaling_min: {:?}", mesh.scaling_min);
+    eprintln!("scaling_max: {:?}", mesh.scaling_max);
+    eprintln!("submeshes: {}", mesh.submeshes.len());
+    for (i, s) in mesh.submeshes.iter().enumerate() {
+        eprintln!("  sub[{i}]: node={} first_idx={} num_idx={} mat={}", s.node_parent_index, s.first_index, s.num_indices, s.material_id);
+    }
 
     let output = if args.len() >= 3 {
         args[2].clone()
