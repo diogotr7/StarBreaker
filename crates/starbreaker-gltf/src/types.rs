@@ -80,25 +80,6 @@ impl Mesh {
         }
     }
 
-    /// Remap vertex positions from scaling bbox space to model bbox space.
-    ///
-    /// The scaling bbox is expanded to cover all NMC node local spaces (for GPU
-    /// skinning), while the model bbox covers the root-relative model space that
-    /// IncludedObjects placements are authored for. When they differ, interior
-    /// CGF vertices need remapping for correct placement.
-    pub fn remap_scaling_to_model(&mut self) {
-        for pos in &mut self.positions {
-            for i in 0..3 {
-                let s_half = ((self.scaling_max[i] - self.scaling_min[i]) / 2.0).max(1.0);
-                let s_center = (self.scaling_max[i] + self.scaling_min[i]) / 2.0;
-                let snorm = (pos[i] - s_center) / s_half;
-
-                let m_half = ((self.model_max[i] - self.model_min[i]) / 2.0).max(1.0);
-                let m_center = (self.model_max[i] + self.model_min[i]) / 2.0;
-                pos[i] = snorm * m_half + m_center;
-            }
-        }
-    }
 }
 
 /// Compute area-weighted smooth normals from geometry (fallback when stream normals unavailable).

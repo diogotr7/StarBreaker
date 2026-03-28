@@ -23,6 +23,13 @@ use starbreaker_chunks::ChunkFile;
 /// Parse a `.skin`/`.cgf` IVO file into a Mesh domain type.
 /// Returns an error if the file uses CrCh format (not supported).
 pub fn parse_skin(data: &[u8]) -> Result<Mesh, Error> {
+    parse_skin_with_options(data, false)
+}
+
+/// Parse a `.skin`/`.cgf` IVO file, optionally dequantizing with model bbox.
+/// Interior CGFs use `use_model_bbox = true` because IncludedObjects placements
+/// are authored for model-bbox space.
+pub(crate) fn parse_skin_with_options(data: &[u8], use_model_bbox: bool) -> Result<Mesh, Error> {
     let chunk_file = ChunkFile::from_bytes(data)?;
     let ivo = match &chunk_file {
         ChunkFile::Ivo(ivo) => ivo,
@@ -47,33 +54,7 @@ pub fn parse_skin(data: &[u8]) -> Result<Mesh, Error> {
         .map(|entry| ivo::material::MaterialName::read(ivo.chunk_data(entry)))
         .collect::<Result<_, _>>()?;
 
-    Ok(types::build_mesh(&skin_mesh, &materials))
-}
-
-/// Like `parse_skin` but dequantizes positions using the model bounding box
-/// instead of the scaling bbox. Interior CGFs need this because IncludedObjects
-/// placements are authored for model-bbox space.
-pub(crate) fn parse_skin_model_bbox(data: &[u8]) -> Result<Mesh, Error> {
-    let chunk_file = ChunkFile::from_bytes(data)?;
-    let ivo = match &chunk_file {
-        ChunkFile::Ivo(ivo) => ivo,
-        ChunkFile::CrCh(_) => return Err(Error::UnsupportedFormat),
-    };
-    let skin_entry = ivo
-        .chunks()
-        .iter()
-        .find(|c| c.chunk_type == starbreaker_chunks::known_types::ivo::IVO_SKIN2)
-        .ok_or(Error::MissingChunk {
-            chunk_type: starbreaker_chunks::known_types::ivo::IVO_SKIN2,
-        })?;
-    let skin_mesh = ivo::skin::SkinMesh::read(ivo.chunk_data(skin_entry))?;
-    let materials: Vec<ivo::material::MaterialName> = ivo
-        .chunks()
-        .iter()
-        .filter(|c| c.chunk_type == starbreaker_chunks::known_types::ivo::MTL_NAME_IVO320)
-        .map(|entry| ivo::material::MaterialName::read(ivo.chunk_data(entry)))
-        .collect::<Result<_, _>>()?;
-    Ok(types::build_mesh_with_bbox(&skin_mesh, &materials, true))
+    Ok(types::build_mesh_with_bbox(&skin_mesh, &materials, use_model_bbox))
 }
 
 /// Parse a `.skin`/`.cgf` IVO file and convert to GLB in one step.

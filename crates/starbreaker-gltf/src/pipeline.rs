@@ -356,13 +356,14 @@ pub fn assemble_glb_with_loadout(
                 entry.material_path.as_deref(),
                 &no_tex_opts,
                 &mut interior_png_cache,
+                false,
             ) {
                 Ok((mesh, mtl, _tex, nmc, _palette, _, _, _bones)) => {
                     let needs_bake = mesh.scaling_min.iter().zip(&mesh.model_min)
                         .chain(mesh.scaling_max.iter().zip(&mesh.model_max))
                         .any(|(s, m)| (s - m).abs() > 0.01);
                     let mesh = if needs_bake {
-                        bake_nmc_absolute(mesh, nmc.as_ref())
+                        bake_nmc_into_mesh(mesh, nmc.as_ref(), false)
                     } else {
                         mesh
                     };
@@ -984,52 +985,16 @@ fn compute_nmc_world_transforms(nmc: &crate::nmc::NodeMeshCombo) -> Vec<glam::Ma
     world.into_iter().map(|w| w.unwrap()).collect()
 }
 
-/// Bake NMC with absolute world transforms (no root_inv).
-/// Used for interior CGFs where scaling bbox ≠ model bbox.
-fn bake_nmc_absolute(
-    mut mesh: crate::types::Mesh,
-    nmc: Option<&crate::nmc::NodeMeshCombo>,
-) -> crate::types::Mesh {
-    let nmc = match nmc {
-        Some(n) if !n.nodes.is_empty() => n,
-        _ => return mesh,
-    };
-    let world_transforms = compute_nmc_world_transforms(nmc);
-    let mut vert_node: Vec<Option<usize>> = vec![None; mesh.positions.len()];
-    for sub in &mesh.submeshes {
-        let node_idx = sub.node_parent_index as usize;
-        if node_idx >= world_transforms.len() { continue; }
-        let start = sub.first_index as usize;
-        let end = (start + sub.num_indices as usize).min(mesh.indices.len());
-        for &idx in &mesh.indices[start..end] {
-            let vi = idx as usize;
-            if vi < vert_node.len() && vert_node[vi].is_none() {
-                vert_node[vi] = Some(node_idx);
-            }
-        }
-    }
-    for (vi, node_opt) in vert_node.iter().enumerate() {
-        let Some(node_idx) = node_opt else { continue };
-        let xform = world_transforms[*node_idx];
-        if xform == glam::Mat4::IDENTITY { continue; }
-        let v = xform.transform_point3(glam::Vec3::from(mesh.positions[vi]));
-        mesh.positions[vi] = v.into();
-        if let Some(ref mut normals) = mesh.normals {
-            if vi < normals.len() {
-                let normal_mat = xform.inverse().transpose();
-                let n = normal_mat.transform_vector3(glam::Vec3::from(normals[vi])).normalize();
-                normals[vi] = n.into();
-            }
-        }
-    }
-    mesh
-}
-
-/// Bake NMC node transforms into mesh vertex positions (root-relative).
-/// Used for instanced geometry where scaling bbox = model bbox.
+/// Bake NMC node transforms into mesh vertex positions.
+///
+/// When `use_root_inv` is true, transforms are made root-relative by factoring
+/// out the root node's world transform (used for instanced geometry where scaling
+/// bbox = model bbox). When false, absolute world transforms are used (for
+/// interior CGFs where scaling bbox ≠ model bbox).
 fn bake_nmc_into_mesh(
     mut mesh: crate::types::Mesh,
     nmc: Option<&crate::nmc::NodeMeshCombo>,
+    use_root_inv: bool,
 ) -> crate::types::Mesh {
     let nmc = match nmc {
         Some(n) if !n.nodes.is_empty() => n,
@@ -1038,12 +1003,14 @@ fn bake_nmc_into_mesh(
 
     let world_transforms = compute_nmc_world_transforms(nmc);
 
-    // Find the root node(s) — nodes with no parent.
-    // Factor out the root transform so we bake relative to root, not absolute.
-    let root_idx = nmc.nodes.iter().position(|n| n.parent_index.is_none());
-    let root_inv = root_idx
-        .map(|i| world_transforms[i].inverse())
-        .unwrap_or(glam::Mat4::IDENTITY);
+    let root_inv = if use_root_inv {
+        let root_idx = nmc.nodes.iter().position(|n| n.parent_index.is_none());
+        root_idx
+            .map(|i| world_transforms[i].inverse())
+            .unwrap_or(glam::Mat4::IDENTITY)
+    } else {
+        glam::Mat4::IDENTITY
+    };
 
     let mut vert_node: Vec<Option<usize>> = vec![None; mesh.positions.len()];
     for sub in &mesh.submeshes {
@@ -1063,7 +1030,6 @@ fn bake_nmc_into_mesh(
 
     for (vi, node_opt) in vert_node.iter().enumerate() {
         let Some(node_idx) = node_opt else { continue };
-        // Transform relative to root: inv(root) × node_world × vertex
         let xform = root_inv * world_transforms[*node_idx];
         if xform == glam::Mat4::IDENTITY {
             continue;
@@ -1085,27 +1051,9 @@ fn bake_nmc_into_mesh(
 }
 
 /// Load a .cgf/.cgfm mesh from P4k by interior path.
+/// When `use_model_bbox` is true, dequantizes positions using the model bounding
+/// box instead of the scaling bbox (needed for interior CGF placement).
 fn export_cgf_from_path(
-    p4k: &MappedP4k,
-    cgf_path: &str,
-    material_path: Option<&str>,
-    opts: &ExportOptions,
-    png_cache: &mut PngCache,
-) -> Result<EntityPayload, Error> {
-    export_cgf_from_path_inner(p4k, cgf_path, material_path, opts, png_cache, false)
-}
-
-fn export_cgf_from_path_model_bbox(
-    p4k: &MappedP4k,
-    cgf_path: &str,
-    material_path: Option<&str>,
-    opts: &ExportOptions,
-    png_cache: &mut PngCache,
-) -> Result<EntityPayload, Error> {
-    export_cgf_from_path_inner(p4k, cgf_path, material_path, opts, png_cache, true)
-}
-
-fn export_cgf_from_path_inner(
     p4k: &MappedP4k,
     cgf_path: &str,
     material_path: Option<&str>,
@@ -2029,11 +1977,7 @@ fn load_single_mesh(
             .map(|mtl| load_material_textures(p4k, mtl, opts.texture_mip, png_cache, opts.include_normals, opts.experimental_textures))
     };
 
-    let mesh = if use_model_bbox {
-        crate::parse_skin_model_bbox(&mesh_bytes)?
-    } else {
-        crate::parse_skin(&mesh_bytes)?
-    };
+    let mesh = crate::parse_skin_with_options(&mesh_bytes, use_model_bbox)?;
 
     Ok((mesh, mtl_file, textures, nmc))
 }
@@ -2083,13 +2027,14 @@ pub fn socpaks_to_glb(
                 entry.material_path.as_deref(),
                 &no_tex_opts,
                 &mut interior_png_cache,
+                false,
             ) {
                 Ok((mesh, mtl, _tex, nmc, _palette, _, _, _bones)) => {
                     let needs_bake = mesh.scaling_min.iter().zip(&mesh.model_min)
                         .chain(mesh.scaling_max.iter().zip(&mesh.model_max))
                         .any(|(s, m)| (s - m).abs() > 0.01);
                     let mesh = if needs_bake {
-                        bake_nmc_absolute(mesh, nmc.as_ref())
+                        bake_nmc_into_mesh(mesh, nmc.as_ref(), false)
                     } else {
                         mesh
                     };
