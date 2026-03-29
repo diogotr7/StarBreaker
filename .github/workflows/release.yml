@@ -56,14 +56,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cli-windows
-          path: target/release/starbreaker.exe
+          path: target/release/starbreaker-cli.exe
 
       - name: Upload CLI (Linux)
         if: matrix.platform == 'ubuntu-22.04'
         uses: actions/upload-artifact@v4
         with:
           name: cli-linux
-          path: target/release/starbreaker
+          path: target/release/starbreaker-cli
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -97,6 +97,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          draft: true
           files: |
-            cli-windows/starbreaker.exe
-            cli-linux/starbreaker
+            cli-windows/starbreaker-cli.exe
+            cli-linux/starbreaker-cli
