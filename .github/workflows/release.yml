@@ -43,6 +43,11 @@ jobs:
         working-directory: app
         run: npm ci
 
+      - name: Use lld linker (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: echo "RUSTFLAGS=-C link-arg=-fuse-ld=lld" >> "$GITHUB_ENV"
+
       - name: Build CLI
         run: cargo build --release --package starbreaker-cli
 
