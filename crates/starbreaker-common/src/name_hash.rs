@@ -295,6 +295,14 @@ const MANUAL_MAPPINGS: &[(u32, &str)] = &[
     (0x442a34ac, "EyeColor"),
     (0x15e90814, "HairDyeColor1"),
     (0xa2c7c909, "HairDyeColor2"),
+    (0x4e865b74, "EyebrowDye"),
+    (0x3b73d344, "StubbleDye"),
+    (0x8792319b, "BeardDye"),
+    (0x2c6279e6, "HairDye"),
+    (0x75196d10, "EyebrowDye2"),
+    (0x9f37ad63, "EyebrowDye3"),
+    (0x1f1fad17, "HairDye2"),
+    (0x13170b02, "HairDye3"),
 ];
 
 static HASH_TO_NAME: LazyLock<HashMap<u32, &'static str>> = LazyLock::new(|| {
