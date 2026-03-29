@@ -1,20 +1,20 @@
 use rustc_hash::FxHashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-use memmap2::Mmap;
-
-use crate::archive::{DirEntry, P4kArchive, P4kEntry, parse_central_directory};
+use crate::archive::{DirEntry, P4kArchive, P4kEntry, parse_central_directory_from_file};
 use crate::error::P4kError;
 
-/// A P4k archive backed by a memory-mapped file.
+/// A P4k archive backed by a pool of file handles.
 ///
 /// Since `P4kEntry` fields are all owned types (`String`, `u64`, etc.),
 /// the entries are parsed once during construction and stored separately
-/// from the mmap.
+/// from the file. Individual reads use seek + read on a pooled file handle,
+/// allowing concurrent reads from multiple threads without contention.
 pub struct MappedP4k {
     path: PathBuf,
-    mmap: Mmap,
+    file_pool: Mutex<Vec<File>>,
     entries: Vec<P4kEntry>,
     path_index: FxHashMap<String, usize>,
     lowercase_index: FxHashMap<String, usize>,
@@ -22,7 +22,7 @@ pub struct MappedP4k {
 }
 
 impl MappedP4k {
-    /// Open a P4k file by memory-mapping it.
+    /// Open a P4k file.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, P4kError> {
         Self::open_with_progress(path, None)
     }
@@ -33,15 +33,14 @@ impl MappedP4k {
         progress: Option<&starbreaker_common::Progress>,
     ) -> Result<Self, P4kError> {
         let path_buf = path.as_ref().to_path_buf();
-        let file = File::open(&path_buf)?;
-        let mmap = unsafe { Mmap::map(&file)? };
+        let mut file = File::open(&path_buf)?;
 
         let (entries, path_index, lowercase_index, sorted_index) =
-            parse_central_directory(&mmap, progress)?;
+            parse_central_directory_from_file(&mut file, progress)?;
 
         Ok(MappedP4k {
             path: path_buf,
-            mmap,
+            file_pool: Mutex::new(vec![file]),
             entries,
             path_index,
             lowercase_index,
@@ -55,8 +54,25 @@ impl MappedP4k {
     }
 
     /// Read and decompress an entry's data.
+    ///
+    /// Uses a pooled file handle so concurrent reads from multiple threads
+    /// don't serialize on a single lock.
     pub fn read(&self, entry: &P4kEntry) -> Result<Vec<u8>, P4kError> {
-        P4kArchive::read_from_data(&self.mmap, entry)
+        // Take a file handle from the pool, or open a new one if empty.
+        let mut file = self
+            .file_pool
+            .lock()
+            .unwrap()
+            .pop()
+            .map(Ok)
+            .unwrap_or_else(|| File::open(&self.path))?;
+
+        let result = P4kArchive::read_from_file(&mut file, entry);
+
+        // Return the handle to the pool.
+        self.file_pool.lock().unwrap().push(file);
+
+        result
     }
 
     /// Get all entries.

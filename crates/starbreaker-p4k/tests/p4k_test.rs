@@ -13,28 +13,12 @@ fn open_p4k_or_skip() -> Option<MappedP4k> {
 
 #[test]
 fn open_real_p4k() {
-    let (p4k_path, _channel) = match starbreaker_p4k::find_p4k() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("SKIP: {e}");
-            return;
-        }
+    let Some(p4k) = open_p4k_or_skip() else {
+        return;
     };
 
-    let t0 = std::time::Instant::now();
-    let file = std::fs::File::open(&p4k_path).unwrap();
-    let mmap = unsafe { memmap2::Mmap::map(&file).unwrap() };
-    let t_mmap = t0.elapsed();
-
-    let t1 = std::time::Instant::now();
-    let archive = P4kArchive::from_bytes(&mmap).unwrap();
-    let t_parse = t1.elapsed();
-
-    println!(
-        "mmap: {t_mmap:?}, parse: {t_parse:?}, entries: {}",
-        archive.len()
-    );
-    assert!(archive.len() > 100_000);
+    println!("entries: {}", p4k.len());
+    assert!(p4k.len() > 100_000);
 }
 
 #[test]

@@ -4892,7 +4892,6 @@ dependencies = [
  "aes",
  "cbc",
  "flate2",
- "memmap2",
  "rustc-hash",
  "ruzstd",
  "starbreaker-common",

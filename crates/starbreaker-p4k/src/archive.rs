@@ -248,24 +248,32 @@ impl<'a> P4kArchive<'a> {
 // ── Internal parsing ─────────────────────────────────────────────────────────
 
 /// Parsed central directory: entries, exact-case index, lowercase index, sorted offsets.
-type CentralDirectory = (
+pub(crate) type CentralDirectory = (
     Vec<P4kEntry>,
     FxHashMap<String, usize>,
     FxHashMap<String, usize>,
     Vec<u32>,
 );
 
-/// Parse the central directory from raw archive data.
-///
-/// Returns (entries, path_index, lowercase_index, sorted_index).
-pub(crate) fn parse_central_directory(
-    data: &[u8],
-    progress: Option<&starbreaker_common::Progress>,
-) -> Result<CentralDirectory, P4kError> {
-    // Step 1: Search backward for EOCD signature
-    let eocd_offset = find_eocd(data)?;
+/// Location of the central directory within an archive.
+struct CdLocation {
+    total_entries: u64,
+    cd_offset: u64,
+    cd_size: u64,
+    is_zip64: bool,
+}
 
-    let mut reader = SpanReader::new_at(data, eocd_offset);
+/// Locate the central directory from the tail of an archive.
+///
+/// `tail_data` is the last N bytes of the file.
+/// `tail_file_offset` is the absolute file offset where `tail_data` starts.
+fn locate_central_directory(
+    tail_data: &[u8],
+    tail_file_offset: u64,
+) -> Result<CdLocation, P4kError> {
+    let eocd_offset = find_eocd(tail_data)?;
+
+    let mut reader = SpanReader::new_at(tail_data, eocd_offset);
     let eocd = reader.read_type::<EocdRecord>()?;
 
     if eocd.signature != EOCD_SIGNATURE {
@@ -277,10 +285,9 @@ pub(crate) fn parse_central_directory(
 
     let is_zip64 = eocd.is_zip64();
 
-    let (total_entries, cd_offset) = if is_zip64 {
-        // Step 2: Find ZIP64 locator (search backwards from EOCD)
-        let locator_offset = find_zip64_locator(data, eocd_offset)?;
-        let mut loc_reader = SpanReader::new_at(data, locator_offset);
+    if is_zip64 {
+        let locator_offset = find_zip64_locator(tail_data, eocd_offset)?;
+        let mut loc_reader = SpanReader::new_at(tail_data, locator_offset);
         let locator = loc_reader.read_type::<Zip64Locator>()?;
 
         if locator.signature != ZIP64_LOCATOR_SIGNATURE {
@@ -290,9 +297,12 @@ pub(crate) fn parse_central_directory(
             });
         }
 
-        // Step 3: Read EOCD64
-        let eocd64_off = locator.eocd64_offset as usize;
-        let mut eocd64_reader = SpanReader::new_at(data, eocd64_off);
+        // eocd64_offset is absolute — convert to buffer-relative
+        let eocd64_abs = locator.eocd64_offset;
+        let eocd64_rel = eocd64_abs
+            .checked_sub(tail_file_offset)
+            .ok_or(P4kError::EocdNotFound)? as usize;
+        let mut eocd64_reader = SpanReader::new_at(tail_data, eocd64_rel);
         let eocd64 = eocd64_reader.read_type::<Eocd64Record>()?;
 
         if eocd64.signature != EOCD64_SIGNATURE {
@@ -302,16 +312,30 @@ pub(crate) fn parse_central_directory(
             });
         }
 
-        (eocd64.total_entries, eocd64.central_directory_offset)
+        Ok(CdLocation {
+            total_entries: eocd64.total_entries,
+            cd_offset: eocd64.central_directory_offset,
+            cd_size: eocd64.central_directory_size,
+            is_zip64: true,
+        })
     } else {
-        (
-            eocd.total_entries as u64,
-            eocd.central_directory_offset as u64,
-        )
-    };
+        Ok(CdLocation {
+            total_entries: eocd.total_entries as u64,
+            cd_offset: eocd.central_directory_offset as u64,
+            cd_size: eocd.central_directory_size as u64,
+            is_zip64: false,
+        })
+    }
+}
 
-    // Step 4: Read all central directory entries
-    let mut cd_reader = SpanReader::new_at(data, cd_offset as usize);
+/// Parse central directory entries from a byte buffer and build indexes.
+fn parse_entries(
+    cd_data: &[u8],
+    total_entries: u64,
+    is_zip64: bool,
+    progress: Option<&starbreaker_common::Progress>,
+) -> Result<CentralDirectory, P4kError> {
+    let mut cd_reader = SpanReader::new(cd_data);
     let mut entries = Vec::with_capacity(total_entries as usize);
 
     for i in 0..total_entries {
@@ -343,6 +367,45 @@ pub(crate) fn parse_central_directory(
     sorted_index.sort_unstable_by(|&a, &b| entries[a as usize].name.cmp(&entries[b as usize].name));
 
     Ok((entries, path_index, lowercase_index, sorted_index))
+}
+
+/// Parse the central directory from raw archive data (in-memory byte slice).
+///
+/// Returns (entries, path_index, lowercase_index, sorted_index).
+pub(crate) fn parse_central_directory(
+    data: &[u8],
+    progress: Option<&starbreaker_common::Progress>,
+) -> Result<CentralDirectory, P4kError> {
+    let loc = locate_central_directory(data, 0)?;
+    let cd_data = &data[loc.cd_offset as usize..];
+    parse_entries(cd_data, loc.total_entries, loc.is_zip64, progress)
+}
+
+/// Parse the central directory from a seekable file handle.
+///
+/// Reads only the EOCD tail and central directory — avoids mapping the entire file.
+pub(crate) fn parse_central_directory_from_file(
+    file: &mut (impl Read + Seek),
+    progress: Option<&starbreaker_common::Progress>,
+) -> Result<CentralDirectory, P4kError> {
+    let file_len = file.seek(SeekFrom::End(0))?;
+
+    // Read the tail of the file to find EOCD/EOCD64 structures.
+    // Max EOCD search window: 22 (EOCD) + 65535 (comment) + 56 (EOCD64) + 20 (locator)
+    let tail_size = (file_len as usize).min(22 + 65535 + 56 + 20);
+    let tail_offset = file_len - tail_size as u64;
+    file.seek(SeekFrom::Start(tail_offset))?;
+    let mut tail = vec![0u8; tail_size];
+    file.read_exact(&mut tail)?;
+
+    let loc = locate_central_directory(&tail, tail_offset)?;
+
+    // Read the central directory entries
+    file.seek(SeekFrom::Start(loc.cd_offset))?;
+    let mut cd_data = vec![0u8; loc.cd_size as usize];
+    file.read_exact(&mut cd_data)?;
+
+    parse_entries(&cd_data, loc.total_entries, loc.is_zip64, progress)
 }
 
 /// Search backward from the end of data for the EOCD signature.
