@@ -1,7 +1,7 @@
 use rustc_hash::FxHashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use crate::archive::{DirEntry, P4kArchive, P4kEntry, parse_central_directory_from_file};
 use crate::error::P4kError;
@@ -62,7 +62,6 @@ impl MappedP4k {
         let mut file = self
             .file_pool
             .lock()
-            .unwrap()
             .pop()
             .map(Ok)
             .unwrap_or_else(|| File::open(&self.path))?;
@@ -70,7 +69,7 @@ impl MappedP4k {
         let result = P4kArchive::read_from_file(&mut file, entry);
 
         // Return the handle to the pool.
-        self.file_pool.lock().unwrap().push(file);
+        self.file_pool.lock().push(file);
 
         result
     }

@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
 use clap::Subcommand;
 use serde_json::Value;
+
+use crate::error::{CliError, Result};
 
 #[derive(Subcommand)]
 pub enum GlbCommand {
@@ -24,28 +25,40 @@ impl GlbCommand {
     }
 }
 
+fn read_u32(data: &[u8], offset: usize) -> Result<u32> {
+    let bytes: [u8; 4] = data[offset..offset + 4]
+        .try_into()
+        .map_err(|_| CliError::InvalidInput(format!("GLB truncated at offset {offset}")))?;
+    Ok(u32::from_le_bytes(bytes))
+}
+
 fn inspect(path: &std::path::Path, show_tree: bool) -> Result<()> {
-    let data = std::fs::read(path).context("failed to read GLB file")?;
+    let data = std::fs::read(path)
+        .map_err(|e| CliError::IoPath { source: e, path: path.display().to_string() })?;
 
     // Parse GLB container: magic(4) + version(4) + length(4) + json_chunk_len(4) + json_chunk_type(4) + json
     if data.len() < 20 {
-        anyhow::bail!("file too small for GLB");
+        return Err(CliError::InvalidInput("file too small for GLB".into()));
     }
-    let magic = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let magic = read_u32(&data, 0)?;
     if magic != 0x46546C67 {
-        anyhow::bail!("not a GLB file (bad magic)");
+        return Err(CliError::InvalidInput("not a GLB file (bad magic)".into()));
     }
-    let _version = u32::from_le_bytes(data[4..8].try_into().unwrap());
-    let _total_len = u32::from_le_bytes(data[8..12].try_into().unwrap());
-    let json_len = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
-    let _json_type = u32::from_le_bytes(data[16..20].try_into().unwrap());
+    let _version = read_u32(&data, 4)?;
+    let _total_len = read_u32(&data, 8)?;
+    let json_len = read_u32(&data, 12)? as usize;
+    let _json_type = read_u32(&data, 16)?;
 
     let json_bytes = &data[20..20 + json_len];
-    let root: Value = serde_json::from_slice(json_bytes).context("failed to parse GLB JSON")?;
+    let root: Value = serde_json::from_slice(json_bytes)
+        .map_err(|e| CliError::WithContext {
+            source: Box::new(e.into()),
+            context: format!("parsing {}", path.display()),
+        })?;
 
     let bin_offset = 20 + json_len;
     let bin_size = if bin_offset + 8 <= data.len() {
-        u32::from_le_bytes(data[bin_offset..bin_offset + 4].try_into().unwrap()) as usize
+        read_u32(&data, bin_offset)? as usize
     } else {
         0
     };
@@ -247,13 +260,15 @@ fn inspect(path: &std::path::Path, show_tree: bool) -> Result<()> {
 
     // Node tree (optional)
     if show_tree {
-        println!("=== Node Tree ===");
-        if let Some(scenes) = root["scenes"].as_array() {
-            for scene in scenes {
-                if let Some(roots) = scene["nodes"].as_array() {
-                    for root_idx in roots {
-                        if let Some(idx) = root_idx.as_u64() {
-                            print_node_tree(nodes.unwrap(), idx as usize, 0);
+        if let Some(nodes) = nodes {
+            println!("=== Node Tree ===");
+            if let Some(scenes) = root["scenes"].as_array() {
+                for scene in scenes {
+                    if let Some(roots) = scene["nodes"].as_array() {
+                        for root_idx in roots {
+                            if let Some(idx) = root_idx.as_u64() {
+                                print_node_tree(nodes, idx as usize, 0);
+                            }
                         }
                     }
                 }

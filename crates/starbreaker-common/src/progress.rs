@@ -1,7 +1,7 @@
 //! Shared progress reporting for long-running operations.
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 /// Thread-safe progress state. Pass `Option<&Progress>` to heavy functions.
 /// `None` means no reporting (zero cost). The UI creates one and polls it.
@@ -37,17 +37,17 @@ impl Progress {
             // SAFETY: parent outlives self (enforced by SubProgress).
             let parent = unsafe { &*parent_ptr };
             parent.value.store((scaled * 10000.0) as u32, Ordering::Relaxed);
-            *parent.stage.lock().unwrap() = message.to_string();
+            *parent.stage.lock() = message.to_string();
         } else {
             self.value.store((clamped * 10000.0) as u32, Ordering::Relaxed);
-            *self.stage.lock().unwrap() = message.to_string();
+            *self.stage.lock() = message.to_string();
         }
     }
 
     /// Read current progress.
     pub fn get(&self) -> (f32, String) {
         let v = self.value.load(Ordering::Relaxed) as f32 / 10000.0;
-        let s = self.stage.lock().unwrap().clone();
+        let s = self.stage.lock().clone();
         (v, s)
     }
 

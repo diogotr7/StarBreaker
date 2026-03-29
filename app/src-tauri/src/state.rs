@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 
 use starbreaker_p4k::MappedP4k;
 use starbreaker_wwise::{AtlIndex, Hierarchy};

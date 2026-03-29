@@ -22,8 +22,11 @@ fn dump_node(xml: &CryXml, node: &CryXmlNode, depth: usize) {
     }
 }
 
-fn main() -> anyhow::Result<()> {
-    let path = env::args().nth(1).expect("usage: debug_atl <file.xml>");
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let path = env::args().nth(1).unwrap_or_else(|| {
+        eprintln!("usage: debug_atl <file.xml>");
+        std::process::exit(1);
+    });
     let data = fs::read(&path)?;
     let xml = from_bytes(&data)?;
     dump_node(&xml, xml.root(), 0);

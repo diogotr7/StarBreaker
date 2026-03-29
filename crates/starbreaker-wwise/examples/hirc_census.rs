@@ -5,7 +5,7 @@ use std::fs;
 
 use starbreaker_wwise::{BnkFile, HircObject, HircObjectType, Hierarchy};
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = env::args().nth(1).unwrap_or_else(|| {
         eprintln!("Usage: hirc_census <directory>");
         std::process::exit(1);

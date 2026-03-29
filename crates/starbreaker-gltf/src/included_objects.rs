@@ -93,16 +93,12 @@ impl IncludedObjects {
                     let mut vector1 = [0.0f64; 3];
                     let mut vector2 = [0.0f64; 3];
                     for i in 0..3 {
-                        vector1[i] = f64::from_le_bytes(
-                            data[off + 4 + i * 8..off + 12 + i * 8].try_into().unwrap(),
-                        );
-                        vector2[i] = f64::from_le_bytes(
-                            data[off + 28 + i * 8..off + 36 + i * 8].try_into().unwrap(),
-                        );
+                        vector1[i] = read_f64_at(data, off + 4 + i * 8)?;
+                        vector2[i] = read_f64_at(data, off + 28 + i * 8)?;
                     }
 
-                    let id = u16::from_le_bytes(data[off + 60..off + 62].try_into().unwrap());
-                    let unknown2 = u16::from_le_bytes(data[off + 62..off + 64].try_into().unwrap());
+                    let id = read_u16_at(data, off + 60)?;
+                    let unknown2 = read_u16_at(data, off + 62)?;
 
                     // 3×4 f64 transform at offset +64 (after type+vectors+unknown+id+unknown2)
                     // Data is row-major: [r00,r01,r02,tx, r10,r11,r12,ty, r20,r21,r22,tz]
@@ -112,13 +108,11 @@ impl IncludedObjects {
                     for row in 0..3 {
                         for (col, col_data) in transform.iter_mut().enumerate() {
                             let idx = mat_off + (row * 4 + col) * 8;
-                            col_data[row] =
-                                f64::from_le_bytes(data[idx..idx + 8].try_into().unwrap());
+                            col_data[row] = read_f64_at(data, idx)?;
                         }
                     }
 
-                    let unknown3 =
-                        u64::from_le_bytes(data[off + 160..off + 168].try_into().unwrap());
+                    let unknown3 = read_u64_at(data, off + 160)?;
                     // Scan forward for the next valid object type marker to determine actual size
                     let actual_size = if unknown3 == 0 {
                         base_size + 16
@@ -139,12 +133,12 @@ impl IncludedObjects {
                     }
 
                     // Read the unknown1 field at +52 (u64)
-                    let unknown1 = u64::from_le_bytes(data[off + 52..off + 60].try_into().unwrap());
+                    let unknown1 = read_u64_at(data, off + 52)?;
 
                     // If unknown3==0, there are 16 extra bytes — read them
                     let extra = if unknown3 == 0 && off + 184 <= data.len() {
-                        let e1 = u64::from_le_bytes(data[off + 168..off + 176].try_into().unwrap());
-                        let e2 = u64::from_le_bytes(data[off + 176..off + 184].try_into().unwrap());
+                        let e1 = read_u64_at(data, off + 168)?;
+                        let e2 = read_u64_at(data, off + 176)?;
                         format!(", extra=[{e1:#x}, {e2:#x}]")
                     } else {
                         String::new()
@@ -197,21 +191,45 @@ impl IncludedObjects {
 }
 
 fn read_u32(data: &[u8], off: &mut usize) -> Result<u32, ParseError> {
-    if *off + 4 > data.len() {
-        return Err(truncated(*off, 4, data.len()));
-    }
-    let val = u32::from_le_bytes(data[*off..*off + 4].try_into().unwrap());
+    let bytes: [u8; 4] = data
+        .get(*off..*off + 4)
+        .and_then(|s| s.try_into().ok())
+        .ok_or_else(|| truncated(*off, 4, data.len()))?;
     *off += 4;
-    Ok(val)
+    Ok(u32::from_le_bytes(bytes))
 }
 
 fn read_u16(data: &[u8], off: &mut usize) -> Result<u16, ParseError> {
-    if *off + 2 > data.len() {
-        return Err(truncated(*off, 2, data.len()));
-    }
-    let val = u16::from_le_bytes(data[*off..*off + 2].try_into().unwrap());
+    let bytes: [u8; 2] = data
+        .get(*off..*off + 2)
+        .and_then(|s| s.try_into().ok())
+        .ok_or_else(|| truncated(*off, 2, data.len()))?;
     *off += 2;
-    Ok(val)
+    Ok(u16::from_le_bytes(bytes))
+}
+
+fn read_f64_at(data: &[u8], idx: usize) -> Result<f64, ParseError> {
+    let bytes: [u8; 8] = data
+        .get(idx..idx + 8)
+        .and_then(|s| s.try_into().ok())
+        .ok_or_else(|| truncated(idx, 8, data.len()))?;
+    Ok(f64::from_le_bytes(bytes))
+}
+
+fn read_u64_at(data: &[u8], idx: usize) -> Result<u64, ParseError> {
+    let bytes: [u8; 8] = data
+        .get(idx..idx + 8)
+        .and_then(|s| s.try_into().ok())
+        .ok_or_else(|| truncated(idx, 8, data.len()))?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn read_u16_at(data: &[u8], idx: usize) -> Result<u16, ParseError> {
+    let bytes: [u8; 2] = data
+        .get(idx..idx + 2)
+        .and_then(|s| s.try_into().ok())
+        .ok_or_else(|| truncated(idx, 2, data.len()))?;
+    Ok(u16::from_le_bytes(bytes))
 }
 
 fn read_fixed_string(data: &[u8], off: &mut usize) -> Result<String, ParseError> {

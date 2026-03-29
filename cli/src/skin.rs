@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
-use anyhow::{Context, Result};
 use clap::Subcommand;
 use rayon::prelude::*;
 
 use crate::common::load_p4k;
+use crate::error::{CliError, Result};
 
 #[derive(Subcommand)]
 pub enum SkinCommand {
@@ -115,9 +115,9 @@ fn scan_stream_types(chunk_data: &[u8]) -> Vec<(u32, u32)> {
     let mut streams = vec![];
     let mut pos = start;
     while pos + 8 <= chunk_data.len() {
-        let tag = u32::from_le_bytes(chunk_data[pos..pos+4].try_into().unwrap());
+        let tag = u32::from_le_bytes(chunk_data[pos..pos+4].try_into().unwrap_or([0;4]));
         if tag == 0 { pos += 4; continue; }
-        let elem_size = u32::from_le_bytes(chunk_data[pos+4..pos+8].try_into().unwrap());
+        let elem_size = u32::from_le_bytes(chunk_data[pos+4..pos+8].try_into().unwrap_or([0;4]));
         if elem_size == 0 || elem_size > 1024 { break; }
 
         streams.push((tag, elem_size));
@@ -175,13 +175,13 @@ fn scan_streams(p4k_path: Option<PathBuf>) -> Result<()> {
 
     mesh_entries.par_iter().for_each(|entry| {
         let Ok(data) = p4k.read(entry) else {
-            *errors.lock().unwrap() += 1;
+            *errors.lock() += 1;
             return;
         };
         let (chunks, streams) = scan_file(&data);
 
         {
-            let mut s = chunk_stats.lock().unwrap();
+            let mut s = chunk_stats.lock();
             for (tag, version) in chunks {
                 let e = s.entry(tag).or_insert_with(|| (0, vec![], vec![]));
                 e.0 += 1;
@@ -192,7 +192,7 @@ fn scan_streams(p4k_path: Option<PathBuf>) -> Result<()> {
             }
         }
         {
-            let mut s = stream_stats.lock().unwrap();
+            let mut s = stream_stats.lock();
             for (tag, elem_size) in streams {
                 let e = s.entry(tag).or_insert_with(|| (0, vec![], vec![]));
                 e.0 += 1;
@@ -203,15 +203,15 @@ fn scan_streams(p4k_path: Option<PathBuf>) -> Result<()> {
             }
         }
 
-        let mut n = scanned.lock().unwrap();
+        let mut n = scanned.lock();
         *n += 1;
         if *n % 5000 == 0 { eprint!("\r  {}/{} files...", *n, mesh_entries.len()); }
     });
 
-    let stream_stats = stream_stats.into_inner().unwrap();
-    let chunk_stats = chunk_stats.into_inner().unwrap();
-    let errors = errors.into_inner().unwrap();
-    eprintln!("\r  Done. {} files scanned, {} read errors.", scanned.into_inner().unwrap(), errors);
+    let stream_stats = stream_stats.into_inner();
+    let chunk_stats = chunk_stats.into_inner();
+    let errors = errors.into_inner();
+    eprintln!("\r  Done. {} files scanned, {} read errors.", scanned.into_inner(), errors);
 
     // Chunk census
     let mut sorted: Vec<_> = chunk_stats.into_iter().collect();
@@ -243,8 +243,7 @@ fn scan_streams(p4k_path: Option<PathBuf>) -> Result<()> {
 }
 
 fn find_stream(stream_id_hex: String, p4k_path: Option<PathBuf>) -> Result<()> {
-    let target = u32::from_str_radix(&stream_id_hex, 16)
-        .context("invalid hex stream ID")?;
+    let target = u32::from_str_radix(&stream_id_hex, 16)?;
     let p4k = load_p4k(p4k_path.as_deref())?;
 
     let mesh_entries: Vec<_> = p4k.entries().iter()
@@ -263,13 +262,13 @@ fn find_stream(stream_id_hex: String, p4k_path: Option<PathBuf>) -> Result<()> {
         let (_, streams) = scan_file(&data);
         for (tag, elem_size) in streams {
             if tag == target {
-                results.lock().unwrap().push((entry.name.clone(), elem_size));
+                results.lock().push((entry.name.clone(), elem_size));
                 break;
             }
         }
     });
 
-    let mut results = results.into_inner().unwrap();
+    let mut results = results.into_inner();
     results.sort();
     println!("\nFound {} files with stream 0x{:08X} ({}):\n",
         results.len(), target, stream_name(target));
@@ -290,7 +289,7 @@ fn export(search: String, output: Option<PathBuf>, p4k_path: Option<PathBuf>) ->
             let name = e.name.to_lowercase();
             name.contains(&search_lower) && (name.ends_with(".skinm") || name.ends_with(".cgfm"))
         })
-        .context(format!("no .skinm/.cgfm file matching '{search}' in P4k"))?;
+        .ok_or_else(|| CliError::NotFound(format!("no .skinm/.cgfm file matching '{search}' in P4k")))?;
 
     eprintln!("Found: {}", entry.name);
     let data = p4k.read(entry)?;

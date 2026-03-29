@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
 use clap::Subcommand;
 use starbreaker_datacore::database::Database;
 
 use crate::common::{load_dcb_bytes, ExportOpts};
+use crate::error::{CliError, Result};
 
 #[derive(Subcommand)]
 pub enum SocpakCommand {
@@ -42,8 +42,8 @@ fn export(
     opts: ExportOpts,
 ) -> Result<()> {
     let (p4k, dcb_bytes) = load_dcb_bytes(p4k_path.as_deref(), None)?;
-    let p4k = p4k.context("P4k required for socpak export")?;
-    let db = Database::from_bytes(&dcb_bytes).context("failed to parse DCB")?;
+    let p4k = p4k.ok_or_else(|| CliError::MissingRequirement("P4k required for socpak export".into()))?;
+    let db = Database::from_bytes(&dcb_bytes)?;
 
     let search_lower = pattern.to_lowercase();
     let socpak_paths: Vec<String> = p4k
@@ -57,7 +57,7 @@ fn export(
         .collect();
 
     if socpak_paths.is_empty() {
-        anyhow::bail!("no .socpak files matching '{pattern}'");
+        return Err(CliError::NotFound(format!("no .socpak files matching '{pattern}'")));
     }
 
     eprintln!("Found {} socpak files", socpak_paths.len());

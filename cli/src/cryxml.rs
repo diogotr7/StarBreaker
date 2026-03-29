@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
-use anyhow::{Context, Result};
 use clap::Subcommand;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
+
+use crate::error::{CliError, Result};
 
 #[derive(Subcommand)]
 pub enum CryxmlCommand {
@@ -37,11 +38,12 @@ impl CryxmlCommand {
 }
 
 fn convert(input: PathBuf, output: Option<PathBuf>) -> Result<()> {
-    let data = std::fs::read(&input).context("failed to read input file")?;
+    let data = std::fs::read(&input)
+        .map_err(|e| CliError::IoPath { source: e, path: input.display().to_string() })?;
     if !starbreaker_cryxml::is_cryxmlb(&data) {
-        anyhow::bail!("{} is not a CryXmlB file", input.display());
+        return Err(CliError::InvalidInput(format!("{} is not a CryXmlB file", input.display())));
     }
-    let cryxml = starbreaker_cryxml::from_bytes(&data).context("failed to parse CryXmlB")?;
+    let cryxml = starbreaker_cryxml::from_bytes(&data)?;
     let xml = format!("{cryxml}");
     let output = output.unwrap_or_else(|| input.with_extension("xml"));
     std::fs::write(&output, xml.as_bytes())?;
@@ -52,12 +54,12 @@ fn convert(input: PathBuf, output: Option<PathBuf>) -> Result<()> {
 fn convert_all(input: PathBuf, output: PathBuf, filter: String) -> Result<()> {
     let files = walkdir(&input, &filter)?;
     if files.is_empty() {
-        anyhow::bail!("no files found in {}", input.display());
+        return Err(CliError::NotFound(format!("no files found in {}", input.display())));
     }
 
     eprintln!("Converting {} files...", files.len());
     let pb = ProgressBar::new(files.len() as u64);
-    pb.set_style(ProgressStyle::default_bar().template("[{bar:40}] {pos}/{len}").unwrap());
+    pb.set_style(ProgressStyle::default_bar().template("[{bar:40}] {pos}/{len}")?);
 
     let errors = std::sync::atomic::AtomicUsize::new(0);
 

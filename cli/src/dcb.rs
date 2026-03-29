@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
 use clap::Subcommand;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use starbreaker_datacore::database::Database;
 
 use crate::common::{load_dcb_bytes, matches_filter};
+use crate::error::Result;
 
 #[derive(Subcommand)]
 pub enum DcbCommand {
@@ -62,7 +62,7 @@ fn extract(
     _enums_dir: Option<PathBuf>,
 ) -> Result<()> {
     let (_p4k, dcb_bytes) = load_dcb_bytes(p4k_path.as_deref(), dcb_path.as_deref())?;
-    let db = Database::from_bytes(&dcb_bytes).context("failed to parse DCB")?;
+    let db = Database::from_bytes(&dcb_bytes)?;
 
     eprintln!("DataCore loaded.");
 
@@ -91,8 +91,7 @@ fn extract(
     let pb = ProgressBar::new(records.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("[{bar:40}] {pos}/{len}")
-            .unwrap(),
+            .template("[{bar:40}] {pos}/{len}")?,
     );
 
     std::fs::create_dir_all(&output)?;

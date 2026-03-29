@@ -1,16 +1,15 @@
 use std::path::Path;
 
-use anyhow::{Context, Result};
 use clap::Args;
 use starbreaker_p4k::MappedP4k;
+
+use crate::error::Result;
 
 /// Open P4k from explicit path or auto-discover.
 pub fn load_p4k(p4k_path: Option<&Path>) -> Result<MappedP4k> {
     match p4k_path {
-        Some(path) => MappedP4k::open(path).context("failed to open P4k"),
-        None => starbreaker_p4k::open_p4k().context(
-            "failed to auto-discover Data.p4k (set SC_DATA_P4K or pass --p4k)",
-        ),
+        Some(path) => Ok(MappedP4k::open(path)?),
+        None => Ok(starbreaker_p4k::open_p4k()?),
     }
 }
 
@@ -21,15 +20,15 @@ pub fn load_dcb_bytes(
     dcb_path: Option<&Path>,
 ) -> Result<(Option<MappedP4k>, Vec<u8>)> {
     if let Some(dcb) = dcb_path {
-        let bytes = std::fs::read(dcb).context("failed to read DCB file")?;
+        let bytes = std::fs::read(dcb)
+            .map_err(|e| crate::error::CliError::IoPath { source: e, path: dcb.display().to_string() })?;
         let p4k = load_p4k(p4k_path).ok();
         return Ok((p4k, bytes));
     }
     let p4k = load_p4k(p4k_path)?;
     let bytes = p4k
         .read_file("Data\\Game2.dcb")
-        .or_else(|_| p4k.read_file("Data\\Game.dcb"))
-        .context("failed to read Game2.dcb from P4k")?;
+        .or_else(|_| p4k.read_file("Data\\Game.dcb"))?;
     Ok((Some(p4k), bytes))
 }
 

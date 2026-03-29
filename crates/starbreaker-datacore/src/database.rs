@@ -595,56 +595,108 @@ impl<'a> Database<'a> {
         self.double_count
     }
 
-    pub fn get_int8(&self, index: usize) -> i8 {
-        self.int8_values_raw[index] as i8
+    pub fn get_int8(&self, index: usize) -> Result<i8, crate::error::QueryError> {
+        self.int8_values_raw.get(index)
+            .map(|&b| b as i8)
+            .ok_or(crate::error::QueryError::Read(CommonParseError::Truncated {
+                offset: index, need: 1, have: self.int8_values_raw.len(),
+            }))
     }
 
-    pub fn get_int16(&self, index: usize) -> i16 {
+    pub fn get_int16(&self, index: usize) -> Result<i16, crate::error::QueryError> {
         let off = index * 2;
-        i16::from_le_bytes(self.int16_values_raw[off..off + 2].try_into().unwrap())
+        let bytes: [u8; 2] = self.int16_values_raw.get(off..off + 2)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(crate::error::QueryError::Read(CommonParseError::Truncated {
+                offset: off, need: 2, have: self.int16_values_raw.len(),
+            }))?;
+        Ok(i16::from_le_bytes(bytes))
     }
 
-    pub fn get_int32(&self, index: usize) -> i32 {
+    pub fn get_int32(&self, index: usize) -> Result<i32, crate::error::QueryError> {
         let off = index * 4;
-        i32::from_le_bytes(self.int32_values_raw[off..off + 4].try_into().unwrap())
+        let bytes: [u8; 4] = self.int32_values_raw.get(off..off + 4)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(crate::error::QueryError::Read(CommonParseError::Truncated {
+                offset: off, need: 4, have: self.int32_values_raw.len(),
+            }))?;
+        Ok(i32::from_le_bytes(bytes))
     }
 
-    pub fn get_int64(&self, index: usize) -> i64 {
+    pub fn get_int64(&self, index: usize) -> Result<i64, crate::error::QueryError> {
         let off = index * 8;
-        i64::from_le_bytes(self.int64_values_raw[off..off + 8].try_into().unwrap())
+        let bytes: [u8; 8] = self.int64_values_raw.get(off..off + 8)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(crate::error::QueryError::Read(CommonParseError::Truncated {
+                offset: off, need: 8, have: self.int64_values_raw.len(),
+            }))?;
+        Ok(i64::from_le_bytes(bytes))
     }
 
-    pub fn get_uint8(&self, index: usize) -> u8 {
-        self.uint8_values_raw[index]
+    pub fn get_uint8(&self, index: usize) -> Result<u8, crate::error::QueryError> {
+        self.uint8_values_raw.get(index)
+            .copied()
+            .ok_or(crate::error::QueryError::Read(CommonParseError::Truncated {
+                offset: index, need: 1, have: self.uint8_values_raw.len(),
+            }))
     }
 
-    pub fn get_uint16(&self, index: usize) -> u16 {
+    pub fn get_uint16(&self, index: usize) -> Result<u16, crate::error::QueryError> {
         let off = index * 2;
-        u16::from_le_bytes(self.uint16_values_raw[off..off + 2].try_into().unwrap())
+        let bytes: [u8; 2] = self.uint16_values_raw.get(off..off + 2)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(crate::error::QueryError::Read(CommonParseError::Truncated {
+                offset: off, need: 2, have: self.uint16_values_raw.len(),
+            }))?;
+        Ok(u16::from_le_bytes(bytes))
     }
 
-    pub fn get_uint32(&self, index: usize) -> u32 {
+    pub fn get_uint32(&self, index: usize) -> Result<u32, crate::error::QueryError> {
         let off = index * 4;
-        u32::from_le_bytes(self.uint32_values_raw[off..off + 4].try_into().unwrap())
+        let bytes: [u8; 4] = self.uint32_values_raw.get(off..off + 4)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(crate::error::QueryError::Read(CommonParseError::Truncated {
+                offset: off, need: 4, have: self.uint32_values_raw.len(),
+            }))?;
+        Ok(u32::from_le_bytes(bytes))
     }
 
-    pub fn get_uint64(&self, index: usize) -> u64 {
+    pub fn get_uint64(&self, index: usize) -> Result<u64, crate::error::QueryError> {
         let off = index * 8;
-        u64::from_le_bytes(self.uint64_values_raw[off..off + 8].try_into().unwrap())
+        let bytes: [u8; 8] = self.uint64_values_raw.get(off..off + 8)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(crate::error::QueryError::Read(CommonParseError::Truncated {
+                offset: off, need: 8, have: self.uint64_values_raw.len(),
+            }))?;
+        Ok(u64::from_le_bytes(bytes))
     }
 
-    pub fn get_bool(&self, index: usize) -> bool {
-        self.bool_values_raw[index] != 0
+    pub fn get_bool(&self, index: usize) -> Result<bool, crate::error::QueryError> {
+        self.bool_values_raw.get(index)
+            .map(|&b| b != 0)
+            .ok_or(crate::error::QueryError::Read(CommonParseError::Truncated {
+                offset: index, need: 1, have: self.bool_values_raw.len(),
+            }))
     }
 
-    pub fn get_single(&self, index: usize) -> f32 {
+    pub fn get_single(&self, index: usize) -> Result<f32, crate::error::QueryError> {
         let off = index * 4;
-        f32::from_le_bytes(self.single_values_raw[off..off + 4].try_into().unwrap())
+        let bytes: [u8; 4] = self.single_values_raw.get(off..off + 4)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(crate::error::QueryError::Read(CommonParseError::Truncated {
+                offset: off, need: 4, have: self.single_values_raw.len(),
+            }))?;
+        Ok(f32::from_le_bytes(bytes))
     }
 
-    pub fn get_double(&self, index: usize) -> f64 {
+    pub fn get_double(&self, index: usize) -> Result<f64, crate::error::QueryError> {
         let off = index * 8;
-        f64::from_le_bytes(self.double_values_raw[off..off + 8].try_into().unwrap())
+        let bytes: [u8; 8] = self.double_values_raw.get(off..off + 8)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(crate::error::QueryError::Read(CommonParseError::Truncated {
+                offset: off, need: 8, have: self.double_values_raw.len(),
+            }))?;
+        Ok(f64::from_le_bytes(bytes))
     }
 
     // ── Instance access ────────────────────────────────────────────────────

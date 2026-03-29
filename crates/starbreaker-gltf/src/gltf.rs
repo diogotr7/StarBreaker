@@ -213,8 +213,8 @@ pub fn write_glb(
                 if idx < builder.nodes_json.len() {
                     builder.nodes_json[idx].extras = Some(
                         serde_json::value::RawValue::from_string(
-                            serde_json::to_string(&serde_json::Value::Object(map)).unwrap()
-                        ).unwrap().into()
+                            serde_json::to_string(&serde_json::Value::Object(map))?
+                        )?.into()
                     );
                 }
             }

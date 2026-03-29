@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
 use clap::Subcommand;
 use starbreaker_datacore::database::Database;
 use starbreaker_datacore::loadout::{EntityIndex, LoadoutNode, resolve_loadout_indexed};
 use starbreaker_datacore::types::Record;
 
 use crate::common::{ExportOpts, load_dcb_bytes};
+use crate::error::{CliError, Result};
 
 #[derive(Subcommand)]
 pub enum EntityCommand {
@@ -54,7 +54,7 @@ fn find_candidates<'a>(db: &'a Database, search: &str) -> Result<Vec<&'a Record>
     let search = search.to_lowercase();
     let entity_si = db
         .struct_id("EntityClassDefinition")
-        .context("EntityClassDefinition struct not found in DCB")?;
+        .ok_or_else(|| CliError::NotFound("EntityClassDefinition struct not found in DCB".into()))?;
     let mut candidates: Vec<_> = db
         .records_of_type(entity_si)
         .filter(|r| {
@@ -77,13 +77,13 @@ fn export(
     crate::print_mem_stats("start");
     let (p4k, dcb_bytes) = load_dcb_bytes(p4k_path.as_deref(), None)?;
     crate::print_mem_stats("after p4k+dcb load");
-    let p4k = p4k.context("P4k required for entity export")?;
-    let db = Database::from_bytes(&dcb_bytes).context("failed to parse DCB")?;
+    let p4k = p4k.ok_or_else(|| CliError::MissingRequirement("P4k required for entity export".into()))?;
+    let db = Database::from_bytes(&dcb_bytes)?;
     crate::print_mem_stats("after db parse");
 
     let candidates = find_candidates(&db, &name)?;
     if candidates.is_empty() {
-        anyhow::bail!("no EntityClassDefinition records matching '{name}'");
+        return Err(CliError::NotFound(format!("no EntityClassDefinition records matching '{name}'")));
     }
 
     let record = candidates[0];
@@ -115,8 +115,7 @@ fn export(
     }
 
     crate::print_mem_stats("before export");
-    let result = starbreaker_gltf::assemble_glb_with_loadout(&db, &p4k, record, &tree, &export_opts)
-        .with_context(|| format!("failed to export {rname}"))?;
+    let result = starbreaker_gltf::assemble_glb_with_loadout(&db, &p4k, record, &tree, &export_opts)?;
 
     crate::print_mem_stats("after export");
     eprintln!("Geometry: {}", result.geometry_path);
@@ -130,11 +129,11 @@ fn export(
 
 fn loadout(name: String, p4k_path: Option<PathBuf>) -> Result<()> {
     let (_, dcb_bytes) = load_dcb_bytes(p4k_path.as_deref(), None)?;
-    let db = Database::from_bytes(&dcb_bytes).context("failed to parse DCB")?;
+    let db = Database::from_bytes(&dcb_bytes)?;
 
     let candidates = find_candidates(&db, &name)?;
     if candidates.is_empty() {
-        anyhow::bail!("no EntityClassDefinition records matching '{name}'");
+        return Err(CliError::NotFound(format!("no EntityClassDefinition records matching '{name}'")));
     }
 
     let idx = EntityIndex::new(&db);

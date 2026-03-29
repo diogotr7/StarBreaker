@@ -8,6 +8,7 @@ use starbreaker_datacore::enums::{ConversionType, DataType};
 use starbreaker_datacore::reader::SpanReader;
 use starbreaker_datacore::types::{CigGuid, Pointer, Reference};
 
+use crate::error::AppError;
 use crate::state::AppState;
 
 // ── DTOs ─────────────────────────────────────────────────────────────────────
@@ -95,7 +96,7 @@ pub fn build_record_index(dcb_bytes: &[u8]) -> Vec<RecordEntry> {
 /// Search records by name substring. Returns up to 500 results.
 #[tauri::command]
 pub fn dc_search(state: State<'_, AppState>, query: String) -> Vec<SearchResultDto> {
-    let guard = state.record_index.lock().unwrap();
+    let guard = state.record_index.lock();
     let index = match guard.as_ref() {
         Some(idx) => idx,
         None => return Vec::new(),
@@ -126,7 +127,7 @@ pub fn dc_search(state: State<'_, AppState>, query: String) -> Vec<SearchResultD
 /// Empty path returns the root level.
 #[tauri::command]
 pub fn dc_list_tree(state: State<'_, AppState>, path: String) -> Vec<TreeEntryDto> {
-    let guard = state.record_index.lock().unwrap();
+    let guard = state.record_index.lock();
     let index = match guard.as_ref() {
         Some(idx) => idx,
         None => return Vec::new(),
@@ -178,11 +179,11 @@ pub fn dc_list_tree(state: State<'_, AppState>, path: String) -> Vec<TreeEntryDt
     records.sort_by(|a, b| {
         let name_a = match a {
             TreeEntryDto::Record { name, .. } => name,
-            _ => unreachable!(),
+            TreeEntryDto::Folder { name } => name,
         };
         let name_b = match b {
             TreeEntryDto::Record { name, .. } => name,
-            _ => unreachable!(),
+            TreeEntryDto::Folder { name } => name,
         };
         name_a.cmp(name_b)
     });
@@ -196,28 +197,22 @@ pub fn dc_list_tree(state: State<'_, AppState>, path: String) -> Vec<TreeEntryDt
 pub async fn dc_get_record(
     state: State<'_, AppState>,
     record_id: String,
-) -> Result<RecordDto, String> {
+) -> Result<RecordDto, AppError> {
     let dcb_bytes = {
-        let guard = state
-            .dcb_bytes
-            .lock()
-            .map_err(|e| format!("Lock error: {e}"))?;
-        guard.as_ref().ok_or("No DataCore loaded")?.clone()
+        let guard = state.dcb_bytes.lock();
+        guard.as_ref().ok_or_else(|| AppError::Internal("DataCore not loaded".into()))?.clone()
     };
 
     let record_id_clone = record_id.clone();
 
     tokio::task::spawn_blocking(move || {
-        let db = starbreaker_datacore::database::Database::from_bytes(&dcb_bytes)
-            .map_err(|e| format!("Failed to parse DataCore: {e}"))?;
+        let db = starbreaker_datacore::database::Database::from_bytes(&dcb_bytes)?;
 
-        let guid: starbreaker_datacore::types::CigGuid = record_id_clone
-            .parse()
-            .map_err(|e| format!("Invalid record ID: {e}"))?;
+        let guid: starbreaker_datacore::types::CigGuid = record_id_clone.parse()?;
 
         let record = db
             .record_by_id(&guid)
-            .ok_or_else(|| "Record not found".to_string())?;
+            .ok_or_else(|| AppError::Internal("record not found".into()))?;
 
         let name = db.resolve_string2(record.name_offset).to_string();
         let struct_type = db
@@ -227,12 +222,10 @@ pub async fn dc_get_record(
 
         let mut buf = Vec::new();
         let mut sink = crate::ui_sink::UiJsonSink::new(&mut buf);
-        starbreaker_datacore::walker::walk_record(&db, record, &mut sink)
-            .map_err(|e| format!("Failed to export JSON: {e}"))?;
-        let json = String::from_utf8(buf)
-            .map_err(|e| format!("Invalid UTF-8 in JSON: {e}"))?;
+        starbreaker_datacore::walker::walk_record(&db, record, &mut sink)?;
+        let json = String::from_utf8(buf)?;
 
-        Ok(RecordDto {
+        Ok::<_, AppError>(RecordDto {
             name: format!("{struct_type}.{name}"),
             struct_type,
             path,
@@ -241,7 +234,7 @@ pub async fn dc_get_record(
         })
     })
     .await
-    .map_err(|e| format!("Task join error: {e}"))?
+    .map_err(|e| AppError::Internal(format!("task join error: {e}")))?
 }
 
 /// Export a record as JSON, saving to the given path.
@@ -250,31 +243,24 @@ pub async fn dc_export_json(
     state: State<'_, AppState>,
     record_id: String,
     output_path: String,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let dcb_bytes = {
-        let guard = state
-            .dcb_bytes
-            .lock()
-            .map_err(|e| format!("Lock error: {e}"))?;
-        guard.as_ref().ok_or("No DataCore loaded")?.clone()
+        let guard = state.dcb_bytes.lock();
+        guard.as_ref().ok_or_else(|| AppError::Internal("DataCore not loaded".into()))?.clone()
     };
 
     tokio::task::spawn_blocking(move || {
-        let db = starbreaker_datacore::database::Database::from_bytes(&dcb_bytes)
-            .map_err(|e| format!("Failed to parse DataCore: {e}"))?;
-        let guid: starbreaker_datacore::types::CigGuid = record_id
-            .parse()
-            .map_err(|e| format!("Invalid record ID: {e}"))?;
+        let db = starbreaker_datacore::database::Database::from_bytes(&dcb_bytes)?;
+        let guid: starbreaker_datacore::types::CigGuid = record_id.parse()?;
         let record = db
             .record_by_id(&guid)
-            .ok_or_else(|| "Record not found".to_string())?;
-        let json_bytes = starbreaker_datacore::export::to_json(&db, record)
-            .map_err(|e| format!("Failed to export: {e}"))?;
-        std::fs::write(&output_path, &json_bytes)
-            .map_err(|e| format!("Failed to write file: {e}"))
+            .ok_or_else(|| AppError::Internal("record not found".into()))?;
+        let json_bytes = starbreaker_datacore::export::to_json(&db, record)?;
+        std::fs::write(&output_path, &json_bytes)?;
+        Ok::<_, AppError>(())
     })
     .await
-    .map_err(|e| format!("Task join error: {e}"))?
+    .map_err(|e| AppError::Internal(format!("task join error: {e}")))?
 }
 
 /// Get records that reference the given record (backlinks).
@@ -282,22 +268,16 @@ pub async fn dc_export_json(
 pub async fn dc_get_backlinks(
     state: State<'_, AppState>,
     record_id: String,
-) -> Result<Vec<BacklinkDto>, String> {
+) -> Result<Vec<BacklinkDto>, AppError> {
     let dcb_bytes = {
-        let guard = state
-            .dcb_bytes
-            .lock()
-            .map_err(|e| format!("Lock error: {e}"))?;
-        guard.as_ref().ok_or("No DataCore loaded")?.clone()
+        let guard = state.dcb_bytes.lock();
+        guard.as_ref().ok_or_else(|| AppError::Internal("DataCore not loaded".into()))?.clone()
     };
 
     tokio::task::spawn_blocking(move || {
-        let db = Database::from_bytes(&dcb_bytes)
-            .map_err(|e| format!("Failed to parse DataCore: {e}"))?;
+        let db = Database::from_bytes(&dcb_bytes)?;
 
-        let target_guid: CigGuid = record_id
-            .parse()
-            .map_err(|e| format!("Invalid record ID: {e}"))?;
+        let target_guid: CigGuid = record_id.parse()?;
 
         let mut backlinks = Vec::new();
 
@@ -324,10 +304,10 @@ pub async fn dc_get_backlinks(
         }
 
         backlinks.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(backlinks)
+        Ok::<_, AppError>(backlinks)
     })
     .await
-    .map_err(|e| format!("Task join error: {e}"))?
+    .map_err(|e| AppError::Internal(format!("task join error: {e}")))?
 }
 
 /// Export a record as XML, saving to the given path.
@@ -336,31 +316,24 @@ pub async fn dc_export_xml(
     state: State<'_, AppState>,
     record_id: String,
     output_path: String,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let dcb_bytes = {
-        let guard = state
-            .dcb_bytes
-            .lock()
-            .map_err(|e| format!("Lock error: {e}"))?;
-        guard.as_ref().ok_or("No DataCore loaded")?.clone()
+        let guard = state.dcb_bytes.lock();
+        guard.as_ref().ok_or_else(|| AppError::Internal("DataCore not loaded".into()))?.clone()
     };
 
     tokio::task::spawn_blocking(move || {
-        let db = Database::from_bytes(&dcb_bytes)
-            .map_err(|e| format!("Failed to parse DataCore: {e}"))?;
-        let guid: CigGuid = record_id
-            .parse()
-            .map_err(|e| format!("Invalid record ID: {e}"))?;
+        let db = Database::from_bytes(&dcb_bytes)?;
+        let guid: CigGuid = record_id.parse()?;
         let record = db
             .record_by_id(&guid)
-            .ok_or_else(|| "Record not found".to_string())?;
-        let xml_bytes = starbreaker_datacore::export::to_xml(&db, record)
-            .map_err(|e| format!("Failed to export: {e}"))?;
-        std::fs::write(&output_path, &xml_bytes)
-            .map_err(|e| format!("Failed to write file: {e}"))
+            .ok_or_else(|| AppError::Internal("record not found".into()))?;
+        let xml_bytes = starbreaker_datacore::export::to_xml(&db, record)?;
+        std::fs::write(&output_path, &xml_bytes)?;
+        Ok::<_, AppError>(())
     })
     .await
-    .map_err(|e| format!("Task join error: {e}"))?
+    .map_err(|e| AppError::Internal(format!("task join error: {e}")))?
 }
 
 // ── Backlink reference collection ────────────────────────────────────────────

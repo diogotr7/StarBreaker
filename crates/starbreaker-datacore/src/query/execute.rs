@@ -23,8 +23,7 @@ pub fn query_one<'a, T: FromDataCore<'a>>(
             count: results.len(),
         });
     }
-    // SAFETY: we just verified len == 1
-    Ok(results.into_iter().next().unwrap())
+    results.into_iter().next().ok_or(QueryError::CardinalityMismatch { count: 0 })
 }
 
 /// Execute a compiled path query against a record, returning all matching values.
@@ -171,7 +170,9 @@ fn execute_segments_first<'a, T: FromDataCore<'a>>(
         match seg.data_type {
             DataType::Class => {
                 if is_leaf {
-                    let val = mat!(seg.target_struct_index.unwrap(), reader)?;
+                    let target_si = seg.target_struct_index
+                        .ok_or(QueryError::MissingTargetStructIndex { segment: "Class".to_owned() })?;
+                    let val = mat!(target_si, reader)?;
                     Ok(Some(T::from_value(val)?))
                 } else {
                     execute_segments_first::<T>(db, segments, seg_idx + 1, reader, skip_references)
@@ -275,9 +276,8 @@ fn execute_segments_first<'a, T: FromDataCore<'a>>(
                 }
             }
             DataType::Class => {
-                let target_si = seg
-                    .target_struct_index
-                    .expect("ClassArray must have target_struct_index");
+                let target_si = seg.target_struct_index
+                    .ok_or(QueryError::MissingTargetStructIndex { segment: "ClassArray".to_owned() })?;
                 for i in 0..count {
                     let instance_bytes = db.get_instance(target_si, first_index + i);
                     let mut sub_reader = SpanReader::new(instance_bytes);
@@ -392,9 +392,8 @@ fn collect_leaf_positions<'a>(
                 }
             }
             DataType::Class => {
-                let target_si = seg
-                    .target_struct_index
-                    .expect("ClassArray must have target_struct_index");
+                let target_si = seg.target_struct_index
+                    .ok_or(QueryError::MissingTargetStructIndex { segment: "ClassArray".to_owned() })?;
                 for i in 0..count {
                     let instance_bytes = db.get_instance(target_si, first_index + i);
                     let mut sub_reader = SpanReader::new(instance_bytes);
@@ -442,7 +441,9 @@ fn execute_segments<'a, T: FromDataCore<'a>>(
         match seg.data_type {
             DataType::Class => {
                 if is_leaf {
-                    let val = mat!(seg.target_struct_index.unwrap(), reader)?;
+                    let target_si = seg.target_struct_index
+                        .ok_or(QueryError::MissingTargetStructIndex { segment: "Class".to_owned() })?;
+                    let val = mat!(target_si, reader)?;
                     results.push(T::from_value(val)?);
                 } else {
                     // Inline struct: the reader is now positioned inside the nested struct.
@@ -547,9 +548,8 @@ fn execute_segments<'a, T: FromDataCore<'a>>(
             }
             DataType::Class => {
                 // ClassArray: instances stored contiguously in instance data
-                let target_si = seg
-                    .target_struct_index
-                    .expect("ClassArray segment must have target_struct_index");
+                let target_si = seg.target_struct_index
+                    .ok_or(QueryError::MissingTargetStructIndex { segment: "ClassArray".to_owned() })?;
                 for i in 0..count {
                     let instance_bytes = db.get_instance(target_si, first_index + i);
                     let mut sub_reader = SpanReader::new(instance_bytes);
@@ -843,17 +843,17 @@ fn materialize_array_depth<'a>(
                     result
                 }
             }
-            DataType::Boolean => Value::Bool(db.get_bool(idx)),
-            DataType::SByte => Value::Int8(db.get_int8(idx)),
-            DataType::Int16 => Value::Int16(db.get_int16(idx)),
-            DataType::Int32 => Value::Int32(db.get_int32(idx)),
-            DataType::Int64 => Value::Int64(db.get_int64(idx)),
-            DataType::Byte => Value::UInt8(db.get_uint8(idx)),
-            DataType::UInt16 => Value::UInt16(db.get_uint16(idx)),
-            DataType::UInt32 => Value::UInt32(db.get_uint32(idx)),
-            DataType::UInt64 => Value::UInt64(db.get_uint64(idx)),
-            DataType::Single => Value::Float(db.get_single(idx)),
-            DataType::Double => Value::Double(db.get_double(idx)),
+            DataType::Boolean => Value::Bool(db.get_bool(idx)?),
+            DataType::SByte => Value::Int8(db.get_int8(idx)?),
+            DataType::Int16 => Value::Int16(db.get_int16(idx)?),
+            DataType::Int32 => Value::Int32(db.get_int32(idx)?),
+            DataType::Int64 => Value::Int64(db.get_int64(idx)?),
+            DataType::Byte => Value::UInt8(db.get_uint8(idx)?),
+            DataType::UInt16 => Value::UInt16(db.get_uint16(idx)?),
+            DataType::UInt32 => Value::UInt32(db.get_uint32(idx)?),
+            DataType::UInt64 => Value::UInt64(db.get_uint64(idx)?),
+            DataType::Single => Value::Float(db.get_single(idx)?),
+            DataType::Double => Value::Double(db.get_double(idx)?),
             DataType::String => Value::String(db.resolve_string(db.string_id_values[idx])),
             DataType::Locale => Value::Locale(db.resolve_string(db.locale_values[idx])),
             DataType::EnumChoice => Value::Enum(db.resolve_string(db.enum_values[idx])),

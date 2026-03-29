@@ -3,11 +3,11 @@ use std::io::BufWriter;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{Context, Result};
 use clap::Subcommand;
 use starbreaker_p4k::{P4kArchive, P4kEntry};
 
 use crate::common::{load_p4k, matches_filter};
+use crate::error::Result;
 
 #[derive(Subcommand)]
 pub enum P4kCommand {
@@ -71,8 +71,7 @@ fn extract(
     let re = regex_pattern
         .as_deref()
         .map(regex::Regex::new)
-        .transpose()
-        .context("invalid regex")?;
+        .transpose()?;
 
     let mut entries: Vec<P4kEntry> = p4k
         .entries()
@@ -107,8 +106,7 @@ fn extract(
     let num_threads = max_threads.unwrap_or(0); // 0 = rayon default (all cores)
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
-        .build()
-        .unwrap();
+        .build()?;
 
     eprintln!(
         "[START] {} threads",
@@ -125,9 +123,15 @@ fn extract(
     pool.install(|| entries.par_iter().for_each(|entry| {
         let result = P4K_FILE.with(|cell| {
             let mut slot = cell.borrow_mut();
-            let file = slot.get_or_insert_with(|| {
-                File::open(&p4k_file_path).expect("failed to open P4k")
-            });
+            if slot.is_none() {
+                match File::open(&p4k_file_path) {
+                    Ok(f) => *slot = Some(f),
+                    Err(e) => return Err(starbreaker_p4k::P4kError::Io(e)),
+                }
+            }
+            let file = slot.as_mut().ok_or_else(|| {
+                starbreaker_p4k::P4kError::Io(std::io::Error::other("P4k file handle missing"))
+            })?;
             P4kArchive::read_from_file(file, entry)
         });
 
@@ -200,8 +204,7 @@ fn list(
     let re = regex_pattern
         .as_deref()
         .map(regex::Regex::new)
-        .transpose()
-        .context("invalid regex")?;
+        .transpose()?;
 
     for entry in p4k.entries() {
         if matches_filter(&entry.name, filter.as_deref(), re.as_ref()) {

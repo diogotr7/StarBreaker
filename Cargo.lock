@@ -4744,6 +4744,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 name = "starbreaker-app"
 version = "0.1.0"
 dependencies = [
+ "parking_lot",
  "rayon",
  "serde",
  "serde_json",
@@ -4759,6 +4760,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-shell",
  "tauri-plugin-updater",
+ "thiserror 2.0.18",
  "tokio",
 ]
 
@@ -4790,7 +4792,6 @@ dependencies = [
 name = "starbreaker-cli"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "clap",
  "crc32c",
  "env_logger",
@@ -4798,6 +4799,7 @@ dependencies = [
  "image",
  "indicatif",
  "log",
+ "parking_lot",
  "rayon",
  "regex",
  "serde_json",
@@ -4811,6 +4813,7 @@ dependencies = [
  "starbreaker-p4k",
  "starbreaker-wem",
  "starbreaker-wwise",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4819,6 +4822,7 @@ version = "0.1.0"
 dependencies = [
  "crc32c",
  "criterion",
+ "parking_lot",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -4892,6 +4896,7 @@ dependencies = [
  "aes",
  "cbc",
  "flate2",
+ "parking_lot",
  "rustc-hash",
  "ruzstd",
  "starbreaker-common",
@@ -4913,7 +4918,6 @@ dependencies = [
 name = "starbreaker-wwise"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "quick-xml 0.37.5",
  "serde",
  "starbreaker-common",

@@ -37,6 +37,9 @@ pub enum ExportError {
 
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+
+    #[error(transparent)]
+    Query(#[from] QueryError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -88,6 +91,9 @@ pub enum QueryError {
 
     #[error(transparent)]
     Read(#[from] starbreaker_common::ParseError),
+
+    #[error("missing target struct index for {segment} segment")]
+    MissingTargetStructIndex { segment: String },
 }
 
 /// Extension trait for `Result<T, QueryError>` to handle optional components.

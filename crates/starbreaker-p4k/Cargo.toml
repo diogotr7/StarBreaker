@@ -12,3 +12,4 @@ flate2 = "1"
 aes = "0.8"
 cbc = "0.1"
 rustc-hash = "2"
+parking_lot = { workspace = true }

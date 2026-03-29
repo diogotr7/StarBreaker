@@ -7,6 +7,7 @@ use tauri::State;
 use starbreaker_p4k::MappedP4k;
 use starbreaker_wwise::{AtlIndex, BnkFile, Hierarchy};
 
+use crate::error::AppError;
 use crate::state::AppState;
 
 // ── DTOs ─────────────────────────────────────────────────────────────────────
@@ -56,28 +57,27 @@ pub struct SoundResult {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-fn ensure_atl(state: &AppState) -> Result<(), String> {
+fn ensure_atl(state: &AppState) -> Result<(), AppError> {
     // Fast path: already built
-    if state.atl_index.lock().unwrap().is_some() {
+    if state.atl_index.lock().is_some() {
         return Ok(());
     }
 
     // Build outside any lock (expensive I/O)
     let p4k = get_p4k(state)?;
-    let atl = AtlIndex::from_p4k(&p4k).map_err(|e| format!("ATL build failed: {e}"))?;
+    let atl = AtlIndex::from_p4k(&p4k)?;
 
     // Store (another thread may have beaten us — that's fine, just overwrite)
-    *state.atl_index.lock().unwrap() = Some(atl);
+    *state.atl_index.lock() = Some(atl);
     Ok(())
 }
 
-fn get_p4k(state: &AppState) -> Result<Arc<MappedP4k>, String> {
+fn get_p4k(state: &AppState) -> Result<Arc<MappedP4k>, AppError> {
     state
         .p4k
         .lock()
-        .unwrap()
         .clone()
-        .ok_or_else(|| "P4k not loaded".to_string())
+        .ok_or_else(|| AppError::Internal("P4k not loaded".into()))
 }
 
 fn load_hierarchy(
@@ -125,14 +125,13 @@ fn read_streamed_wem(
     p4k: &MappedP4k,
     media_id: u32,
     wwise_paths: &HashMap<String, String>,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, AppError> {
     let filename = format!("{media_id}.wem");
     let path = wwise_paths
         .get(&filename)
         .cloned()
         .unwrap_or_else(|| format!("Data\\Sounds\\wwise\\Media\\{media_id}.wem"));
-    p4k.read_file(&path)
-        .map_err(|e| format!("Failed to read streamed WEM {media_id}: {e}"))
+    Ok(p4k.read_file(&path)?)
 }
 
 fn read_embedded_wem(
@@ -140,39 +139,34 @@ fn read_embedded_wem(
     media_id: u32,
     bank_name: &str,
     wwise_paths: &HashMap<String, String>,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, AppError> {
     let bank_path = wwise_paths
         .get(bank_name)
         .cloned()
         .unwrap_or_else(|| format!("Data\\Sounds\\wwise\\{}", bank_name));
-    let bank_data = p4k
-        .read_file(&bank_path)
-        .map_err(|e| format!("Failed to read bank {bank_name}: {e}"))?;
-    let bnk = BnkFile::parse(&bank_data)
-        .map_err(|e| format!("Failed to parse bank {bank_name}: {e}"))?;
-    let entry_data = bnk
-        .wem_data_by_id(media_id)
-        .map_err(|e| format!("WEM {media_id} not in bank DIDX: {e}"))?;
+    let bank_data = p4k.read_file(&bank_path)?;
+    let bnk = BnkFile::parse(&bank_data)?;
+    let entry_data = bnk.wem_data_by_id(media_id)?;
     Ok(entry_data.to_vec())
 }
 
 // ── Commands ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn audio_init(state: State<'_, AppState>) -> Result<AudioInitResult, String> {
+pub fn audio_init(state: State<'_, AppState>) -> Result<AudioInitResult, AppError> {
     ensure_atl(&state)?;
 
     // Build bank path index if not already done
     {
-        let mut wp = state.wwise_paths.lock().unwrap();
+        let mut wp = state.wwise_paths.lock();
         if wp.is_empty() {
             let p4k = get_p4k(&state)?;
             *wp = build_wwise_path_index(&p4k);
         }
     }
 
-    let atl_guard = state.atl_index.lock().unwrap();
-    let atl = atl_guard.as_ref().unwrap();
+    let atl_guard = state.atl_index.lock();
+    let atl = atl_guard.as_ref().ok_or_else(|| AppError::Internal("audio not initialized".into()))?;
     Ok(AudioInitResult {
         trigger_count: atl.len(),
         bank_count: atl.bank_names().len(),
@@ -183,17 +177,14 @@ pub fn audio_init(state: State<'_, AppState>) -> Result<AudioInitResult, String>
 pub fn audio_search_entities(
     state: State<'_, AppState>,
     query: String,
-) -> Result<Vec<EntityResult>, String> {
+) -> Result<Vec<EntityResult>, AppError> {
     let dcb_bytes = state
         .dcb_bytes
         .lock()
-        .unwrap()
         .clone()
-        .ok_or("DataCore not loaded")?;
+        .ok_or_else(|| AppError::Internal("DataCore not loaded".into()))?;
 
-    let db =
-        starbreaker_datacore::database::Database::from_bytes(&dcb_bytes)
-            .map_err(|e| format!("DataCore parse failed: {e}"))?;
+    let db = starbreaker_datacore::database::Database::from_bytes(&dcb_bytes)?;
 
     let entities =
         starbreaker_wwise::datacore_audio::search_entities_with_audio(&db, &query);
@@ -213,10 +204,10 @@ pub fn audio_search_entities(
 pub fn audio_search_triggers(
     state: State<'_, AppState>,
     query: String,
-) -> Result<Vec<TriggerResult>, String> {
+) -> Result<Vec<TriggerResult>, AppError> {
     ensure_atl(&state)?;
-    let atl_guard = state.atl_index.lock().unwrap();
-    let atl = atl_guard.as_ref().unwrap();
+    let atl_guard = state.atl_index.lock();
+    let atl = atl_guard.as_ref().ok_or_else(|| AppError::Internal("audio not initialized".into()))?;
 
     Ok(atl
         .search(&query)
@@ -232,10 +223,10 @@ pub fn audio_search_triggers(
 }
 
 #[tauri::command]
-pub fn audio_list_banks(state: State<'_, AppState>) -> Result<Vec<BankResult>, String> {
+pub fn audio_list_banks(state: State<'_, AppState>) -> Result<Vec<BankResult>, AppError> {
     ensure_atl(&state)?;
-    let atl_guard = state.atl_index.lock().unwrap();
-    let atl = atl_guard.as_ref().unwrap();
+    let atl_guard = state.atl_index.lock();
+    let atl = atl_guard.as_ref().ok_or_else(|| AppError::Internal("audio not initialized".into()))?;
 
     let mut banks: Vec<BankResult> = atl
         .bank_names()
@@ -253,15 +244,15 @@ pub fn audio_list_banks(state: State<'_, AppState>) -> Result<Vec<BankResult>, S
 pub fn audio_bank_triggers(
     state: State<'_, AppState>,
     bank_name: String,
-) -> Result<Vec<TriggerDetail>, String> {
+) -> Result<Vec<TriggerDetail>, AppError> {
     ensure_atl(&state)?;
-    let atl_guard = state.atl_index.lock().unwrap();
-    let atl = atl_guard.as_ref().unwrap();
+    let atl_guard = state.atl_index.lock();
+    let atl = atl_guard.as_ref().ok_or_else(|| AppError::Internal("audio not initialized".into()))?;
 
     let trigger_names = atl.triggers_for_bank(&bank_name);
     let p4k = get_p4k(&state)?;
-    let mut cache_guard = state.bank_cache.lock().unwrap();
-    let wp = state.wwise_paths.lock().unwrap().clone();
+    let mut cache_guard = state.bank_cache.lock();
+    let wp = state.wwise_paths.lock().clone();
 
     let mut results = Vec::new();
     for name in trigger_names {
@@ -292,19 +283,16 @@ pub fn audio_bank_triggers(
 pub fn audio_bank_media(
     state: State<'_, AppState>,
     bank_name: String,
-) -> Result<Vec<SoundResult>, String> {
+) -> Result<Vec<SoundResult>, AppError> {
     let p4k = get_p4k(&state)?;
-    let wp = state.wwise_paths.lock().unwrap().clone();
+    let wp = state.wwise_paths.lock().clone();
 
     let bank_path = wp
         .get(&bank_name)
         .cloned()
         .unwrap_or_else(|| format!("Data\\Sounds\\wwise\\{}", bank_name));
-    let bank_data = p4k
-        .read_file(&bank_path)
-        .map_err(|e| format!("Failed to read bank {bank_name}: {e}"))?;
-    let bnk = BnkFile::parse(&bank_data)
-        .map_err(|e| format!("Failed to parse bank {bank_name}: {e}"))?;
+    let bank_data = p4k.read_file(&bank_path)?;
+    let bnk = BnkFile::parse(&bank_data)?;
 
     let mut seen = HashSet::new();
     let mut results = Vec::new();
@@ -397,15 +385,13 @@ pub fn audio_bank_media(
 pub fn audio_entity_triggers(
     state: State<'_, AppState>,
     entity_name: String,
-) -> Result<Vec<TriggerDetail>, String> {
+) -> Result<Vec<TriggerDetail>, AppError> {
     let dcb_bytes = state
         .dcb_bytes
         .lock()
-        .unwrap()
         .clone()
-        .ok_or("DataCore not loaded")?;
-    let db = starbreaker_datacore::database::Database::from_bytes(&dcb_bytes)
-        .map_err(|e| format!("DataCore parse failed: {e}"))?;
+        .ok_or_else(|| AppError::Internal("DataCore not loaded".into()))?;
+    let db = starbreaker_datacore::database::Database::from_bytes(&dcb_bytes)?;
 
     let entities =
         starbreaker_wwise::datacore_audio::search_entities_with_audio(&db, &entity_name);
@@ -413,15 +399,15 @@ pub fn audio_entity_triggers(
     let entity = entities
         .iter()
         .find(|e| e.entity_name == entity_name)
-        .ok_or_else(|| format!("Entity '{}' not found", entity_name))?;
+        .ok_or_else(|| AppError::Internal(format!("entity '{}' not found", entity_name)))?;
 
     ensure_atl(&state)?;
-    let atl_guard = state.atl_index.lock().unwrap();
-    let atl = atl_guard.as_ref().unwrap();
+    let atl_guard = state.atl_index.lock();
+    let atl = atl_guard.as_ref().ok_or_else(|| AppError::Internal("audio not initialized".into()))?;
 
     let p4k = get_p4k(&state)?;
-    let mut cache_guard = state.bank_cache.lock().unwrap();
-    let wp = state.wwise_paths.lock().unwrap().clone();
+    let mut cache_guard = state.bank_cache.lock();
+    let wp = state.wwise_paths.lock().clone();
 
     let mut results = Vec::new();
     for tref in &entity.triggers {
@@ -455,25 +441,25 @@ pub fn audio_entity_triggers(
 pub fn audio_resolve_trigger(
     state: State<'_, AppState>,
     trigger_name: String,
-) -> Result<Vec<SoundResult>, String> {
+) -> Result<Vec<SoundResult>, AppError> {
     ensure_atl(&state)?;
-    let atl_guard = state.atl_index.lock().unwrap();
-    let atl = atl_guard.as_ref().unwrap();
+    let atl_guard = state.atl_index.lock();
+    let atl = atl_guard.as_ref().ok_or_else(|| AppError::Internal("audio not initialized".into()))?;
 
     let trigger = atl
         .get_trigger(&trigger_name)
-        .ok_or_else(|| format!("Trigger '{}' not found", trigger_name))?;
+        .ok_or_else(|| AppError::Internal(format!("trigger '{}' not found", trigger_name)))?;
 
     let bank_name = trigger.bank_name.clone();
     let event_name = trigger.wwise_event_name.clone();
     drop(atl_guard);
 
     let p4k = get_p4k(&state)?;
-    let mut cache_guard = state.bank_cache.lock().unwrap();
-    let wp = state.wwise_paths.lock().unwrap().clone();
+    let mut cache_guard = state.bank_cache.lock();
+    let wp = state.wwise_paths.lock().clone();
 
     let hierarchy = load_hierarchy(&p4k, &bank_name, &mut cache_guard, &wp)
-        .ok_or_else(|| format!("Failed to load bank '{}'", bank_name))?;
+        .ok_or_else(|| AppError::Internal(format!("failed to load bank '{}'", bank_name)))?;
 
     let sounds = hierarchy.resolve_event_by_name(&event_name);
 
@@ -509,9 +495,9 @@ pub fn audio_decode_wem(
     media_id: u32,
     source_type: String,
     bank_name: String,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, AppError> {
     let p4k = get_p4k(&state)?;
-    let wp = state.wwise_paths.lock().unwrap().clone();
+    let wp = state.wwise_paths.lock().clone();
 
     let wem_bytes = match source_type.as_str() {
         "Stream" | "PrefetchStream" => read_streamed_wem(&p4k, media_id, &wp)?,
@@ -520,23 +506,18 @@ pub fn audio_decode_wem(
             // (some banks have HIRC-only with media stored externally)
             match read_embedded_wem(&p4k, media_id, &bank_name, &wp) {
                 Ok(bytes) => bytes,
-                Err(_) => read_streamed_wem(&p4k, media_id, &wp)
-                    .map_err(|e| format!(
-                        "WEM {media_id} not in bank DIDX and not found as streamed file: {e}"
-                    ))?,
+                Err(_) => read_streamed_wem(&p4k, media_id, &wp)?,
             }
         }
-        other => return Err(format!("Unknown source type: {other}")),
+        other => return Err(AppError::Internal(format!("unknown source type: {other}"))),
     };
 
-    let wem = starbreaker_wem::WemFile::parse(&wem_bytes)
-        .map_err(|e| format!("WEM parse failed: {e}"))?;
+    let wem = starbreaker_wem::WemFile::parse(&wem_bytes)?;
 
     match wem.codec_type() {
         starbreaker_wem::WemCodec::Vorbis => {
-            starbreaker_wem::decode::vorbis_to_ogg(&wem_bytes)
-                .map_err(|e| format!("Vorbis decode failed: {e}"))
+            Ok(starbreaker_wem::decode::vorbis_to_ogg(&wem_bytes)?)
         }
-        other => Err(format!("Codec {other} not supported for playback")),
+        other => Err(AppError::Internal(format!("codec {other} not supported for playback"))),
     }
 }

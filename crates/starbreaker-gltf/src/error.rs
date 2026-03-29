@@ -26,6 +26,9 @@ pub enum Error {
     #[error("glTF serialization failed: {0}")]
     Gltf(String),
 
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+
     #[error("record '{record_name}' has no SGeometryResourceParams component")]
     NoGeometryComponent { record_name: String },
 

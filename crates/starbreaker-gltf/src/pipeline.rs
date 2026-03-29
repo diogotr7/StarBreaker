@@ -982,7 +982,7 @@ fn compute_nmc_world_transforms(nmc: &crate::nmc::NodeMeshCombo) -> Vec<glam::Ma
         resolve(i, &nmc.nodes, &local, &mut world);
     }
 
-    world.into_iter().map(|w| w.unwrap()).collect()
+    world.into_iter().flatten().collect()
 }
 
 /// Bake NMC node transforms into mesh vertex positions.

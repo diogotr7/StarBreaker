@@ -8,6 +8,7 @@ zerocopy = { version = "0.8", features = ["derive"] }
 thiserror = "2"
 crc32c = "0.6"
 serde = { version = "1", features = ["derive"] }
+parking_lot = { workspace = true }
 
 [dev-dependencies]
 serde_json = "1"

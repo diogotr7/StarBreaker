@@ -15,4 +15,3 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
-anyhow = "1"

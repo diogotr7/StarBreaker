@@ -113,6 +113,7 @@ fn depth_limit_preserves_gladius_loadout() {
         include_lights: false,
         include_tangents: true,
         include_materials: true,
+        experimental_textures: false,
     };
     let result = starbreaker_gltf::assemble_glb_with_loadout(&db, &p4k, record, &tree, &opts)
         .expect("Gladius export failed");
@@ -184,6 +185,7 @@ fn depth_limit_preserves_idris_p_collector_military() {
         include_lights: false,
         include_tangents: true,
         include_materials: true,
+        experimental_textures: false,
     };
     let result = starbreaker_gltf::assemble_glb_with_loadout(&db, &p4k, record, &tree, &opts)
         .expect("Idris P Collector Military export failed");

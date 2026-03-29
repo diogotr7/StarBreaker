@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use anyhow::Result;
 use clap::Subcommand;
 
 use crate::common::load_p4k;
+use crate::error::{CliError, Result};
 
 #[derive(Subcommand)]
 pub enum ChfCommand {
@@ -103,7 +103,7 @@ fn crack_hashes(p4k_path: Option<PathBuf>) -> Result<()> {
 
     let dcb_entry = p4k.entries().iter()
         .find(|e| e.name.to_lowercase().ends_with(".dcb"))
-        .ok_or_else(|| anyhow::anyhow!("no global.dcb in P4K"))?;
+        .ok_or_else(|| CliError::NotFound("no global.dcb in P4K".into()))?;
     let dcb_data = p4k.read(dcb_entry)?;
     let db = starbreaker_datacore::Database::from_bytes(&dcb_data)?;
 

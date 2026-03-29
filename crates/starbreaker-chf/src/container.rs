@@ -2,7 +2,7 @@ use std::io::Read;
 
 use crate::chf_data::ChfData;
 use crate::error::ChfError;
-use starbreaker_common::ParseError;
+use starbreaker_common::{ParseError, SpanReader};
 
 const CHF_SIZE: usize = 4096;
 const MAGIC: u16 = 0x4242;
@@ -43,9 +43,10 @@ impl ChfFile {
         }
 
         let unknown = [bytes[2], bytes[3]];
-        let expected_crc = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-        let compressed_size = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
-        let _decompressed_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let mut reader = SpanReader::new_at(bytes, 4);
+        let expected_crc = reader.read_u32()?;
+        let compressed_size = reader.read_u32()? as usize;
+        let _decompressed_size = reader.read_u32()? as usize;
 
         // Validate CRC32C over bytes[16..4096]
         let actual_crc = crc32c::crc32c(&bytes[16..CHF_SIZE]);

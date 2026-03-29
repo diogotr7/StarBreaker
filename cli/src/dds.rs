@@ -1,11 +1,12 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
 use clap::Subcommand;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use starbreaker_dds::DdsFile;
 use starbreaker_dds::sibling::FsSiblingReader;
+
+use crate::error::{CliError, Result};
 
 #[derive(Subcommand)]
 pub enum DdsCommand {
@@ -90,11 +91,11 @@ impl DdsCommand {
 fn info(input: &str, p4k_path: Option<&Path>) -> Result<()> {
     let dds = if Path::new(input).exists() {
         // Filesystem path
-        let data = std::fs::read(input).context("failed to read DDS file")?;
+        let data = std::fs::read(input)
+            .map_err(|e| CliError::IoPath { source: e, path: input.to_string() })?;
         let reader = FsSiblingReader::new(input);
         DdsFile::from_split(&data, &reader)
-            .or_else(|_| DdsFile::headers_only(&data))
-            .context("failed to parse DDS")?
+            .or_else(|_| DdsFile::headers_only(&data))?
     } else {
         // Try P4k path
         let p4k = crate::common::load_p4k(p4k_path)?;
@@ -106,16 +107,15 @@ fn info(input: &str, p4k_path: Option<&Path>) -> Result<()> {
         let normalized = with_prefix.replace('/', "\\");
         let entry = p4k
             .entry_case_insensitive(&normalized)
-            .ok_or_else(|| anyhow::anyhow!("not found in P4k: {normalized}"))?;
-        let data = p4k.read(entry).context("failed to read from P4k")?;
+            .ok_or_else(|| CliError::NotFound(format!("not found in P4k: {normalized}")))?;
+        let data = p4k.read(entry)?;
         let p4k_reader = P4kDdsSiblingReader {
             p4k: &p4k,
             base_path: normalized,
         };
         // Try split merge first, fall back to header-only parse for unsupported formats
         DdsFile::from_split(&data, &p4k_reader)
-            .or_else(|_| DdsFile::headers_only(&data))
-            .context("failed to parse DDS")?
+            .or_else(|_| DdsFile::headers_only(&data))?
     };
 
     // Format
@@ -192,30 +192,32 @@ fn decode_p4k(input: &str, output: &Path, mip: usize, alpha: bool, p4k_path: Opt
     let normalized = with_prefix.replace('/', "\\");
     let entry = p4k
         .entry_case_insensitive(&normalized)
-        .ok_or_else(|| anyhow::anyhow!("not found in P4k: {normalized}"))?;
-    let data = p4k.read(entry).context("failed to read from P4k")?;
+        .ok_or_else(|| CliError::NotFound(format!("not found in P4k: {normalized}")))?;
+    let data = p4k.read(entry)?;
     let reader = P4kDdsSiblingReader {
         p4k: &p4k,
         base_path: normalized,
     };
-    let dds = DdsFile::from_split(&data, &reader).context("failed to parse DDS")?;
+    let dds = DdsFile::from_split(&data, &reader)?;
 
     if alpha {
         // Decode alpha/smoothness from sibling mips
-        anyhow::ensure!(dds.has_alpha_mips(), "no alpha mips found (no .Xa sibling files)");
+        if !dds.has_alpha_mips() {
+            return Err(CliError::NotFound("no alpha mips found (no .Xa sibling files)".into()));
+        }
         let mip = mip.min(dds.alpha_mip_data.len().saturating_sub(1));
         let (w, h) = dds.dimensions(mip);
         eprintln!("Decoding alpha mip {mip}: {w}x{h} ({} alpha mips available)", dds.alpha_mip_data.len());
-        let smoothness = dds.decode_alpha_mip(mip).context("failed to decode alpha mip")?;
+        let smoothness = dds.decode_alpha_mip(mip)?;
         // Write as grayscale PNG
         let img = image::GrayImage::from_raw(w, h, smoothness)
-            .ok_or_else(|| anyhow::anyhow!("failed to create grayscale image"))?;
-        img.save(output).context("failed to save PNG")?;
+            .ok_or_else(|| CliError::InvalidInput("failed to create grayscale image".into()))?;
+        img.save(output)?;
     } else {
         let mip = mip.min(dds.mip_count().saturating_sub(1));
         let (w, h) = dds.dimensions(mip);
         eprintln!("Decoding mip {mip}: {w}x{h}");
-        dds.save_png(output, mip).context("failed to decode/save PNG")?;
+        dds.save_png(output, mip)?;
     }
 
     eprintln!("Written to {}", output.display());
@@ -223,9 +225,10 @@ fn decode_p4k(input: &str, output: &Path, mip: usize, alpha: bool, p4k_path: Opt
 }
 
 fn merge(input: PathBuf, output: Option<PathBuf>) -> Result<()> {
-    let data = std::fs::read(&input).context("failed to read DDS file")?;
+    let data = std::fs::read(&input)
+        .map_err(|e| CliError::IoPath { source: e, path: input.display().to_string() })?;
     let reader = FsSiblingReader::new(&input);
-    let dds = DdsFile::from_split(&data, &reader).context("failed to parse/merge DDS")?;
+    let dds = DdsFile::from_split(&data, &reader)?;
     let merged = dds.to_dds();
     let output = output.unwrap_or_else(|| input.with_extension("merged.dds"));
     std::fs::write(&output, &merged)?;
@@ -236,14 +239,13 @@ fn merge(input: PathBuf, output: Option<PathBuf>) -> Result<()> {
 fn merge_all(input: PathBuf, output: PathBuf) -> Result<()> {
     let files = collect_base_dds_files(&input)?;
     if files.is_empty() {
-        anyhow::bail!("no base .dds files found");
+        return Err(CliError::NotFound("no base .dds files found".into()));
     }
     eprintln!("Merging {} files...", files.len());
     let pb = ProgressBar::new(files.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("[{bar:40}] {pos}/{len}")
-            .unwrap(),
+            .template("[{bar:40}] {pos}/{len}")?,
     );
 
     files.par_iter().for_each(|file| {
@@ -270,12 +272,12 @@ fn merge_all(input: PathBuf, output: PathBuf) -> Result<()> {
 }
 
 fn to_png(input: PathBuf, output: Option<PathBuf>) -> Result<()> {
-    let data = std::fs::read(&input).context("failed to read DDS file")?;
+    let data = std::fs::read(&input)
+        .map_err(|e| CliError::IoPath { source: e, path: input.display().to_string() })?;
     let reader = FsSiblingReader::new(&input);
-    let dds = DdsFile::from_split(&data, &reader).context("failed to parse DDS")?;
+    let dds = DdsFile::from_split(&data, &reader)?;
     let output = output.unwrap_or_else(|| input.with_extension("png"));
-    dds.save_png(&output, 0)
-        .context("failed to decode/save PNG")?;
+    dds.save_png(&output, 0)?;
     eprintln!("Written to {}", output.display());
     Ok(())
 }
@@ -292,14 +294,13 @@ fn to_png_all(input: PathBuf, output: PathBuf, filter: String) -> Result<()> {
         .collect();
 
     if files.is_empty() {
-        anyhow::bail!("no matching .dds files found");
+        return Err(CliError::NotFound("no matching .dds files found".into()));
     }
     eprintln!("Converting {} files to PNG...", files.len());
     let pb = ProgressBar::new(files.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("[{bar:40}] {pos}/{len}")
-            .unwrap(),
+            .template("[{bar:40}] {pos}/{len}")?,
     );
 
     files.par_iter().for_each(|file| {

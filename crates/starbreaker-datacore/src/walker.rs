@@ -13,18 +13,18 @@ use crate::types::{CigGuid, Pointer, Record, Reference, StringId};
 fn write_ptr_label(buf: &mut [u8; 24], id: usize) -> &str {
     use std::io::Write;
     let mut cursor = std::io::Cursor::new(&mut buf[..]);
-    write!(cursor, "ptr:{id}").unwrap();
+    let _ = write!(cursor, "ptr:{id}");
     let n = cursor.position() as usize;
-    std::str::from_utf8(&buf[..n]).unwrap()
+    std::str::from_utf8(&buf[..n]).unwrap_or("ptr:?")
 }
 
 /// Write "_PointsTo_:ptr:{id}" into a stack buffer, returning the str slice.
 fn write_points_to_label(buf: &mut [u8; 32], id: usize) -> &str {
     use std::io::Write;
     let mut cursor = std::io::Cursor::new(&mut buf[..]);
-    write!(cursor, "_PointsTo_:ptr:{id}").unwrap();
+    let _ = write!(cursor, "_PointsTo_:ptr:{id}");
     let n = cursor.position() as usize;
-    std::str::from_utf8(&buf[..n]).unwrap()
+    std::str::from_utf8(&buf[..n]).unwrap_or("_PointsTo_:ptr:?")
 }
 
 // ─── Walk context ────────────────────────────────────────────────────────────
@@ -513,47 +513,47 @@ where
         let idx = i as usize;
         match data_type {
             DataType::Boolean => {
-                let val = db.get_bool(idx);
+                let val = db.get_bool(idx)?;
                 sink.write_bool(None, val)?;
             }
             DataType::SByte => {
-                let val = db.get_int8(idx);
+                let val = db.get_int8(idx)?;
                 sink.write_i8(None, val)?;
             }
             DataType::Int16 => {
-                let val = db.get_int16(idx);
+                let val = db.get_int16(idx)?;
                 sink.write_i16(None, val)?;
             }
             DataType::Int32 => {
-                let val = db.get_int32(idx);
+                let val = db.get_int32(idx)?;
                 sink.write_i32(None, val)?;
             }
             DataType::Int64 => {
-                let val = db.get_int64(idx);
+                let val = db.get_int64(idx)?;
                 sink.write_i64(None, val)?;
             }
             DataType::Byte => {
-                let val = db.get_uint8(idx);
+                let val = db.get_uint8(idx)?;
                 sink.write_u8(None, val)?;
             }
             DataType::UInt16 => {
-                let val = db.get_uint16(idx);
+                let val = db.get_uint16(idx)?;
                 sink.write_u16(None, val)?;
             }
             DataType::UInt32 => {
-                let val = db.get_uint32(idx);
+                let val = db.get_uint32(idx)?;
                 sink.write_u32(None, val)?;
             }
             DataType::UInt64 => {
-                let val = db.get_uint64(idx);
+                let val = db.get_uint64(idx)?;
                 sink.write_u64(None, val)?;
             }
             DataType::Single => {
-                let val = db.get_single(idx);
+                let val = db.get_single(idx)?;
                 sink.write_f32(None, val)?;
             }
             DataType::Double => {
-                let val = db.get_double(idx);
+                let val = db.get_double(idx)?;
                 sink.write_f64(None, val)?;
             }
             DataType::String => {

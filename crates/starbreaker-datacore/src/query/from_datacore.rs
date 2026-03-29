@@ -29,7 +29,7 @@ pub trait FromDataCore<'a>: Sized {
     /// Convert from a materialized `Value`.  Only `Value` itself overrides this;
     /// all other types use the default implementation which panics.
     fn from_value(_value: crate::query::value::Value<'a>) -> Result<Self, QueryError> {
-        unreachable!("from_value called on non-Value type")
+        Err(QueryError::UnknownType(0))
     }
 }
 
@@ -55,7 +55,7 @@ macro_rules! impl_from_datacore_int {
                 index: usize,
                 _data_type: DataType,
             ) -> Result<Self, QueryError> {
-                Ok(db.$array_method(index))
+                Ok(db.$array_method(index)?)
             }
         }
     };
@@ -92,7 +92,7 @@ impl<'a> FromDataCore<'a> for bool {
         index: usize,
         _data_type: DataType,
     ) -> Result<Self, QueryError> {
-        Ok(db.get_bool(index))
+        Ok(db.get_bool(index)?)
     }
 }
 
@@ -121,7 +121,11 @@ impl<'a> FromDataCore<'a> for String {
             DataType::String => db.string_id_values[index],
             DataType::Locale => db.locale_values[index],
             DataType::EnumChoice => db.enum_values[index],
-            _ => unreachable!("String::read_from_array called with unexpected data_type"),
+            _ => return Err(QueryError::LeafTypeMismatch {
+                property: "String".to_owned(),
+                expected: Self::expected_data_types(),
+                actual: data_type,
+            }),
         };
         Ok(db.resolve_string(sid).to_owned())
     }
@@ -220,17 +224,17 @@ impl<'a> FromDataCore<'a> for Value<'a> {
         data_type: DataType,
     ) -> Result<Self, QueryError> {
         match data_type {
-            DataType::Boolean => Ok(Value::Bool(db.get_bool(index))),
-            DataType::SByte => Ok(Value::Int8(db.get_int8(index))),
-            DataType::Int16 => Ok(Value::Int16(db.get_int16(index))),
-            DataType::Int32 => Ok(Value::Int32(db.get_int32(index))),
-            DataType::Int64 => Ok(Value::Int64(db.get_int64(index))),
-            DataType::Byte => Ok(Value::UInt8(db.get_uint8(index))),
-            DataType::UInt16 => Ok(Value::UInt16(db.get_uint16(index))),
-            DataType::UInt32 => Ok(Value::UInt32(db.get_uint32(index))),
-            DataType::UInt64 => Ok(Value::UInt64(db.get_uint64(index))),
-            DataType::Single => Ok(Value::Float(db.get_single(index))),
-            DataType::Double => Ok(Value::Double(db.get_double(index))),
+            DataType::Boolean => Ok(Value::Bool(db.get_bool(index)?)),
+            DataType::SByte => Ok(Value::Int8(db.get_int8(index)?)),
+            DataType::Int16 => Ok(Value::Int16(db.get_int16(index)?)),
+            DataType::Int32 => Ok(Value::Int32(db.get_int32(index)?)),
+            DataType::Int64 => Ok(Value::Int64(db.get_int64(index)?)),
+            DataType::Byte => Ok(Value::UInt8(db.get_uint8(index)?)),
+            DataType::UInt16 => Ok(Value::UInt16(db.get_uint16(index)?)),
+            DataType::UInt32 => Ok(Value::UInt32(db.get_uint32(index)?)),
+            DataType::UInt64 => Ok(Value::UInt64(db.get_uint64(index)?)),
+            DataType::Single => Ok(Value::Float(db.get_single(index)?)),
+            DataType::Double => Ok(Value::Double(db.get_double(index)?)),
             DataType::String => Ok(Value::String(db.resolve_string(db.string_id_values[index]))),
             DataType::Locale => Ok(Value::Locale(db.resolve_string(db.locale_values[index]))),
             DataType::EnumChoice => Ok(Value::Enum(db.resolve_string(db.enum_values[index]))),

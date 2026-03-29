@@ -20,3 +20,18 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
+
+
+[workspace.lints.rust]
+warnings = { level = "warn" }
+
+[workspace.lints.clippy]
+all = { level = "warn" }
+correctness = { level = "warn" }
+suspicious = { level = "warn" }
+style = { level = "warn" }
+complexity = { level = "warn" }
+perf = { level = "warn" }
+
+[workspace.dependencies]
+parking_lot = "0.12"

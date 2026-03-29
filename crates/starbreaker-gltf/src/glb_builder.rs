@@ -1008,8 +1008,8 @@ impl GlbBuilder {
                 "include_materials": eo.include_materials,
             }));
             Some(serde_json::value::RawValue::from_string(
-                serde_json::to_string(&serde_json::Value::Object(map)).unwrap()
-            ).unwrap().into())
+                serde_json::to_string(&serde_json::Value::Object(map))?
+            )?.into())
         };
 
         let root = json::Root {
@@ -1043,6 +1043,21 @@ impl GlbBuilder {
 
         serialize_glb(&root, &self.bin)
     }
+}
+
+/// Serialize a [`serde_json::Map`] into a [`RawValue`] for glTF extras.
+///
+/// Returns `None` if serialization fails (should never happen for in-memory JSON
+/// values without non-finite floats).
+fn map_to_raw_value(
+    map: serde_json::Map<String, serde_json::Value>,
+) -> Option<Box<serde_json::value::RawValue>> {
+    let s = serde_json::to_string(&serde_json::Value::Object(map))
+        .map_err(|e| log::warn!("failed to serialize extras map: {e}"))
+        .ok()?;
+    serde_json::value::RawValue::from_string(s)
+        .map_err(|e| log::warn!("failed to create RawValue from extras JSON: {e}"))
+        .ok()
 }
 
 /// Serialize a glTF Root + binary buffer into a GLB byte vector.
@@ -1330,9 +1345,7 @@ fn build_material(
         if map.is_empty() {
             None
         } else {
-            Some(serde_json::value::RawValue::from_string(
-                serde_json::to_string(&serde_json::Value::Object(map)).unwrap()
-            ).unwrap().into())
+            map_to_raw_value(map).map(Into::into)
         }
     };
 

@@ -86,7 +86,9 @@ pub fn find_file(env_var: &str, relative_path: &str) -> Result<Discovered, Disco
 
     // Pick the newest by modification time
     candidates.sort_by(|a, b| b.2.cmp(&a.2));
-    let (path, source, _) = candidates.into_iter().next().unwrap();
+    let (path, source, _) = candidates.into_iter().next().ok_or(DiscoverError::NotFound {
+        relative_path: relative_path.to_string(),
+    })?;
     Ok(Discovered { path, source })
 }
 
@@ -152,11 +154,11 @@ impl std::fmt::Display for DiscoverError {
             }
             DiscoverError::NotInstalled => write!(
                 f,
-                "Star Citizen not found at '{DEFAULT_ROOT}'"
+                "Star Citizen not found at '{DEFAULT_ROOT}'; pass --p4k or set {ENV_P4K}"
             ),
             DiscoverError::NotFound { relative_path } => write!(
                 f,
-                "No '{relative_path}' found in any channel ({}) under '{DEFAULT_ROOT}'",
+                "no '{relative_path}' found in any channel ({}) under '{DEFAULT_ROOT}'; pass --p4k or set {ENV_P4K}",
                 CHANNELS.join(", ")
             ),
         }

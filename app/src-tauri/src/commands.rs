@@ -9,6 +9,7 @@ use starbreaker_common::Progress;
 use starbreaker_datacore::types::CigGuid;
 use starbreaker_p4k::MappedP4k;
 
+use crate::error::AppError;
 use crate::state::AppState;
 
 /// Discovery result returned to the frontend.
@@ -58,12 +59,12 @@ pub async fn open_p4k(
     app: AppHandle,
     state: State<'_, AppState>,
     path: String,
-) -> Result<usize, String> {
+) -> Result<usize, AppError> {
     let path_clone = path.clone();
     let app_clone = app.clone();
 
     // Run the heavy open on a blocking thread with progress polling
-    let result = tokio::task::spawn_blocking(move || {
+    let (mapped, dcb_bytes, loc_map, record_index) = tokio::task::spawn_blocking(move || {
         let progress = std::sync::Arc::new(Progress::new());
 
         // Poll progress and emit events to the frontend
@@ -88,71 +89,44 @@ pub async fn open_p4k(
         let _ = poll_thread.join();
 
         // Extract DCB bytes and localization from the P4k
-        match mapped {
-            Ok(p4k) => {
-                let dcb_bytes = p4k
-                    .read_file("Data\\Game2.dcb")
-                    .map_err(|e| format!("Failed to extract Game2.dcb: {e}"))?;
-                let loc_data = p4k
-                    .read_file("Data\\Localization\\english\\global.ini")
-                    .unwrap_or_default();
-                let loc_map = crate::state::parse_localization(&loc_data);
-                let record_index =
-                    crate::datacore_commands::build_record_index(&dcb_bytes);
-                Ok((p4k, dcb_bytes, loc_map, record_index))
-            }
-            Err(e) => Err(format!("Failed to open P4k: {e}")),
-        }
+        let p4k = mapped?;
+        let dcb_bytes = p4k.read_file("Data\\Game2.dcb")?;
+        let loc_data = p4k
+            .read_file("Data\\Localization\\english\\global.ini")
+            .unwrap_or_default();
+        let loc_map = crate::state::parse_localization(&loc_data);
+        let record_index = crate::datacore_commands::build_record_index(&dcb_bytes);
+        Ok::<_, AppError>((p4k, dcb_bytes, loc_map, record_index))
     })
     .await
-    .map_err(|e| format!("Task join error: {e}"))?;
+    .map_err(|e| AppError::Internal(format!("task join error: {e}")))?
+    ?;
 
-    match result {
-        Ok((mapped, dcb_bytes, loc_map, record_index)) => {
-            let count = mapped.len();
-            let arc_p4k = Arc::new(mapped);
+    let count = mapped.len();
+    let arc_p4k = Arc::new(mapped);
 
-            let mut p4k_guard = state.p4k.lock().map_err(|e| format!("Lock error: {e}"))?;
-            *p4k_guard = Some(arc_p4k);
+    *state.p4k.lock() = Some(arc_p4k);
+    *state.dcb_bytes.lock() = Some(dcb_bytes);
+    *state.localization.lock() = loc_map;
+    *state.record_index.lock() = Some(record_index);
 
-            let mut dcb_guard = state
-                .dcb_bytes
-                .lock()
-                .map_err(|e| format!("Lock error: {e}"))?;
-            *dcb_guard = Some(dcb_bytes);
-
-            let mut loc_guard = state
-                .localization
-                .lock()
-                .map_err(|e| format!("Lock error: {e}"))?;
-            *loc_guard = loc_map;
-
-            let mut idx_guard = state
-                .record_index
-                .lock()
-                .map_err(|e| format!("Lock error: {e}"))?;
-            *idx_guard = Some(record_index);
-
-            Ok(count)
-        }
-        Err(e) => Err(e),
-    }
+    Ok(count)
 }
 
 /// List only subdirectory names under a path (fast — no file data serialized).
 #[tauri::command]
-pub fn list_subdirs(state: State<'_, AppState>, path: String) -> Result<Vec<String>, String> {
-    let guard = state.p4k.lock().map_err(|e| format!("Lock error: {e}"))?;
-    let p4k = guard.as_ref().ok_or("No P4k loaded")?;
+pub fn list_subdirs(state: State<'_, AppState>, path: String) -> Result<Vec<String>, AppError> {
+    let guard = state.p4k.lock();
+    let p4k = guard.as_ref().ok_or_else(|| AppError::Internal("P4k not loaded".into()))?;
 
     Ok(p4k.list_subdirs(&path))
 }
 
 /// List directory contents from the loaded P4k.
 #[tauri::command]
-pub fn list_dir(state: State<'_, AppState>, path: String) -> Result<Vec<DirEntryDto>, String> {
-    let guard = state.p4k.lock().map_err(|e| format!("Lock error: {e}"))?;
-    let p4k = guard.as_ref().ok_or("No P4k loaded")?;
+pub fn list_dir(state: State<'_, AppState>, path: String) -> Result<Vec<DirEntryDto>, AppError> {
+    let guard = state.p4k.lock();
+    let p4k = guard.as_ref().ok_or_else(|| AppError::Internal("P4k not loaded".into()))?;
 
     let entries = p4k.list_dir(&path);
     let dtos = entries
@@ -191,25 +165,18 @@ pub struct CategoryDto {
 
 /// Scan EntityClassDefinition records from the cached DCB and return categorized entities.
 #[tauri::command]
-pub async fn scan_categories(state: State<'_, AppState>) -> Result<Vec<CategoryDto>, String> {
+pub async fn scan_categories(state: State<'_, AppState>) -> Result<Vec<CategoryDto>, AppError> {
     let dcb_bytes = {
-        let guard = state
-            .dcb_bytes
-            .lock()
-            .map_err(|e| format!("Lock error: {e}"))?;
-        guard.as_ref().ok_or("No DataCore loaded")?.clone()
+        let guard = state.dcb_bytes.lock();
+        guard.as_ref().ok_or_else(|| AppError::Internal("DataCore not loaded".into()))?.clone()
     };
     let loc = {
-        let guard = state
-            .localization
-            .lock()
-            .map_err(|e| format!("Lock error: {e}"))?;
+        let guard = state.localization.lock();
         guard.clone()
     };
 
     tokio::task::spawn_blocking(move || {
-        let db = starbreaker_datacore::database::Database::from_bytes(&dcb_bytes)
-            .map_err(|e| format!("Failed to parse DataCore: {e}"))?;
+        let db = starbreaker_datacore::database::Database::from_bytes(&dcb_bytes)?;
 
         use starbreaker_datacore::QueryResultExt;
         use starbreaker_datacore::query::value::Value;
@@ -219,11 +186,11 @@ pub async fn scan_categories(state: State<'_, AppState>) -> Result<Vec<CategoryD
         // but propagates real errors (typo in path, wrong leaf type, etc.).
         let loc_compiled = db.compile_rooted::<Value>(
             "EntityClassDefinition.Components[SAttachableComponentParams].AttachDef.Localization.Name",
-        ).optional().map_err(|e| format!("Failed to compile localization path: {e}"))?;
+        ).optional()?;
 
         let inclusion_compiled = db.compile_rooted::<Value>(
             "EntityClassDefinition.StaticEntityClassData[EAEntityDataParams].inclusionMode",
-        ).optional().map_err(|e| format!("Failed to compile inclusionMode path: {e}"))?;
+        ).optional()?;
 
         let mut ships = Vec::new();
         let mut ground_vehicles = Vec::new();
@@ -294,7 +261,7 @@ pub async fn scan_categories(state: State<'_, AppState>) -> Result<Vec<CategoryD
         weapons.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
         other.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
 
-        Ok(vec![
+        Ok::<_, AppError>(vec![
             CategoryDto {
                 name: "Ships".to_string(),
                 entities: ships,
@@ -314,7 +281,7 @@ pub async fn scan_categories(state: State<'_, AppState>) -> Result<Vec<CategoryD
         ])
     })
     .await
-    .map_err(|e| format!("Task join error: {e}"))?
+    .map_err(|e| AppError::Internal(format!("task join error: {e}")))?
 }
 
 // ── Export commands ──────────────────────────────────────────────────
@@ -355,21 +322,18 @@ pub async fn start_export(
     app: AppHandle,
     state: State<'_, AppState>,
     request: ExportRequest,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     // Reset cancel flag
     state.export_cancel.store(false, Ordering::SeqCst);
 
     // Clone data out of state
     let p4k = {
-        let guard = state.p4k.lock().map_err(|e| format!("Lock error: {e}"))?;
-        guard.as_ref().ok_or("No P4k loaded")?.clone()
+        let guard = state.p4k.lock();
+        guard.as_ref().ok_or_else(|| AppError::Internal("P4k not loaded".into()))?.clone()
     };
     let dcb_bytes = {
-        let guard = state
-            .dcb_bytes
-            .lock()
-            .map_err(|e| format!("Lock error: {e}"))?;
-        guard.as_ref().ok_or("No DataCore loaded")?.clone()
+        let guard = state.dcb_bytes.lock();
+        guard.as_ref().ok_or_else(|| AppError::Internal("DataCore not loaded".into()))?.clone()
     };
     let cancel = state.export_cancel.clone();
 
@@ -378,8 +342,7 @@ pub async fn start_export(
         .record_ids
         .iter()
         .map(|s| s.parse::<CigGuid>())
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Invalid record ID: {e}"))?;
+        .collect::<std::result::Result<Vec<_>, _>>()?;
 
     let opts = starbreaker_gltf::ExportOptions {
         include_textures: request.include_textures,
@@ -419,10 +382,23 @@ pub async fn start_export(
         // Use a dedicated thread pool capped at half the CPU cores to avoid
         // melting the system — each export is memory-heavy (mesh + DDS + PNG).
         let num_threads = (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) / 2).max(2);
-        let pool = rayon::ThreadPoolBuilder::new()
+        let pool = match rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads)
             .build()
-            .unwrap();
+        {
+            Ok(pool) => pool,
+            Err(e) => {
+                let _ = app.emit(
+                    "export-done",
+                    ExportDone {
+                        success: 0,
+                        errors: total,
+                    },
+                );
+                eprintln!("failed to build thread pool: {e}");
+                return;
+            }
+        };
 
         pool.install(|| {
         use rayon::prelude::*;
@@ -485,15 +461,14 @@ fn export_single(
     record_id: &CigGuid,
     output_path: &Path,
     opts: &starbreaker_gltf::ExportOptions,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let record = db
         .record_by_id(record_id)
-        .ok_or_else(|| "Record not found".to_string())?;
+        .ok_or_else(|| AppError::Internal("record not found".into()))?;
     let idx = starbreaker_datacore::loadout::EntityIndex::new(db);
     let tree = starbreaker_datacore::loadout::resolve_loadout_indexed(&idx, record);
-    let result = starbreaker_gltf::assemble_glb_with_loadout(db, p4k, record, &tree, opts)
-        .map_err(|e| format!("{e}"))?;
-    std::fs::write(output_path, &result.glb).map_err(|e| format!("Failed to write GLB: {e}"))?;
+    let result = starbreaker_gltf::assemble_glb_with_loadout(db, p4k, record, &tree, opts)?;
+    std::fs::write(output_path, &result.glb)?;
     Ok(())
 }
 

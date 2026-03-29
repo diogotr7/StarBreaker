@@ -4,6 +4,7 @@
 mod audio_commands;
 mod commands;
 mod datacore_commands;
+mod error;
 mod state;
 mod ui_sink;
 
@@ -39,5 +40,8 @@ fn main() {
             audio_commands::audio_decode_wem,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|e| {
+            eprintln!("fatal: {e}");
+            std::process::exit(1);
+        });
 }

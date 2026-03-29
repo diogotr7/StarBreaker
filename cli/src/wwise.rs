@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
 use clap::Subcommand;
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -10,6 +9,7 @@ use starbreaker_wem::WemFile;
 use starbreaker_wwise::{BnkFile, Hierarchy};
 
 use crate::common::load_p4k;
+use crate::error::{CliError, Result};
 
 #[derive(Subcommand)]
 pub enum WwiseCommand {
@@ -104,16 +104,17 @@ impl WwiseCommand {
 fn load_bnk_bytes(input: &str, p4k_path: Option<&Path>) -> Result<Vec<u8>> {
     let path = Path::new(input);
     if path.exists() {
-        return fs::read(path).context("failed to read BNK file");
+        return Ok(fs::read(path)
+            .map_err(|e| CliError::IoPath { source: e, path: path.display().to_string() })?);
     }
     // Try P4k path
     let p4k = load_p4k(p4k_path)?;
-    p4k.read_file(input).context("failed to read BNK from P4k")
+    Ok(p4k.read_file(input)?)
 }
 
 fn info(input: &str, p4k_path: Option<&Path>) -> Result<()> {
     let data = load_bnk_bytes(input, p4k_path)?;
-    let bnk = BnkFile::parse(&data).context("failed to parse BNK")?;
+    let bnk = BnkFile::parse(&data)?;
 
     eprintln!("Bank version:  {}", bnk.header.version);
     eprintln!("Bank ID:       {}", bnk.header.bank_id);
@@ -152,7 +153,7 @@ fn info(input: &str, p4k_path: Option<&Path>) -> Result<()> {
 
 fn list(input: &str, p4k_path: Option<&Path>) -> Result<()> {
     let data = load_bnk_bytes(input, p4k_path)?;
-    let bnk = BnkFile::parse(&data).context("failed to parse BNK")?;
+    let bnk = BnkFile::parse(&data)?;
 
     if bnk.data_index.is_empty() {
         eprintln!("No embedded WEM entries.");
@@ -194,7 +195,7 @@ fn list(input: &str, p4k_path: Option<&Path>) -> Result<()> {
 
 fn extract(input: &str, output: &Path, decode: bool, p4k_path: Option<&Path>) -> Result<()> {
     let data = load_bnk_bytes(input, p4k_path)?;
-    let bnk = BnkFile::parse(&data).context("failed to parse BNK")?;
+    let bnk = BnkFile::parse(&data)?;
 
     if bnk.data_index.is_empty() {
         eprintln!("No embedded WEM entries to extract.");
@@ -206,8 +207,7 @@ fn extract(input: &str, output: &Path, decode: bool, p4k_path: Option<&Path>) ->
     let pb = ProgressBar::new(bnk.data_index.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("[{bar:40}] {pos}/{len}")
-            .unwrap(),
+            .template("[{bar:40}] {pos}/{len}")?,
     );
 
     for entry in &bnk.data_index {
@@ -238,12 +238,11 @@ fn extract(input: &str, output: &Path, decode: bool, p4k_path: Option<&Path>) ->
 }
 
 fn decode_and_write(id: u32, wem_bytes: &[u8], output: &Path) -> Result<()> {
-    let wem = WemFile::parse(wem_bytes).context("failed to parse WEM")?;
+    let wem = WemFile::parse(wem_bytes)?;
 
     match wem.codec_type() {
         starbreaker_wem::WemCodec::Vorbis => {
-            let ogg = starbreaker_wem::decode::vorbis_to_ogg(wem_bytes)
-                .context("Vorbis decode failed")?;
+            let ogg = starbreaker_wem::decode::vorbis_to_ogg(wem_bytes)?;
             let path = output.join(format!("{id}.ogg"));
             fs::write(&path, ogg)?;
         }
@@ -262,8 +261,8 @@ fn decode_and_write(id: u32, wem_bytes: &[u8], output: &Path) -> Result<()> {
 
 fn events(input: &str, p4k_path: Option<&Path>) -> Result<()> {
     let data = load_bnk_bytes(input, p4k_path)?;
-    let bnk = BnkFile::parse(&data).context("failed to parse BNK")?;
-    let hirc = bnk.hirc.as_ref().context("bank has no HIRC section")?;
+    let bnk = BnkFile::parse(&data)?;
+    let hirc = bnk.hirc.as_ref().ok_or_else(|| CliError::NotFound("bank has no HIRC section".into()))?;
     let hierarchy = Hierarchy::from_section(hirc);
 
     let mut evts: Vec<_> = hierarchy.events().collect();
@@ -285,13 +284,13 @@ fn events(input: &str, p4k_path: Option<&Path>) -> Result<()> {
 
 fn trace(input: &str, event_str: &str, p4k_path: Option<&Path>) -> Result<()> {
     let data = load_bnk_bytes(input, p4k_path)?;
-    let bnk = BnkFile::parse(&data).context("failed to parse BNK")?;
-    let hirc = bnk.hirc.as_ref().context("bank has no HIRC section")?;
+    let bnk = BnkFile::parse(&data)?;
+    let hirc = bnk.hirc.as_ref().ok_or_else(|| CliError::NotFound("bank has no HIRC section".into()))?;
     let hierarchy = Hierarchy::from_section(hirc);
 
     // Parse event identifier: hex (0x...), decimal, or name (FNV-1 hash)
     let event_id = if let Some(hex) = event_str.strip_prefix("0x") {
-        u32::from_str_radix(hex, 16).context("invalid hex event ID")?
+        u32::from_str_radix(hex, 16)?
     } else if let Ok(num) = event_str.parse::<u32>() {
         num
     } else {
@@ -329,8 +328,8 @@ fn trace(input: &str, event_str: &str, p4k_path: Option<&Path>) -> Result<()> {
 
 fn dump(input: &str, p4k_path: Option<&Path>) -> Result<()> {
     let data = load_bnk_bytes(input, p4k_path)?;
-    let bnk = BnkFile::parse(&data).context("failed to parse BNK")?;
-    let hirc = bnk.hirc.as_ref().context("bank has no HIRC section")?;
+    let bnk = BnkFile::parse(&data)?;
+    let hirc = bnk.hirc.as_ref().ok_or_else(|| CliError::NotFound("bank has no HIRC section".into()))?;
     let hierarchy = Hierarchy::from_section(hirc);
 
     let mut objects: Vec<&starbreaker_wwise::HircObject> = Vec::new();
@@ -357,18 +356,17 @@ fn search(
     if let Some(entity_name) = entity {
         return search_by_entity(&p4k, &entity_name);
     }
-    anyhow::bail!("specify --trigger or --entity");
+    return Err(CliError::InvalidInput("specify --trigger or --entity".into()));
 }
 
 fn search_by_trigger(p4k: &starbreaker_p4k::MappedP4k, trigger_name: &str) -> Result<()> {
     eprintln!("Building ATL index...");
-    let atl = starbreaker_wwise::AtlIndex::from_p4k(p4k)
-        .context("failed to build ATL index")?;
+    let atl = starbreaker_wwise::AtlIndex::from_p4k(p4k)?;
     eprintln!("ATL index: {} triggers", atl.len());
 
     let trigger = atl
         .get_trigger(trigger_name)
-        .context(format!("trigger '{}' not found in ATL", trigger_name))?;
+        .ok_or_else(|| CliError::NotFound(format!("trigger '{}' not found in ATL", trigger_name)))?;
 
     eprintln!(
         "Trigger: {} -> bank {} ({}, radius {:?})",
@@ -377,11 +375,9 @@ fn search_by_trigger(p4k: &starbreaker_p4k::MappedP4k, trigger_name: &str) -> Re
 
     // Load bank and resolve
     let bank_path = format!("Data\\Sounds\\wwise\\{}", trigger.bank_name);
-    let bank_data = p4k
-        .read_file(&bank_path)
-        .context(format!("failed to read bank {}", bank_path))?;
-    let bnk = BnkFile::parse(&bank_data).context("failed to parse BNK")?;
-    let hirc = bnk.hirc.as_ref().context("bank has no HIRC")?;
+    let bank_data = p4k.read_file(&bank_path)?;
+    let bnk = BnkFile::parse(&bank_data)?;
+    let hirc = bnk.hirc.as_ref().ok_or_else(|| CliError::NotFound("bank has no HIRC".into()))?;
     let hierarchy = Hierarchy::from_section(hirc);
 
     let sounds = hierarchy.resolve_event_by_name(&trigger.wwise_event_name);
@@ -407,10 +403,8 @@ fn search_by_entity(p4k: &starbreaker_p4k::MappedP4k, entity_query: &str) -> Res
     eprintln!("Loading DataCore...");
     let dcb_bytes = p4k
         .read_file("Data\\Game2.dcb")
-        .or_else(|_| p4k.read_file("Data\\Game.dcb"))
-        .context("failed to read Game2.dcb from P4k")?;
-    let db = starbreaker_datacore::Database::from_bytes(&dcb_bytes)
-        .context("failed to parse DataCore")?;
+        .or_else(|_| p4k.read_file("Data\\Game.dcb"))?;
+    let db = starbreaker_datacore::Database::from_bytes(&dcb_bytes)?;
 
     // Find entities with audio triggers
     eprintln!("Searching for entities matching '{entity_query}'...");
@@ -424,8 +418,7 @@ fn search_by_entity(p4k: &starbreaker_p4k::MappedP4k, entity_query: &str) -> Res
 
     // Build ATL index
     eprintln!("Building ATL index...");
-    let atl = starbreaker_wwise::AtlIndex::from_p4k(p4k)
-        .context("failed to build ATL index")?;
+    let atl = starbreaker_wwise::AtlIndex::from_p4k(p4k)?;
 
     // Cache loaded bank hierarchies
     let mut bank_cache: HashMap<String, Option<Hierarchy>> = HashMap::new();

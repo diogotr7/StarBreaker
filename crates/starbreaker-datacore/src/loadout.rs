@@ -756,7 +756,10 @@ fn collect_entries_recursive(
                 // use a dummy record (geometry path is what matters for export)
                 log::debug!("{indent}  (no record for '{ref_name}', using ref geometry)");
                 out.push(LoadoutNode {
-                    record: *idx.db.records().first().unwrap(), // placeholder
+                    record: match idx.db.records().first() {
+                        Some(r) => *r,
+                        None => continue, // skip node if DB has no records
+                    },
                     entity_name: ref_name,
                     item_port_name: port_name.to_owned(),
                     helper_bone_name: None,

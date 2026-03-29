@@ -4,6 +4,7 @@ mod cryxml;
 mod dcb;
 mod dds;
 mod entity;
+mod error;
 mod glb;
 mod p4k;
 mod skin;
@@ -135,7 +136,7 @@ enum Command {
     },
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() {
     env_logger::init();
 
     let cli = Cli::parse();
@@ -145,7 +146,7 @@ fn main() -> anyhow::Result<()> {
         eprintln!("[mem] cap set to {}MB", cli.mem_cap);
     }
 
-    match cli.command {
+    let result = match cli.command {
         Command::P4k { command } => command.run(),
         Command::Dcb { command } => command.run(),
         Command::Entity { command } => command.run(),
@@ -156,5 +157,10 @@ fn main() -> anyhow::Result<()> {
         Command::Glb { command } => command.run(),
         Command::Chf { command } => command.run(),
         Command::Wwise { command } => command.run(),
+    };
+
+    if let Err(e) = result {
+        eprintln!("error: {e}");
+        std::process::exit(1);
     }
 }

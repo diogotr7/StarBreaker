@@ -5,7 +5,7 @@ use std::path::Path;
 use starbreaker_wem::WemFile;
 use starbreaker_wwise::BnkFile;
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage: dump_bnk <path.bnk> [output_dir]");
