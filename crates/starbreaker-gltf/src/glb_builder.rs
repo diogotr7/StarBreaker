@@ -124,10 +124,14 @@ impl GlbBuilder {
             r
         }
 
-        // Collect chain from node to root
+        // Collect chain from node to root (cap at node count to break cycles)
         let mut chain = vec![node_idx];
         let mut cur = node_idx;
         while let Some(p) = parent_of[cur] {
+            if chain.len() >= nodes.len() {
+                log::warn!("cycle in node parent chain at node {cur}, breaking");
+                break;
+            }
             chain.push(p);
             cur = p;
         }
@@ -144,6 +148,10 @@ impl GlbBuilder {
 
     /// Append `child_idx` as a child of `parent_idx` in the node list.
     pub fn append_child_to_node(&mut self, parent_idx: u32, child_idx: u32) {
+        if parent_idx == child_idx {
+            log::warn!("skipping self-referencing node attachment at index {parent_idx}");
+            return;
+        }
         if let Some(node) = self.nodes_json.get_mut(parent_idx as usize) {
             if let Some(ref mut children_arr) = node.children {
                 children_arr.push(json::Index::new(child_idx));
