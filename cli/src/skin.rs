@@ -300,7 +300,8 @@ fn export(search: String, output: Option<PathBuf>, p4k_path: Option<PathBuf>) ->
         PathBuf::from(format!("{stem}.glb"))
     });
 
-    std::fs::write(&output, &glb)?;
+    std::fs::write(&output, &glb)
+        .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
     eprintln!("Written {} bytes to {}", glb.len(), output.display());
     Ok(())
 }

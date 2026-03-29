@@ -95,8 +95,20 @@ fn load_hierarchy(
             .get(bank_name)
             .cloned()
             .unwrap_or_else(|| format!("Data\\Sounds\\wwise\\{bank_name}"));
-        let data = p4k.read_file(&path).ok()?;
-        let bnk = BnkFile::parse(&data).ok()?;
+        let data = match p4k.read_file(&path) {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!("failed to read {path}: {e}");
+                return None;
+            }
+        };
+        let bnk = match BnkFile::parse(&data) {
+            Ok(b) => b,
+            Err(e) => {
+                log::warn!("failed to parse {path}: {e}");
+                return None;
+            }
+        };
         let hirc = bnk.hirc.as_ref()?;
         Some(Arc::new(Hierarchy::from_section(hirc)))
     })();
@@ -342,8 +354,15 @@ pub fn audio_bank_media(
                 .get(&companion_name)
                 .cloned()
                 .unwrap_or_else(|| format!("Data\\Sounds\\wwise\\{}", companion_name));
-            if let Ok(data) = p4k.read_file(&companion_path) {
-                if let Ok(cbnk) = BnkFile::parse(&data) {
+            let data = match p4k.read_file(&companion_path) {
+                Ok(d) => d,
+                Err(e) => {
+                    log::warn!("failed to read companion bank {companion_path}: {e}");
+                    return Ok(results);
+                }
+            };
+            match BnkFile::parse(&data) {
+                Ok(cbnk) => {
                     if let Some(hirc) = &cbnk.hirc {
                         let hierarchy = Hierarchy::from_section(hirc);
                         for s in hierarchy.all_media() {
@@ -372,6 +391,9 @@ pub fn audio_bank_media(
                             });
                         }
                     }
+                }
+                Err(e) => {
+                    log::warn!("failed to parse companion bank {companion_path}: {e}");
                 }
             }
         }

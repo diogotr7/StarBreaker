@@ -89,7 +89,9 @@ fn extract(
     let dirs = P4kArchive::unique_directories(&entries);
     for dir in &dirs {
         let dir_path = output.join(dir.replace('\\', "/"));
-        let _ = std::fs::create_dir_all(&dir_path);
+        if let Err(e) = std::fs::create_dir_all(&dir_path) {
+            eprintln!("[ERR] create dir {}: {e}", dir_path.display());
+        }
     }
     eprintln!("{} directories created.", dirs.len());
 

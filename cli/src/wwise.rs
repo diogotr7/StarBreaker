@@ -445,8 +445,20 @@ fn search_by_entity(p4k: &starbreaker_p4k::MappedP4k, entity_query: &str) -> Res
                         .or_insert_with(|| {
                             let path =
                                 format!("Data\\Sounds\\wwise\\{}", trigger.bank_name);
-                            let data = p4k.read_file(&path).ok()?;
-                            let bnk = BnkFile::parse(&data).ok()?;
+                            let data = match p4k.read_file(&path) {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    log::debug!("failed to read {path}: {e}");
+                                    return None;
+                                }
+                            };
+                            let bnk = match BnkFile::parse(&data) {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    log::debug!("failed to parse {path}: {e}");
+                                    return None;
+                                }
+                            };
                             let hirc = bnk.hirc.as_ref()?;
                             Some(Hierarchy::from_section(hirc))
                         });

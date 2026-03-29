@@ -46,7 +46,8 @@ fn convert(input: PathBuf, output: Option<PathBuf>) -> Result<()> {
     let cryxml = starbreaker_cryxml::from_bytes(&data)?;
     let xml = format!("{cryxml}");
     let output = output.unwrap_or_else(|| input.with_extension("xml"));
-    std::fs::write(&output, xml.as_bytes())?;
+    std::fs::write(&output, xml.as_bytes())
+        .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
     eprintln!("Written to {}", output.display());
     Ok(())
 }
@@ -67,7 +68,9 @@ fn convert_all(input: PathBuf, output: PathBuf, filter: String) -> Result<()> {
         let rel = file.strip_prefix(&input).unwrap_or(file);
         let out_path = output.join(rel);
         if let Some(parent) = out_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("[ERR] create dir {}: {e}", parent.display());
+            }
         }
         let result = (|| -> Result<()> {
             let data = std::fs::read(file)?;

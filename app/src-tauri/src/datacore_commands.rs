@@ -385,8 +385,8 @@ fn collect_attr_refs(db: &Database, dt: DataType, prop_struct_index: i32, reader
 }
 
 fn collect_array_refs(db: &Database, dt: DataType, prop_struct_index: i32, reader: &mut SpanReader, out: &mut Vec<CigGuid>) {
-    let count = reader.read_i32().unwrap_or(0);
-    let first = reader.read_i32().unwrap_or(0);
+    let Ok(count) = reader.read_i32() else { return };
+    let Ok(first) = reader.read_i32() else { return };
     match dt {
         DataType::Reference => {
             for i in first..first + count {

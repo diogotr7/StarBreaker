@@ -106,7 +106,9 @@ fn extract(
         let out_path = output.join(&out_name);
 
         if let Some(parent) = out_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("[ERR] create dir {}: {e}", parent.display());
+            }
         }
 
         let result = match format.as_str() {

@@ -109,7 +109,8 @@ fn export(
     if dump_hierarchy {
         let json = starbreaker_gltf::dump_hierarchy(&db, &p4k, record, &tree);
         let json_path = output.with_extension("json");
-        std::fs::write(&json_path, &json)?;
+        std::fs::write(&json_path, &json)
+            .map_err(|e| CliError::IoPath { source: e, path: json_path.display().to_string() })?;
         eprintln!("Hierarchy written to {}", json_path.display());
         return Ok(());
     }
@@ -121,7 +122,8 @@ fn export(
     eprintln!("Geometry: {}", result.geometry_path);
     eprintln!("Material: {}", result.material_path);
     eprintln!("GLB size: {} bytes", result.glb.len());
-    std::fs::write(&output, &result.glb)?;
+    std::fs::write(&output, &result.glb)
+        .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
     crate::print_mem_stats("after write");
     eprintln!("Written to {}", output.display());
     Ok(())

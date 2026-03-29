@@ -65,7 +65,8 @@ fn export(
     let glb = starbreaker_gltf::socpaks_to_glb(&db, &p4k, &socpak_paths, &export_opts)?;
 
     let output = output.unwrap_or_else(|| PathBuf::from(format!("{pattern}.glb")));
-    std::fs::write(&output, &glb)?;
+    std::fs::write(&output, &glb)
+        .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
     eprintln!("Written {} bytes to {}", glb.len(), output.display());
     Ok(())
 }

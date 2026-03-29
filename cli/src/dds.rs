@@ -231,7 +231,8 @@ fn merge(input: PathBuf, output: Option<PathBuf>) -> Result<()> {
     let dds = DdsFile::from_split(&data, &reader)?;
     let merged = dds.to_dds();
     let output = output.unwrap_or_else(|| input.with_extension("merged.dds"));
-    std::fs::write(&output, &merged)?;
+    std::fs::write(&output, &merged)
+        .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
     eprintln!("Written to {}", output.display());
     Ok(())
 }
@@ -252,7 +253,9 @@ fn merge_all(input: PathBuf, output: PathBuf) -> Result<()> {
         let rel = file.strip_prefix(&input).unwrap_or(file);
         let out_path = output.join(rel);
         if let Some(parent) = out_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("[ERR] create dir {}: {e}", parent.display());
+            }
         }
         let result = (|| -> Result<()> {
             let data = std::fs::read(file)?;
@@ -307,7 +310,9 @@ fn to_png_all(input: PathBuf, output: PathBuf, filter: String) -> Result<()> {
         let rel = file.strip_prefix(&input).unwrap_or(file);
         let out_path = output.join(rel).with_extension("png");
         if let Some(parent) = out_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("[ERR] create dir {}: {e}", parent.display());
+            }
         }
         let result = (|| -> Result<()> {
             let data = std::fs::read(file)?;
