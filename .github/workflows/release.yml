@@ -93,11 +93,17 @@ jobs:
           name: cli-linux
           path: cli-linux
 
+      - name: Package CLI artifacts
+        run: |
+          tag="${{ github.ref_name }}"
+          zip -j "starbreaker-cli-${tag}-windows-x86_64.zip" cli-windows/starbreaker-cli.exe
+          tar -czf "starbreaker-cli-${tag}-linux-x86_64.tar.gz" -C cli-linux starbreaker-cli
+
       - name: Upload CLI to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           draft: true
           files: |
-            cli-windows/starbreaker-cli.exe
-            cli-linux/starbreaker-cli
+            starbreaker-cli-${{ github.ref_name }}-windows-x86_64.zip
+            starbreaker-cli-${{ github.ref_name }}-linux-x86_64.tar.gz
