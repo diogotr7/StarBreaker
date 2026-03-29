@@ -7,7 +7,6 @@ fn fixture_base() -> PathBuf {
     Path::new(manifest_dir)
         .join("..")
         .join("..")
-        .join("..")
         .join("research")
 }
 
