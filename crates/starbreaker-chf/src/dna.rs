@@ -82,6 +82,10 @@ pub struct Dna {
     pub variant_hash: NameHash,
     /// Number of face parts in the blend matrix.
     pub part_count: u16,
+    /// Number of blends per part (always 4 in practice).
+    pub blends_per_part: u16,
+    /// Unknown header field, preserved for round-tripping.
+    pub header_unknown: u16,
     /// Maximum head ID referenced by any blend.
     pub max_head_id: u16,
     /// Per-face-part blend data (4 blends per part).
@@ -111,10 +115,10 @@ impl Dna {
         // Zero u32
         expect_u32(&mut r, 0)?;
 
-        // DNA header: part_count, blends_per_part (always 4), unknown (always 0), max_head_id
+        // DNA header: part_count, blends_per_part (always 4), unknown, max_head_id
         let part_count = r.read_u16()?;
-        let _blends_per_part = r.read_u16()?; // Always 4 in practice
-        let _unknown = r.read_u16()?; // Always 0 in observed files, purpose unknown
+        let blends_per_part = r.read_u16()?;
+        let header_unknown = r.read_u16()?;
         let max_head_id = r.read_u16()?;
 
         // Read interleaved DnaBlend entries: part_count * 4 entries total
@@ -152,15 +156,40 @@ impl Dna {
             gender_hash,
             variant_hash,
             part_count,
+            blends_per_part,
+            header_unknown,
             max_head_id,
             face_parts,
         })
     }
 
-    /// Write DNA to the writer. Writes the u64 size prefix then the raw bytes.
+    /// Reconstruct raw DNA bytes from the structured fields.
+    pub fn to_raw_bytes(&self) -> Vec<u8> {
+        let mut w = SpanWriter::new();
+        w.write_val(&NameHash::from_string("dna matrix 1.0"));
+        w.write_val(&self.gender_hash);
+        w.write_val(&self.variant_hash);
+        w.write_u32(0);
+        w.write_u16(self.part_count);
+        w.write_u16(self.blends_per_part);
+        w.write_u16(self.header_unknown);
+        w.write_u16(self.max_head_id);
+
+        // Interleaved: for each blend_index, for each part in BTreeMap order
+        for blend_idx in 0..4usize {
+            for (_part, blends) in &self.face_parts {
+                w.write_u16(blends[blend_idx].value);
+                w.write_u16(blends[blend_idx].head_id);
+            }
+        }
+        w.into_inner()
+    }
+
+    /// Write DNA, reconstructing bytes from structured fields.
     pub fn write(&self, writer: &mut SpanWriter) {
-        writer.write_u64(self.raw_bytes.len() as u64);
-        writer.write_bytes(&self.raw_bytes);
+        let bytes = self.to_raw_bytes();
+        writer.write_u64(bytes.len() as u64);
+        writer.write_bytes(&bytes);
     }
 }
 

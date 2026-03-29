@@ -58,7 +58,7 @@ pub fn parse_dna(bytes: &[u8]) -> Result<Dna, ParseError> {
     Dna::read_raw(bytes)
 }
 
-/// Return the raw bytes of a Dna struct.
+/// Reconstruct DNA bytes from structured fields.
 pub fn write_dna(dna: &Dna) -> Vec<u8> {
-    dna.raw_bytes.clone()
+    dna.to_raw_bytes()
 }
