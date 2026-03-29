@@ -4,3 +4,19 @@ members = ["crates/*", "cli", "app/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
+
+# Dev builds: basic optimizations for tolerable debug performance
+[profile.dev]
+opt-level = 1
+
+# External dependencies get full optimization even in dev builds.
+# Only recompiles when deps change, so the cost is paid once and cached.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Release builds: full optimization + fat LTO (CI-only, not for local dev)
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
