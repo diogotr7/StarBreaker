@@ -38,12 +38,27 @@ jobs:
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
-        with:
-          workspaces: "app/src-tauri -> target"
 
       - name: Install frontend dependencies
         working-directory: app
         run: npm ci
+
+      - name: Build CLI
+        run: cargo build --release --package starbreaker-cli
+
+      - name: Upload CLI (Windows)
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-windows
+          path: target/release/starbreaker.exe
+
+      - name: Upload CLI (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-linux
+          path: target/release/starbreaker
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -57,3 +72,26 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+  upload-cli:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cli-windows
+          path: cli-windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: cli-linux
+          path: cli-linux
+
+      - name: Upload CLI to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            cli-windows/starbreaker.exe
+            cli-linux/starbreaker
