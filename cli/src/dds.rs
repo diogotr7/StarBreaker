@@ -18,12 +18,12 @@ pub enum DdsCommand {
         #[arg(long, env = "SC_DATA_P4K")]
         p4k: Option<PathBuf>,
     },
-    /// Decode a DDS from P4k to PNG (for debugging)
+    /// Decode a DDS from P4k to PNG
     Decode {
         /// DDS path in P4k
         input: String,
-        /// Output PNG path
-        output: PathBuf,
+        /// Output PNG path [default: <input>.png]
+        output: Option<PathBuf>,
         /// Mip level to decode
         #[arg(long, default_value = "0")]
         mip: usize,
@@ -75,7 +75,13 @@ impl DdsCommand {
     pub fn run(self) -> Result<()> {
         match self {
             Self::Info { input, p4k } => info(&input, p4k.as_deref()),
-            Self::Decode { input, output, mip, alpha, p4k } => decode_p4k(&input, &output, mip, alpha, p4k.as_deref()),
+            Self::Decode { input, output, mip, alpha, p4k } => {
+                let output = output.unwrap_or_else(|| {
+                    let stem = input.rsplit(['/', '\\']).next().unwrap_or("output");
+                    PathBuf::from(format!("{stem}.png"))
+                });
+                decode_p4k(&input, &output, mip, alpha, p4k.as_deref())
+            }
             Self::Merge { input, output } => merge(input, output),
             Self::MergeAll { input, output } => merge_all(input, output),
             Self::ToPng { input, output } => to_png(input, output),
@@ -246,7 +252,7 @@ fn merge_all(input: PathBuf, output: PathBuf) -> Result<()> {
     let pb = ProgressBar::new(files.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("[{bar:40}] {pos}/{len}")?,
+            .template("[{bar:40}] {pos}/{len} ({elapsed}, ETA {eta})")?,
     );
 
     files.par_iter().for_each(|file| {
@@ -303,7 +309,7 @@ fn to_png_all(input: PathBuf, output: PathBuf, filter: String) -> Result<()> {
     let pb = ProgressBar::new(files.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("[{bar:40}] {pos}/{len}")?,
+            .template("[{bar:40}] {pos}/{len} ({elapsed}, ETA {eta})")?,
     );
 
     files.par_iter().for_each(|file| {

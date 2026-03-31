@@ -60,11 +60,11 @@ pub fn set_mem_cap(bytes: usize) {
     CAP.store(bytes, Relaxed);
 }
 
-/// Print current and peak memory usage to stderr.
-pub fn print_mem_stats(label: &str) {
+/// Log current and peak memory usage at debug level.
+pub fn log_mem_stats(label: &str) {
     let current = ALLOCATED.load(Relaxed);
     let peak = PEAK.load(Relaxed);
-    eprintln!(
+    log::debug!(
         "[mem] {label}: current={:.1}MB peak={:.1}MB",
         current as f64 / 1_048_576.0,
         peak as f64 / 1_048_576.0,
@@ -78,6 +78,9 @@ struct Cli {
     /// Memory cap in MB — abort if exceeded (0 = unlimited)
     #[arg(long, global = true, default_value = "0")]
     mem_cap: usize,
+    /// Increase log verbosity (-v = debug, -vv = trace)
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    verbose: u8,
     #[command(subcommand)]
     command: Command,
 }
@@ -137,13 +140,23 @@ enum Command {
 }
 
 fn main() {
-    env_logger::init();
-
     let cli = Cli::parse();
+
+    let env_filter = std::env::var("RUST_LOG").unwrap_or_else(|_| {
+        match cli.verbose {
+            0 => "warn",
+            1 => "debug",
+            _ => "trace",
+        }
+        .to_string()
+    });
+    env_logger::Builder::new()
+        .parse_filters(&env_filter)
+        .init();
 
     if cli.mem_cap > 0 {
         set_mem_cap(cli.mem_cap * 1_048_576);
-        eprintln!("[mem] cap set to {}MB", cli.mem_cap);
+        log::debug!("[mem] cap set to {}MB", cli.mem_cap);
     }
 
     let result = match cli.command {

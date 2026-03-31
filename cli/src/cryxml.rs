@@ -60,7 +60,7 @@ fn convert_all(input: PathBuf, output: PathBuf, filter: String) -> Result<()> {
 
     eprintln!("Converting {} files...", files.len());
     let pb = ProgressBar::new(files.len() as u64);
-    pb.set_style(ProgressStyle::default_bar().template("[{bar:40}] {pos}/{len}")?);
+    pb.set_style(ProgressStyle::default_bar().template("[{bar:40}] {pos}/{len} ({elapsed}, ETA {eta})")?);
 
     let errors = std::sync::atomic::AtomicUsize::new(0);
 

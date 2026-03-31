@@ -41,7 +41,7 @@ Requires Rust (edition 2024). For the Tauri app, you also need Node.js.
 
 ```sh
 # CLI only
-cargo build --release -p starbreaker-cli
+cargo build --release -p starbreaker
 
 # Tauri app
 cd app && npm install && npm run tauri build

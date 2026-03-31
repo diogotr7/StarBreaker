@@ -1,12 +1,19 @@
 use std::path::PathBuf;
 
-use clap::Subcommand;
+use clap::{Subcommand, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use starbreaker_datacore::database::Database;
 
 use crate::common::{load_dcb_bytes, matches_filter};
 use crate::error::Result;
+
+#[derive(Clone, ValueEnum)]
+pub enum DcbFormat {
+    Json,
+    Xml,
+    Unp4k,
+}
 
 #[derive(Subcommand)]
 pub enum DcbCommand {
@@ -21,18 +28,12 @@ pub enum DcbCommand {
         /// Output directory
         #[arg(short, long)]
         output: PathBuf,
-        /// Output format: json, xml, or unp4k
-        #[arg(long, default_value = "xml")]
-        format: String,
+        /// Output format
+        #[arg(long, value_enum, default_value = "xml")]
+        format: DcbFormat,
         /// Filter record names by glob
         #[arg(long)]
         filter: Option<String>,
-        /// Also extract type definitions to this directory
-        #[arg(long)]
-        types: Option<PathBuf>,
-        /// Also extract enum definitions to this directory
-        #[arg(long)]
-        enums: Option<PathBuf>,
     },
 }
 
@@ -45,9 +46,7 @@ impl DcbCommand {
                 output,
                 format,
                 filter,
-                types,
-                enums,
-            } => extract(p4k, dcb, output, format, filter, types, enums),
+            } => extract(p4k, dcb, output, format, filter),
         }
     }
 }
@@ -56,20 +55,17 @@ fn extract(
     p4k_path: Option<PathBuf>,
     dcb_path: Option<PathBuf>,
     output: PathBuf,
-    format: String,
+    format: DcbFormat,
     filter: Option<String>,
-    _types_dir: Option<PathBuf>,
-    _enums_dir: Option<PathBuf>,
 ) -> Result<()> {
     let (_p4k, dcb_bytes) = load_dcb_bytes(p4k_path.as_deref(), dcb_path.as_deref())?;
     let db = Database::from_bytes(&dcb_bytes)?;
 
     eprintln!("DataCore loaded.");
 
-    let ext = if format.eq_ignore_ascii_case("json") {
-        "json"
-    } else {
-        "xml"
+    let ext = match format {
+        DcbFormat::Json => "json",
+        DcbFormat::Xml | DcbFormat::Unp4k => "xml",
     };
 
     // Only export main records (matching C#'s behavior), using the file path
@@ -91,7 +87,7 @@ fn extract(
     let pb = ProgressBar::new(records.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("[{bar:40}] {pos}/{len}")?,
+            .template("[{bar:40}] {pos}/{len} ({elapsed}, ETA {eta})")?,
     );
 
     std::fs::create_dir_all(&output)?;
@@ -111,10 +107,10 @@ fn extract(
             }
         }
 
-        let result = match format.as_str() {
-            "json" => starbreaker_datacore::export::to_json(&db, record),
-            "unp4k" => starbreaker_datacore::export::to_unp4k_xml(&db, record),
-            _ => starbreaker_datacore::export::to_xml(&db, record),
+        let result = match format {
+            DcbFormat::Json => starbreaker_datacore::export::to_json(&db, record),
+            DcbFormat::Unp4k => starbreaker_datacore::export::to_unp4k_xml(&db, record),
+            DcbFormat::Xml => starbreaker_datacore::export::to_xml(&db, record),
         };
 
         match result {

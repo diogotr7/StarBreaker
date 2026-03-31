@@ -74,12 +74,12 @@ fn export(
     dump_hierarchy: bool,
     opts: ExportOpts,
 ) -> Result<()> {
-    crate::print_mem_stats("start");
+    crate::log_mem_stats("start");
     let (p4k, dcb_bytes) = load_dcb_bytes(p4k_path.as_deref(), None)?;
-    crate::print_mem_stats("after p4k+dcb load");
+    crate::log_mem_stats("after p4k+dcb load");
     let p4k = p4k.ok_or_else(|| CliError::MissingRequirement("P4k required for entity export".into()))?;
     let db = Database::from_bytes(&dcb_bytes)?;
-    crate::print_mem_stats("after db parse");
+    crate::log_mem_stats("after db parse");
 
     let candidates = find_candidates(&db, &name)?;
     if candidates.is_empty() {
@@ -96,9 +96,9 @@ fn export(
     let export_opts = starbreaker_gltf::ExportOptions::from(&opts);
     let output = output.unwrap_or_else(|| PathBuf::from(format!("{name}.glb")));
 
-    crate::print_mem_stats("before loadout resolve");
+    crate::log_mem_stats("before loadout resolve");
     let tree = resolve_loadout_indexed(&idx, record);
-    crate::print_mem_stats("after loadout resolve");
+    crate::log_mem_stats("after loadout resolve");
 
     eprintln!("\nLoadout tree for {}:", tree.root.entity_name);
     for child in &tree.root.children {
@@ -115,16 +115,16 @@ fn export(
         return Ok(());
     }
 
-    crate::print_mem_stats("before export");
+    crate::log_mem_stats("before export");
     let result = starbreaker_gltf::assemble_glb_with_loadout(&db, &p4k, record, &tree, &export_opts)?;
 
-    crate::print_mem_stats("after export");
+    crate::log_mem_stats("after export");
     eprintln!("Geometry: {}", result.geometry_path);
     eprintln!("Material: {}", result.material_path);
     eprintln!("GLB size: {} bytes", result.glb.len());
     std::fs::write(&output, &result.glb)
         .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
-    crate::print_mem_stats("after write");
+    crate::log_mem_stats("after write");
     eprintln!("Written to {}", output.display());
     Ok(())
 }

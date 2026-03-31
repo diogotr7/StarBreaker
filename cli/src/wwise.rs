@@ -15,7 +15,7 @@ use crate::error::{CliError, Result};
 pub enum WwiseCommand {
     /// Print soundbank metadata (version, sections, WEM count)
     Info {
-        /// Input .bnk file path
+        /// Input .bnk file path (filesystem or P4k path)
         input: String,
         /// Path to Data.p4k (for P4k paths)
         #[arg(long, env = "SC_DATA_P4K")]
@@ -23,7 +23,7 @@ pub enum WwiseCommand {
     },
     /// List all embedded WEM entries in a soundbank
     List {
-        /// Input .bnk file path
+        /// Input .bnk file path (filesystem or P4k path)
         input: String,
         /// Path to Data.p4k (for P4k paths)
         #[arg(long, env = "SC_DATA_P4K")]
@@ -31,7 +31,7 @@ pub enum WwiseCommand {
     },
     /// Extract WEM files from a soundbank
     Extract {
-        /// Input .bnk file path
+        /// Input .bnk file path (filesystem or P4k path)
         input: String,
         /// Output directory
         #[arg(short, long)]
@@ -45,22 +45,28 @@ pub enum WwiseCommand {
     },
     /// List all events in a soundbank
     Events {
+        /// Input .bnk file path (filesystem or P4k path)
         input: String,
+        /// Path to Data.p4k (for P4k paths)
         #[arg(long, env = "SC_DATA_P4K")]
         p4k: Option<PathBuf>,
     },
     /// Trace an event to its leaf sounds
     Trace {
+        /// Input .bnk file path (filesystem or P4k path)
         input: String,
         /// Event name or numeric ID (e.g., "Play_weapon_fire" or "0xA3B2C1D0" or "12345")
         #[arg(long)]
         event: String,
+        /// Path to Data.p4k (for P4k paths)
         #[arg(long, env = "SC_DATA_P4K")]
         p4k: Option<PathBuf>,
     },
     /// Dump full HIRC hierarchy as JSON
     Dump {
+        /// Input .bnk file path (filesystem or P4k path)
         input: String,
+        /// Path to Data.p4k (for P4k paths)
         #[arg(long, env = "SC_DATA_P4K")]
         p4k: Option<PathBuf>,
     },
@@ -70,10 +76,10 @@ pub enum WwiseCommand {
         #[arg(long, env = "SC_DATA_P4K")]
         p4k: Option<PathBuf>,
         /// Search by trigger name (ATL -> bank -> HIRC -> sounds)
-        #[arg(long, group = "search_mode")]
+        #[arg(long, group = "search_mode", required_unless_present = "entity")]
         trigger: Option<String>,
         /// Search by DataCore entity name (entity -> triggers -> ATL -> banks -> sounds)
-        #[arg(long, group = "search_mode")]
+        #[arg(long, group = "search_mode", required_unless_present = "trigger")]
         entity: Option<String>,
     },
 }
@@ -116,9 +122,9 @@ fn info(input: &str, p4k_path: Option<&Path>) -> Result<()> {
     let data = load_bnk_bytes(input, p4k_path)?;
     let bnk = BnkFile::parse(&data)?;
 
-    eprintln!("Bank version:  {}", bnk.header.version);
-    eprintln!("Bank ID:       {}", bnk.header.bank_id);
-    eprintln!(
+    println!("Bank version:  {}", bnk.header.version);
+    println!("Bank ID:       {}", bnk.header.bank_id);
+    println!(
         "Sections:      {}",
         bnk.section_tags()
             .iter()
@@ -126,10 +132,10 @@ fn info(input: &str, p4k_path: Option<&Path>) -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    eprintln!("Embedded WEMs: {}", bnk.wem_count());
+    println!("Embedded WEMs: {}", bnk.wem_count());
 
     if let Some(ref hirc) = bnk.hirc {
-        eprintln!("HIRC objects:  {}", hirc.entries.len());
+        println!("HIRC objects:  {}", hirc.entries.len());
         let counts = hirc.type_counts();
         let mut sorted: Vec<_> = counts.iter().collect();
         sorted.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
@@ -137,14 +143,14 @@ fn info(input: &str, p4k_path: Option<&Path>) -> Result<()> {
             let name = starbreaker_wwise::HircObjectType::from_u8(*type_id)
                 .map(|t| t.name().to_string())
                 .unwrap_or_else(|| format!("Unknown({})", type_id));
-            eprintln!("  {name:<30} {count}");
+            println!("  {name:<30} {count}");
         }
     }
 
     if !bnk.string_ids.is_empty() {
-        eprintln!("String IDs:    {}", bnk.string_ids.len());
+        println!("String IDs:    {}", bnk.string_ids.len());
         for (id, name) in &bnk.string_ids {
-            eprintln!("  {id}: {name}");
+            println!("  {id}: {name}");
         }
     }
 
@@ -156,15 +162,14 @@ fn list(input: &str, p4k_path: Option<&Path>) -> Result<()> {
     let bnk = BnkFile::parse(&data)?;
 
     if bnk.data_index.is_empty() {
-        eprintln!("No embedded WEM entries.");
         return Ok(());
     }
 
-    eprintln!(
+    println!(
         "{:<12} {:<10} {:<10} {:<12} {}",
         "WEM ID", "Offset", "Size", "Codec", "Duration"
     );
-    eprintln!("{}", "-".repeat(60));
+    println!("{}", "-".repeat(60));
 
     for entry in &bnk.data_index {
         // Copy packed fields to locals to avoid misaligned reference errors.
@@ -184,7 +189,7 @@ fn list(input: &str, p4k_path: Option<&Path>) -> Result<()> {
             Err(_) => ("(parse err)".into(), "?".into()),
         };
 
-        eprintln!(
+        println!(
             "{:<12} {:<10} {:<10} {:<12} {}",
             id, offset, size, codec_str, duration_str
         );
@@ -207,7 +212,7 @@ fn extract(input: &str, output: &Path, decode: bool, p4k_path: Option<&Path>) ->
     let pb = ProgressBar::new(bnk.data_index.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("[{bar:40}] {pos}/{len}")?,
+            .template("[{bar:40}] {pos}/{len} ({elapsed}, ETA {eta})")?,
     );
 
     for entry in &bnk.data_index {
@@ -270,7 +275,7 @@ fn events(input: &str, p4k_path: Option<&Path>) -> Result<()> {
 
     for (id, event) in &evts {
         let resolved = hierarchy.resolve_event(*id);
-        eprintln!(
+        println!(
             "Event {:#010x}  actions: {}  sounds: {}",
             id,
             event.action_ids.len(),
@@ -278,7 +283,7 @@ fn events(input: &str, p4k_path: Option<&Path>) -> Result<()> {
         );
     }
 
-    eprintln!("\nTotal: {} events", evts.len());
+    println!("\nTotal: {} events", evts.len());
     Ok(())
 }
 
@@ -301,8 +306,7 @@ fn trace(input: &str, event_str: &str, p4k_path: Option<&Path>) -> Result<()> {
 
     let results = hierarchy.resolve_event(event_id);
     if results.is_empty() {
-        eprintln!("No sounds resolved for event {:#010x}", event_id);
-        return Ok(());
+        return Err(CliError::NotFound(format!("no sounds resolved for event {:#010x}", event_id)));
     }
 
     for sound in &results {
@@ -319,10 +323,10 @@ fn trace(input: &str, event_str: &str, p4k_path: Option<&Path>) -> Result<()> {
             starbreaker_wwise::SoundSource::PrefetchStream => "PrefetchStream",
             starbreaker_wwise::SoundSource::Stream => "Stream",
         };
-        eprintln!("{} -> media {} [{}]", path_str, sound.media_id, source_str);
+        println!("{} -> media {} [{}]", path_str, sound.media_id, source_str);
     }
 
-    eprintln!("\nResolved {} sounds", results.len());
+    println!("\nResolved {} sounds", results.len());
     Ok(())
 }
 
@@ -356,7 +360,7 @@ fn search(
     if let Some(entity_name) = entity {
         return search_by_entity(&p4k, &entity_name);
     }
-    return Err(CliError::InvalidInput("specify --trigger or --entity".into()));
+    Err(CliError::InvalidInput("specify --trigger or --entity".into()))
 }
 
 fn search_by_trigger(p4k: &starbreaker_p4k::MappedP4k, trigger_name: &str) -> Result<()> {
@@ -368,7 +372,7 @@ fn search_by_trigger(p4k: &starbreaker_p4k::MappedP4k, trigger_name: &str) -> Re
         .get_trigger(trigger_name)
         .ok_or_else(|| CliError::NotFound(format!("trigger '{}' not found in ATL", trigger_name)))?;
 
-    eprintln!(
+    println!(
         "Trigger: {} -> bank {} ({}, radius {:?})",
         trigger.trigger_name, trigger.bank_name, trigger.duration_type, trigger.radius_max
     );
@@ -387,9 +391,9 @@ fn search_by_trigger(p4k: &starbreaker_p4k::MappedP4k, trigger_name: &str) -> Re
             starbreaker_wwise::SoundSource::PrefetchStream => "PrefetchStream",
             starbreaker_wwise::SoundSource::Stream => "Stream",
         };
-        eprintln!("  media {} [{}]", sound.media_id, source_str);
+        println!("  media {} [{}]", sound.media_id, source_str);
     }
-    eprintln!(
+    println!(
         "\n{} -> {} sounds ({})",
         trigger_name,
         sounds.len(),
@@ -412,8 +416,7 @@ fn search_by_entity(p4k: &starbreaker_p4k::MappedP4k, entity_query: &str) -> Res
         starbreaker_wwise::datacore_audio::search_entities_with_audio(&db, entity_query);
 
     if entities.is_empty() {
-        eprintln!("No entities with audio triggers found matching '{entity_query}'");
-        return Ok(());
+        return Err(CliError::NotFound(format!("no entities with audio triggers matching '{entity_query}'")));
     }
 
     // Build ATL index
@@ -424,7 +427,7 @@ fn search_by_entity(p4k: &starbreaker_p4k::MappedP4k, entity_query: &str) -> Res
     let mut bank_cache: HashMap<String, Option<Hierarchy>> = HashMap::new();
 
     for entity in &entities {
-        eprintln!(
+        println!(
             "\nEntity: {} ({})",
             entity.entity_name, entity.record_path
         );
@@ -477,13 +480,13 @@ fn search_by_entity(p4k: &starbreaker_p4k::MappedP4k, entity_query: &str) -> Res
             };
 
             total_sounds += sound_count;
-            eprintln!(
+            println!(
                 "  {} -> {} sounds ({})",
                 tref.trigger_name, sound_count, bank_name
             );
         }
 
-        eprintln!(
+        println!(
             "  Total: {} triggers, {} sounds across {} banks",
             total_triggers,
             total_sounds,

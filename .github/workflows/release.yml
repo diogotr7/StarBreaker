@@ -49,21 +49,21 @@ jobs:
         run: echo "RUSTFLAGS=-C link-arg=-fuse-ld=lld" >> "$GITHUB_ENV"
 
       - name: Build CLI
-        run: cargo build --release --package starbreaker-cli
+        run: cargo build --release --package starbreaker
 
       - name: Upload CLI (Windows)
         if: matrix.platform == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
           name: cli-windows
-          path: target/release/starbreaker-cli.exe
+          path: target/release/starbreaker.exe
 
       - name: Upload CLI (Linux)
         if: matrix.platform == 'ubuntu-22.04'
         uses: actions/upload-artifact@v4
         with:
           name: cli-linux
-          path: target/release/starbreaker-cli
+          path: target/release/starbreaker
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -96,8 +96,8 @@ jobs:
       - name: Package CLI artifacts
         run: |
           tag="${{ github.ref_name }}"
-          zip -j "starbreaker-cli-${tag}-windows-x86_64.zip" cli-windows/starbreaker-cli.exe
-          tar -czf "starbreaker-cli-${tag}-linux-x86_64.tar.gz" -C cli-linux starbreaker-cli
+          zip -j "starbreaker-cli-${tag}-windows-x86_64.zip" cli-windows/starbreaker.exe
+          tar -czf "starbreaker-cli-${tag}-linux-x86_64.tar.gz" -C cli-linux starbreaker
 
       - name: Upload CLI to release
         uses: softprops/action-gh-release@v2

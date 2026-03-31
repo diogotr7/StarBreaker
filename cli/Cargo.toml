@@ -1,19 +1,17 @@
 [package]
-name = "starbreaker-cli"
+name = "starbreaker"
 version.workspace = true
 edition = "2024"
 
 [[bin]]
-name = "starbreaker-cli"
+name = "starbreaker"
 path = "src/main.rs"
 
 [dependencies]
-starbreaker-common = { path = "../crates/starbreaker-common" }
 starbreaker-wwise = { path = "../crates/starbreaker-wwise" }
 starbreaker-wem = { path = "../crates/starbreaker-wem" }
 starbreaker-chunks = { path = "../crates/starbreaker-chunks" }
 starbreaker-chf = { path = "../crates/starbreaker-chf" }
-crc32c = "0.6"
 starbreaker-p4k = { path = "../crates/starbreaker-p4k" }
 starbreaker-datacore = { path = "../crates/starbreaker-datacore" }
 starbreaker-gltf = { path = "../crates/starbreaker-gltf" }
@@ -31,3 +29,9 @@ env_logger = "0.11"
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json = "1.0.149"
 parking_lot = { workspace = true }
+
+# Dev-dependencies used only by examples (not shipped in the release binary).
+[dev-dependencies]
+crc32c = "0.6"
+starbreaker-common = { path = "../crates/starbreaker-common" }
+anyhow = "1"

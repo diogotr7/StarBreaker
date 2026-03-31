@@ -4741,6 +4741,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "starbreaker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crc32c",
+ "env_logger",
+ "glob-match",
+ "image",
+ "indicatif",
+ "log",
+ "parking_lot",
+ "rayon",
+ "regex",
+ "serde_json",
+ "starbreaker-chf",
+ "starbreaker-chunks",
+ "starbreaker-common",
+ "starbreaker-cryxml",
+ "starbreaker-datacore",
+ "starbreaker-dds",
+ "starbreaker-gltf",
+ "starbreaker-p4k",
+ "starbreaker-wem",
+ "starbreaker-wwise",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "starbreaker-app"
 version = "0.1.0"
 dependencies = [
@@ -4787,34 +4816,6 @@ dependencies = [
  "starbreaker-common",
  "thiserror 2.0.18",
  "zerocopy",
-]
-
-[[package]]
-name = "starbreaker-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "crc32c",
- "env_logger",
- "glob-match",
- "image",
- "indicatif",
- "log",
- "parking_lot",
- "rayon",
- "regex",
- "serde_json",
- "starbreaker-chf",
- "starbreaker-chunks",
- "starbreaker-common",
- "starbreaker-cryxml",
- "starbreaker-datacore",
- "starbreaker-dds",
- "starbreaker-gltf",
- "starbreaker-p4k",
- "starbreaker-wem",
- "starbreaker-wwise",
- "thiserror 2.0.18",
 ]
 
 [[package]]
