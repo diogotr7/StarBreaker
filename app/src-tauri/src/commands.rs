@@ -606,7 +606,7 @@ pub fn preview_dds(
     }
 
     let mip_level = mip
-        .unwrap_or_else(|| std::cmp::min(2, dds.mip_count() - 1))
+        .unwrap_or(0)
         .min(dds.mip_count() - 1);
     let (width, height) = dds.dimensions(mip_level);
     let rgba = dds.decode_rgba(mip_level)?;
