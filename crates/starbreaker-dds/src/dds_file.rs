@@ -382,7 +382,15 @@ pub fn resolve_format(
         let four_cc = { pf.four_cc };
         DxgiFormat::from_four_cc(&four_cc).ok_or_else(|| {
             let cc = String::from_utf8_lossy(&four_cc);
-            DdsError::UnsupportedFormat(format!("FourCC '{cc}'"))
+            let flags = { pf.flags };
+            let bpp = { pf.rgb_bit_count };
+            let rm = { pf.r_bit_mask };
+            let gm = { pf.g_bit_mask };
+            let bm = { pf.b_bit_mask };
+            let am = { pf.a_bit_mask };
+            DdsError::UnsupportedFormat(format!(
+                "FourCC '{cc}' (flags=0x{flags:08X}, bpp={bpp}, rmask=0x{rm:08X}, gmask=0x{gm:08X}, bmask=0x{bm:08X}, amask=0x{am:08X})"
+            ))
         })
     }
 }
