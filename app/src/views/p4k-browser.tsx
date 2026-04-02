@@ -14,15 +14,18 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-const GEOMETRY_EXTENSIONS = [".skin", ".skinm", ".cgf", ".cgfm", ".cga", ".chr"];
+const GEOMETRY_EXTENSIONS = [".skin", ".skinm", ".cgf", ".cgfm", ".cga"];
 
 function isGeometryFile(path: string): boolean {
   const lower = path.toLowerCase();
   return GEOMETRY_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
+const XML_EXTENSIONS = [".xml", ".mtl", ".chrparams", ".cdf", ".adb", ".comb"];
+
 function isXmlFile(path: string): boolean {
-  return path.toLowerCase().endsWith(".xml");
+  const lower = path.toLowerCase();
+  return XML_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
 function isDdsFile(path: string): boolean {
