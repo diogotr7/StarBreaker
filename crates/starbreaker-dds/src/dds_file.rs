@@ -258,11 +258,18 @@ impl DdsFile {
             });
         }
 
-        let format = resolve_format(&self.header.pixel_format, self.dxt10_header.as_ref())?;
-        let is_snorm = matches!(format, DxgiFormat::BC4Snorm | DxgiFormat::BC5Snorm);
-        let block_format = dxgi_to_block_format(format)?;
+        let pf = &self.header.pixel_format;
         let (w, h) = self.dimensions(mip_level);
         let data = &self.mip_data[mip_level];
+
+        // Uncompressed: FourCC is zero and rgb_bit_count is set
+        if pf.four_cc == [0; 4] && self.dxt10_header.is_none() && pf.rgb_bit_count > 0 {
+            return decode_uncompressed(data, w, h, pf);
+        }
+
+        let format = resolve_format(pf, self.dxt10_header.as_ref())?;
+        let is_snorm = matches!(format, DxgiFormat::BC4Snorm | DxgiFormat::BC5Snorm);
+        let block_format = dxgi_to_block_format(format)?;
 
         decode_block_compressed(data, w, h, block_format, is_snorm)
     }
@@ -390,4 +397,54 @@ fn dxgi_to_block_format(format: DxgiFormat) -> Result<BlockFormat, DdsError> {
         DxgiFormat::BC6hUf16 => Ok(BlockFormat::BC6H),
         DxgiFormat::BC7Unorm | DxgiFormat::BC7UnormSrgb => Ok(BlockFormat::BC7),
     }
+}
+
+/// Decode uncompressed pixel data using the DDS pixel format bit masks.
+fn decode_uncompressed(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    pf: &DdsPixelFormat,
+) -> Result<Vec<u8>, DdsError> {
+    let bpp = pf.rgb_bit_count as usize;
+    let byte_pp = bpp / 8;
+    if byte_pp == 0 || bpp % 8 != 0 {
+        return Err(DdsError::UnsupportedFormat(format!(
+            "uncompressed {bpp}-bit (non-byte-aligned)"
+        )));
+    }
+
+    let pixel_count = (width as usize) * (height as usize);
+    let expected = pixel_count * byte_pp;
+    if data.len() < expected {
+        return Err(DdsError::Decode(format!(
+            "uncompressed data too short: need {expected}, have {}",
+            data.len()
+        )));
+    }
+
+    let r_shift = pf.r_bit_mask.trailing_zeros();
+    let g_shift = pf.g_bit_mask.trailing_zeros();
+    let b_shift = pf.b_bit_mask.trailing_zeros();
+    let has_alpha = pf.a_bit_mask != 0;
+    let a_shift = pf.a_bit_mask.trailing_zeros();
+
+    let mut out = vec![255u8; pixel_count * 4];
+
+    for i in 0..pixel_count {
+        let off = i * byte_pp;
+        let mut raw = 0u32;
+        for b in 0..byte_pp {
+            raw |= (data[off + b] as u32) << (b * 8);
+        }
+
+        out[i * 4] = ((raw >> r_shift) & 0xFF) as u8;
+        out[i * 4 + 1] = ((raw >> g_shift) & 0xFF) as u8;
+        out[i * 4 + 2] = ((raw >> b_shift) & 0xFF) as u8;
+        if has_alpha {
+            out[i * 4 + 3] = ((raw >> a_shift) & 0xFF) as u8;
+        }
+    }
+
+    Ok(out)
 }
