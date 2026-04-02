@@ -39,6 +39,8 @@ fn main() {
             audio_commands::audio_resolve_trigger,
             audio_commands::audio_decode_wem,
             commands::preview_geometry,
+            commands::preview_xml,
+            commands::preview_dds,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

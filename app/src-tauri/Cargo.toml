@@ -18,6 +18,9 @@ starbreaker-datacore = { path = "../../crates/starbreaker-datacore" }
 starbreaker-gltf = { path = "../../crates/starbreaker-gltf" }
 starbreaker-wwise = { path = "../../crates/starbreaker-wwise" }
 starbreaker-wem = { path = "../../crates/starbreaker-wem" }
+starbreaker-cryxml = { path = "../../crates/starbreaker-cryxml" }
+starbreaker-dds = { path = "../../crates/starbreaker-dds" }
+image = { version = "0.25", default-features = false, features = ["png"] }
 tokio = { version = "1", features = ["rt"] }
 rayon = "1"
 tauri-plugin-updater = "2"

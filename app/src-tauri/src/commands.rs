@@ -515,3 +515,64 @@ pub fn preview_geometry(
     let glb = starbreaker_gltf::skin_to_glb(&data)?;
     Ok(glb)
 }
+
+/// Decode a CryXMLB file from the P4K and return it as formatted XML text.
+#[tauri::command]
+pub fn preview_xml(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<String, AppError> {
+    let p4k = state
+        .p4k
+        .lock()
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("P4K not loaded".into()))?
+        .clone();
+
+    let data = p4k.read_file(&path)?;
+
+    // Try CryXMLB decode first, fall back to raw UTF-8
+    if starbreaker_cryxml::is_cryxmlb(&data) {
+        let cryxml = starbreaker_cryxml::from_bytes(&data)?;
+        Ok(format!("{cryxml}"))
+    } else {
+        Ok(String::from_utf8_lossy(&data).into_owned())
+    }
+}
+
+/// Decode a DDS texture from the P4K and return it as PNG bytes.
+/// Uses mip level 2 (1/4 resolution) for fast preview.
+#[tauri::command]
+pub fn preview_dds(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<Vec<u8>, AppError> {
+    let p4k = state
+        .p4k
+        .lock()
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("P4K not loaded".into()))?
+        .clone();
+
+    let data = p4k.read_file(&path)?;
+    let dds = starbreaker_dds::DdsFile::from_bytes(&data)?;
+
+    // Use mip level 2 if available, otherwise highest available
+    let mip = std::cmp::min(2, dds.mip_count().saturating_sub(1));
+    let (width, height) = dds.dimensions(mip);
+    let rgba = dds.decode_rgba(mip)?;
+
+    // Encode as PNG
+    let mut png_buf = Vec::new();
+    let encoder = image::codecs::png::PngEncoder::new(&mut png_buf);
+    image::ImageEncoder::write_image(
+        encoder,
+        &rgba,
+        width,
+        height,
+        image::ExtendedColorType::Rgba8,
+    )
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok(png_buf)
+}

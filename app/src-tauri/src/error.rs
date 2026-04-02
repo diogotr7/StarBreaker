@@ -27,6 +27,10 @@ pub enum AppError {
     Guid(#[from] GuidParseError),
     #[error(transparent)]
     Utf8(#[from] std::string::FromUtf8Error),
+    #[error(transparent)]
+    CryXml(#[from] starbreaker_cryxml::CryXmlError),
+    #[error(transparent)]
+    Dds(#[from] starbreaker_dds::DdsError),
 
     #[error("{0}")]
     Internal(String),
