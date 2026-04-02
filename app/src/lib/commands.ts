@@ -328,8 +328,18 @@ export async function previewXml(path: string): Promise<string> {
 
 // ── DDS preview ──
 
-/** Decode a DDS texture and return PNG bytes. */
-export async function previewDds(path: string): Promise<ArrayBuffer> {
-  const bytes = await invoke<number[]>("preview_dds", { path });
-  return new Uint8Array(bytes).buffer;
+export interface DdsPreviewResult {
+  png: number[];
+  width: number;
+  height: number;
+  mip_level: number;
+  mip_count: number;
+}
+
+/** Decode a DDS texture and return PNG bytes + metadata. */
+export async function previewDds(
+  path: string,
+  mip?: number,
+): Promise<DdsPreviewResult> {
+  return invoke<DdsPreviewResult>("preview_dds", { path, mip: mip ?? null });
 }

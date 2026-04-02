@@ -540,13 +540,37 @@ pub fn preview_xml(
     }
 }
 
-/// Decode a DDS texture from the P4K and return it as PNG bytes.
-/// Uses mip level 2 (1/4 resolution) for fast preview.
+/// Metadata returned alongside a DDS preview so the frontend can show mip controls.
+#[derive(serde::Serialize)]
+pub struct DdsPreviewResult {
+    pub png: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub mip_level: usize,
+    pub mip_count: usize,
+}
+
+/// P4K-backed sibling reader for split DDS mip files.
+struct P4kSiblingReader {
+    p4k: std::sync::Arc<starbreaker_p4k::MappedP4k>,
+    base_path: String,
+}
+
+impl starbreaker_dds::ReadSibling for P4kSiblingReader {
+    fn read_sibling(&self, suffix: &str) -> Option<Vec<u8>> {
+        let path = format!("{}{suffix}", self.base_path);
+        self.p4k.read_file(&path).ok()
+    }
+}
+
+/// Decode a DDS texture from the P4K (merging split mip siblings) and return
+/// a specific mip level as PNG bytes along with metadata for mip selection.
 #[tauri::command]
 pub fn preview_dds(
     state: tauri::State<'_, AppState>,
     path: String,
-) -> Result<Vec<u8>, AppError> {
+    mip: Option<usize>,
+) -> Result<DdsPreviewResult, AppError> {
     let p4k = state
         .p4k
         .lock()
@@ -555,20 +579,22 @@ pub fn preview_dds(
         .clone();
 
     let data = p4k.read_file(&path)?;
-    let dds = starbreaker_dds::DdsFile::from_bytes(&data)?;
+    let sibling_reader = P4kSiblingReader {
+        p4k: p4k.clone(),
+        base_path: path.clone(),
+    };
+    let dds = starbreaker_dds::DdsFile::from_split(&data, &sibling_reader)?;
 
     if dds.mip_count() == 0 {
-        return Err(AppError::Internal(
-            "DDS has no embedded mip data (mips may be in sibling files)".into(),
-        ));
+        return Err(AppError::Internal("DDS has no mip data".into()));
     }
 
-    // Use mip level 2 if available, otherwise highest available
-    let mip = std::cmp::min(2, dds.mip_count() - 1);
-    let (width, height) = dds.dimensions(mip);
-    let rgba = dds.decode_rgba(mip)?;
+    let mip_level = mip
+        .unwrap_or_else(|| std::cmp::min(2, dds.mip_count() - 1))
+        .min(dds.mip_count() - 1);
+    let (width, height) = dds.dimensions(mip_level);
+    let rgba = dds.decode_rgba(mip_level)?;
 
-    // Encode as PNG
     let mut png_buf = Vec::new();
     let encoder = image::codecs::png::PngEncoder::new(&mut png_buf);
     image::ImageEncoder::write_image(
@@ -580,5 +606,11 @@ pub fn preview_dds(
     )
     .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    Ok(png_buf)
+    Ok(DdsPreviewResult {
+        png: png_buf,
+        width,
+        height,
+        mip_level,
+        mip_count: dds.mip_count(),
+    })
 }
