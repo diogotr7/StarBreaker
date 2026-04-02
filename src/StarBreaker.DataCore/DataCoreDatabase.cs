@@ -56,7 +56,7 @@ public sealed class DataCoreDatabase
         using var reader = new BinaryReader(fs);
         _ = reader.ReadUInt32();
         var version = reader.ReadUInt32();
-        if (version is < 5 or > 6)
+        if (version is < 5 or > 8 or 7)
             throw new Exception($"Unsupported file version: {version}");
         _ = reader.ReadUInt32();
         _ = reader.ReadUInt32();
@@ -92,7 +92,15 @@ public sealed class DataCoreDatabase
         PropertyDefinitions = reader.BaseStream.ReadArray<DataCorePropertyDefinition>(propertyDefinitionCount);
         EnumDefinitions = reader.BaseStream.ReadArray<DataCoreEnumDefinition>(enumDefinitionCount);
         DataMappings = reader.BaseStream.ReadArray<DataCoreDataMapping>(dataMappingCount);
-        RecordDefinitions = reader.BaseStream.ReadArray<DataCoreRecord>(recordDefinitionCount);
+        if (version >= 8)
+        {
+            RecordDefinitions = reader.BaseStream.ReadArray<DataCoreRecord>(recordDefinitionCount);
+        }
+        else
+        {
+            var v6Records = reader.BaseStream.ReadArray<DataCoreRecordV6>(recordDefinitionCount);
+            RecordDefinitions = Array.ConvertAll(v6Records, r => DataCoreRecord.FromV6(in r));
+        }
 
         Int8Values = reader.BaseStream.ReadArray<sbyte>(int8ValueCount);
         Int16Values = reader.BaseStream.ReadArray<short>(int16ValueCount);

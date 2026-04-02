@@ -100,6 +100,9 @@ public sealed class DataCoreBinaryJson : IDataCoreBinary<string>
         context.Writer.WriteStartObject();
         context.Writer.WriteString("_RecordName_", record.GetName(Database));
         context.Writer.WriteString("_RecordId_", record.Id.ToString());
+        var tag = record.GetTag(Database);
+        if (tag is not null)
+            context.Writer.WriteString("_RecordTag_", tag);
         context.Writer.WriteStartObject("_RecordValue_");
         WriteInstance(record.StructIndex, record.InstanceIndex, context);
         context.Writer.WriteEndObject();

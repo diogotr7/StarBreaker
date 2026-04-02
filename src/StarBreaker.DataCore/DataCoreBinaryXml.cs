@@ -93,6 +93,9 @@ public sealed class DataCoreBinaryXml : IDataCoreBinary<string>
 
         writer.WriteStartElement(XmlConvert.EncodeName(record.GetName(Database)));
         writer.WriteAttributeString("RecordId", record.Id.ToString());
+        var tag = record.GetTag(Database);
+        if (tag is not null)
+            writer.WriteAttributeString("RecordTag", tag);
 
         WriteInstance(record.StructIndex, record.InstanceIndex, context);
 
