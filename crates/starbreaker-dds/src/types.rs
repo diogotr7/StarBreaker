@@ -92,7 +92,10 @@ impl DxgiFormat {
     pub fn from_four_cc(four_cc: &[u8; 4]) -> Option<Self> {
         match four_cc {
             b"DXT1" => Some(Self::BC1Unorm),
+            b"DXT3" => Some(Self::BC3Unorm), // BC2 not supported; approximate as BC3
             b"DXT5" => Some(Self::BC3Unorm),
+            b"ATI1" => Some(Self::BC4Unorm),
+            b"ATI2" => Some(Self::BC5Unorm),
             b"BC4U" => Some(Self::BC4Unorm),
             b"BC4S" => Some(Self::BC4Snorm),
             b"BC5U" => Some(Self::BC5Unorm),
