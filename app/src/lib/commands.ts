@@ -310,3 +310,11 @@ export async function audioDecodeWem(
 ): Promise<number[]> {
   return invoke<number[]>("audio_decode_wem", { mediaId, sourceType, bankName });
 }
+
+// ── Geometry preview ──
+
+/** Generate a GLB preview for a geometry file. Returns raw GLB bytes. */
+export async function previewGeometry(path: string): Promise<ArrayBuffer> {
+  const bytes = await invoke<number[]>("preview_geometry", { path });
+  return new Uint8Array(bytes).buffer;
+}
