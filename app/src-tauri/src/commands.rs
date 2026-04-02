@@ -481,3 +481,37 @@ fn sanitize_filename(name: &str) -> String {
         })
         .collect()
 }
+
+/// Generate a GLB preview for a geometry file in the P4K.
+/// Accepts .skin, .skinm, .cgf, .cgfm, .cga, .chr paths.
+/// Companion files (.skinm/.cgfm) are resolved to their primary (.skin/.cgf).
+#[tauri::command]
+pub fn preview_geometry(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<Vec<u8>, AppError> {
+    let p4k = state
+        .p4k
+        .lock()
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("P4K not loaded".into()))?
+        .clone();
+
+    // Resolve companion: .skinm -> .skin, .cgfm -> .cgf
+    let primary = if path.ends_with('m')
+        && (path.ends_with(".skinm") || path.ends_with(".cgfm"))
+    {
+        path[..path.len() - 1].to_string()
+    } else {
+        path.clone()
+    };
+
+    // Try reading the companion file first (has vertex data), fall back to primary
+    let companion = format!("{primary}m");
+    let data = p4k
+        .read_file(&companion)
+        .or_else(|_| p4k.read_file(&primary))?;
+
+    let glb = starbreaker_gltf::skin_to_glb(&data)?;
+    Ok(glb)
+}
