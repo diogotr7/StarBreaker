@@ -318,3 +318,18 @@ export async function previewGeometry(path: string): Promise<ArrayBuffer> {
   const bytes = await invoke<number[]>("preview_geometry", { path });
   return new Uint8Array(bytes).buffer;
 }
+
+// ── XML preview ──
+
+/** Decode a CryXMLB file and return formatted XML text. */
+export async function previewXml(path: string): Promise<string> {
+  return invoke<string>("preview_xml", { path });
+}
+
+// ── DDS preview ──
+
+/** Decode a DDS texture and return PNG bytes. */
+export async function previewDds(path: string): Promise<ArrayBuffer> {
+  const bytes = await invoke<number[]>("preview_dds", { path });
+  return new Uint8Array(bytes).buffer;
+}

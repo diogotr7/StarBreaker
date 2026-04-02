@@ -3,6 +3,8 @@ import { listDir, type DirEntry } from "../lib/commands";
 import { useAppStore } from "../stores/app-store";
 import { ResizeHandle } from "../components/resize-handle";
 import { GeometryPreview } from "../components/geometry-preview";
+import { XmlPreview } from "../components/xml-preview";
+import { DdsPreview } from "../components/dds-preview";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -17,6 +19,14 @@ const GEOMETRY_EXTENSIONS = [".skin", ".skinm", ".cgf", ".cgfm", ".cga", ".chr"]
 function isGeometryFile(path: string): boolean {
   const lower = path.toLowerCase();
   return GEOMETRY_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+function isXmlFile(path: string): boolean {
+  return path.toLowerCase().endsWith(".xml");
+}
+
+function isDdsFile(path: string): boolean {
+  return path.toLowerCase().endsWith(".dds");
 }
 
 interface TreeNode {
@@ -271,6 +281,10 @@ export function P4kBrowser() {
       <div className="flex-1 flex items-center justify-center text-text-dim overflow-hidden">
         {selectedPath && isGeometryFile(selectedPath) ? (
           <GeometryPreview path={selectedPath} />
+        ) : selectedPath && isXmlFile(selectedPath) ? (
+          <XmlPreview path={selectedPath} />
+        ) : selectedPath && isDdsFile(selectedPath) ? (
+          <DdsPreview path={selectedPath} />
         ) : selectedPath ? (
           <div className="text-center">
             <p className="text-sm font-mono break-all px-8">{selectedPath}</p>
