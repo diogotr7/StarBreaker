@@ -557,8 +557,14 @@ pub fn preview_dds(
     let data = p4k.read_file(&path)?;
     let dds = starbreaker_dds::DdsFile::from_bytes(&data)?;
 
+    if dds.mip_count() == 0 {
+        return Err(AppError::Internal(
+            "DDS has no embedded mip data (mips may be in sibling files)".into(),
+        ));
+    }
+
     // Use mip level 2 if available, otherwise highest available
-    let mip = std::cmp::min(2, dds.mip_count().saturating_sub(1));
+    let mip = std::cmp::min(2, dds.mip_count() - 1);
     let (width, height) = dds.dimensions(mip);
     let rgba = dds.decode_rgba(mip)?;
 
