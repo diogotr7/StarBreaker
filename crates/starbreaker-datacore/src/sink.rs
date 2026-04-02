@@ -5,6 +5,9 @@ use crate::types::CigGuid;
 pub trait ExportSink {
     type Error: From<std::io::Error>;
 
+    /// File extension used for cross-record reference paths (e.g. "json", "xml").
+    fn extension(&self) -> &str;
+
     fn begin_object(&mut self, name: Option<&str>) -> Result<(), Self::Error>;
     fn end_object(&mut self) -> Result<(), Self::Error>;
     fn begin_array(&mut self, name: &str) -> Result<(), Self::Error>;

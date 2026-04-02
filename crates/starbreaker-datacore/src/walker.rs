@@ -649,9 +649,11 @@ where
     let context_file_name = resolve_file_name_by_offset(db, ctx.file_name_offset);
     let target_record_name = db.resolve_string2(target.name_offset);
 
+    let ext = sink.extension().to_owned();
+
     if db.is_main_record(target) {
         let mut path_buf = compute_relative_path_buf(target_file_name, context_file_name);
-        change_extension(&mut path_buf, "json");
+        change_extension(&mut path_buf, &ext);
         sink.write_record_ref(name, &target.id, target_record_name, &path_buf)?;
         return Ok(());
     }
@@ -675,7 +677,7 @@ where
     // Cross-file sub-record: emit path + metadata
     sink.begin_object(name)?;
     let mut path_buf = compute_relative_path_buf(target_file_name, context_file_name);
-    change_extension(&mut path_buf, "json");
+    change_extension(&mut path_buf, &ext);
     sink.write_str(Some("_RecordPath_"), &path_buf)?;
     sink.write_str(Some("_RecordName_"), target_record_name)?;
     sink.write_guid(Some("_RecordId_"), &target.id)?;

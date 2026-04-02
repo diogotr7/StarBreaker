@@ -61,6 +61,10 @@ impl AudioTriggerSink {
 impl ExportSink for AudioTriggerSink {
     type Error = ExportError;
 
+    fn extension(&self) -> &str {
+        "json"
+    }
+
     fn begin_object(&mut self, name: Option<&str>) -> Result<(), Self::Error> {
         let segment = name.unwrap_or("{}").to_string();
         self.path_stack.push(segment);

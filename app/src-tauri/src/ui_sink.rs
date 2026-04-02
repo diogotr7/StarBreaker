@@ -20,6 +20,10 @@ impl<W: Write> UiJsonSink<W> {
 impl<W: Write> ExportSink for UiJsonSink<W> {
     type Error = std::io::Error;
 
+    fn extension(&self) -> &str {
+        "json"
+    }
+
     fn begin_object(&mut self, name: Option<&str>) -> Result<(), Self::Error> {
         self.inner.begin_object(name)
     }

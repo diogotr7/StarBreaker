@@ -75,6 +75,10 @@ impl<W: Write> JsonSink<W> {
 impl<W: Write> ExportSink for JsonSink<W> {
     type Error = std::io::Error;
 
+    fn extension(&self) -> &str {
+        "json"
+    }
+
     fn begin_object(&mut self, name: Option<&str>) -> Result<(), Self::Error> {
         self.value_prefix(name)?;
         self.fmt.begin_object(&mut self.writer)?;

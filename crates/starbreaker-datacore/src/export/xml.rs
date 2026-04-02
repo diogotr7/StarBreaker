@@ -63,6 +63,10 @@ impl<W: Write> XmlSink<W> {
 impl<W: Write> ExportSink for XmlSink<W> {
     type Error = std::io::Error;
 
+    fn extension(&self) -> &str {
+        "xml"
+    }
+
     fn begin_object(&mut self, name: Option<&str>) -> Result<(), Self::Error> {
         let tag = Self::tag(name).to_owned();
         self.writer
