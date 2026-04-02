@@ -5,7 +5,7 @@ use starbreaker_datacore::enums::DataType;
 use starbreaker_datacore::error::QueryError;
 use starbreaker_datacore::query::compile::compile_path;
 use starbreaker_datacore::types::{
-    CigGuid, DataMapping, Pointer, PropertyDefinition, Record, StructDefinition,
+    CigGuid, DataMapping, Pointer, PropertyDefinition, Record, StringId2, StructDefinition,
 };
 use test_helpers::DcbBuilder;
 
@@ -243,6 +243,7 @@ fn build_test_db() -> Vec<u8> {
     b.records.push(Record {
         name_offset: s_entity,
         file_name_offset: file_name,
+        tag_offset: StringId2(-1),
         struct_index: 0, // Entity
         id: record_id,
         instance_index: 0,

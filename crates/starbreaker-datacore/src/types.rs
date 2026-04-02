@@ -66,12 +66,31 @@ pub struct DataMapping {
 
 // ─── Record ─────────────────────────────────────────────────────────────────
 
-/// A top-level DataCore record (32 bytes).
+/// A top-level DataCore record in v6 format (32 bytes).
+///
+/// Used for deserializing v6 DCB binaries and for building v6 test fixtures.
+#[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[repr(C, packed)]
+pub struct RecordV6 {
+    pub name_offset: StringId2,
+    pub file_name_offset: StringId,
+    pub struct_index: i32,
+    pub id: CigGuid,
+    pub instance_index: u16,
+    pub struct_size: u16,
+}
+
+/// A top-level DataCore record (36 bytes, v8+ layout).
+///
+/// In v8 a `tag_offset` field was inserted between `file_name_offset` and
+/// `struct_index`, categorising records by domain (e.g. "Ship", "Character").
+/// When loading v6 files the field is set to `StringId2(-1)`.
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C, packed)]
 pub struct Record {
     pub name_offset: StringId2,
     pub file_name_offset: StringId,
+    pub tag_offset: StringId2,
     pub struct_index: i32,
     pub id: CigGuid,
     pub instance_index: u16,
@@ -92,6 +111,20 @@ impl Record {
     /// The struct type of this record, as an opaque identifier.
     pub fn struct_id(&self) -> StructId {
         StructId(self.struct_index)
+    }
+}
+
+impl From<RecordV6> for Record {
+    fn from(r: RecordV6) -> Self {
+        Record {
+            name_offset: r.name_offset,
+            file_name_offset: r.file_name_offset,
+            tag_offset: StringId2(-1),
+            struct_index: r.struct_index,
+            id: r.id,
+            instance_index: r.instance_index,
+            struct_size: r.struct_size,
+        }
     }
 }
 
@@ -136,7 +169,8 @@ const _: () = {
     assert!(size_of::<PropertyDefinition>() == 12);
     assert!(size_of::<EnumDefinition>() == 8);
     assert!(size_of::<DataMapping>() == 8);
-    assert!(size_of::<Record>() == 32);
+    assert!(size_of::<RecordV6>() == 32);
+    assert!(size_of::<Record>() == 36);
     assert!(size_of::<Pointer>() == 8);
     assert!(size_of::<Reference>() == 20);
 };

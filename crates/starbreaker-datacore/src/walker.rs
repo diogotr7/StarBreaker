@@ -258,6 +258,12 @@ where
     sink.write_str(Some("_RecordName_"), record_name)?;
     sink.write_guid(Some("_RecordId_"), &record.id)?;
 
+    // 2b. Record tag/domain (v8+)
+    if record.tag_offset.0 != -1 {
+        let tag = db.resolve_string2(record.tag_offset);
+        sink.write_str(Some("_RecordTag_"), tag)?;
+    }
+
     // 3. _RecordValue_ object
     sink.begin_object(Some("_RecordValue_"))?;
     walk_instance(

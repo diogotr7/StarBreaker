@@ -8,7 +8,7 @@ pub enum ParseError {
     #[error(transparent)]
     Common(#[from] CommonParseError),
 
-    #[error("unsupported version: {0} (only v6 supported)")]
+    #[error("unsupported version: {0} (only v6 and v8 supported)")]
     UnsupportedVersion(u32),
 }
 

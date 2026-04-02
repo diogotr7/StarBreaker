@@ -23,7 +23,10 @@ fn parse_error_truncated_display() {
 #[test]
 fn parse_error_unsupported_version_display() {
     let e = ParseError::UnsupportedVersion(5);
-    assert_eq!(e.to_string(), "unsupported version: 5 (only v6 supported)");
+    assert_eq!(
+        e.to_string(),
+        "unsupported version: 5 (only v6 and v8 supported)"
+    );
 }
 
 #[test]
@@ -202,7 +205,7 @@ fn data_mapping_size() {
 
 #[test]
 fn record_size() {
-    assert_eq!(size_of::<Record>(), 32);
+    assert_eq!(size_of::<Record>(), 36);
 }
 
 #[test]

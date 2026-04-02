@@ -3,7 +3,7 @@ mod test_helpers;
 use starbreaker_datacore::database::Database;
 use starbreaker_datacore::export;
 use starbreaker_datacore::types::{
-    CigGuid, DataMapping, PropertyDefinition, Record, StructDefinition,
+    CigGuid, DataMapping, PropertyDefinition, Record, StringId2, StructDefinition,
 };
 use test_helpers::DcbBuilder;
 use zerocopy::IntoBytes;
@@ -60,6 +60,7 @@ fn export_simple_record_to_json() {
     b.records.push(Record {
         name_offset: struct_name,
         file_name_offset: file_name,
+        tag_offset: StringId2(-1),
         struct_index: 0,
         id: record_id,
         instance_index: 0,

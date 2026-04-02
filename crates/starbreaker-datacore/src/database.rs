@@ -11,8 +11,8 @@ use crate::enums::{ConversionType, DataType};
 use crate::error::ParseError;
 use crate::reader::SpanReader;
 use crate::types::{
-    CigGuid, DataMapping, EnumDefinition, Pointer, PropertyDefinition, Record, Reference, StringId,
-    StringId2, StructDefinition,
+    CigGuid, DataMapping, EnumDefinition, Pointer, PropertyDefinition, Record, RecordV6, Reference,
+    StringId, StringId2, StructDefinition,
 };
 
 /// Raw DCB file header (120 bytes).
@@ -68,7 +68,7 @@ pub struct Database<'a> {
     property_defs: &'a [PropertyDefinition],
     enum_defs: &'a [EnumDefinition],
     data_mappings: &'a [DataMapping],
-    records: &'a [Record],
+    records: std::borrow::Cow<'a, [Record]>,
 
     // Value arrays stored as raw bytes to avoid alignment issues.
     // Individual elements are read via from_le_bytes.
@@ -197,7 +197,7 @@ fn raw_range(
 }
 
 impl<'a> Database<'a> {
-    /// Parse a DCB v6 binary blob into a zero-copy `Database`.
+    /// Parse a DCB v6 or v8 binary blob into a zero-copy `Database`.
     pub fn from_bytes(data: &'a [u8]) -> Result<Self, ParseError> {
         // 1. Validate minimum header size
         if data.len() < HEADER_SIZE {
@@ -214,8 +214,9 @@ impl<'a> Database<'a> {
         let h = reader.read_type::<RawDCBHeader>()?;
 
         // 3. Validate version
-        if h.version != 6 {
-            return Err(ParseError::UnsupportedVersion(h.version));
+        let version = h.version;
+        if version != 6 && version != 8 {
+            return Err(ParseError::UnsupportedVersion(version));
         }
 
         let struct_definition_count = h.struct_definition_count as usize;
@@ -255,7 +256,17 @@ impl<'a> Database<'a> {
             slice_from_bytes::<EnumDefinition>(data, offset, enum_definition_count)?;
         let (data_mappings, offset) =
             slice_from_bytes::<DataMapping>(data, offset, data_mapping_count)?;
-        let (records, offset) = slice_from_bytes::<Record>(data, offset, record_definition_count)?;
+
+        // In v8 Record grew from 32 to 36 bytes (new tag_offset field).
+        let (records, offset) = if version >= 8 {
+            let (recs, off) = slice_from_bytes::<Record>(data, offset, record_definition_count)?;
+            (std::borrow::Cow::Borrowed(recs), off)
+        } else {
+            let (v6, off) =
+                slice_from_bytes::<RecordV6>(data, offset, record_definition_count)?;
+            let converted: Vec<Record> = v6.iter().copied().map(Record::from).collect();
+            (std::borrow::Cow::Owned(converted), off)
+        };
 
         // 5. Value arrays — stored as raw bytes to avoid alignment issues
         let (int8_values_raw, offset) = raw_range(data, offset, int8_value_count, 1)?;
@@ -333,7 +344,7 @@ impl<'a> Database<'a> {
         let records_by_struct = {
             let n = struct_defs.len();
             let mut counts = vec![0usize; n];
-            for record in records {
+            for record in records.iter() {
                 counts[record.struct_index as usize] += 1;
             }
             let mut buckets: Vec<Vec<usize>> =
@@ -479,7 +490,7 @@ impl<'a> Database<'a> {
 
         // 12. Compute main records: last record per unique file_name_offset
         let mut last_by_file: FxHashMap<i32, CigGuid> = FxHashMap::default();
-        for record in records {
+        for record in records.iter() {
             last_by_file.insert(record.file_name_offset.0, record.id);
         }
         let mut main_record_ids = HashSet::new();
@@ -556,7 +567,7 @@ impl<'a> Database<'a> {
     }
 
     pub fn records(&self) -> &[Record] {
-        self.records
+        &self.records
     }
 
     // ── Value array accessors (unaligned-safe) ─────────────────────────────

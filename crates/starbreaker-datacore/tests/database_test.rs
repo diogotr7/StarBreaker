@@ -98,6 +98,7 @@ fn parse_with_one_struct_and_record() {
     b.records.push(Record {
         name_offset: struct_name,
         file_name_offset: file_name,
+        tag_offset: StringId2(-1),
         struct_index: 0,
         id: record_id,
         instance_index: 0,
@@ -257,6 +258,7 @@ fn record_by_id_lookup() {
     b.records.push(Record {
         name_offset: name,
         file_name_offset: file1,
+        tag_offset: StringId2(-1),
         struct_index: 0,
         id: id1,
         instance_index: 0,
@@ -266,6 +268,7 @@ fn record_by_id_lookup() {
     b.records.push(Record {
         name_offset: name,
         file_name_offset: file2,
+        tag_offset: StringId2(-1),
         struct_index: 0,
         id: id2,
         instance_index: 1,
@@ -318,6 +321,7 @@ fn main_record_is_last_with_same_filename() {
     b.records.push(Record {
         name_offset: name,
         file_name_offset: shared_file,
+        tag_offset: StringId2(-1),
         struct_index: 0,
         id: id_first,
         instance_index: 0,
@@ -327,6 +331,7 @@ fn main_record_is_last_with_same_filename() {
     b.records.push(Record {
         name_offset: name,
         file_name_offset: shared_file,
+        tag_offset: StringId2(-1),
         struct_index: 0,
         id: id_last,
         instance_index: 1,

@@ -2,7 +2,7 @@ mod test_helpers;
 
 use starbreaker_datacore::database::Database;
 use starbreaker_datacore::types::{
-    CigGuid, DataMapping, Pointer, PropertyDefinition, Record, StructDefinition,
+    CigGuid, DataMapping, Pointer, PropertyDefinition, Record, StringId2, StructDefinition,
 };
 use starbreaker_datacore::walker::prescan_weak_pointers;
 use test_helpers::DcbBuilder;
@@ -61,6 +61,7 @@ fn prescan_finds_weak_pointer() {
     b.records.push(Record {
         name_offset: struct_name,
         file_name_offset: file_name,
+        tag_offset: StringId2(-1),
         struct_index: 0,
         id: record_id,
         instance_index: 0,
@@ -126,6 +127,7 @@ fn prescan_null_weak_pointer_ignored() {
     b.records.push(Record {
         name_offset: struct_name,
         file_name_offset: file_name,
+        tag_offset: StringId2(-1),
         struct_index: 0,
         id: record_id,
         instance_index: 0,

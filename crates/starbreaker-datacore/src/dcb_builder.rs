@@ -150,9 +150,14 @@ impl DcbBuilder {
         for m in &self.data_mappings {
             buf.extend_from_slice(m.as_bytes());
         }
-        // 5. Record
+        // 5. Record (v6 format: 32 bytes, skipping tag_offset)
         for r in &self.records {
-            buf.extend_from_slice(r.as_bytes());
+            buf.extend_from_slice(r.name_offset.as_bytes());
+            buf.extend_from_slice(r.file_name_offset.as_bytes());
+            buf.extend_from_slice(&r.struct_index.to_le_bytes());
+            buf.extend_from_slice(r.id.as_bytes());
+            buf.extend_from_slice(&r.instance_index.to_le_bytes());
+            buf.extend_from_slice(&r.struct_size.to_le_bytes());
         }
 
         // 6. int8_values
