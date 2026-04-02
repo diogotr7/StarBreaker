@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listDir, type DirEntry } from "../lib/commands";
 import { useAppStore } from "../stores/app-store";
 import { ResizeHandle } from "../components/resize-handle";
+import { GeometryPreview } from "../components/geometry-preview";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -9,6 +10,13 @@ function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024 * 1024)
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+const GEOMETRY_EXTENSIONS = [".skin", ".skinm", ".cgf", ".cgfm", ".cga", ".chr"];
+
+function isGeometryFile(path: string): boolean {
+  const lower = path.toLowerCase();
+  return GEOMETRY_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
 interface TreeNode {
@@ -259,12 +267,13 @@ export function P4kBrowser() {
       </div>
       <ResizeHandle width={treeWidth} onResize={setTreeWidth} side="right" min={200} max={600} />
 
-      {/* Preview panel (placeholder) */}
-      <div className="flex-1 flex items-center justify-center text-text-dim">
-        {selectedPath ? (
+      {/* Preview panel */}
+      <div className="flex-1 flex items-center justify-center text-text-dim overflow-hidden">
+        {selectedPath && isGeometryFile(selectedPath) ? (
+          <GeometryPreview path={selectedPath} />
+        ) : selectedPath ? (
           <div className="text-center">
             <p className="text-sm font-mono break-all px-8">{selectedPath}</p>
-            <p className="text-xs mt-2">Preview coming soon</p>
           </div>
         ) : (
           <p className="text-sm">Select a file to preview</p>
