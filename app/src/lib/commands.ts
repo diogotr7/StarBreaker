@@ -311,6 +311,14 @@ export async function audioDecodeWem(
   return invoke<number[]>("audio_decode_wem", { mediaId, sourceType, bankName });
 }
 
+// ── Raw file access ──
+
+/** Read a raw file from the P4K. */
+export async function readP4kFile(path: string): Promise<ArrayBuffer> {
+  const bytes = await invoke<number[]>("read_p4k_file", { path });
+  return new Uint8Array(bytes).buffer;
+}
+
 // ── Geometry preview ──
 
 /** Generate a GLB preview for a geometry file. Returns raw GLB bytes. */

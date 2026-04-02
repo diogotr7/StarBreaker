@@ -5,6 +5,7 @@ import { ResizeHandle } from "../components/resize-handle";
 import { GeometryPreview } from "../components/geometry-preview";
 import { XmlPreview } from "../components/xml-preview";
 import { DdsPreview } from "../components/dds-preview";
+import { ImagePreview } from "../components/image-preview";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -30,6 +31,13 @@ function isXmlFile(path: string): boolean {
 
 function isDdsFile(path: string): boolean {
   return path.toLowerCase().endsWith(".dds");
+}
+
+const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".bmp"];
+
+function isImageFile(path: string): boolean {
+  const lower = path.toLowerCase();
+  return IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
 interface TreeNode {
@@ -288,6 +296,8 @@ export function P4kBrowser() {
           <XmlPreview path={selectedPath} />
         ) : selectedPath && isDdsFile(selectedPath) ? (
           <DdsPreview path={selectedPath} />
+        ) : selectedPath && isImageFile(selectedPath) ? (
+          <ImagePreview path={selectedPath} />
         ) : selectedPath ? (
           <div className="text-center">
             <p className="text-sm font-mono break-all px-8">{selectedPath}</p>

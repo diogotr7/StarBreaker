@@ -540,6 +540,22 @@ pub fn preview_xml(
     }
 }
 
+/// Read a raw file from the P4K. Used for images (PNG, TGA, etc.) that
+/// don't need server-side decoding.
+#[tauri::command]
+pub fn read_p4k_file(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<Vec<u8>, AppError> {
+    let p4k = state
+        .p4k
+        .lock()
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("P4K not loaded".into()))?
+        .clone();
+    Ok(p4k.read_file(&path)?)
+}
+
 /// Metadata returned alongside a DDS preview so the frontend can show mip controls.
 #[derive(serde::Serialize)]
 pub struct DdsPreviewResult {

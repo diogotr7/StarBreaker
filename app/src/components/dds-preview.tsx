@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { previewDds } from "../lib/commands";
+import { ImagePanZoom } from "./image-pan-zoom";
 
 interface Props {
   path: string;
@@ -110,13 +111,11 @@ export function DdsPreview({ path }: Props) {
         )}
       </div>
 
-      {/* Image */}
-      <div className="flex-1 flex items-center justify-center overflow-auto p-4">
-        <img
+      {/* Image with pan/zoom */}
+      <div className="flex-1 overflow-hidden">
+        <ImagePanZoom
           src={objectUrl}
           alt={path.split("/").pop() ?? "texture"}
-          className="max-w-full max-h-full object-contain"
-          style={{ imageRendering: "auto" }}
         />
       </div>
     </div>

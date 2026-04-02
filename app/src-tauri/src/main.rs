@@ -41,6 +41,7 @@ fn main() {
             commands::preview_geometry,
             commands::preview_xml,
             commands::preview_dds,
+            commands::read_p4k_file,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {
