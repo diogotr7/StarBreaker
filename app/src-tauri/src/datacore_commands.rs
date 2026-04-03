@@ -336,6 +336,86 @@ pub async fn dc_export_xml(
     .map_err(|e| AppError::Internal(format!("task join error: {e}")))?
 }
 
+/// Export all records under a folder path to JSON files.
+#[tauri::command]
+pub async fn dc_export_folder(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path_prefix: String,
+    format: String,
+    output_dir: String,
+) -> Result<usize, AppError> {
+    // Collect matching record IDs from the index.
+    let record_ids: Vec<String> = {
+        let guard = state.record_index.lock();
+        let index = guard.as_ref().ok_or_else(|| AppError::Internal("DataCore not loaded".into()))?;
+        let prefix = if path_prefix.ends_with('/') {
+            path_prefix.clone()
+        } else {
+            format!("{path_prefix}/")
+        };
+        index
+            .iter()
+            .filter(|e| e.path.starts_with(&prefix) || e.path == path_prefix)
+            .map(|e| e.id.clone())
+            .collect()
+    };
+
+    let dcb_bytes = {
+        let guard = state.dcb_bytes.lock();
+        guard.as_ref().ok_or_else(|| AppError::Internal("DataCore not loaded".into()))?.clone()
+    };
+
+    let count = record_ids.len();
+    let fmt = format.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let db = Database::from_bytes(&dcb_bytes)?;
+        std::fs::create_dir_all(&output_dir)?;
+
+        for (i, rid) in record_ids.iter().enumerate() {
+            let guid: CigGuid = rid.parse()?;
+            let record = db.record_by_id(&guid).ok_or_else(|| {
+                AppError::Internal(format!("record not found: {rid}"))
+            })?;
+
+            let file_name = db.resolve_string(record.file_name_offset);
+            let ext = if fmt == "xml" { "xml" } else { "json" };
+            let out_name = match file_name.rfind('.') {
+                Some(dot) => format!("{}.{ext}", &file_name[..dot]),
+                None => format!("{file_name}.{ext}"),
+            };
+            let out_path = std::path::Path::new(&output_dir).join(&out_name);
+
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            if i % 20 == 0 || i + 1 == count {
+                let short = out_name.rsplit('/').next().unwrap_or(&out_name).to_string();
+                let _ = tauri::Emitter::emit(&app, "folder-extract-progress",
+                    crate::commands::FolderExtractProgress {
+                        current: i + 1,
+                        total: count,
+                        name: short,
+                    },
+                );
+            }
+
+            let data = if fmt == "xml" {
+                starbreaker_datacore::export::to_xml(&db, record)?
+            } else {
+                starbreaker_datacore::export::to_json(&db, record)?
+            };
+            std::fs::write(&out_path, &data)?;
+        }
+
+        Ok::<_, AppError>(count)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("task join error: {e}")))?
+}
+
 // ── Backlink reference collection ────────────────────────────────────────────
 
 fn collect_references(db: &Database, struct_index: i32, instance_index: i32, out: &mut Vec<CigGuid>) {

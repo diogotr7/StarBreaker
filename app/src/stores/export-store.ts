@@ -34,6 +34,7 @@ interface ExportState {
   includeTangents: boolean;
   includeMaterials: boolean;
   experimentalTextures: boolean;
+  threads: number;
   outputDir: string | null;
   setLod: (v: number) => void;
   setMip: (v: number) => void;
@@ -44,6 +45,7 @@ interface ExportState {
   setIncludeTangents: (v: boolean) => void;
   setIncludeMaterials: (v: boolean) => void;
   setExperimentalTextures: (v: boolean) => void;
+  setThreads: (v: number) => void;
   setOutputDir: (dir: string | null) => void;
 
   // Export progress
@@ -70,6 +72,7 @@ type PersistedExportState = Pick<
   | "includeTangents"
   | "includeMaterials"
   | "experimentalTextures"
+  | "threads"
   | "outputDir"
   | "hideNpcVariants"
 >;
@@ -119,6 +122,7 @@ export const useExportStore = create<ExportState>()(
   includeTangents: true,
   includeMaterials: true,
   experimentalTextures: false,
+  threads: 0,
   outputDir: null,
   setLod: (v) => set({ lod: v }),
   setMip: (v) => set({ mip: v }),
@@ -129,6 +133,7 @@ export const useExportStore = create<ExportState>()(
   setIncludeTangents: (v) => set({ includeTangents: v }),
   setIncludeMaterials: (v) => set({ includeMaterials: v }),
   setExperimentalTextures: (v) => set({ experimentalTextures: v }),
+  setThreads: (v) => set({ threads: v }),
   setOutputDir: (dir) => set({ outputDir: dir }),
 
   exporting: false,
@@ -158,6 +163,7 @@ export const useExportStore = create<ExportState>()(
         includeTangents: s.includeTangents,
         includeMaterials: s.includeMaterials,
         experimentalTextures: s.experimentalTextures,
+        threads: s.threads,
         outputDir: s.outputDir,
         hideNpcVariants: s.hideNpcVariants,
       }),

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useDataCoreStore, type PanelMode } from "../stores/datacore-store";
+import { Download } from "lucide-react";
+import { useDataCoreStore } from "../stores/datacore-store";
 import { ResizeHandle } from "../components/resize-handle";
+import { ExtractProgress } from "../components/extract-progress";
 import {
   dcSearch,
   dcListTree,
@@ -8,65 +10,65 @@ import {
   dcGetBacklinks,
   dcExportJson,
   dcExportXml,
+  dcExportFolder,
   type TreeEntryDto,
+  type SearchResultDto,
   type BacklinkDto,
 } from "../lib/commands";
 
 export function DataCoreBrowser() {
   const [navWidth, setNavWidth] = useState(350);
+  const [extracting, setExtracting] = useState(false);
+  const searchQuery = useDataCoreStore((s) => s.searchQuery);
+  const setSearchQuery = useDataCoreStore((s) => s.setSearchQuery);
+  const searching = useDataCoreStore((s) => s.searching);
 
   return (
-    <div className="flex-1 flex overflow-hidden">
-      <NavPanel width={navWidth} />
-      <ResizeHandle width={navWidth} onResize={setNavWidth} side="right" min={200} max={600} />
-      <InspectorPanel />
+    <div className="flex-1 flex flex-col overflow-hidden relative">
+      <ExtractProgress active={extracting} onDone={() => setExtracting(false)} />
+      {/* Toolbar */}
+      <div className="flex items-center gap-2 px-3 border-b border-border bg-bg-alt shrink-0" style={{ height: "var(--toolbar-height)" }}>
+        <input
+          type="text"
+          placeholder="Search records..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="flex-1 bg-surface rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-faint outline-none focus:ring-1 focus:ring-ring"
+        />
+        {searching && (
+          <span className="text-xs text-text-dim shrink-0">Searching...</span>
+        )}
+      </div>
+      <div className="flex-1 flex overflow-hidden">
+        <NavPanel width={navWidth} onExtractStart={() => setExtracting(true)} onExtractEnd={() => setExtracting(false)} />
+        <ResizeHandle width={navWidth} onResize={setNavWidth} side="right" min={200} max={600} />
+        <InspectorPanel />
+      </div>
     </div>
   );
 }
 
-// ── Left panel: Search / Tree navigation ─────────────────────────────────────
+// ── Left panel: combined tree + search ──────────────────────────────────────
 
-function NavPanel({ width }: { width: number }) {
-  const panelMode = useDataCoreStore((s) => s.panelMode);
-  const setPanelMode = useDataCoreStore((s) => s.setPanelMode);
+function NavPanel({ width, onExtractStart, onExtractEnd }: {
+  width: number;
+  onExtractStart: () => void;
+  onExtractEnd: () => void;
+}) {
+  const searchQuery = useDataCoreStore((s) => s.searchQuery);
+  const hasSearch = searchQuery.trim().length > 0;
 
   return (
     <div className="flex flex-col border-r border-border overflow-hidden shrink-0" style={{ width }}>
-      <div className="flex gap-1 p-1.5">
-        <ModeButton label="Search" active={panelMode === "search"} mode="search" onClick={setPanelMode} />
-        <ModeButton label="Tree" active={panelMode === "tree"} mode="tree" onClick={setPanelMode} />
-      </div>
-      {panelMode === "search" ? <SearchPanel /> : <TreePanel />}
+      {hasSearch ? <SearchResults /> : <TreePanel onExtractStart={onExtractStart} onExtractEnd={onExtractEnd} />}
     </div>
   );
 }
 
-function ModeButton({ label, active, mode, onClick }: {
-  label: string;
-  active: boolean;
-  mode: PanelMode;
-  onClick: (mode: PanelMode) => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={() => onClick(mode)}
-      className={`px-3 py-1 text-xs rounded transition-colors ${
-        active
-          ? "bg-primary text-bg-deep"
-          : "bg-surface text-text-dim hover:bg-surface-hi hover:text-text"
-      }`}
-    >
-      {label}
-    </button>
-  );
-}
+// ── Search results (flat list when typing) ──────────────────────────────────
 
-// ── Search panel ─────────────────────────────────────────────────────────────
-
-function SearchPanel() {
+function SearchResults() {
   const searchQuery = useDataCoreStore((s) => s.searchQuery);
-  const setSearchQuery = useDataCoreStore((s) => s.setSearchQuery);
   const searchResults = useDataCoreStore((s) => s.searchResults);
   const setSearchResults = useDataCoreStore((s) => s.setSearchResults);
   const searching = useDataCoreStore((s) => s.searching);
@@ -86,29 +88,15 @@ function SearchPanel() {
     [setSearchResults, setSearching],
   );
 
-  // Initial search on mount
   useEffect(() => {
-    doSearch("");
-  }, [doSearch]);
-
-  const handleInput = (value: string) => {
-    setSearchQuery(value);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => doSearch(value), 150);
-  };
+    debounceRef.current = setTimeout(() => doSearch(searchQuery), 150);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [searchQuery, doSearch]);
 
   return (
     <>
-      <div className="px-2 py-1">
-        <input
-          type="text"
-          placeholder="Search records..."
-          value={searchQuery}
-          onChange={(e) => handleInput(e.target.value)}
-          className="w-full bg-bg-deep text-text text-sm px-2.5 py-1.5 rounded border border-border outline-none focus:border-primary placeholder:text-text-faint"
-        />
-      </div>
-      <div className="px-2.5 py-0.5 text-[11px] text-text-dim">
+      <div className="px-2.5 py-1 text-[11px] text-text-dim">
         {searching ? "Searching..." : `${searchResults.length} results`}
       </div>
       <div className="flex-1 overflow-y-auto">
@@ -120,14 +108,14 @@ function SearchPanel() {
   );
 }
 
-function SearchResultRow({ result }: { result: { name: string; struct_type: string; path: string; id: string } }) {
+function SearchResultRow({ result }: { result: SearchResultDto }) {
   const selectRecord = useSelectRecord();
 
   return (
     <button
       type="button"
       onClick={() => selectRecord(result.id)}
-      className="w-full text-left px-2 py-1 hover:bg-surface transition-colors"
+      className="w-full text-left px-2.5 py-1 hover:bg-surface transition-colors"
     >
       <div className="flex items-center justify-between gap-2">
         <span className="text-[13px] text-text truncate">{result.name}</span>
@@ -138,17 +126,25 @@ function SearchResultRow({ result }: { result: { name: string; struct_type: stri
   );
 }
 
-// ── Tree panel ───────────────────────────────────────────────────────────────
+// ── Tree panel (browse when search is empty) ────────────────────────────────
 
-function TreePanel() {
+function TreePanel({ onExtractStart, onExtractEnd }: {
+  onExtractStart: () => void;
+  onExtractEnd: () => void;
+}) {
   return (
     <div className="flex-1 overflow-y-auto">
-      <TreeLevel path="" depth={0} />
+      <TreeLevel path="" depth={0} onExtractStart={onExtractStart} onExtractEnd={onExtractEnd} />
     </div>
   );
 }
 
-function TreeLevel({ path, depth }: { path: string; depth: number }) {
+function TreeLevel({ path, depth, onExtractStart, onExtractEnd }: {
+  path: string;
+  depth: number;
+  onExtractStart: () => void;
+  onExtractEnd: () => void;
+}) {
   const [entries, setEntries] = useState<TreeEntryDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
@@ -187,18 +183,16 @@ function TreeLevel({ path, depth }: { path: string; depth: number }) {
           const childPath = path ? `${path}/${entry.name}` : entry.name;
           return (
             <div key={`f:${entry.name}`}>
-              <button
-                type="button"
-                onClick={() => toggleFolder(entry.name)}
-                className="w-full text-left flex items-center h-6 hover:bg-surface transition-colors"
-                style={{ paddingLeft: depth * 16 + 6 }}
-              >
-                <span className="text-[10px] w-4 text-text-dim">
-                  {expanded ? "\u25BC" : "\u25B6"}
-                </span>
-                <span className="text-[13px] text-text">{entry.name}</span>
-              </button>
-              {expanded && <TreeLevel path={childPath} depth={depth + 1} />}
+              <FolderRow
+                name={entry.name}
+                path={childPath}
+                depth={depth}
+                expanded={expanded}
+                onToggle={() => toggleFolder(entry.name)}
+                onExtractStart={onExtractStart}
+                onExtractEnd={onExtractEnd}
+              />
+              {expanded && <TreeLevel path={childPath} depth={depth + 1} onExtractStart={onExtractStart} onExtractEnd={onExtractEnd} />}
             </div>
           );
         }
@@ -207,10 +201,11 @@ function TreeLevel({ path, depth }: { path: string; depth: number }) {
             key={`r:${entry.id}`}
             type="button"
             onClick={() => selectRecord(entry.id)}
-            className="w-full text-left flex items-center h-6 hover:bg-surface transition-colors"
+            className="w-full text-left flex items-center h-6 hover:bg-surface transition-colors group"
             style={{ paddingLeft: depth * 16 + 22 }}
           >
-            <span className="text-[13px] text-text-sub truncate">{entry.name}</span>
+            <span className="text-[13px] text-text-sub truncate flex-1">{entry.name}</span>
+            <span className="text-[10px] text-text-faint pr-2 shrink-0">{entry.struct_type}</span>
           </button>
         );
       })}
@@ -218,7 +213,57 @@ function TreeLevel({ path, depth }: { path: string; depth: number }) {
   );
 }
 
-// ── Right panel: Record inspector ────────────────────────────────────────────
+function FolderRow({ name, path, depth, expanded, onToggle, onExtractStart, onExtractEnd }: {
+  name: string;
+  path: string;
+  depth: number;
+  expanded: boolean;
+  onToggle: () => void;
+  onExtractStart: () => void;
+  onExtractEnd: () => void;
+}) {
+  const handleExport = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const dir = await open({ title: `Export "${name}" folder`, directory: true, multiple: false });
+    if (!dir) return;
+
+    onExtractStart();
+    try {
+      await dcExportFolder(path, "json", dir);
+    } catch (err) {
+      console.error("Folder export failed:", err);
+    } finally {
+      onExtractEnd();
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="w-full text-left flex items-center h-6 hover:bg-surface transition-colors group"
+      style={{ paddingLeft: depth * 16 + 6 }}
+    >
+      <span className="text-[10px] w-4 text-text-dim">
+        {expanded ? "\u25BC" : "\u25B6"}
+      </span>
+      <span className="text-[13px] text-text flex-1">{name}</span>
+      <button
+        type="button"
+        onClick={handleExport}
+        title={`Export all records in ${name}/`}
+        className="hidden group-hover:flex items-center justify-center w-5 h-5 mr-1 rounded
+                   text-text-dim hover:text-text hover:bg-surface-hi transition-colors
+                   disabled:opacity-50"
+      >
+        <Download size={12} />
+      </button>
+    </button>
+  );
+}
+
+// ── Right panel: Record inspector ───────────────────────────────────────────
 
 function InspectorPanel() {
   const selectedRecord = useDataCoreStore((s) => s.selectedRecord);
@@ -299,7 +344,7 @@ function InspectorPanel() {
               type="button"
               disabled={saving}
               onClick={() => handleExport("json")}
-              className="px-3 py-1 text-xs bg-surface hover:bg-surface-hi text-text rounded transition-colors disabled:opacity-50"
+              className="px-3 py-1 text-xs bg-surface hover:bg-surface-hi text-text rounded-md transition-colors disabled:opacity-50"
             >
               {saving ? "Saving..." : "Export JSON"}
             </button>
@@ -307,7 +352,7 @@ function InspectorPanel() {
               type="button"
               disabled={saving}
               onClick={() => handleExport("xml")}
-              className="px-3 py-1 text-xs bg-surface hover:bg-surface-hi text-text rounded transition-colors disabled:opacity-50"
+              className="px-3 py-1 text-xs bg-surface hover:bg-surface-hi text-text rounded-md transition-colors disabled:opacity-50"
             >
               {saving ? "Saving..." : "Export XML"}
             </button>
@@ -332,7 +377,7 @@ function NavButton({ label, enabled, onClick }: {
       type="button"
       disabled={!enabled}
       onClick={onClick}
-      className={`px-2.5 py-1 text-xs rounded transition-colors ${
+      className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
         enabled
           ? "bg-surface hover:bg-surface-hi text-text"
           : "text-text-faint cursor-default"
@@ -343,7 +388,7 @@ function NavButton({ label, enabled, onClick }: {
   );
 }
 
-// ── Backlinks section ────────────────────────────────────────────────────────
+// ── Backlinks section ───────────────────────────────────────────────────────
 
 function BacklinksSection({ recordId }: { recordId: string }) {
   const [backlinks, setBacklinks] = useState<BacklinkDto[]>([]);
@@ -406,7 +451,7 @@ function BacklinksSection({ recordId }: { recordId: string }) {
   );
 }
 
-// ── JSON Tree viewer ─────────────────────────────────────────────────────────
+// ── JSON Tree viewer ────────────────────────────────────────────────────────
 
 const GUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -569,7 +614,7 @@ function CollapsibleNode({ name, value, depth, rerender, isArray }: {
   );
 }
 
-// ── Hooks ────────────────────────────────────────────────────────────────────
+// ── Hooks ───────────────────────────────────────────────────────────────────
 
 function useSelectRecord() {
   const setSelectedRecord = useDataCoreStore((s) => s.setSelectedRecord);

@@ -25,14 +25,43 @@ export interface LoadProgress {
   message: string;
 }
 
+export interface SystemPalette {
+  scheme: string;
+  background: string;
+  foreground: string;
+  accent: string;
+  success: string;
+  warning: string;
+  danger: string;
+}
+
+/** Get the OS system theme (dark/light, accent, palette). */
+export async function getSystemTheme(): Promise<SystemPalette> {
+  return invoke<SystemPalette>("get_system_theme");
+}
+
+/** Listen for OS theme changes. */
+export function onSystemThemeChanged(
+  callback: (palette: SystemPalette) => void,
+): Promise<UnlistenFn> {
+  return listen<SystemPalette>("system-theme-changed", (event) => {
+    callback(event.payload);
+  });
+}
+
 /** Discover all Data.p4k installations across channels. */
 export async function discoverP4k(): Promise<DiscoverResult[]> {
   return invoke<DiscoverResult[]>("discover_p4k");
 }
 
-/** Open a P4k file and load it into the backend. Returns entry count. */
-export async function openP4k(path: string): Promise<number> {
-  return invoke<number>("open_p4k", { path });
+export interface P4kInfo {
+  entry_count: number;
+  total_bytes: number;
+}
+
+/** Open a P4k file and load it into the backend. */
+export async function openP4k(path: string): Promise<P4kInfo> {
+  return invoke<P4kInfo>("open_p4k", { path });
 }
 
 /** List directory contents from the loaded P4k. */
@@ -93,6 +122,7 @@ export interface ExportRequest {
   include_tangents: boolean;
   include_materials: boolean;
   experimental_textures: boolean;
+  threads: number;
 }
 
 export interface ExportProgress {
@@ -211,6 +241,15 @@ export async function dcExportXml(recordId: string, outputPath: string): Promise
   return invoke<void>("dc_export_xml", { recordId, outputPath });
 }
 
+/** Export all records under a folder path. Returns count of exported records. */
+export async function dcExportFolder(
+  pathPrefix: string,
+  format: "json" | "xml",
+  outputDir: string,
+): Promise<number> {
+  return invoke<number>("dc_export_folder", { pathPrefix, format, outputDir });
+}
+
 export interface BacklinkDto {
   name: string;
   id: string;
@@ -309,6 +348,29 @@ export async function audioDecodeWem(
   bankName: string,
 ): Promise<number[]> {
   return invoke<number[]>("audio_decode_wem", { mediaId, sourceType, bankName });
+}
+
+export interface FolderExtractProgress {
+  current: number;
+  total: number;
+  name: string;
+}
+
+/** Listen for folder extract progress events. */
+export function onFolderExtractProgress(
+  callback: (progress: FolderExtractProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<FolderExtractProgress>("folder-extract-progress", (event) => {
+    callback(event.payload);
+  });
+}
+
+/** Extract all files under a P4k folder path to disk. Returns count. */
+export async function extractP4kFolder(
+  pathPrefix: string,
+  outputDir: string,
+): Promise<number> {
+  return invoke<number>("extract_p4k_folder", { pathPrefix, outputDir });
 }
 
 // ── Raw file access ──

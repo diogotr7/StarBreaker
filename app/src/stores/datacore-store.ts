@@ -1,17 +1,12 @@
 import { create } from "zustand";
 import type { RecordDto, SearchResultDto } from "../lib/commands";
 
-export type PanelMode = "search" | "tree";
-
 interface NavHistory {
   stack: string[];
   position: number; // -1 means empty
 }
 
 interface DataCoreState {
-  panelMode: PanelMode;
-  setPanelMode: (mode: PanelMode) => void;
-
   // Search
   searchQuery: string;
   searchResults: SearchResultDto[];
@@ -40,9 +35,6 @@ interface DataCoreState {
 }
 
 export const useDataCoreStore = create<DataCoreState>((set, get) => ({
-  panelMode: "search",
-  setPanelMode: (mode) => set({ panelMode: mode }),
-
   searchQuery: "",
   searchResults: [],
   searching: false,
