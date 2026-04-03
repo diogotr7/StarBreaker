@@ -60,9 +60,6 @@ impl DdsFile {
             None
         };
 
-        let format = resolve_format(&header.pixel_format, dxt10_header.as_ref())?;
-        let block_size = format.block_size();
-
         let mip_count = std::cmp::max(1, header.mipmap_count) as usize;
 
         // Determine number of faces (cubemaps have 6 faces)
@@ -70,7 +67,9 @@ impl DdsFile {
 
         // Calculate sizes for each mip level (per face)
         let mip_sizes: Vec<usize> = (0..mip_count)
-            .map(|level| mip_byte_size(header.width, header.height, level, block_size))
+            .map(|level| {
+                compute_mip_size(&header.pixel_format, dxt10_header.as_ref(), header.width, header.height, level)
+            })
             .collect();
 
         let remaining = reader.read_bytes(reader.remaining())?;
@@ -129,8 +128,6 @@ impl DdsFile {
             None
         };
 
-        let format = resolve_format(&header.pixel_format, dxt10_header.as_ref())?;
-        let block_size = format.block_size();
         let mip_count = std::cmp::max(1, header.mipmap_count) as usize;
 
         // Remaining bytes in the base file are the smallest mip level(s)
@@ -138,7 +135,9 @@ impl DdsFile {
 
         // Calculate sizes for each mip level
         let mip_sizes: Vec<usize> = (0..mip_count)
-            .map(|level| mip_byte_size(header.width, header.height, level, block_size))
+            .map(|level| {
+                compute_mip_size(&header.pixel_format, dxt10_header.as_ref(), header.width, header.height, level)
+            })
             .collect();
 
         // Probe for sibling split files: .8, .7, .6, ..., .1
@@ -338,13 +337,30 @@ impl DdsFile {
     }
 }
 
-/// Calculate the byte size for a single mip level of a block-compressed texture.
-fn mip_byte_size(width: u32, height: u32, mip_level: usize, block_size: usize) -> usize {
+/// Calculate the byte size for a single mip level.
+/// Works for both block-compressed and uncompressed formats.
+fn compute_mip_size(
+    pf: &DdsPixelFormat,
+    dxt10: Option<&DdsHeaderDxt10>,
+    width: u32,
+    height: u32,
+    mip_level: usize,
+) -> usize {
     let w = std::cmp::max(1, width >> mip_level);
     let h = std::cmp::max(1, height >> mip_level);
-    let blocks_w = w.div_ceil(4) as usize;
-    let blocks_h = h.div_ceil(4) as usize;
-    blocks_w * blocks_h * block_size
+
+    // Try block-compressed first
+    if let Ok(format) = resolve_format(pf, dxt10) {
+        let block_size = format.block_size();
+        let blocks_w = w.div_ceil(4) as usize;
+        let blocks_h = h.div_ceil(4) as usize;
+        return blocks_w * blocks_h * block_size;
+    }
+
+    // Uncompressed: use rgb_bit_count
+    let bpp = { pf.rgb_bit_count } as usize;
+    let byte_pp = if bpp > 0 { bpp / 8 } else { 4 }; // default to 32-bit
+    (w as usize) * (h as usize) * byte_pp
 }
 
 /// Determine number of faces (1 for regular textures, 6 for cubemaps).
