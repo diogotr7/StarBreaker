@@ -63,6 +63,7 @@ export function ExportView() {
   const setProgress = useExportStore((s) => s.setProgress);
   const addExportError = useExportStore((s) => s.addExportError);
   const setResult = useExportStore((s) => s.setResult);
+  const deselectIds = useExportStore((s) => s.deselectIds);
 
   // Load categories on mount
   useEffect(() => {
@@ -94,6 +95,10 @@ export function ExportView() {
 
     onExportDone((r) => {
       if (!cancelled) {
+        // Auto-deselect successfully exported items so only failures remain selected
+        if (r.succeeded_ids.length > 0) {
+          deselectIds(r.succeeded_ids);
+        }
         setResult(r);
       }
     }).then((unlisten) => {
@@ -105,7 +110,7 @@ export function ExportView() {
       cancelled = true;
       for (const fn of unlisteners) fn();
     };
-  }, [setProgress, addExportError, setResult]);
+  }, [setProgress, addExportError, setResult, deselectIds]);
 
   const category = categories[activeCategory];
   const filtered = category
@@ -148,7 +153,8 @@ export function ExportView() {
     setExporting(true);
     startExport(request).catch((err) => {
       console.error("Export failed:", err);
-      setExporting(false);
+      addExportError(String(err));
+      setResult({ success: 0, errors: selectedEntities.length, succeeded_ids: [] });
     });
   };
 

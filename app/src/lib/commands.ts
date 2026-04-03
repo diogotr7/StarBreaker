@@ -129,12 +129,14 @@ export interface ExportProgress {
   current: number;
   total: number;
   entity_name: string;
+  entity_id: string;
   error: string | null;
 }
 
 export interface ExportDone {
   success: number;
   errors: number;
+  succeeded_ids: string[];
 }
 
 // ── Export commands ──
@@ -365,12 +367,13 @@ export function onFolderExtractProgress(
   });
 }
 
-/** Extract all files under a P4k folder path to disk. Returns count. */
+/** Extract files under a P4k folder path to disk. Optional filter by extension (e.g. "mtl,xml"). */
 export async function extractP4kFolder(
   pathPrefix: string,
   outputDir: string,
+  filter?: string,
 ): Promise<number> {
-  return invoke<number>("extract_p4k_folder", { pathPrefix, outputDir });
+  return invoke<number>("extract_p4k_folder", { pathPrefix, outputDir, filter: filter ?? null });
 }
 
 // ── Raw file access ──
@@ -412,4 +415,21 @@ export async function previewDds(
   mip?: number,
 ): Promise<DdsPreviewResult> {
   return invoke<DdsPreviewResult>("preview_dds", { path, mip: mip ?? null });
+}
+
+/** Save a DDS texture from P4K as a PNG file to disk. */
+export async function exportDdsPng(
+  path: string,
+  outputPath: string,
+  mip?: number,
+): Promise<void> {
+  return invoke<void>("export_dds_png", { path, outputPath, mip: mip ?? null });
+}
+
+/** Extract a single file from P4K to disk. */
+export async function extractP4kFile(
+  path: string,
+  outputPath: string,
+): Promise<void> {
+  return invoke<void>("extract_p4k_file", { path, outputPath });
 }

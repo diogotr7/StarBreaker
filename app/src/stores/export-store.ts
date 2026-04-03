@@ -59,6 +59,7 @@ interface ExportState {
   setProgress: (current: number, total: number, label: string) => void;
   addExportError: (msg: string) => void;
   setResult: (result: ExportDone | null) => void;
+  deselectIds: (ids: string[]) => void;
 }
 
 type PersistedExportState = Pick<
@@ -149,6 +150,12 @@ export const useExportStore = create<ExportState>()(
   addExportError: (msg) =>
     set((s) => ({ exportErrors: [...s.exportErrors, msg] })),
   setResult: (result) => set({ result, exporting: false }),
+  deselectIds: (ids) =>
+    set((s) => {
+      const next = new Set(s.selected);
+      for (const id of ids) next.delete(id);
+      return { selected: next };
+    }),
     }),
     {
       name: "export",

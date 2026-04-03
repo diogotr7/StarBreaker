@@ -352,6 +352,7 @@ pub struct ExportProgress {
     pub current: usize,
     pub total: usize,
     pub entity_name: String,
+    pub entity_id: String,
     pub error: Option<String>,
 }
 
@@ -359,6 +360,7 @@ pub struct ExportProgress {
 pub struct ExportDone {
     pub success: usize,
     pub errors: usize,
+    pub succeeded_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -430,6 +432,7 @@ pub async fn start_export(
                     ExportDone {
                         success: 0,
                         errors: record_ids.len(),
+                        succeeded_ids: Vec::new(),
                     },
                 );
                 return;
@@ -440,6 +443,10 @@ pub async fn start_export(
         let success = AtomicUsize::new(0);
         let errors = AtomicUsize::new(0);
         let completed = AtomicUsize::new(0);
+        let succeeded_ids: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+        // Build string IDs upfront for event payloads.
+        let id_strings: Vec<String> = record_ids.iter().map(|id| id.to_string()).collect();
 
         // 0 = auto (half cores), otherwise use the requested count.
         let num_threads = if request.threads > 0 {
@@ -458,6 +465,7 @@ pub async fn start_export(
                     ExportDone {
                         success: 0,
                         errors: total,
+                        succeeded_ids: Vec::new(),
                     },
                 );
                 eprintln!("failed to build thread pool: {e}");
@@ -467,7 +475,7 @@ pub async fn start_export(
 
         pool.install(|| {
         use rayon::prelude::*;
-        record_ids.par_iter().zip(names.par_iter()).for_each(|(record_id, name)| {
+        record_ids.par_iter().zip(names.par_iter()).zip(id_strings.par_iter()).for_each(|((record_id, name), id_str)| {
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
@@ -479,6 +487,7 @@ pub async fn start_export(
                     current: i + 1,
                     total,
                     entity_name: name.clone(),
+                    entity_id: id_str.clone(),
                     error: None,
                 },
             );
@@ -487,7 +496,10 @@ pub async fn start_export(
             let output_path = std::path::PathBuf::from(&output_dir).join(&filename);
 
             match export_single(&db, &p4k, record_id, &output_path, &opts) {
-                Ok(()) => { success.fetch_add(1, Ordering::Relaxed); }
+                Ok(()) => {
+                    success.fetch_add(1, Ordering::Relaxed);
+                    succeeded_ids.lock().unwrap().push(id_str.clone());
+                }
                 Err(e) => {
                     let _ = app.emit(
                         "export-progress",
@@ -495,6 +507,7 @@ pub async fn start_export(
                             current: i + 1,
                             total,
                             entity_name: name.clone(),
+                            entity_id: id_str.clone(),
                             error: Some(format!("{name}: {e}")),
                         },
                     );
@@ -507,6 +520,7 @@ pub async fn start_export(
         let _ = app.emit("export-done", ExportDone {
             success: success.load(Ordering::Relaxed),
             errors: errors.load(Ordering::Relaxed),
+            succeeded_ids: succeeded_ids.into_inner().unwrap(),
         });
     });
 
@@ -636,6 +650,7 @@ pub async fn extract_p4k_folder(
     state: State<'_, AppState>,
     path_prefix: String,
     output_dir: String,
+    filter: Option<String>,
 ) -> Result<usize, AppError> {
     let p4k = state
         .p4k
@@ -651,10 +666,31 @@ pub async fn extract_p4k_folder(
             format!("{path_prefix}\\")
         };
 
+        // Parse extension filters (comma-separated, e.g. "mtl,xml")
+        let extensions: Vec<String> = filter
+            .as_deref()
+            .unwrap_or("")
+            .split(',')
+            .map(|s| {
+                let s = s.trim().to_lowercase();
+                if s.starts_with('.') { s } else { format!(".{s}") }
+            })
+            .filter(|s| s.len() > 1)
+            .collect();
+
         let entries: Vec<_> = p4k
             .entries()
             .iter()
-            .filter(|e| e.name.starts_with(&prefix) && e.uncompressed_size > 0)
+            .filter(|e| {
+                if !e.name.starts_with(&prefix) || e.uncompressed_size == 0 {
+                    return false;
+                }
+                if extensions.is_empty() {
+                    return true;
+                }
+                let name_lower = e.name.to_lowercase();
+                extensions.iter().any(|ext| name_lower.ends_with(ext.as_str()))
+            })
             .collect();
 
         let count = entries.len();
@@ -757,4 +793,77 @@ pub fn preview_dds(
         mip_level,
         mip_count: dds.mip_count(),
     })
+}
+
+/// Save a DDS texture from the P4K as a PNG file to disk.
+#[tauri::command]
+pub fn export_dds_png(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    output_path: String,
+    mip: Option<usize>,
+) -> Result<(), AppError> {
+    let p4k = state
+        .p4k
+        .lock()
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("P4K not loaded".into()))?
+        .clone();
+
+    let data = p4k.read_file(&path)?;
+    let sibling_reader = P4kSiblingReader {
+        p4k: p4k.clone(),
+        base_path: path.clone(),
+    };
+    let dds = starbreaker_dds::DdsFile::from_split(&data, &sibling_reader)?;
+
+    if dds.mip_count() == 0 {
+        return Err(AppError::Internal("DDS has no mip data".into()));
+    }
+
+    let mip_level = mip.unwrap_or(0).min(dds.mip_count() - 1);
+    let (width, height) = dds.dimensions(mip_level);
+    let rgba = dds.decode_rgba(mip_level)?;
+
+    let out = std::path::Path::new(&output_path);
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let file = std::fs::File::create(out)?;
+    let encoder = image::codecs::png::PngEncoder::new(file);
+    image::ImageEncoder::write_image(
+        encoder,
+        &rgba,
+        width,
+        height,
+        image::ExtendedColorType::Rgba8,
+    )
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Extract a single file from the P4K to disk.
+#[tauri::command]
+pub fn extract_p4k_file(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    output_path: String,
+) -> Result<(), AppError> {
+    let p4k = state
+        .p4k
+        .lock()
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("P4K not loaded".into()))?
+        .clone();
+
+    let data = p4k.read_file(&path)?;
+    let out = std::path::Path::new(&output_path);
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(out, &data)?;
+
+    Ok(())
 }
