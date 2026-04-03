@@ -400,11 +400,18 @@ fn resolve_sub_geometry(idx: &EntityIndex, children: &mut [LoadoutNode]) {
         if variants.is_empty() {
             continue;
         }
-        if let Some(m) = match_sub_geometry_variant(&variants, &child.port_tags, &child.item_port_name) {
+        if let Some(m) = match_sub_geometry_variant(&variants, &child.port_tags, child.helper_bone_name.as_deref(), &child.item_port_name) {
             log::debug!("  SubGeometry: {} tag='{}' -> {}", child.entity_name, m.tag, m.geometry_path);
             child.geometry_path = Some(m.geometry_path.clone());
             if !m.material_path.is_empty() { child.material_path = Some(m.material_path.clone()); }
         } else if variants.len() > 1 {
+            log::warn!(
+                "  SubGeometry: {} has {} variants but none matched port='{}' bone='{}' tags='{}'. Variants: [{}]",
+                child.entity_name, variants.len(), child.item_port_name,
+                child.helper_bone_name.as_deref().unwrap_or(""),
+                child.port_tags,
+                variants.iter().map(|v| format!("{}:{}", v.tag, v.geometry_path)).collect::<Vec<_>>().join(", ")
+            );
             unmatched.push(i);
         }
     }
@@ -420,7 +427,7 @@ fn resolve_sub_geometry(idx: &EntityIndex, children: &mut [LoadoutNode]) {
             .filter_map(|(_, c)| c.geometry_path.clone())
             .collect();
         if let Some(v) = variants.iter().find(|v| !claimed.contains(&v.geometry_path)) {
-            log::debug!("  SubGeometry: {} tag='{}' (remaining) -> {}", entity, v.tag, v.geometry_path);
+            log::info!("  SubGeometry: {} tag='{}' (fallback, unclaimed) -> {}", entity, v.tag, v.geometry_path);
             children[ui].geometry_path = Some(v.geometry_path.clone());
             if !v.material_path.is_empty() { children[ui].material_path = Some(v.material_path.clone()); }
         }
@@ -432,15 +439,16 @@ fn resolve_sub_geometry(idx: &EntityIndex, children: &mut [LoadoutNode]) {
     }
 }
 
-/// Match SubGeometry variants against port tags or item port name.
-/// Priority: 1) port_tags match, 2) SubGeometry tag appears in item_port_name.
+/// Match SubGeometry variants against port tags, helper bone name, or item port name.
+/// Priority: 1) port_tags, 2) helper_bone_name, 3) item_port_name.
+/// This mirrors scdatatools' behavior where the helper (bone) name is the primary
+/// matching field for SubGeometry variant selection.
 fn match_sub_geometry_variant<'a>(
     variants: &'a [SubGeometryVariant],
     port_tags: &str,
+    helper_bone_name: Option<&str>,
     item_port_name: &str,
 ) -> Option<&'a SubGeometryVariant> {
-    let port_lower = item_port_name.to_lowercase();
-
     // 1. Try match against port_tags
     if !port_tags.is_empty() {
         let tags_lower = port_tags.to_lowercase();
@@ -451,7 +459,21 @@ fn match_sub_geometry_variant<'a>(
         }
     }
 
-    // 2. Try SubGeometry tag as substring of item_port_name
+    // 2. Try SubGeometry tag as substring of helper bone name
+    //    (scdatatools' primary matching strategy — the bone name often contains
+    //     variant-specific identifiers like "left", "right", "center")
+    if let Some(bone) = helper_bone_name {
+        let bone_lower = bone.to_lowercase();
+        for v in variants {
+            let tag_lower = v.tag.to_lowercase();
+            if bone_lower.contains(&tag_lower) {
+                return Some(v);
+            }
+        }
+    }
+
+    // 3. Try SubGeometry tag as substring of item_port_name
+    let port_lower = item_port_name.to_lowercase();
     for v in variants {
         let tag_lower = v.tag.to_lowercase();
         if port_lower.contains(&tag_lower) {
@@ -668,7 +690,7 @@ fn collect_entries_recursive(
                     children: grandchildren,
                 }
             } else {
-                log::debug!("{indent}loadout: {port_name} -> {class_name} (entity not found)");
+                log::warn!("{indent}loadout: {port_name} -> {class_name} (entity not found in EntityIndex)");
                 continue;
             };
             out.push(child);
