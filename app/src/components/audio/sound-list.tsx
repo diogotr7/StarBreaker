@@ -19,7 +19,7 @@ export function SoundList() {
               key={`${sound.media_id}-${index}`}
               className={`flex items-center gap-2 px-3 py-1.5 text-sm ${
                 isActive
-                  ? "bg-primary/15 text-primary"
+                  ? "bg-primary/15 text-text"
                   : "text-text-sub hover:bg-surface/50"
               }`}
             >

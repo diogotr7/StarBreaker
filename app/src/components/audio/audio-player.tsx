@@ -104,7 +104,7 @@ export function AudioPlayer() {
           <button
             type="button"
             onClick={togglePlay}
-            className="w-8 h-8 flex items-center justify-center rounded-full bg-primary text-bg-deep text-sm font-bold hover:opacity-90 transition-opacity"
+            className="w-8 h-8 flex items-center justify-center rounded-full bg-primary text-on-primary text-sm font-bold hover:opacity-90 transition-opacity"
           >
             {isPlaying ? "||" : "\u25B6"}
           </button>
@@ -116,7 +116,7 @@ export function AudioPlayer() {
             step={0.001}
             value={seekValue}
             onChange={onSeek}
-            className="flex-1 h-1 accent-primary cursor-pointer"
+            className="flex-1 h-1 accent-accent cursor-pointer"
           />
 
           <span className="text-xs text-text-dim font-mono min-w-[80px] text-right">
@@ -130,7 +130,7 @@ export function AudioPlayer() {
             step={0.01}
             value={volume}
             onChange={onVolume}
-            className="w-20 h-1 accent-primary cursor-pointer"
+            className="w-20 h-1 accent-accent cursor-pointer"
             title={`Volume: ${Math.round(volume * 100)}%`}
           />
 

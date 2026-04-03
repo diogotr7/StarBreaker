@@ -57,24 +57,26 @@ function SearchBar() {
   );
 
   return (
-    <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-bg-alt">
+    <div className="flex items-center gap-2 px-3 border-b border-border bg-bg-alt shrink-0" style={{ height: "var(--toolbar-height)" }}>
       <input
         key={searchMode}
         type="text"
-        placeholder={searchMode === "entity" ? "Search entities..." : searchMode === "bank" ? "Filter banks..." : "Search triggers..."}
+        placeholder={searchMode === "entity" ? "Search entities..." : searchMode === "bank" ? "Search banks..." : "Search triggers..."}
         defaultValue={searchQuery}
         onChange={(e) => onInput(e.target.value)}
-        className="flex-1 bg-surface px-3 py-1.5 rounded text-sm text-text placeholder:text-text-faint outline-none focus:ring-1 focus:ring-ring"
+        className="flex-1 bg-surface rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-faint outline-none focus:ring-1 focus:ring-ring"
       />
-      <div className="flex gap-1">
+      {isSearching && <span className="text-xs text-text-dim shrink-0">Searching...</span>}
+      <span className="text-xs text-text-faint shrink-0">{triggerCount.toLocaleString()} triggers</span>
+      <div className="flex gap-1 shrink-0">
         {(["bank", "trigger", "entity"] as const).map((mode) => (
           <button
             key={mode}
             type="button"
             onClick={() => setSearchMode(mode)}
-            className={`px-3 py-1 text-xs rounded transition-colors capitalize ${
+            className={`px-3 py-1 text-xs rounded-md transition-colors capitalize ${
               searchMode === mode
-                ? "bg-primary text-bg-deep"
+                ? "bg-primary/15 text-text"
                 : "bg-surface text-text-dim hover:bg-surface-hi hover:text-text"
             }`}
           >
@@ -82,8 +84,6 @@ function SearchBar() {
           </button>
         ))}
       </div>
-      {isSearching && <span className="text-xs text-text-dim">Searching...</span>}
-      <span className="text-xs text-text-faint">{triggerCount.toLocaleString()} triggers</span>
     </div>
   );
 }

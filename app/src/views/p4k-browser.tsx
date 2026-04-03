@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { listDir, type DirEntry } from "../lib/commands";
+import { Download } from "lucide-react";
+import { listDir, extractP4kFolder, type DirEntry } from "../lib/commands";
+import { ExtractProgress } from "../components/extract-progress";
 import { useAppStore } from "../stores/app-store";
 import { ResizeHandle } from "../components/resize-handle";
 import { GeometryPreview } from "../components/geometry-preview";
@@ -57,12 +59,16 @@ function TreeItem({
   onToggle,
   selectedPath,
   onSelect,
+  onExtractStart,
+  onExtractEnd,
 }: {
   node: TreeNode;
   depth: number;
   onToggle: (path: string) => void;
   selectedPath: string;
   onSelect: (path: string) => void;
+  onExtractStart: () => void;
+  onExtractEnd: () => void;
 }) {
   const isSelected = selectedPath === node.path;
   const [showSpinner, setShowSpinner] = useState(false);
@@ -78,6 +84,22 @@ function TreeItem({
     return () => clearTimeout(timerRef.current);
   }, [node.loading]);
 
+  const handleExtract = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const dir = await open({ title: `Extract "${node.name}"`, directory: true, multiple: false });
+    if (!dir) return;
+
+    onExtractStart();
+    try {
+      await extractP4kFolder(node.path, dir);
+    } catch (err) {
+      console.error("P4k folder extract failed:", err);
+    } finally {
+      onExtractEnd();
+    }
+  };
+
   return (
     <div>
       <button
@@ -87,8 +109,8 @@ function TreeItem({
         }}
         className={`
           w-full text-left px-2 py-1 text-sm flex items-center gap-1.5 cursor-pointer
-          hover:bg-surface/50 transition-colors
-          ${isSelected ? "bg-primary/15 text-primary" : "text-text"}
+          hover:bg-surface/50 transition-colors group
+          ${isSelected ? "bg-primary/15 text-text" : "text-text"}
         `}
         style={{ paddingLeft: `${depth * 16 + 8}px` }}
       >
@@ -119,6 +141,20 @@ function TreeItem({
 
         <span className="flex-1 truncate">{node.name}</span>
 
+        {/* Extract button for folders */}
+        {node.isDir && (
+          <button
+            type="button"
+            onClick={handleExtract}
+            title={`Extract ${node.name}/`}
+            className="hidden group-hover:flex items-center justify-center w-5 h-5 rounded
+                       text-text-dim hover:text-text hover:bg-surface-hi transition-colors
+                       disabled:opacity-50"
+          >
+            <Download size={12} />
+          </button>
+        )}
+
         {/* File size */}
         {!node.isDir && node.size != null && (
           <span className="text-xs text-text-dim shrink-0 tabular-nums">
@@ -137,6 +173,8 @@ function TreeItem({
             onToggle={onToggle}
             selectedPath={selectedPath}
             onSelect={onSelect}
+            onExtractStart={onExtractStart}
+            onExtractEnd={onExtractEnd}
           />
         ))}
     </div>
@@ -255,18 +293,19 @@ export function P4kBrowser() {
     );
   }
 
+  const [extracting, setExtracting] = useState(false);
+
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <div className="flex-1 flex flex-col overflow-hidden relative">
+      <ExtractProgress active={extracting} onDone={() => setExtracting(false)} />
       {/* Search bar */}
-      <div className="px-3 py-2 border-b border-border shrink-0">
+      <div className="px-3 flex items-center border-b border-border bg-bg-alt shrink-0" style={{ height: "var(--toolbar-height)" }}>
         <input
           type="text"
           placeholder="Search files..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-full bg-surface border border-border rounded-md px-3 py-1.5 text-sm
-                     text-text placeholder:text-text-faint outline-none
-                     focus:border-primary/50 focus:ring-1 focus:ring-primary/25 transition-colors"
+          className="w-full bg-surface rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-faint outline-none focus:ring-1 focus:ring-ring"
         />
       </div>
 
@@ -282,6 +321,8 @@ export function P4kBrowser() {
               onToggle={handleToggle}
               selectedPath={selectedPath}
               onSelect={setSelectedPath}
+              onExtractStart={() => setExtracting(true)}
+              onExtractEnd={() => setExtracting(false)}
             />
           ))}
         </div>

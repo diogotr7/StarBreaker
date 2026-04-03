@@ -23,7 +23,7 @@ export function TriggerList() {
             onClick={() => selectTrigger(trigger.trigger_name)}
             className={`w-full text-left px-3 py-1.5 text-sm transition-colors ${
               selectedTrigger === trigger.trigger_name
-                ? "bg-primary/15 text-primary"
+                ? "bg-primary/15 text-text"
                 : "text-text-sub hover:bg-surface/50 hover:text-text"
             }`}
           >

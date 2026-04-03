@@ -26,7 +26,7 @@ function EntityListInner() {
             onClick={() => selectEntity(entity.name)}
             className={`w-full text-left px-3 py-1.5 text-sm transition-colors ${
               selectedEntity === entity.name
-                ? "bg-primary/15 text-primary"
+                ? "bg-primary/15 text-text"
                 : "text-text-sub hover:bg-surface/50 hover:text-text"
             }`}
           >
@@ -64,7 +64,7 @@ function BankList() {
             onClick={() => selectBank(bank.name)}
             className={`w-full text-left px-3 py-1.5 text-sm transition-colors ${
               selectedBank === bank.name
-                ? "bg-primary/15 text-primary"
+                ? "bg-primary/15 text-text"
                 : "text-text-sub hover:bg-surface/50 hover:text-text"
             }`}
           >
