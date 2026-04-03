@@ -33,11 +33,71 @@ pub enum DirEntryDto {
     Directory { name: String },
 }
 
+/// Info returned after opening a P4k.
+#[derive(Serialize)]
+pub struct P4kInfo {
+    pub entry_count: usize,
+    pub total_bytes: u64,
+}
+
 /// Progress event payload.
 #[derive(Clone, Serialize)]
 pub struct LoadProgress {
     pub fraction: f32,
     pub message: String,
+}
+
+/// System theme palette returned to the frontend.
+#[derive(Serialize)]
+pub struct SystemPalette {
+    pub scheme: String,
+    pub background: String,
+    pub foreground: String,
+    pub accent: String,
+    pub success: String,
+    pub warning: String,
+    pub danger: String,
+}
+
+/// Get the OS system theme (dark/light, accent color, palette).
+#[tauri::command]
+pub fn get_system_theme() -> SystemPalette {
+    let st = system_theme::SystemTheme::new().ok();
+    let theme = st.as_ref().map(|s| s.get_theme());
+    let scheme = st
+        .as_ref()
+        .and_then(|s| s.get_scheme().ok())
+        .unwrap_or(system_theme::ThemeScheme::Dark);
+
+    if let Some(theme) = theme {
+        let p = &theme.palette;
+        let hex = |c: &system_theme::ThemeColor| {
+            let r = (c.red * 255.0) as u8;
+            let g = (c.green * 255.0) as u8;
+            let b = (c.blue * 255.0) as u8;
+            format!("#{r:02X}{g:02X}{b:02X}")
+        };
+        SystemPalette {
+            scheme: format!("{scheme:?}"),
+            background: hex(&p.background),
+            foreground: hex(&p.foreground),
+            accent: hex(&p.accent),
+            success: hex(&p.success),
+            warning: hex(&p.warning),
+            danger: hex(&p.danger),
+        }
+    } else {
+        // Fallback
+        SystemPalette {
+            scheme: "Dark".into(),
+            background: "#1A1A1A".into(),
+            foreground: "#E2E0E4".into(),
+            accent: "#B07CFF".into(),
+            success: "#5EC77A".into(),
+            warning: "#E8B63A".into(),
+            danger: "#E85454".into(),
+        }
+    }
 }
 
 /// Discover all Data.p4k installations across channels.
@@ -59,7 +119,7 @@ pub async fn open_p4k(
     app: AppHandle,
     state: State<'_, AppState>,
     path: String,
-) -> Result<usize, AppError> {
+) -> Result<P4kInfo, AppError> {
     let path_clone = path.clone();
     let app_clone = app.clone();
 
@@ -102,7 +162,8 @@ pub async fn open_p4k(
     .map_err(|e| AppError::Internal(format!("task join error: {e}")))?
     ?;
 
-    let count = mapped.len();
+    let entry_count = mapped.len();
+    let total_bytes: u64 = mapped.entries().iter().map(|e| e.uncompressed_size).sum();
     let arc_p4k = Arc::new(mapped);
 
     *state.p4k.lock() = Some(arc_p4k);
@@ -110,7 +171,7 @@ pub async fn open_p4k(
     *state.localization.lock() = loc_map;
     *state.record_index.lock() = Some(record_index);
 
-    Ok(count)
+    Ok(P4kInfo { entry_count, total_bytes })
 }
 
 /// List only subdirectory names under a path (fast — no file data serialized).
@@ -314,6 +375,7 @@ pub struct ExportRequest {
     pub include_tangents: bool,
     pub include_materials: bool,
     pub experimental_textures: bool,
+    pub threads: usize,
 }
 
 /// Start exporting selected entities to GLB files.
@@ -379,9 +441,12 @@ pub async fn start_export(
         let errors = AtomicUsize::new(0);
         let completed = AtomicUsize::new(0);
 
-        // Use a dedicated thread pool capped at half the CPU cores to avoid
-        // melting the system — each export is memory-heavy (mesh + DDS + PNG).
-        let num_threads = (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) / 2).max(2);
+        // 0 = auto (half cores), otherwise use the requested count.
+        let num_threads = if request.threads > 0 {
+            request.threads
+        } else {
+            (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) / 2).max(2)
+        };
         let pool = match rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads)
             .build()
@@ -554,6 +619,69 @@ pub fn read_p4k_file(
         .ok_or_else(|| AppError::Internal("P4K not loaded".into()))?
         .clone();
     Ok(p4k.read_file(&path)?)
+}
+
+/// Progress event for folder extraction.
+#[derive(Clone, Serialize)]
+pub struct FolderExtractProgress {
+    pub current: usize,
+    pub total: usize,
+    pub name: String,
+}
+
+/// Extract all files under a P4k folder path to disk.
+#[tauri::command]
+pub async fn extract_p4k_folder(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path_prefix: String,
+    output_dir: String,
+) -> Result<usize, AppError> {
+    let p4k = state
+        .p4k
+        .lock()
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("P4K not loaded".into()))?
+        .clone();
+
+    tokio::task::spawn_blocking(move || {
+        let prefix = if path_prefix.ends_with('\\') {
+            path_prefix.clone()
+        } else {
+            format!("{path_prefix}\\")
+        };
+
+        let entries: Vec<_> = p4k
+            .entries()
+            .iter()
+            .filter(|e| e.name.starts_with(&prefix) && e.uncompressed_size > 0)
+            .collect();
+
+        let count = entries.len();
+        let out = std::path::Path::new(&output_dir);
+
+        for (i, entry) in entries.iter().enumerate() {
+            if i % 50 == 0 || i + 1 == count {
+                let short_name = entry.name.rsplit('\\').next().unwrap_or(&entry.name).to_string();
+                let _ = app.emit("folder-extract-progress", FolderExtractProgress {
+                    current: i + 1,
+                    total: count,
+                    name: short_name,
+                });
+            }
+            let rel = entry.name.replace('\\', "/");
+            let dest = out.join(&rel);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let data = p4k.read(entry)?;
+            std::fs::write(&dest, &data)?;
+        }
+
+        Ok::<_, AppError>(count)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("task join error: {e}")))?
 }
 
 /// Metadata returned alongside a DDS preview so the frontend can show mip controls.

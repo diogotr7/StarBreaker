@@ -27,7 +27,7 @@ export function GeometryPreview({ path }: Props) {
     if (!container) return;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setClearColor(0x1e1e2e); // dark theme background
+    renderer.setClearColor(0x1a1a1a);
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(renderer.domElement);
@@ -132,7 +132,7 @@ export function GeometryPreview({ path }: Props) {
   return (
     <div ref={containerRef} className="relative w-full h-full">
       {loading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-base/80 z-10">
+        <div className="absolute inset-0 flex items-center justify-center bg-bg/80 z-10">
           <div className="flex flex-col items-center gap-2 text-text-dim">
             <svg
               className="animate-spin h-6 w-6"
@@ -158,9 +158,9 @@ export function GeometryPreview({ path }: Props) {
         </div>
       )}
       {error && (
-        <div className="absolute inset-0 flex items-center justify-center bg-base z-10">
+        <div className="absolute inset-0 flex items-center justify-center bg-bg z-10">
           <div className="text-center px-8">
-            <p className="text-red-400 text-sm font-medium">
+            <p className="text-danger text-sm font-medium">
               Failed to load geometry
             </p>
             <p className="text-text-dim text-xs mt-1 font-mono break-all">

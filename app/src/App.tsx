@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useAppStore } from "./stores/app-store";
 import { Sidebar } from "./components/sidebar";
 import { StartupScreen } from "./components/startup-dialog";
@@ -6,10 +7,19 @@ import { P4kBrowser } from "./views/p4k-browser";
 import { DataCoreBrowser } from "./views/datacore-browser";
 import { ExportView } from "./views/export-view";
 import { AudioView } from "./views/audio-view";
+import { getSystemTheme, onSystemThemeChanged } from "./lib/commands";
+import { applySystemTheme } from "./lib/theme";
 
 function App() {
   const mode = useAppStore((s) => s.mode);
   const hasData = useAppStore((s) => s.hasData);
+
+  // Apply OS system theme on mount and react to changes.
+  useEffect(() => {
+    getSystemTheme().then(applySystemTheme);
+    const unlisten = onSystemThemeChanged(applySystemTheme);
+    return () => { unlisten.then((f) => f()); };
+  }, []);
 
   if (!hasData) {
     return <StartupScreen />;

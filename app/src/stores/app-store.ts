@@ -18,6 +18,7 @@ interface AppState {
   p4kPath: string | null;
   p4kSource: string | null;
   entryCount: number;
+  totalBytes: number;
 
   discoveries: DiscoverResult[];
   setDiscoveries: (discoveries: DiscoverResult[]) => void;
@@ -28,7 +29,7 @@ interface AppState {
 
   setLoading: (loading: boolean) => void;
   setProgress: (fraction: number, message: string) => void;
-  setLoaded: (path: string, source: string, entryCount: number) => void;
+  setLoaded: (path: string, source: string, entryCount: number, totalBytes: number) => void;
   setError: (error: string) => void;
   clearError: () => void;
 }
@@ -50,6 +51,7 @@ export const useAppStore = create<AppState>()(
       p4kPath: null,
       p4kSource: null,
       entryCount: 0,
+      totalBytes: 0,
 
       discoveries: [],
       setDiscoveries: (discoveries) => set({ discoveries }),
@@ -66,7 +68,7 @@ export const useAppStore = create<AppState>()(
       setLoading: (loading) => set({ loading }),
       setProgress: (fraction, message) =>
         set({ loadingProgress: fraction, loadingMessage: message }),
-      setLoaded: (path, source, entryCount) =>
+      setLoaded: (path, source, entryCount, totalBytes) =>
         set({
           hasData: true,
           loading: false,
@@ -74,6 +76,7 @@ export const useAppStore = create<AppState>()(
           p4kPath: path,
           p4kSource: source,
           entryCount,
+          totalBytes,
           loadingProgress: 1,
           loadingMessage: "Done",
         }),

@@ -1,36 +1,49 @@
 @import "tailwindcss";
-@import "@catppuccin/tailwindcss/macchiato.css";
 
-/* Semantic tokens — components use these, never ctp- directly.
-   To switch themes, change only this mapping. */
+/* Custom theme derived from the StarBreaker app icon.
+   Deep purple/navy base, violet primary, warm coral accent. */
 @theme {
-  --color-bg: var(--color-ctp-base);
-  --color-bg-alt: var(--color-ctp-mantle);
-  --color-bg-deep: var(--color-ctp-crust);
-  --color-surface: var(--color-ctp-surface0);
-  --color-surface-hi: var(--color-ctp-surface1);
-  --color-overlay: var(--color-ctp-overlay0);
+  /* Backgrounds — true neutral darks, blend with OS chrome */
+  --color-bg: #1a1a1a;
+  --color-bg-alt: #1e1e1e;
+  --color-bg-deep: #141414;
+  --color-surface: #262626;
+  --color-surface-hi: #2e2e2e;
+  --color-overlay: #383838;
 
-  --color-text: var(--color-ctp-text);
-  --color-text-sub: var(--color-ctp-subtext1);
-  --color-text-dim: var(--color-ctp-subtext0);
-  --color-text-faint: var(--color-ctp-overlay1);
+  /* Text — neutral */
+  --color-text: #e2e0e4;
+  --color-text-sub: #a8a4ae;
+  --color-text-dim: #7a7680;
+  --color-text-faint: #504d56;
 
-  --color-primary: var(--color-ctp-mauve);
-  --color-accent: var(--color-ctp-peach);
-  --color-success: var(--color-ctp-green);
-  --color-warning: var(--color-ctp-yellow);
-  --color-danger: var(--color-ctp-red);
-  --color-info: var(--color-ctp-blue);
+  /* Brand */
+  --color-primary: #b07cff;
+  --color-accent: #d08060;
 
-  --color-border: var(--color-ctp-surface0);
-  --color-ring: var(--color-ctp-mauve);
+  /* Semantic */
+  --color-success: #5ec77a;
+  --color-warning: #e8b63a;
+  --color-danger: #e85454;
+  --color-info: #5c9df0;
+
+  /* Contrast text on colored backgrounds */
+  --color-on-primary: #ffffff;
+  --color-on-accent: #ffffff;
+
+  /* Layout */
+  --toolbar-height: 50px;
+
+  /* Borders & focus */
+  --color-border: #2a2a2a;
+  --color-ring: #b07cff;
 }
 
 body {
   margin: 0;
   background-color: var(--color-bg);
   color: var(--color-text);
+  transition: background-color 0.3s ease, color 0.3s ease;
   font-family:
     -apple-system,
     BlinkMacSystemFont,
@@ -45,6 +58,11 @@ body {
 #root {
   height: 100vh;
   display: flex;
+}
+
+/* Smooth fade when OS theme changes */
+aside, nav, main, header, div, button, input, span, p {
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
 }
 
 ::-webkit-scrollbar {

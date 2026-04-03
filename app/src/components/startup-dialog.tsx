@@ -35,8 +35,8 @@ export function StartupScreen() {
     });
 
     try {
-      const count = await openP4k(path);
-      setLoaded(path, source, count);
+      const info = await openP4k(path);
+      setLoaded(path, source, info.entry_count, info.total_bytes);
     } catch (err) {
       setError(String(err));
     } finally {

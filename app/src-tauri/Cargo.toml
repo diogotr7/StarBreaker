@@ -29,3 +29,5 @@ parking_lot = { workspace = true }
 thiserror = "2"
 log = "0.4"
 tauri-plugin-store = "2"
+system-theme = "0.3"
+futures-lite = "2"

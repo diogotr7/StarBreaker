@@ -47,7 +47,7 @@ export function UpdateBanner() {
             {canAutoUpdate ? (
               <button
                 onClick={handleUpdate}
-                className="px-2 py-0.5 rounded bg-info text-bg font-medium hover:opacity-90 transition-opacity"
+                className="px-2 py-0.5 rounded bg-info text-white font-medium hover:opacity-90 transition-opacity"
               >
                 Update
               </button>
@@ -56,7 +56,7 @@ export function UpdateBanner() {
                 href={`https://github.com/diogotr7/StarBreaker/releases/tag/v${update.version}`}
                 target="_blank"
                 rel="noreferrer"
-                className="px-2 py-0.5 rounded bg-info text-bg font-medium hover:opacity-90 transition-opacity"
+                className="px-2 py-0.5 rounded bg-info text-white font-medium hover:opacity-90 transition-opacity"
               >
                 View release
               </a>
