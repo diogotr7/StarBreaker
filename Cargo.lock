@@ -4773,13 +4773,16 @@ dependencies = [
 name = "starbreaker-app"
 version = "0.1.2"
 dependencies = [
+ "image",
  "log",
  "parking_lot",
  "rayon",
  "serde",
  "serde_json",
  "starbreaker-common",
+ "starbreaker-cryxml",
  "starbreaker-datacore",
+ "starbreaker-dds",
  "starbreaker-gltf",
  "starbreaker-p4k",
  "starbreaker-wem",
