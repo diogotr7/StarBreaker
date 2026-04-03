@@ -5,7 +5,7 @@ pub(crate) mod gltf;
 pub(crate) mod included_objects;
 pub mod ivo;
 pub mod mtl;
-pub(crate) mod nmc;
+pub mod nmc;
 pub(crate) mod pipeline;
 pub mod skeleton;
 pub(crate) mod socpak;

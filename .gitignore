@@ -5,6 +5,8 @@ exports/
 *.dcb
 
 .cargo/config.toml
+.mcp.json
+mcp/starbreaker-mcp.exe
 
 research/
 
