@@ -4,7 +4,7 @@
 
 Toolkit for reading and extracting Star Citizen game files. Handles the P4k archive, DataCore database, CryEngine assets, Wwise audio, and character files.
 
-There is also a legacy C# version on the [`csharp`](../../tree/csharp) branch.
+There is also a legacy C# version on the [`master`](../../tree/master) branch.
 
 ## Crates
 
@@ -60,4 +60,22 @@ SC_DATA_P4K = "D:\\Games\\StarCitizen\\LIVE\\Data.p4k"
 
 Or set the `SC_DATA_P4K` / `SC_EXE` environment variables directly.
 
+## Acknowledgements
 
+Projects without which StarBreaker would not have been possible
+
+### [unp4k](https://github.com/dolkensp/unp4k)
+
+P4k file support, DataCore decoding, CryXML
+
+### [scdatatools](https://gitlab.com/scmodding/frameworks/scdatatools)
+
+Socpak decoding and how to assemble the various parts of an entity together
+
+### [Blender-Tools](https://github.com/scorg-tools/Blender-Tools)
+
+Material handling, more assembling of entity parts together
+
+### [CryEngine-Converter](https://github.com/Markemp/Cryengine-Converter)
+
+Geometry formats, CryChunk, #ivo support
