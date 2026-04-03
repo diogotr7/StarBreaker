@@ -34,8 +34,6 @@ Available converters:
   dds-merge  DDS split mips → single merged DDS (keeps DDS format)
   all        enable all converters
 
-If both dds-png and dds-merge are given, dds-png wins.
-
 Examples:
   --convert cryxml                  only decode binary XML
   --convert dds-png                 only convert textures to PNG
@@ -86,10 +84,6 @@ impl ConvertFlags {
                     flags.dds_merge = true;
                 }
             }
-        }
-        // dds-png wins over dds-merge if both specified
-        if flags.dds_png {
-            flags.dds_merge = false;
         }
         flags
     }
@@ -422,43 +416,31 @@ fn convert_and_write(
         return true;
     }
 
-    // DDS → PNG
-    if conv.dds_png && is_base_dds(&entry.name) {
-        let dds = parse_dds_with_siblings(data, &entry.name, p4k);
-        match dds {
+    // DDS conversions — parse once, write whichever outputs are requested.
+    if (conv.dds_png || conv.dds_merge) && is_base_dds(&entry.name) {
+        match parse_dds_with_siblings(data, &entry.name, p4k) {
             Ok(dds) => {
                 let rel = entry.name.replace('\\', "/");
-                let png_rel = format!("{}.png", &rel[..rel.len() - 4]);
-                let out_path = output.join(&png_rel);
-                match dds.save_png(&out_path, 0) {
-                    Ok(()) => {
-                        converted_count.fetch_add(1, Ordering::Relaxed);
-                    }
-                    Err(e) => {
-                        error_count.fetch_add(1, Ordering::Relaxed);
-                        eprintln!("\n[ERR] Convert (dds→png) {}: {e}", entry.name);
+                if conv.dds_png {
+                    let png_rel = format!("{}.png", &rel[..rel.len() - 4]);
+                    let out_path = output.join(&png_rel);
+                    match dds.save_png(&out_path, 0) {
+                        Ok(()) => { converted_count.fetch_add(1, Ordering::Relaxed); }
+                        Err(e) => {
+                            error_count.fetch_add(1, Ordering::Relaxed);
+                            eprintln!("\n[ERR] Convert (dds→png) {}: {e}", entry.name);
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                error_count.fetch_add(1, Ordering::Relaxed);
-                eprintln!("\n[ERR] Parse DDS {}: {e}", entry.name);
-            }
-        }
-        return true;
-    }
-
-    // DDS → merged DDS
-    if conv.dds_merge && is_base_dds(&entry.name) {
-        let dds = parse_dds_with_siblings(data, &entry.name, p4k);
-        match dds {
-            Ok(dds) => {
-                let out_path = output.join(entry.name.replace('\\', "/"));
-                if let Err(e) = write_file(&out_path, &dds.to_dds()) {
-                    error_count.fetch_add(1, Ordering::Relaxed);
-                    eprintln!("\n[ERR] Write (dds merge) {}: {e}", entry.name);
-                } else {
-                    converted_count.fetch_add(1, Ordering::Relaxed);
+                if conv.dds_merge {
+                    let out_path = output.join(&rel);
+                    match write_file(&out_path, &dds.to_dds()) {
+                        Ok(()) => { converted_count.fetch_add(1, Ordering::Relaxed); }
+                        Err(e) => {
+                            error_count.fetch_add(1, Ordering::Relaxed);
+                            eprintln!("\n[ERR] Write (dds merge) {}: {e}", entry.name);
+                        }
+                    }
                 }
             }
             Err(e) => {
