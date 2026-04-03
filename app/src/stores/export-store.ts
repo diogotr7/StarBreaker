@@ -1,5 +1,7 @@
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import type { CategoryDto, ExportDone } from "../lib/commands";
+import { tauriStorage } from "../lib/tauri-storage";
 
 interface ExportState {
   // Categories
@@ -57,7 +59,24 @@ interface ExportState {
   setResult: (result: ExportDone | null) => void;
 }
 
-export const useExportStore = create<ExportState>((set) => ({
+type PersistedExportState = Pick<
+  ExportState,
+  | "lod"
+  | "mip"
+  | "includeTextures"
+  | "includeInterior"
+  | "includeNormals"
+  | "includeLights"
+  | "includeTangents"
+  | "includeMaterials"
+  | "experimentalTextures"
+  | "outputDir"
+  | "hideNpcVariants"
+>;
+
+export const useExportStore = create<ExportState>()(
+  persist<ExportState, [], [], PersistedExportState>(
+    (set) => ({
   categories: [],
   categoriesLoading: false,
   activeCategory: 0,
@@ -125,4 +144,23 @@ export const useExportStore = create<ExportState>((set) => ({
   addExportError: (msg) =>
     set((s) => ({ exportErrors: [...s.exportErrors, msg] })),
   setResult: (result) => set({ result, exporting: false }),
-}));
+    }),
+    {
+      name: "export",
+      storage: tauriStorage,
+      partialize: (s) => ({
+        lod: s.lod,
+        mip: s.mip,
+        includeTextures: s.includeTextures,
+        includeInterior: s.includeInterior,
+        includeNormals: s.includeNormals,
+        includeLights: s.includeLights,
+        includeTangents: s.includeTangents,
+        includeMaterials: s.includeMaterials,
+        experimentalTextures: s.experimentalTextures,
+        outputDir: s.outputDir,
+        hideNpcVariants: s.hideNpcVariants,
+      }),
+    },
+  ),
+);

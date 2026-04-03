@@ -14,6 +14,8 @@ export function StartupScreen() {
   const setLoaded = useAppStore((s) => s.setLoaded);
   const setError = useAppStore((s) => s.setError);
   const clearError = useAppStore((s) => s.clearError);
+  const recentCustomPaths = useAppStore((s) => s.recentCustomPaths);
+  const addRecentCustomPath = useAppStore((s) => s.addRecentCustomPath);
 
   const hasDiscovered = useRef(false);
 
@@ -46,6 +48,7 @@ export function StartupScreen() {
     clearError();
     const path = await browseP4k();
     if (path) {
+      addRecentCustomPath(path);
       await handleLoad(path, "custom");
     }
   };
@@ -124,6 +127,29 @@ export function StartupScreen() {
                   No Star Citizen installations detected.
                 </p>
               </div>
+            )}
+
+            {/* Recent custom paths */}
+            {recentCustomPaths.length > 0 && (
+              <>
+                <p className="text-xs text-text-dim uppercase tracking-wider font-semibold mt-2">
+                  Recent
+                </p>
+                {recentCustomPaths.map((path) => (
+                  <button
+                    key={path}
+                    onClick={() => handleLoad(path, "custom")}
+                    className="flex items-center gap-4 p-4 bg-bg-alt border border-border rounded-lg
+                               hover:border-primary/50 hover:bg-primary/5 transition-colors
+                               cursor-pointer text-left group"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-text-dim truncate">{path}</p>
+                    </div>
+                    <span className="text-text-faint text-xs">&rarr;</span>
+                  </button>
+                ))}
+              </>
             )}
 
             {/* Browse custom */}

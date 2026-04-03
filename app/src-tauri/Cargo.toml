@@ -28,3 +28,4 @@ tauri-plugin-process = "2"
 parking_lot = { workspace = true }
 thiserror = "2"
 log = "0.4"
+tauri-plugin-store = "2"
