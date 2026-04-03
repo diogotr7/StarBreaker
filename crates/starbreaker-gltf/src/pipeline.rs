@@ -431,6 +431,10 @@ fn load_child_mesh(
         let gp = child.geometry_path.as_deref().unwrap_or("");
         let mp = child.material_path.as_deref().unwrap_or("");
         export_entity_from_paths(p4k, gp, mp, opts)
+            .map_err(|e| {
+                log::warn!("  {} -> load from paths failed: {e}", child.entity_name);
+                e
+            })
             .or_else(|_| export_entity_payload(db, p4k, &child.record, opts))
     } else {
         export_entity_payload(db, p4k, &child.record, opts)
@@ -586,7 +590,98 @@ pub fn resolve_loadout_meshes(
     // Load invisible port flags from vehicle XML (empty for non-vehicles).
     let invisible_ports = load_invisible_ports(db, p4k, record);
 
-    let children = resolve_children(db, p4k, &tree.root.children, opts, &invisible_ports);
+    let mut children = resolve_children(db, p4k, &tree.root.children, opts, &invisible_ports);
+
+    // Load Tread/Wheel parts from vehicle definition XML (ground vehicles).
+    // These are geometry parts not represented in the DataCore loadout tree.
+    let veh_parts = load_vehicle_xml_parts(db, p4k, record);
+    if !veh_parts.is_empty() {
+        // Skip parts whose names already appear in the loadout children to avoid duplication.
+        let existing_names: std::collections::HashSet<String> = children
+            .iter()
+            .map(|c| c.attachment_name.to_lowercase())
+            .collect();
+
+        // Build a lookup from part name → VehicleXmlPart for child wheel attachment.
+        let wheel_lookup: std::collections::HashMap<String, &VehicleXmlPart> = veh_parts
+            .iter()
+            .filter(|p| p.children.is_empty()) // wheels have no children
+            .map(|p| (p.name.to_lowercase(), p))
+            .collect();
+
+        for part in &veh_parts {
+            if existing_names.contains(&part.name.to_lowercase()) {
+                log::debug!("  vehicle part '{}' already in loadout, skipping", part.name);
+                continue;
+            }
+            // Only add tread parts here; their wheel children are attached below.
+            if part.children.is_empty() && veh_parts.iter().any(|p| p.children.iter().any(|c| c.eq_ignore_ascii_case(&part.name))) {
+                continue; // wheel part — will be attached as child of its tread
+            }
+            let p4k_path = datacore_path_to_p4k(&part.geometry_path);
+            // CDF files don't have companion files — check for the CDF itself.
+            // For CGA/CGF, check the companion (.cgam/.cgfm).
+            let part_has_geom = if part.geometry_path.to_lowercase().ends_with(".cdf") {
+                p4k.entry_case_insensitive(&p4k_path).is_some()
+            } else {
+                let companion = resolve_companion_path(p4k, &p4k_path, opts.lod_level);
+                p4k.entry_case_insensitive(&companion).is_some()
+            };
+            log::debug!("  vehicle part '{}' has_geometry={} path={}", part.name, part_has_geom, p4k_path);
+
+            // Resolve wheel children for treads.
+            let mut part_children = Vec::new();
+            for wheel_name in &part.children {
+                if let Some(wheel) = wheel_lookup.get(&wheel_name.to_lowercase()) {
+                    let wheel_p4k = datacore_path_to_p4k(&wheel.geometry_path);
+                    let wheel_has_geom = if wheel.geometry_path.to_lowercase().ends_with(".cdf") {
+                        p4k.entry_case_insensitive(&wheel_p4k).is_some()
+                    } else {
+                        let wheel_companion = resolve_companion_path(p4k, &wheel_p4k, opts.lod_level);
+                        p4k.entry_case_insensitive(&wheel_companion).is_some()
+                    };
+
+                    part_children.push(crate::types::ResolvedNode {
+                        entity_name: wheel.name.clone(),
+                        attachment_name: wheel.name.clone(),
+                        no_rotation: false,
+                        offset_position: [0.0; 3],
+                        offset_rotation: [0.0; 3],
+                        nmc: None,
+                        bones: Vec::new(),
+                        has_geometry: wheel_has_geom,
+                        record: *record,
+                        geometry_path: Some(wheel.geometry_path.clone()),
+                        material_path: if wheel.material_path.is_empty() {
+                            None
+                        } else {
+                            Some(wheel.material_path.clone())
+                        },
+                        children: Vec::new(),
+                    });
+                }
+            }
+
+            children.push(crate::types::ResolvedNode {
+                entity_name: part.name.clone(),
+                attachment_name: part.name.clone(),
+                no_rotation: false,
+                offset_position: [0.0; 3],
+                offset_rotation: [0.0; 3],
+                nmc: None,
+                bones: Vec::new(),
+                has_geometry: part_has_geom,
+                record: *record,
+                geometry_path: Some(part.geometry_path.clone()),
+                material_path: if part.material_path.is_empty() {
+                    None
+                } else {
+                    Some(part.material_path.clone())
+                },
+                children: part_children,
+            });
+        }
+    }
 
     Ok(crate::types::ResolvedNode {
         entity_name: tree.root.entity_name.clone(),
@@ -1567,7 +1662,9 @@ fn query_tint_from_record(db: &Database, record: &Record) -> Option<mtl::TintPal
 fn try_load_mtl(p4k: &MappedP4k, p4k_path: &str) -> Option<mtl::MtlFile> {
     let entry = p4k.entry_case_insensitive(p4k_path)?;
     let data = p4k.read(entry).ok()?;
-    mtl::parse_mtl(&data).ok()
+    let mut mtl = mtl::parse_mtl(&data).ok()?;
+    mtl.source_path = Some(p4k_path.to_string());
+    Some(mtl)
 }
 
 /// Convert a DataCore file path to P4k format.
@@ -1913,6 +2010,144 @@ fn collect_invisible_ports_from_xml_override(
 
     for child in xml.node_children(node) {
         collect_invisible_ports_from_xml_override(xml, child, invisible);
+    }
+}
+
+// ── Vehicle XML Tread / Wheel part extraction ─────────────────────────────────
+
+/// A geometry part extracted from a vehicle definition XML (treads, wheels).
+/// These are ground-vehicle parts not represented in the DataCore loadout tree.
+pub(crate) struct VehicleXmlPart {
+    /// Part name (used as attachment point / bone name).
+    pub name: String,
+    /// Geometry file path (relative, DataCore-style).
+    pub geometry_path: String,
+    /// Material path from XML (may be empty).
+    pub material_path: String,
+    /// Child part names (for treads: the wheel part names attached to this tread).
+    pub children: Vec<String>,
+}
+
+/// Extract Tread and SubPartWheel parts from a vehicle definition XML.
+/// Returns a flat list of parts with parent-child relationships encoded in `children`.
+pub fn load_vehicle_xml_parts(
+    db: &Database,
+    p4k: &MappedP4k,
+    record: &Record,
+) -> Vec<VehicleXmlPart> {
+    let veh_def = db
+        .compile_path::<String>(
+            record.struct_id(),
+            "Components[VehicleComponentParams].vehicleDefinition",
+        )
+        .ok()
+        .and_then(|c| db.query_single::<String>(&c, record).ok().flatten());
+
+    let veh_def = match veh_def {
+        Some(ref s) if !s.is_empty() => s,
+        _ => return Vec::new(),
+    };
+
+    let base_p4k = datacore_path_to_p4k(veh_def);
+    let data = match p4k
+        .entry_case_insensitive(&base_p4k)
+        .and_then(|e| p4k.read(e).ok())
+    {
+        Some(d) => d,
+        None => return Vec::new(),
+    };
+
+    let xml = match starbreaker_cryxml::from_bytes(&data) {
+        Ok(x) => x,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut parts = Vec::new();
+    collect_vehicle_parts(&xml, xml.root(), &mut parts);
+
+    if !parts.is_empty() {
+        log::info!("Vehicle XML: {} tread/wheel parts", parts.len());
+        for p in &parts {
+            log::debug!("  vehicle part: {} -> {} (children: {:?})", p.name, p.geometry_path, p.children);
+        }
+    }
+
+    parts
+}
+
+/// Recursively walk vehicle XML collecting Tread and SubPartWheel parts.
+fn collect_vehicle_parts(
+    xml: &starbreaker_cryxml::CryXml,
+    node: &starbreaker_cryxml::CryXmlNode,
+    parts: &mut Vec<VehicleXmlPart>,
+) {
+    let tag = xml.node_tag(node);
+
+    if tag == "Part" {
+        let attrs: std::collections::HashMap<&str, &str> = xml.node_attributes(node).collect();
+        let part_class = attrs.get("class").copied().unwrap_or("");
+        let part_name = attrs.get("name").copied().unwrap_or("");
+
+        if part_class == "Tread" {
+            // Look for <Tread> child element
+            for child in xml.node_children(node) {
+                if xml.node_tag(child) != "Tread" {
+                    continue;
+                }
+                let tread_attrs: std::collections::HashMap<&str, &str> =
+                    xml.node_attributes(child).collect();
+                let filename = tread_attrs.get("filename").copied().unwrap_or("");
+                let material = tread_attrs.get("materialName").copied().unwrap_or("");
+
+                // Collect wheel part names from <Wheels><Wheel partName="..."/></Wheels>
+                let mut wheel_names = Vec::new();
+                for tread_child in xml.node_children(child) {
+                    if xml.node_tag(tread_child) == "Wheels" {
+                        for wheel in xml.node_children(tread_child) {
+                            if xml.node_tag(wheel) == "Wheel" {
+                                if let Some((_, pn)) =
+                                    xml.node_attributes(wheel).find(|(k, _)| *k == "partName")
+                                {
+                                    wheel_names.push(pn.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !filename.is_empty() && !part_name.is_empty() {
+                    parts.push(VehicleXmlPart {
+                        name: part_name.to_string(),
+                        geometry_path: filename.to_string(),
+                        material_path: material.to_string(),
+                        children: wheel_names,
+                    });
+                }
+            }
+        } else if part_class == "SubPartWheel" {
+            // Look for <SubPart> child element
+            for child in xml.node_children(node) {
+                if xml.node_tag(child) != "SubPart" {
+                    continue;
+                }
+                if let Some((_, filename)) =
+                    xml.node_attributes(child).find(|(k, _)| *k == "filename")
+                {
+                    if !filename.is_empty() && !part_name.is_empty() {
+                        parts.push(VehicleXmlPart {
+                            name: part_name.to_string(),
+                            geometry_path: filename.to_string(),
+                            material_path: String::new(),
+                            children: Vec::new(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    for child in xml.node_children(node) {
+        collect_vehicle_parts(xml, child, parts);
     }
 }
 

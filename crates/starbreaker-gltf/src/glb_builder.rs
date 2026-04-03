@@ -310,7 +310,12 @@ impl GlbBuilder {
 
                 // Create a wrapper node for the child entity containing its NMC root nodes + bone nodes
                 let wrapper_idx = self.nodes_json.len() as u32;
-                self.node_name_to_idx.insert(child.entity_name.to_lowercase(), wrapper_idx);
+                // Only register if the name isn't already taken (e.g., by a parent NMC node
+                // with the same name — vehicle XML wheel parts use bone names as entity names).
+                let lower_name = child.entity_name.to_lowercase();
+                if !self.node_name_to_idx.contains_key(&lower_name) {
+                    self.node_name_to_idx.insert(lower_name, wrapper_idx);
+                }
                 let mut wrapper_children: Vec<json::Index<json::Node>> = child_root_nodes
                     .iter()
                     .map(|&i| json::Index::new(child_node_base + i))
@@ -333,7 +338,10 @@ impl GlbBuilder {
             } else {
                 // Empty NMC — use flat mesh
                 let idx = self.nodes_json.len() as u32;
-                self.node_name_to_idx.insert(child.entity_name.to_lowercase(), idx);
+                let lower_name = child.entity_name.to_lowercase();
+                if !self.node_name_to_idx.contains_key(&lower_name) {
+                    self.node_name_to_idx.insert(lower_name, idx);
+                }
                 let offset_matrix = offset_to_gltf_matrix(child.offset_position, child.offset_rotation);
                 self.nodes_json.push(json::Node {
                     name: Some(child.entity_name.clone()),
@@ -346,7 +354,10 @@ impl GlbBuilder {
         } else {
             // No NMC — single flat node
             let idx = self.nodes_json.len() as u32;
-            self.node_name_to_idx.insert(child.entity_name.to_lowercase(), idx);
+            let lower_name = child.entity_name.to_lowercase();
+            if !self.node_name_to_idx.contains_key(&lower_name) {
+                self.node_name_to_idx.insert(lower_name, idx);
+            }
             let offset_matrix = offset_to_gltf_matrix(child.offset_position, child.offset_rotation);
             self.nodes_json.push(json::Node {
                 name: Some(child.entity_name.clone()),
@@ -837,6 +848,11 @@ impl GlbBuilder {
                 node_submeshes[nidx].push(i);
             }
         }
+        log::debug!(
+            "  NMC hierarchy: {} nodes, {} submeshes, has_mesh={}, root='{}'",
+            nmc.nodes.len(), submeshes.len(), has_mesh,
+            nmc.nodes.first().map(|n| n.name.as_str()).unwrap_or("?"),
+        );
 
         // Create per-NMC-node meshes.
         let mut node_mesh_idx: Vec<Option<u32>> = vec![None; nmc.nodes.len()];
@@ -1152,7 +1168,8 @@ fn build_materials(
     submeshes.iter().map(|sub| {
         let mat = build_material(sub, materials, palette, submaterial_texture_idx, submaterial_normal_idx, submaterial_roughness_idx, experimental_textures);
         let key = format!(
-            "{:?}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}",
+            "{}|{:?}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}",
+            mat.name.as_deref().unwrap_or(""),
             mat.pbr_metallic_roughness.base_color_factor,
             mat.pbr_metallic_roughness.metallic_factor,
             mat.pbr_metallic_roughness.roughness_factor,
@@ -1193,7 +1210,27 @@ fn build_material(
                 Some(json::material::AlphaCutoff(v)),
             ),
         };
-        let name = if m.name.is_empty() { sub.material_name.clone() } else { Some(m.name.clone()) };
+        let base_name = if m.name.is_empty() {
+            sub.material_name.clone().unwrap_or_default()
+        } else {
+            m.name.clone()
+        };
+        // CGF-Converter compatible naming: {mtl_stem}_mtl_{material_name}_0{material_id}
+        let name = {
+            let mtl_stem = materials.and_then(|mtl| {
+                mtl.source_path.as_ref().and_then(|p| {
+                    let file = p.rsplit(['\\', '/']).next()?;
+                    Some(file.strip_suffix(".mtl").unwrap_or(file).to_string())
+                })
+            });
+            if let Some(stem) = mtl_stem {
+                Some(format!("{stem}_mtl_{base_name}_0{}", sub.material_id))
+            } else if base_name.is_empty() {
+                None
+            } else {
+                Some(base_name)
+            }
+        };
         let palette_color = palette.and_then(|p| match m.palette_tint {
             1 => Some(p.primary),
             2 => Some(p.secondary),
