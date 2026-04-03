@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download } from "lucide-react";
-import { listDir, extractP4kFolder, type DirEntry } from "../lib/commands";
+import { listDir, extractP4kFolder, extractP4kFile, type DirEntry } from "../lib/commands";
 import { ExtractProgress } from "../components/extract-progress";
 import { useAppStore } from "../stores/app-store";
 import { ResizeHandle } from "../components/resize-handle";
@@ -59,6 +59,7 @@ function TreeItem({
   onToggle,
   selectedPath,
   onSelect,
+  extractFilter,
   onExtractStart,
   onExtractEnd,
 }: {
@@ -67,6 +68,7 @@ function TreeItem({
   onToggle: (path: string) => void;
   selectedPath: string;
   onSelect: (path: string) => void;
+  extractFilter: string;
   onExtractStart: () => void;
   onExtractEnd: () => void;
 }) {
@@ -92,7 +94,7 @@ function TreeItem({
 
     onExtractStart();
     try {
-      await extractP4kFolder(node.path, dir);
+      await extractP4kFolder(node.path, dir, extractFilter || undefined);
     } catch (err) {
       console.error("P4k folder extract failed:", err);
     } finally {
@@ -155,11 +157,35 @@ function TreeItem({
           </button>
         )}
 
-        {/* File size */}
-        {!node.isDir && node.size != null && (
-          <span className="text-xs text-text-dim shrink-0 tabular-nums">
-            {formatSize(node.size)}
-          </span>
+        {/* File download + size */}
+        {!node.isDir && (
+          <>
+            <button
+              type="button"
+              onClick={async (e) => {
+                e.stopPropagation();
+                const { save } = await import("@tauri-apps/plugin-dialog");
+                const filename = node.name;
+                const outputPath = await save({ title: `Save "${filename}"`, defaultPath: filename });
+                if (!outputPath) return;
+                try {
+                  await extractP4kFile(node.path, outputPath);
+                } catch (err) {
+                  console.error("File extract failed:", err);
+                }
+              }}
+              title={`Save ${node.name}`}
+              className="hidden group-hover:flex items-center justify-center w-5 h-5 rounded
+                         text-text-dim hover:text-text hover:bg-surface-hi transition-colors"
+            >
+              <Download size={12} />
+            </button>
+            {node.size != null && (
+              <span className="text-xs text-text-dim shrink-0 tabular-nums">
+                {formatSize(node.size)}
+              </span>
+            )}
+          </>
         )}
       </button>
 
@@ -173,6 +199,7 @@ function TreeItem({
             onToggle={onToggle}
             selectedPath={selectedPath}
             onSelect={onSelect}
+            extractFilter={extractFilter}
             onExtractStart={onExtractStart}
             onExtractEnd={onExtractEnd}
           />
@@ -294,18 +321,27 @@ export function P4kBrowser() {
   }
 
   const [extracting, setExtracting] = useState(false);
+  const [extractFilter, setExtractFilter] = useState("");
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
       <ExtractProgress active={extracting} onDone={() => setExtracting(false)} />
-      {/* Search bar */}
-      <div className="px-3 flex items-center border-b border-border bg-bg-alt shrink-0" style={{ height: "var(--toolbar-height)" }}>
+      {/* Toolbar */}
+      <div className="px-3 flex items-center gap-2 border-b border-border bg-bg-alt shrink-0" style={{ height: "var(--toolbar-height)" }}>
         <input
           type="text"
           placeholder="Search files..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-full bg-surface rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-faint outline-none focus:ring-1 focus:ring-ring"
+          className="flex-1 bg-surface rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-faint outline-none focus:ring-1 focus:ring-ring"
+        />
+        <input
+          type="text"
+          placeholder="Extract filter (e.g. mtl,xml)"
+          value={extractFilter}
+          onChange={(e) => setExtractFilter(e.target.value)}
+          title="Comma-separated file extensions to include when extracting folders. Leave empty for all files."
+          className="w-48 bg-surface rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-faint outline-none focus:ring-1 focus:ring-ring shrink-0"
         />
       </div>
 
@@ -321,6 +357,7 @@ export function P4kBrowser() {
               onToggle={handleToggle}
               selectedPath={selectedPath}
               onSelect={setSelectedPath}
+              extractFilter={extractFilter}
               onExtractStart={() => setExtracting(true)}
               onExtractEnd={() => setExtracting(false)}
             />

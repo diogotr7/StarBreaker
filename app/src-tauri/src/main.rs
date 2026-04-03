@@ -61,6 +61,8 @@ fn main() {
             commands::preview_geometry,
             commands::preview_xml,
             commands::preview_dds,
+            commands::export_dds_png,
+            commands::extract_p4k_file,
             commands::read_p4k_file,
             commands::extract_p4k_folder,
         ])

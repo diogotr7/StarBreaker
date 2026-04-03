@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { previewDds } from "../lib/commands";
+import { Download } from "lucide-react";
+import { previewDds, exportDdsPng } from "../lib/commands";
 import { ImagePanZoom } from "./image-pan-zoom";
 
 interface Props {
@@ -80,6 +81,22 @@ export function DdsPreview({ path }: Props) {
     );
   }
 
+  const handleSavePng = async () => {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const stem = path.split(/[\\/]/).pop()?.replace(/\.dds$/i, "") ?? "texture";
+    const outputPath = await save({
+      title: "Save texture as PNG",
+      defaultPath: `${stem}.png`,
+      filters: [{ name: "PNG Image", extensions: ["png"] }],
+    });
+    if (!outputPath) return;
+    try {
+      await exportDdsPng(path, outputPath, mipLevel);
+    } catch (err) {
+      console.error("Failed to save PNG:", err);
+    }
+  };
+
   if (!objectUrl) return null;
 
   return (
@@ -109,6 +126,15 @@ export function DdsPreview({ path }: Props) {
         {loading && (
           <span className="text-text-dim animate-pulse">loading...</span>
         )}
+        <button
+          onClick={handleSavePng}
+          title="Save as PNG"
+          className="ml-auto flex items-center gap-1.5 px-2 py-1 rounded-md text-text-dim
+                     hover:text-text hover:bg-surface/60 transition-colors cursor-pointer"
+        >
+          <Download size={12} />
+          <span>Save PNG</span>
+        </button>
       </div>
 
       {/* Image with pan/zoom */}
