@@ -15,6 +15,9 @@ pub struct TintPalette {
 #[derive(Debug, Clone)]
 pub struct MtlFile {
     pub materials: Vec<SubMaterial>,
+    /// P4k source path of this .mtl file (e.g. `Data\Objects\Ships\RSI\aurora_mk2\rsi_aurora_mk2_int.mtl`).
+    /// Used for CGF-Converter compatible material naming.
+    pub source_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -132,9 +135,32 @@ impl SubMaterial {
     /// CryEngine Shininess (0-255) = smoothness. The GBuffer stores
     /// "Gloss/smoothness" and EFTT_SMOOTHNESS maps to the `_ddna` alpha channel.
     /// Roughness = 1.0 - smoothness, where smoothness = shininess / 255.
+    ///
+    /// HardSurface, LayerBlend, and Illum shaders typically set Shininess=255 as a
+    /// placeholder because they derive per-pixel smoothness from the `_ddna` alpha
+    /// channel. Without per-pixel smoothness texture data, the literal 0.0 roughness
+    /// creates an unrealistic mirror finish. Use a default of 0.5 for these shaders.
     pub fn roughness(&self) -> f32 {
         let smoothness = (self.shininess / 255.0).clamp(0.0, 1.0);
-        1.0 - smoothness
+        let roughness = 1.0 - smoothness;
+        // Shaders that use per-pixel smoothness set Shininess=255 as a placeholder.
+        // Without the _ddna texture, this produces roughness=0 (mirror). Use a
+        // reasonable default instead.
+        if roughness == 0.0 && self.uses_per_pixel_smoothness() {
+            0.5
+        } else {
+            roughness
+        }
+    }
+
+    /// Whether this material's shader derives smoothness from a texture rather than
+    /// the scalar Shininess value.
+    fn uses_per_pixel_smoothness(&self) -> bool {
+        let s = self.shader.to_lowercase();
+        s.contains("hardsurface")
+            || s.contains("layerblend")
+            || s == "illum"
+            || s == "glasspbr"
     }
 
     /// glTF metallic factor derived from material name.
@@ -209,7 +235,7 @@ pub fn parse_mtl(data: &[u8]) -> Result<MtlFile, Error> {
         vec![parse_sub_material(&xml, root)]
     };
 
-    Ok(MtlFile { materials })
+    Ok(MtlFile { materials, source_path: None })
 }
 
 fn parse_sub_material(
