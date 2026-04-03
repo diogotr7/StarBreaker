@@ -3,7 +3,7 @@
 //! Produces XML matching the community's unforge/unp4k tool output:
 //! - Scalar fields → XML attributes on the parent element
 //! - Arrays → child elements named by data type (`<Int32>`, `<Bool>`, etc.)
-//! - Empty elements are omitted
+//! - `__type` on struct elements; `__polymorphicType` on polymorphic pointers
 //! - Root element: record name, with `__type`, `__ref`, `__path` appended as attributes
 //! - Strong pointers: inlined (cycle-protected)
 //! - References: inlined up to depth 1, then GUID attribute
@@ -99,17 +99,9 @@ struct XmlNode {
 
 /// Helper: `<Tag value="val"/>` — unp4k's CreateElementWithValue for primitives.
 fn value_element(tag: &str, val: impl ToString) -> XmlNode {
-    let s = val.to_string();
-    if s.is_empty() {
-        return XmlNode {
-            tag: tag.to_owned(),
-            attrs: Vec::new(),
-            children: Vec::new(),
-        };
-    }
     XmlNode {
         tag: tag.to_owned(),
-        attrs: vec![("value".to_owned(), s)],
+        attrs: vec![("value".to_owned(), val.to_string())],
         children: Vec::new(),
     }
 }
@@ -246,27 +238,24 @@ fn walk_attribute<W: Write>(
         DataType::String | DataType::Locale | DataType::EnumChoice => {
             let sid = reader.read_type::<StringId>()?;
             let s = ctx.db.resolve_string(*sid);
-            if !s.is_empty() {
-                output.attrs.push((name.to_owned(), s.to_owned()));
-            }
+            output.attrs.push((name.to_owned(), s.to_owned()));
         }
         DataType::Guid => {
             let guid = reader.read_type::<CigGuid>()?;
-            if *guid != CigGuid::EMPTY {
-                output.attrs.push((name.to_owned(), guid.to_string()));
-            }
+            output.attrs.push((name.to_owned(), guid.to_string()));
         }
 
         // Complex types → child elements
         DataType::Class => {
+            let struct_name = ctx.db.resolve_string2(ctx.db.struct_def(prop_struct_index).name_offset);
             let sub = walk_struct_fields(ctx, prop_struct_index, reader)?;
-            if !sub.attrs.is_empty() || !sub.children.is_empty() {
-                output.children.push(XmlNode {
-                    tag: name.to_owned(),
-                    attrs: sub.attrs,
-                    children: sub.children,
-                });
-            }
+            let mut attrs = sub.attrs;
+            attrs.push(("__type".to_owned(), struct_name.to_owned()));
+            output.children.push(XmlNode {
+                tag: name.to_owned(),
+                attrs,
+                children: sub.children,
+            });
         }
         DataType::StrongPointer => {
             let ptr = reader.read_type::<Pointer>()?;
@@ -276,19 +265,22 @@ fn walk_attribute<W: Write>(
                 // unp4k reads VariantIndex as UInt16
                 let variant = ptr.instance_index as u16 as u32;
                 let sub = walk_struct_at_index(ctx, ptr.struct_index, variant)?;
-                if !sub.attrs.is_empty() || !sub.children.is_empty() {
-                    // Wrap: <fieldName><StructName attrs...>children</StructName></fieldName>
-                    let inner = XmlNode {
-                        tag: struct_name.to_owned(),
-                        attrs: sub.attrs,
-                        children: sub.children,
-                    };
-                    output.children.push(XmlNode {
-                        tag: name.to_owned(),
-                        attrs: Vec::new(),
-                        children: vec![inner],
-                    });
+                let mut attrs = sub.attrs;
+                attrs.push(("__type".to_owned(), struct_name.to_owned()));
+                if prop_struct_index >= 0 && ptr.struct_index != prop_struct_index {
+                    attrs.push(("__polymorphicType".to_owned(), struct_name.to_owned()));
                 }
+                // Wrap: <fieldName><StructName attrs...>children</StructName></fieldName>
+                let inner = XmlNode {
+                    tag: struct_name.to_owned(),
+                    attrs,
+                    children: sub.children,
+                };
+                output.children.push(XmlNode {
+                    tag: name.to_owned(),
+                    attrs: Vec::new(),
+                    children: vec![inner],
+                });
             }
         }
         DataType::WeakPointer => {
@@ -308,14 +300,10 @@ fn walk_attribute<W: Write>(
             }
         }
         DataType::Reference => {
-            // unp4k: references are GUID attributes, skipped when GUID is empty.
-            // unp4k's IsNull checks `Value == Guid.Empty` (just the GUID, not instance_index).
             let reference = reader.read_type::<Reference>()?;
-            if reference.record_id != CigGuid::EMPTY {
-                output
-                    .attrs
-                    .push((name.to_owned(), reference.record_id.to_string()));
-            }
+            output
+                .attrs
+                .push((name.to_owned(), reference.record_id.to_string()));
         }
     }
     Ok(())
@@ -352,28 +340,23 @@ fn walk_array<W: Write>(
             DataType::Guid =>    Some(value_element("Guid", &ctx.db.guid_values[idx])),
             DataType::String => {
                 let s = ctx.db.resolve_string(ctx.db.string_id_values[idx]);
-                if s.is_empty() { None } else { Some(value_element("String", s)) }
+                Some(value_element("String", s))
             }
             DataType::Locale => {
                 let s = ctx.db.resolve_string(ctx.db.locale_values[idx]);
-                if s.is_empty() { None } else { Some(value_element("LocID", s)) }
+                Some(value_element("LocID", s))
             }
             DataType::EnumChoice => {
                 let s = ctx.db.resolve_string(ctx.db.enum_values[idx]);
-                if s.is_empty() { None } else { Some(value_element("Enum", s)) }
+                Some(value_element("Enum", s))
             }
             DataType::Reference => {
                 let reference = &ctx.db.reference_values[idx];
-                if reference.record_id == CigGuid::EMPTY {
-                    None
-                } else {
-                    // unp4k: <Reference value="guid"/>
-                    Some(XmlNode {
-                        tag: "Reference".to_owned(),
-                        attrs: vec![("value".to_owned(), reference.record_id.to_string())],
-                        children: Vec::new(),
-                    })
-                }
+                Some(XmlNode {
+                    tag: "Reference".to_owned(),
+                    attrs: vec![("value".to_owned(), reference.record_id.to_string())],
+                    children: Vec::new(),
+                })
             }
             DataType::StrongPointer => {
                 let ptr = &ctx.db.strong_values[idx];
@@ -387,15 +370,16 @@ fn walk_array<W: Write>(
                         ptr.struct_index,
                         ptr.instance_index as u16 as u32,
                     )?;
-                    if !sub.attrs.is_empty() || !sub.children.is_empty() {
-                        Some(XmlNode {
-                            tag: struct_name.to_owned(),
-                            attrs: sub.attrs,
-                            children: sub.children,
-                        })
-                    } else {
-                        None
+                    let mut attrs = sub.attrs;
+                    attrs.push(("__type".to_owned(), struct_name.to_owned()));
+                    if prop_struct_index >= 0 && ptr.struct_index != prop_struct_index {
+                        attrs.push(("__polymorphicType".to_owned(), struct_name.to_owned()));
                     }
+                    Some(XmlNode {
+                        tag: struct_name.to_owned(),
+                        attrs,
+                        children: sub.children,
+                    })
                 }
             }
             DataType::WeakPointer => {
@@ -410,30 +394,29 @@ fn walk_array<W: Write>(
                         ptr.struct_index,
                         ptr.instance_index as u16 as u32,
                     )?;
-                    if !sub.attrs.is_empty() || !sub.children.is_empty() {
-                        Some(XmlNode {
-                            tag: struct_name.to_owned(),
-                            attrs: sub.attrs,
-                            children: sub.children,
-                        })
-                    } else {
-                        None
+                    let mut attrs = sub.attrs;
+                    attrs.push(("__type".to_owned(), struct_name.to_owned()));
+                    if prop_struct_index >= 0 && ptr.struct_index != prop_struct_index {
+                        attrs.push(("__polymorphicType".to_owned(), struct_name.to_owned()));
                     }
+                    Some(XmlNode {
+                        tag: struct_name.to_owned(),
+                        attrs,
+                        children: sub.children,
+                    })
                 }
             }
             DataType::Class => {
                 let struct_def = ctx.db.struct_def(prop_struct_index);
                 let struct_name = ctx.db.resolve_string2(struct_def.name_offset);
                 let sub = walk_struct_at_index(ctx, prop_struct_index, i as u32)?;
-                if !sub.attrs.is_empty() || !sub.children.is_empty() {
-                    Some(XmlNode {
-                        tag: struct_name.to_owned(),
-                        attrs: sub.attrs,
-                        children: sub.children,
-                    })
-                } else {
-                    None
-                }
+                let mut attrs = sub.attrs;
+                attrs.push(("__type".to_owned(), struct_name.to_owned()));
+                Some(XmlNode {
+                    tag: struct_name.to_owned(),
+                    attrs,
+                    children: sub.children,
+                })
             }
         };
 
@@ -442,13 +425,11 @@ fn walk_array<W: Write>(
         }
     }
 
-    if !children.is_empty() {
-        output.children.push(XmlNode {
-            tag: name.to_owned(),
-            attrs: Vec::new(),
-            children,
-        });
-    }
+    output.children.push(XmlNode {
+        tag: name.to_owned(),
+        attrs: Vec::new(),
+        children,
+    });
 
     Ok(())
 }
