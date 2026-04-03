@@ -81,12 +81,150 @@ impl From<&ExportOpts> for starbreaker_gltf::ExportOptions {
 }
 
 /// Filter entries by glob or regex.
+///
+/// For glob patterns, both the pattern and name are normalized to forward
+/// slashes before matching — P4k entries use backslashes internally but
+/// users shouldn't have to care.
 pub fn matches_filter(name: &str, filter: Option<&str>, regex: Option<&regex::Regex>) -> bool {
     if let Some(pattern) = filter {
-        return glob_match::glob_match(pattern, name);
+        let norm_name = name.replace('\\', "/");
+        let norm_pattern = pattern.replace('\\', "/");
+        return glob_match::glob_match(&norm_pattern, &norm_name);
     }
     if let Some(re) = regex {
         return re.is_match(name);
     }
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Typical P4k entry paths (backslash-separated, rooted at Data\).
+    const XML_DEEP: &str = r"Data\Libs\Subsumption\Missions\mission.xml";
+    const XML_SHALLOW: &str = r"Data\game.xml";
+    const DDS_DEEP: &str = r"Data\Objects\ships\aurora\texture.dds";
+    const DDS_SIBLING: &str = r"Data\Objects\ships\aurora\texture.dds.1";
+    const CGF_DEEP: &str = r"Data\Objects\ships\aurora\model.cgf";
+
+    // -----------------------------------------------------------------------
+    // matches_filter — glob: extension wildcards
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn glob_star_xml_only_matches_root_level() {
+        // `*` does NOT cross path separators, so `*.xml` only matches names
+        // with no directory component. This is correct glob semantics.
+        assert!(!matches_filter(XML_DEEP, Some("*.xml"), None));
+        assert!(!matches_filter(XML_SHALLOW, Some("*.xml"), None));
+    }
+
+    #[test]
+    fn glob_star_dds_only_matches_root_level() {
+        assert!(!matches_filter(DDS_DEEP, Some("*.dds"), None));
+    }
+
+    #[test]
+    fn glob_doublestar_xml_matches_all_depths() {
+        // `**/*.xml` matches .xml files at any depth.
+        assert!(matches_filter(XML_DEEP, Some("**/*.xml"), None));
+        assert!(matches_filter(XML_SHALLOW, Some("**/*.xml"), None));
+    }
+
+    #[test]
+    fn glob_doublestar_dds_matches_all_depths() {
+        assert!(matches_filter(DDS_DEEP, Some("**/*.dds"), None));
+    }
+
+    #[test]
+    fn glob_doublestar_dds_excludes_siblings() {
+        // `.dds.1` is NOT a `.dds` file.
+        assert!(!matches_filter(DDS_SIBLING, Some("**/*.dds"), None));
+    }
+
+    // -----------------------------------------------------------------------
+    // matches_filter — glob: backslash patterns work (normalized)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn glob_backslash_doublestar_works() {
+        // Users on Windows may type backslashes — should work identically.
+        assert!(matches_filter(XML_DEEP, Some(r"**\*.xml"), None));
+        assert!(matches_filter(XML_SHALLOW, Some(r"**\*.xml"), None));
+        assert!(matches_filter(DDS_DEEP, Some(r"**\*.dds"), None));
+    }
+
+    // -----------------------------------------------------------------------
+    // matches_filter — glob: exact paths & prefixes
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn glob_exact_path_with_backslashes() {
+        assert!(matches_filter(
+            XML_DEEP,
+            Some(r"Data\Libs\Subsumption\Missions\mission.xml"),
+            None,
+        ));
+    }
+
+    #[test]
+    fn glob_exact_path_with_forward_slashes() {
+        assert!(matches_filter(
+            XML_DEEP,
+            Some("Data/Libs/Subsumption/Missions/mission.xml"),
+            None,
+        ));
+    }
+
+    #[test]
+    fn glob_prefix_doublestar_backslash() {
+        assert!(matches_filter(XML_DEEP, Some(r"Data\Libs\**"), None));
+        assert!(!matches_filter(DDS_DEEP, Some(r"Data\Libs\**"), None));
+    }
+
+    #[test]
+    fn glob_prefix_doublestar_forward_slash() {
+        assert!(matches_filter(XML_DEEP, Some("Data/Libs/**"), None));
+        assert!(!matches_filter(DDS_DEEP, Some("Data/Libs/**"), None));
+    }
+
+    #[test]
+    fn glob_partial_directory_wildcard() {
+        // Match all files under any ships subdirectory.
+        assert!(matches_filter(DDS_DEEP, Some("**/ships/**"), None));
+        assert!(matches_filter(CGF_DEEP, Some("**/ships/**"), None));
+        assert!(!matches_filter(XML_DEEP, Some("**/ships/**"), None));
+    }
+
+    // -----------------------------------------------------------------------
+    // matches_filter — regex mode
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn regex_xml_suffix() {
+        let re = regex::Regex::new(r"\.xml$").unwrap();
+        assert!(matches_filter(XML_DEEP, None, Some(&re)));
+        assert!(matches_filter(XML_SHALLOW, None, Some(&re)));
+        assert!(!matches_filter(DDS_DEEP, None, Some(&re)));
+    }
+
+    #[test]
+    fn regex_dds_suffix_excludes_siblings() {
+        let re = regex::Regex::new(r"\.dds$").unwrap();
+        assert!(matches_filter(DDS_DEEP, None, Some(&re)));
+        assert!(!matches_filter(DDS_SIBLING, None, Some(&re)));
+    }
+
+    // -----------------------------------------------------------------------
+    // matches_filter — no filter
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn no_filter_matches_everything() {
+        assert!(matches_filter(XML_DEEP, None, None));
+        assert!(matches_filter(DDS_DEEP, None, None));
+        assert!(matches_filter(CGF_DEEP, None, None));
+    }
+}
+
