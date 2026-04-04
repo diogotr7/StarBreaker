@@ -26,8 +26,10 @@ fn main() {
                 // Show first bone's first keyframe
                 if let Some(ch) = clip.channels.first() {
                     if let Some(kf) = ch.rotations.first() {
-                        println!("    bone 0x{:08X}: rot[0] t={:.1} q=[{:.3},{:.3},{:.3},{:.3}]",
-                            ch.bone_hash, kf.time, kf.value[0], kf.value[1], kf.value[2], kf.value[3]);
+                        let q = kf.value;
+                        let mag = (q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]).sqrt();
+                        println!("    bone 0x{:08X}: rot[0] t={:.1} q=[{:.4},{:.4},{:.4},{:.4}] |q|={:.3}",
+                            ch.bone_hash, kf.time, q[0], q[1], q[2], q[3], mag);
                     }
                     if let Some(kf) = ch.positions.first() {
                         println!("    bone 0x{:08X}: pos[0] t={:.1} p=[{:.3},{:.3},{:.3}]",

@@ -186,34 +186,29 @@ fn parse_animation_blocks(data: &[u8]) -> Result<Vec<Vec<BoneChannel>>, Error> {
 
         let bone_count = u16::from_le_bytes(data[offset + 4..offset + 6].try_into().unwrap()) as usize;
         let _magic = u16::from_le_bytes(data[offset + 6..offset + 8].try_into().unwrap());
-        let data_size = u32::from_le_bytes(data[offset + 8..offset + 12].try_into().unwrap()) as usize;
+        let _data_size = u32::from_le_bytes(data[offset + 8..offset + 12].try_into().unwrap()) as usize;
 
-        let block_start = offset + 12;
-        let block_end = block_start + data_size;
-        if block_end > data.len() {
-            log::warn!("Animation block at offset 0x{offset:x} extends past end of data");
-            break;
-        }
+        let block_start = offset + 12; // after 12-byte header
+        // Headers are packed sequentially: header(12) + bone_hashes(bone_count*4) + controllers(bone_count*24)
+        // The NEXT block starts right after the controller entries.
+        // Keyframe data lives at the end, accessed via absolute offsets from controllers.
+        let headers_end = block_start + bone_count * 4 + bone_count * 24;
 
-        // Pass the full data and absolute offsets so controller offsets resolve correctly.
-        // Controller offsets are relative to each controller's position in the file stream,
-        // which includes the IVO chunk header + the 12-byte block header before the data.
-        match parse_single_block(data, block_start, block_end, bone_count) {
+        match parse_single_block(data, block_start, bone_count) {
             Ok(channels) => blocks.push(channels),
             Err(e) => log::warn!("Failed to parse animation block at 0x{offset:x}: {e}"),
         }
 
-        offset = block_end;
-        // Align to 4 bytes
-        offset = (offset + 3) & !3;
+        offset = headers_end;
     }
 
     Ok(blocks)
 }
 
 /// Parse a single animation block.
-/// `data` is the full chunk data; `start`/`end` delimit this block (after the 12-byte header).
-fn parse_single_block(data: &[u8], start: usize, end: usize, bone_count: usize) -> Result<Vec<BoneChannel>, Error> {
+/// `data` is the full chunk data; `start` is the offset after the 12-byte block header.
+/// Controller offsets are absolute (relative to each controller's position in the data).
+fn parse_single_block(data: &[u8], start: usize, bone_count: usize) -> Result<Vec<BoneChannel>, Error> {
     let mut pos = start;
 
     // Bone hash array: bone_count × u32
@@ -249,29 +244,33 @@ fn parse_single_block(data: &[u8], start: usize, end: usize, bone_count: usize) 
 
     let mut channels = Vec::with_capacity(bone_count);
     for (i, (ctrl_offset, ctrl)) in controllers.iter().enumerate() {
+        if i == 0 && ctrl.num_rot_keys > 0 {
+            log::debug!("ctrl[0] at offset 0x{:x}: rot_keys={} rot_fmt=0x{:04x} rot_time_off=0x{:x} rot_data_off=0x{:x} -> abs data at 0x{:x}",
+                ctrl_offset, ctrl.num_rot_keys, ctrl.rot_format_flags,
+                ctrl.rot_time_offset, ctrl.rot_data_offset,
+                ctrl_offset + ctrl.rot_data_offset as usize);
+        }
+        // Offsets in the controller entry are relative to the start of the chunk data
+        // (not relative to the controller entry itself as in some other CryEngine formats).
         let rotations = if ctrl.num_rot_keys > 0 {
-            let time_abs = if ctrl.rot_time_offset > 0 { ctrl_offset + ctrl.rot_time_offset as usize } else { 0 };
-            let data_abs = ctrl_offset + ctrl.rot_data_offset as usize;
             let times = if ctrl.rot_time_offset > 0 {
-                read_time_keys(data, time_abs, ctrl.num_rot_keys as usize, ctrl.rot_format_flags)?
+                read_time_keys(data, ctrl.rot_time_offset as usize, ctrl.num_rot_keys as usize, ctrl.rot_format_flags)?
             } else {
                 (0..ctrl.num_rot_keys as usize).map(|t| t as f32).collect()
             };
-            let values = read_rotation_keys(data, data_abs, ctrl.num_rot_keys as usize, ctrl.rot_format_flags)?;
+            let values = read_rotation_keys(data, ctrl.rot_data_offset as usize, ctrl.num_rot_keys as usize, ctrl.rot_format_flags)?;
             times.into_iter().zip(values).map(|(t, v)| Keyframe { time: t, value: v }).collect()
         } else {
             Vec::new()
         };
 
         let positions = if ctrl.num_pos_keys > 0 {
-            let time_abs = if ctrl.pos_time_offset > 0 { ctrl_offset + ctrl.pos_time_offset as usize } else { 0 };
-            let data_abs = ctrl_offset + ctrl.pos_data_offset as usize;
             let times = if ctrl.pos_time_offset > 0 {
-                read_time_keys(data, time_abs, ctrl.num_pos_keys as usize, ctrl.pos_format_flags)?
+                read_time_keys(data, ctrl.pos_time_offset as usize, ctrl.num_pos_keys as usize, ctrl.pos_format_flags)?
             } else {
                 (0..ctrl.num_pos_keys as usize).map(|t| t as f32).collect()
             };
-            let values = read_position_keys(data, data_abs, ctrl.num_pos_keys as usize, ctrl.pos_format_flags)?;
+            let values = read_position_keys(data, ctrl.pos_data_offset as usize, ctrl.num_pos_keys as usize, ctrl.pos_format_flags)?;
             times.into_iter().zip(values).map(|(t, v)| Keyframe { time: t, value: v }).collect()
         } else {
             Vec::new()
@@ -391,19 +390,10 @@ fn read_time_keys(data: &[u8], offset: usize, count: usize, format_flags: u16) -
 
 // ─── Rotation key reading ───────────────────────────────────────────────────
 
-fn read_rotation_keys(data: &[u8], offset: usize, count: usize, format_flags: u16) -> Result<Vec<[f32; 4]>, Error> {
-    let rot_format = format_flags >> 8;
-    match rot_format {
-        // 0x80: SmallTree48BitQuat (6 bytes per key)
-        0x80 => read_small_tree_48bit_quats(data, offset, count),
-        // 0x81: uncompressed quaternion (16 bytes per key)
-        // Undocumented but observed — raw f32×4
-        0x01 => read_uncompressed_quats(data, offset, count),
-        _ => {
-            log::warn!("Unknown rotation format 0x{rot_format:02x}, count={count}");
-            Ok(vec![[0.0, 0.0, 0.0, 1.0]; count])
-        }
-    }
+fn read_rotation_keys(data: &[u8], offset: usize, count: usize, _format_flags: u16) -> Result<Vec<[f32; 4]>, Error> {
+    // IVO DBA/CAF always uses uncompressed quaternions (16 bytes each: x,y,z,w).
+    // The format flags control the TIME encoding, not the rotation compression.
+    read_uncompressed_quats(data, offset, count)
 }
 
 fn read_uncompressed_quats(data: &[u8], offset: usize, count: usize) -> Result<Vec<[f32; 4]>, Error> {
