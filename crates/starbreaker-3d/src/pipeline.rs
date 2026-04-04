@@ -118,7 +118,7 @@ pub struct ExportResult {
 
 /// Export a single entity's mesh, materials, textures, NMC, and palette from DataCore + P4k.
 /// Export an entity payload by resolving geometry/material paths from DataCore.
-pub(crate) fn export_entity_payload(
+pub fn export_entity_payload(
     db: &Database,
     p4k: &MappedP4k,
     record: &Record,

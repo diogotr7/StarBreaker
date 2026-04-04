@@ -1,12 +1,12 @@
 pub mod animation;
 pub mod dequant;
 pub mod error;
-pub(crate) mod gltf;
+pub mod gltf;
 pub(crate) mod included_objects;
 pub mod ivo;
 pub mod mtl;
 pub mod nmc;
-pub(crate) mod pipeline;
+pub mod pipeline;
 pub mod skeleton;
 pub(crate) mod socpak;
 pub mod types;
@@ -14,7 +14,7 @@ pub mod types;
 pub use error::Error;
 pub use pipeline::{
     ExportFormat, ExportOptions, ExportResult, MaterialMode,
-    assemble_glb_with_loadout,
+    assemble_glb_with_loadout, export_entity_payload,
     dump_hierarchy, load_invisible_ports, resolve_loadout_meshes, socpaks_to_glb,
 };
 pub use types::Mesh;
