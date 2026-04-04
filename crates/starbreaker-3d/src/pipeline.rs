@@ -541,6 +541,7 @@ fn flatten_resolved_tree(
                 normals: None,
                 tangents: None,
                 colors: None,
+                bone_mappings: None,
                 submeshes: Vec::new(),
                 model_min: [0.0; 3],
                 model_max: [0.0; 3],

@@ -1,6 +1,6 @@
 use crate::dequant;
 use crate::ivo::material::MaterialName;
-use crate::ivo::skin::{NormalData, PositionData, SkinMesh, TangentData};
+use crate::ivo::skin::{BoneMapping, NormalData, PositionData, SkinMesh, TangentData};
 
 #[derive(Debug, Clone)]
 pub struct Mesh {
@@ -10,6 +10,8 @@ pub struct Mesh {
     pub normals: Option<Vec<[f32; 3]>>,
     pub tangents: Option<Vec<[f32; 4]>>,
     pub colors: Option<Vec<[u8; 4]>>,
+    /// Per-vertex bone mapping (4 bone indices + 4 weights). Present on skinned meshes.
+    pub bone_mappings: Option<Vec<BoneMapping>>,
     pub submeshes: Vec<SubMesh>,
     /// Model-space bounding box (first bbox from MeshInfo).
     /// NMC scene graph transforms are in this coordinate system.
@@ -45,6 +47,9 @@ impl Mesh {
             a.extend(b);
         }
         if let (Some(a), Some(b)) = (&mut self.tangents, other.tangents) {
+            a.extend(b);
+        }
+        if let (Some(a), Some(b)) = (&mut self.bone_mappings, other.bone_mappings) {
             a.extend(b);
         }
         // Merge vertex colors: pad with opaque white if one side is missing.
@@ -228,6 +233,7 @@ pub fn build_mesh_with_bbox(skin: &SkinMesh, materials: &[MaterialName], use_mod
         normals,
         tangents: tangents_out,
         colors: skin.streams.colors.clone(),
+        bone_mappings: skin.streams.bone_mappings.clone(),
         submeshes,
         model_min: skin.info.model_min,
         model_max: skin.info.model_max,

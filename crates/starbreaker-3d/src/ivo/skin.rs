@@ -84,8 +84,10 @@ pub mod stream_type {
     pub const IVOQTANGENTS: u32 = 0xEE057252;
     pub const IVOBONEMAP: u32 = 0x677C7B23;
     pub const IVOBONEMAP32: u32 = 0x6ECA3708;
+    /// Simple bone mapping: single u16 bone index per vertex, weight implied 1.0.
+    /// Used for rigid attachment meshes where each vertex is influenced by one bone.
+    pub const IVOSIMPLEBONEMAP: u32 = 0x9D51C5EE;
     pub const IVOCOLORS2: u32 = 0xD9EED421;
-    pub const IVOUNKNOWN: u32 = 0x9D51C5EE;
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +123,14 @@ pub struct SubMeshDescriptor {
     pub center: [f32; 3],
 }
 
+/// Per-vertex bone mapping: 4 bone indices + 4 weights.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct BoneMapping {
+    pub bone_indices: [u16; 4],
+    pub weights: [f32; 4],
+}
+
 #[derive(Debug)]
 pub struct DataStreams {
     pub positions: PositionData,
@@ -129,6 +139,7 @@ pub struct DataStreams {
     pub colors: Option<Vec<[u8; 4]>>,
     pub tangents: Option<TangentData>,
     pub normals: Option<NormalData>,
+    pub bone_mappings: Option<Vec<BoneMapping>>,
 }
 
 /// Raw normal data — format determined by which stream was present.
@@ -237,6 +248,7 @@ impl SkinMesh {
         let mut uvs: Option<Vec<[u16; 2]>> = None;
         let mut indices: Option<Vec<u32>> = None;
         let mut colors: Option<Vec<[u8; 4]>> = None;
+        let mut bone_mappings: Option<Vec<BoneMapping>> = None;
         let mut tangents: Option<TangentData> = None;
         let mut normals: Option<NormalData> = None;
 
@@ -271,6 +283,7 @@ impl SkinMesh {
                     stream_type::IVOQTANGENTS => "IVOQTANGENTS",
                     stream_type::IVOBONEMAP => "IVOBONEMAP",
                     stream_type::IVOBONEMAP32 => "IVOBONEMAP32",
+                    stream_type::IVOSIMPLEBONEMAP => "IVOSIMPLEBONEMAP",
                     stream_type::IVOCOLORS2 => "IVOCOLORS2",
                     _ => "UNKNOWN",
                 };
@@ -350,6 +363,50 @@ impl SkinMesh {
                     }
                     tangents = Some(TangentData::Tangents(raw.to_vec()));
                 }
+                stream_type::IVOBONEMAP => {
+                    // elem_size=8: 4×u8 bone indices + 4×u8 weights
+                    let mut mappings = Vec::with_capacity(num_verts);
+                    for _ in 0..num_verts {
+                        let raw = reader.read_slice::<u8>(element_size as usize)?;
+                        mappings.push(BoneMapping {
+                            bone_indices: [raw[0] as u16, raw[1] as u16, raw[2] as u16, raw[3] as u16],
+                            weights: [
+                                raw[4] as f32 / 255.0,
+                                raw[5] as f32 / 255.0,
+                                raw[6] as f32 / 255.0,
+                                raw[7] as f32 / 255.0,
+                            ],
+                        });
+                    }
+                    bone_mappings = Some(mappings);
+                }
+                stream_type::IVOSIMPLEBONEMAP => {
+                    // elem_size=2: single u16 bone index per vertex, weight = 1.0
+                    let indices_raw = reader.read_slice::<u16>(num_verts)?;
+                    let mappings = indices_raw.iter().map(|&idx| BoneMapping {
+                        bone_indices: [idx, 0, 0, 0],
+                        weights: [1.0, 0.0, 0.0, 0.0],
+                    }).collect();
+                    bone_mappings = Some(mappings);
+                }
+                stream_type::IVOBONEMAP32 => {
+                    // elem_size=12: 4×u16 bone indices + 4×u8 weights
+                    let mut mappings = Vec::with_capacity(num_verts);
+                    for _ in 0..num_verts {
+                        let indices_raw = reader.read_slice::<u16>(4)?;
+                        let weights_raw = reader.read_slice::<u8>(4)?;
+                        mappings.push(BoneMapping {
+                            bone_indices: [indices_raw[0], indices_raw[1], indices_raw[2], indices_raw[3]],
+                            weights: [
+                                weights_raw[0] as f32 / 255.0,
+                                weights_raw[1] as f32 / 255.0,
+                                weights_raw[2] as f32 / 255.0,
+                                weights_raw[3] as f32 / 255.0,
+                            ],
+                        });
+                    }
+                    bone_mappings = Some(mappings);
+                }
                 _ => {
                     let count = num_verts;
                     let skip_bytes = element_size as usize * count;
@@ -383,6 +440,7 @@ impl SkinMesh {
             colors,
             tangents,
             normals,
+            bone_mappings,
         })
     }
 }

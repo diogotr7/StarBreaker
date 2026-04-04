@@ -535,13 +535,13 @@ impl StarBreakerMcp {
         match &chunk_file {
             starbreaker_chunks::ChunkFile::Ivo(ivo) => {
                 let _ = writeln!(out, "Format: IVO (#ivo), {} chunks\n", ivo.chunks().len());
-                let _ = writeln!(out, "{:<4} {:<12} {:>8} {:>10} {:>10}", "Idx", "Type", "Version", "Offset", "Size");
-                let _ = writeln!(out, "{}", "-".repeat(50));
+                let _ = writeln!(out, "{:<4} {:<12} {:>10} {:>8} {:>10} {:>10}", "Idx", "Type", "ChunkType", "Version", "Offset", "Size");
+                let _ = writeln!(out, "{}", "-".repeat(62));
                 for (i, chunk) in ivo.chunks().iter().enumerate() {
                     let name = starbreaker_chunks::known_types::ivo::name(chunk.chunk_type)
                         .unwrap_or("Unknown");
-                    let _ = writeln!(out, "{:<4} {:<12} {:>8} {:>#10x} {:>10}",
-                        i, name, chunk.version, chunk.offset, chunk.size);
+                    let _ = writeln!(out, "{:<4} {:<12} {:#010x} {:>8} {:>#10x} {:>10}",
+                        i, name, chunk.chunk_type, chunk.version, chunk.offset, chunk.size);
                 }
 
                 // NMC summary if present
