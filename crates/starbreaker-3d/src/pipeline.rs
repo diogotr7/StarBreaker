@@ -293,7 +293,9 @@ pub fn assemble_glb_with_loadout(
     tree: &starbreaker_datacore::loadout::LoadoutTree,
     opts: &ExportOptions,
 ) -> Result<ExportResult, Error> {
-    assemble_glb_with_loadout_and_animations(db, p4k, record, tree, opts, Vec::new())
+    // Auto-discover animations from the entity's chrparams → DBA.
+    let animations = discover_entity_animations(db, p4k, record);
+    assemble_glb_with_loadout_and_animations(db, p4k, record, tree, opts, animations)
 }
 
 /// Like `assemble_glb_with_loadout` but with animation clips injected into the GLB.
@@ -1970,6 +1972,96 @@ fn transform_mesh_by_bone(mesh: &mut crate::Mesh, bone: &crate::skeleton::Bone) 
     }
     mesh.model_min = new_min.into();
     mesh.model_max = new_max.into();
+}
+
+/// Auto-discover and load animation clips for an entity.
+///
+/// Resolves the geometry path from DataCore, finds the `.chrparams` companion file,
+/// parses it for the `$TracksDatabase` DBA path, then loads and parses the DBA.
+/// Returns empty Vec on any failure (missing chrparams, no DBA, parse error).
+fn discover_entity_animations(
+    db: &Database,
+    p4k: &MappedP4k,
+    record: &Record,
+) -> Vec<crate::animation::dba::AnimationClip> {
+    // Resolve geometry path from DataCore.
+    let geom_compiled = match db.compile_path::<String>(
+        record.struct_id(),
+        "Components[SGeometryResourceParams].Geometry.Geometry.Geometry.path",
+    ) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let geometry_path = match db.query_single::<String>(&geom_compiled, record) {
+        Ok(Some(p)) => p,
+        _ => return Vec::new(),
+    };
+
+    // Derive chrparams path: same directory + base name + .chrparams
+    // e.g. "Objects/Ships/AEGS/Avenger/AEGS_Avenger.cga" → "...AEGS_Avenger.chrparams"
+    let chrparams_path = {
+        let p = geometry_path.replace('\\', "/");
+        let base = p.rsplit_once('.').map(|(b, _)| b).unwrap_or(&p);
+        format!("{base}.chrparams")
+    };
+
+    let p4k_chrparams = datacore_path_to_p4k(&chrparams_path);
+    let chrparams_entry = match p4k.entry_case_insensitive(&p4k_chrparams) {
+        Some(e) => e,
+        None => {
+            log::debug!("No chrparams at {p4k_chrparams}");
+            return Vec::new();
+        }
+    };
+
+    let chrparams_data = match p4k.read(chrparams_entry) {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("Failed to read chrparams: {e}");
+            return Vec::new();
+        }
+    };
+
+    let chrparams = match crate::animation::chrparams::parse_chrparams(&chrparams_data) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("Failed to parse chrparams: {e}");
+            return Vec::new();
+        }
+    };
+
+    let Some(dba_path) = chrparams.tracks_database else {
+        log::debug!("No $TracksDatabase in chrparams");
+        return Vec::new();
+    };
+
+    let p4k_dba = datacore_path_to_p4k(&dba_path);
+    let dba_entry = match p4k.entry_case_insensitive(&p4k_dba) {
+        Some(e) => e,
+        None => {
+            log::warn!("DBA not found in P4k: {p4k_dba}");
+            return Vec::new();
+        }
+    };
+
+    let dba_data = match p4k.read(dba_entry) {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("Failed to read DBA: {e}");
+            return Vec::new();
+        }
+    };
+
+    match crate::animation::dba::parse_dba(&dba_data) {
+        Ok(db) => {
+            log::info!("Loaded {} animation clips from {}", db.clips.len(), dba_entry.name);
+            db.clips
+        }
+        Err(e) => {
+            log::warn!("Failed to parse DBA: {e}");
+            Vec::new()
+        }
+    }
 }
 
 fn datacore_path_to_p4k(path: &str) -> String {
