@@ -435,9 +435,7 @@ fn read_uncompressed_quats(data: &[u8], offset: usize, count: usize) -> Result<V
     }).collect())
 }
 
-/// SmallTree48BitQuat: 6 bytes per quaternion.
-/// 3 components at 15 bits each + 3-bit index of largest component.
-/// Scale: 23170.0, Range: ±0.707106781186 (±1/√2)
+/// SmallTree48BitQuat: 6 bytes (3 × u16) per quaternion.
 fn read_small_tree_48bit_quats(data: &[u8], offset: usize, count: usize) -> Result<Vec<[f32; 4]>, Error> {
     let size = count * 6;
     if offset + size > data.len() {
@@ -446,38 +444,51 @@ fn read_small_tree_48bit_quats(data: &[u8], offset: usize, count: usize) -> Resu
 
     Ok((0..count).map(|i| {
         let o = offset + i * 6;
-        let m1 = u16::from_le_bytes(data[o..o + 2].try_into().unwrap()) as u64;
-        let m2 = u16::from_le_bytes(data[o + 2..o + 4].try_into().unwrap()) as u64;
-        let m3 = u16::from_le_bytes(data[o + 4..o + 6].try_into().unwrap()) as u64;
-
-        let packed = m1 | (m2 << 16) | (m3 << 32);
-        decode_small_tree_quat_48(packed)
+        let s0 = u16::from_le_bytes(data[o..o + 2].try_into().unwrap());
+        let s1 = u16::from_le_bytes(data[o + 2..o + 4].try_into().unwrap());
+        let s2 = u16::from_le_bytes(data[o + 4..o + 6].try_into().unwrap());
+        decode_small_tree_quat_48(s0, s1, s2)
     }).collect())
 }
 
-fn decode_small_tree_quat_48(packed: u64) -> [f32; 4] {
-    const SCALE: f32 = 23170.0;
-    const RANGE: f32 = std::f32::consts::FRAC_1_SQRT_2; // 0.707106781186
+/// Decode SmallTree48BitQuat from 3 × u16.
+/// Bit layout (confirmed via Ghidra FUN_14659d660):
+///   u16[0] bits 0-14: v0 (15 bits), bit 15: sign/carry for v1
+///   u16[1] bits 0-13: v1 (combined with bit 15 of u16[0]), bits 14-15: partial v2
+///   u16[2] bits 0-13: v2 (combined with bits 14-15 of u16[1]), bits 14-15: largest index
+/// Scale: DAT_1487b1534 = 1/23170.0, offset: DAT_147a60420 = 1/sqrt(2)
+/// Lookup table at DAT_1487a9900: [1,2,3, 0,2,3, 0,1,3, 0,1,2]
+/// Output: [x, y, z, w] with reconstructed component at index position.
+fn decode_small_tree_quat_48(s0: u16, s1: u16, s2: u16) -> [f32; 4] {
+    const INV_SCALE: f32 = 1.0 / 23170.0;
+    const RANGE: f32 = std::f32::consts::FRAC_1_SQRT_2;
 
-    // 3-bit index of largest component in [w,x,y,z] order
-    let largest_idx = (packed >> 45) & 0x7;
-    // 3 × 15-bit stored components (the 3 smallest)
-    let v0 = ((packed >> 0) & 0x7FFF) as f32 / SCALE - RANGE;
-    let v1 = ((packed >> 15) & 0x7FFF) as f32 / SCALE - RANGE;
-    let v2 = ((packed >> 30) & 0x7FFF) as f32 / SCALE - RANGE;
+    // 2-bit index from top of 3rd short
+    let idx = (s2 >> 14) as usize;
 
-    // Reconstruct the 4th (largest) component from unit quaternion constraint
-    let w_sq = 1.0 - v0 * v0 - v1 * v1 - v2 * v2;
+    // Extract 3 × 15-bit values with cross-word boundaries (matching Ghidra exactly):
+    // v0 = u16[0] & 0x7FFF
+    let raw0 = (s0 & 0x7FFF) as f32 * INV_SCALE - RANGE;
+    // v1 = (u16[1] * 2 - (i16(u16[0]) >> 15)) & 0x7FFF  (borrows sign bit from u16[0])
+    let raw1 = ((s1 as u32).wrapping_mul(2).wrapping_sub((s0 as i16 >> 15) as u32) & 0x7FFF) as f32 * INV_SCALE - RANGE;
+    // v2 = ((u16[1] >> 14) + i16(u16[2]) * 4) & 0x7FFF
+    let raw2 = ((s1 >> 14) as u32).wrapping_add((s2 as i16 as i32 as u32).wrapping_mul(4));
+    let raw2 = (raw2 & 0x7FFF) as f32 * INV_SCALE - RANGE;
+
+    // Reconstruct the largest component
+    let w_sq = 1.0 - raw0 * raw0 - raw1 * raw1 - raw2 * raw2;
     let largest = if w_sq > 0.0 { w_sq.sqrt() } else { 0.0 };
 
-    // The 3-bit index uses [w,x,y,z] convention (0=W, 1=X, 2=Y, 3=Z).
-    // Remap to [x,y,z,w] output order and insert reconstructed component.
-    match largest_idx {
-        0 => [v0, v1, v2, largest], // W largest → output [x, y, z, W]
-        1 => [largest, v0, v1, v2], // X largest → output [X, y, z, w]
-        2 => [v0, largest, v1, v2], // Y largest → output [x, Y, z, w]
-        _ => [v0, v1, largest, v2], // Z largest → output [x, y, Z, w]
-    }
+    // Placement via lookup table: idx determines where reconstructed goes
+    // Table: [1,2,3, 0,2,3, 0,1,3, 0,1,2]
+    const TABLE: [[u8; 3]; 4] = [[1,2,3], [0,2,3], [0,1,3], [0,1,2]];
+    let slots = TABLE[idx];
+    let mut q = [0.0f32; 4];
+    q[slots[0] as usize] = raw0;
+    q[slots[1] as usize] = raw1;
+    q[slots[2] as usize] = raw2;
+    q[idx] = largest;
+    q
 }
 
 // ─── Position key reading ───────────────────────────────────────────────────
@@ -511,19 +522,14 @@ fn read_position_keys(data: &[u8], offset: usize, count: usize, format_flags: u1
     }
 }
 
-/// SNORM full positions: 24-byte header (channelMask Vec3 + scale Vec3), then 6 bytes per key.
-/// Decode: channelMask[i] + (snorm / 32767.0) * scale[i]
-/// channelMask provides the offset (center), scale provides the half-range.
+/// SNORM full positions: 24-byte header (scale Vec3 + offset Vec3), then 6 bytes per key (u16 × 3).
+/// Confirmed via Ghidra: `value = (float)(u16) * scale + offset`
 fn read_snorm_full_positions(data: &[u8], offset: usize, count: usize) -> Result<Vec<[f32; 3]>, Error> {
     if offset + 24 + count * 6 > data.len() {
         return Err(Error::Other(format!("SNORM full positions overflow at 0x{offset:x}")));
     }
-    let center = read_vec3(data, offset);
-    let scale = read_vec3(data, offset + 12);
-
-    // Log header for debugging SNORM issues
-    log::debug!("SNORM full: center=[{:.4},{:.4},{:.4}] scale=[{:.4},{:.4},{:.4}] count={count}",
-        center[0], center[1], center[2], scale[0], scale[1], scale[2]);
+    let scale = read_vec3(data, offset);
+    let pos_offset = read_vec3(data, offset + 12);
 
     Ok((0..count).map(|i| {
         let o = offset + 24 + i * 6;
@@ -531,28 +537,28 @@ fn read_snorm_full_positions(data: &[u8], offset: usize, count: usize) -> Result
         let uy = u16::from_le_bytes(data[o + 2..o + 4].try_into().unwrap());
         let uz = u16::from_le_bytes(data[o + 4..o + 6].try_into().unwrap());
         [
-            center[0] + (ux as f32 / 65535.0 * 2.0 - 1.0) * scale[0],
-            center[1] + (uy as f32 / 65535.0 * 2.0 - 1.0) * scale[1],
-            center[2] + (uz as f32 / 65535.0 * 2.0 - 1.0) * scale[2],
+            ux as f32 * scale[0] + pos_offset[0],
+            uy as f32 * scale[1] + pos_offset[1],
+            uz as f32 * scale[2] + pos_offset[2],
         ]
     }).collect())
 }
 
-/// SNORM packed positions: 24-byte header (channelMask Vec3 + scale Vec3) + variable bytes per key.
-/// Only encodes channels that are active (channelMask < FLT_MAX sentinel).
-/// Decode: channelMask[i] + (snorm / 32767.0) * scale[i]
+/// SNORM packed positions: 24-byte header (scale Vec3 + offset Vec3) + variable u16 per key.
+/// Inactive channels have scale == FLT_MAX; their value is offset directly.
+/// Confirmed via Ghidra: `value = (float)(u16) * scale + offset`
 fn read_snorm_packed_positions(data: &[u8], offset: usize, count: usize) -> Result<Vec<[f32; 3]>, Error> {
     if offset + 24 > data.len() {
         return Err(Error::Other(format!("SNORM packed header overflow at 0x{offset:x}")));
     }
-    let center = read_vec3(data, offset);
-    let scale = read_vec3(data, offset + 12);
+    let scale = read_vec3(data, offset);
+    let pos_offset = read_vec3(data, offset + 12);
 
     const FLT_MAX_SENTINEL: f32 = 3.0e38;
     let active: [bool; 3] = [
-        center[0].abs() < FLT_MAX_SENTINEL,
-        center[1].abs() < FLT_MAX_SENTINEL,
-        center[2].abs() < FLT_MAX_SENTINEL,
+        scale[0].abs() < FLT_MAX_SENTINEL,
+        scale[1].abs() < FLT_MAX_SENTINEL,
+        scale[2].abs() < FLT_MAX_SENTINEL,
     ];
     let bytes_per_key: usize = active.iter().filter(|&&a| a).count() * 2;
 
@@ -563,13 +569,12 @@ fn read_snorm_packed_positions(data: &[u8], offset: usize, count: usize) -> Resu
 
     Ok((0..count).map(|i| {
         let o = data_start + i * bytes_per_key;
-        let mut pos = [0.0f32; 3];
+        let mut pos = pos_offset; // inactive channels get offset directly
         let mut byte_offset = 0;
         for ch in 0..3 {
             if active[ch] {
-                // Read as unsigned u16 [0..65535] and map to [center-|scale|, center+|scale|]
                 let uv = u16::from_le_bytes(data[o + byte_offset..o + byte_offset + 2].try_into().unwrap());
-                pos[ch] = center[ch] + (uv as f32 / 65535.0 * 2.0 - 1.0) * scale[ch];
+                pos[ch] = uv as f32 * scale[ch] + pos_offset[ch];
                 byte_offset += 2;
             }
         }
