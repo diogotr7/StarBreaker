@@ -1075,13 +1075,28 @@ impl GlbBuilder {
 
         let joint_base = self.nodes_json.len() as u32;
 
-        // 1. Create joint nodes.
-        // Use identity transforms — DBA animation keyframes provide the correct
-        // local transforms at each frame. The rest pose comes from frame 0.
+        // 1. Create joint nodes with LOCAL transforms (rest pose from .chr).
         for (i, bone) in bones.iter().enumerate() {
+            let (world_rot, world_pos) = world_transforms[i];
+
+            let (local_pos, local_rot) = if bone.parent_index >= 0
+                && (bone.parent_index as usize) < bones.len()
+            {
+                let pi = bone.parent_index as usize;
+                let (parent_rot, parent_pos) = world_transforms[pi];
+                let inv_parent = parent_rot.inverse();
+                (inv_parent * (world_pos - parent_pos), inv_parent * world_rot)
+            } else {
+                (world_pos, world_rot)
+            };
+
             let node_idx = self.nodes_json.len() as u32;
             self.nodes_json.push(json::Node {
                 name: Some(bone.name.clone()),
+                translation: Some(local_pos.into()),
+                rotation: Some(json::scene::UnitQuaternion([
+                    local_rot.x, local_rot.y, local_rot.z, local_rot.w,
+                ])),
                 ..Default::default()
             });
 
