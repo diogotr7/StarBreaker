@@ -9,10 +9,12 @@ fn main() {
         eprintln!("Usage: entity_to_glb <entity_name> [output.glb] [options]");
         eprintln!();
         eprintln!("Options:");
-        eprintln!("  --no-textures     Skip texture embedding");
+        eprintln!("  --no-textures     Downgrade to colors-only materials (no texture embedding)");
+        eprintln!("  --no-materials    Strip all material data (plain white surfaces)");
+        eprintln!("  --no-interior     Skip interior geometry from socpak containers");
+        eprintln!("  --no-attachments  Skip attached items (weapons, thrusters, etc.)");
         eprintln!("  --mip N           Use texture mip level N (0=full, 2=1/4 res, 4=1/16 res)");
         eprintln!("  --lod N           Use LOD level N (0=highest detail, 1+=lower)");
-        eprintln!("  --no-interior     Skip interior geometry from socpak containers");
         eprintln!();
         eprintln!("Example: entity_to_glb AEGS_Gladius gladius.glb --lod 1 --mip 2");
         std::process::exit(1);
@@ -25,10 +27,10 @@ fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--no-textures" => opts.include_textures = false,
-            "--no-normals" => opts.include_normals = false,
+            "--no-textures" => opts.material_mode = starbreaker_gltf::MaterialMode::Colors,
+            "--no-materials" => opts.material_mode = starbreaker_gltf::MaterialMode::None,
             "--no-interior" => opts.include_interior = false,
-            "--no-materials" => opts.include_materials = false,
+            "--no-attachments" => opts.include_attachments = false,
             "--dump-hierarchy" => dump_hierarchy = true,
             "--mip" => {
                 i += 1;
@@ -52,8 +54,8 @@ fn main() {
         .cloned()
         .unwrap_or_else(|| format!("{entity_name}.glb"));
     eprintln!(
-        "Options: include_textures={}, mip={}, lod={}, interior={}",
-        opts.include_textures, opts.texture_mip, opts.lod_level, opts.include_interior
+        "Options: material_mode={:?}, mip={}, lod={}, interior={}, attachments={}",
+        opts.material_mode, opts.texture_mip, opts.lod_level, opts.include_interior, opts.include_attachments
     );
 
     // Load P4k (auto-discovers from SC_DATA_P4K env var or default install locations)

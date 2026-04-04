@@ -105,15 +105,11 @@ fn depth_limit_preserves_gladius_loadout() {
 
     // Export must succeed with geometry
     let opts = starbreaker_gltf::ExportOptions {
-        include_textures: false,
-        texture_mip: 0,
-        lod_level: 0,
+        material_mode: starbreaker_gltf::MaterialMode::Colors,
         include_interior: false,
-        include_normals: true,
-        include_lights: false,
-        include_tangents: true,
-        include_materials: true,
-        experimental_textures: false,
+        lod_level: 0,
+        texture_mip: 0,
+        ..Default::default()
     };
     let result = starbreaker_gltf::assemble_glb_with_loadout(&db, &p4k, record, &tree, &opts)
         .expect("Gladius export failed");
@@ -177,15 +173,11 @@ fn depth_limit_preserves_idris_p_collector_military() {
 
     // Export must succeed
     let opts = starbreaker_gltf::ExportOptions {
-        include_textures: false,
-        texture_mip: 0,
-        lod_level: 2,
+        material_mode: starbreaker_gltf::MaterialMode::Colors,
         include_interior: false,
-        include_normals: true,
-        include_lights: false,
-        include_tangents: true,
-        include_materials: true,
-        experimental_textures: false,
+        lod_level: 2,
+        texture_mip: 0,
+        ..Default::default()
     };
     let result = starbreaker_gltf::assemble_glb_with_loadout(&db, &p4k, record, &tree, &opts)
         .expect("Idris P Collector Military export failed");

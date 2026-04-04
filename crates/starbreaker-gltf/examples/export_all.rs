@@ -20,15 +20,11 @@ fn main() {
     std::fs::create_dir_all(&output_dir).expect("failed to create output dir");
 
     let opts = starbreaker_gltf::ExportOptions {
-        include_textures: true,
-        include_normals: true,
-        include_tangents: true,
-        include_interior: true,
-        include_lights: true,
-        include_materials: true,
-        experimental_textures: true,
-        texture_mip: 1,
+        material_mode: starbreaker_gltf::MaterialMode::Colors,
+        include_interior: false,
         lod_level: 1,
+        texture_mip: 1,
+        ..Default::default()
     };
 
     // Load P4k + DCB

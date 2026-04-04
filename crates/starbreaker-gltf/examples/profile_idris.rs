@@ -10,15 +10,11 @@ fn main() {
     env_logger::init();
 
     let opts = starbreaker_gltf::ExportOptions {
-        include_textures: true,
-        include_normals: true,
-        include_tangents: true,
+        material_mode: starbreaker_gltf::MaterialMode::Textures,
         include_interior: true,
-        include_lights: true,
-        include_materials: true,
-        experimental_textures: true,
-        texture_mip: 0,
         lod_level: 0,
+        texture_mip: 0,
+        ..Default::default()
     };
 
     eprintln!("Opening P4k...");

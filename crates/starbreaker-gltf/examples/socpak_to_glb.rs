@@ -9,25 +9,25 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "Usage: socpak_to_glb <search_pattern> [output.glb] [--no-textures] [--mip N] [--lod N]"
+            "Usage: socpak_to_glb <search_pattern> [output.glb] [--textures] [--mip N] [--lod N]"
         );
         eprintln!();
         eprintln!(
             "Finds all .socpak files matching the pattern in the P4k and exports them as a single GLB."
         );
-        eprintln!("Example: socpak_to_glb grimhex grimhex.glb --no-textures --lod 1");
+        eprintln!("Example: socpak_to_glb grimhex grimhex.glb --textures --lod 1");
         std::process::exit(1);
     }
 
     let mut positional = Vec::new();
     let mut opts = starbreaker_gltf::ExportOptions {
-        include_textures: false,
+        material_mode: starbreaker_gltf::MaterialMode::Colors,
         ..Default::default()
     };
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--no-textures" => opts.include_textures = false,
+            "--textures" => opts.material_mode = starbreaker_gltf::MaterialMode::Textures,
             "--mip" => {
                 i += 1;
                 opts.texture_mip = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(2);
