@@ -416,6 +416,7 @@ mod tests {
                 colors: None,
                 tangents: None,
                 normals: None,
+                bone_mappings: None,
             },
         };
 

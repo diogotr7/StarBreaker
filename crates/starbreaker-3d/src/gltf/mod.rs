@@ -250,6 +250,7 @@ mod tests {
             normals: None,
             tangents: None,
             colors: None,
+            bone_mappings: None,
             submeshes: vec![SubMesh {
                 material_name: Some("test".into()),
                 material_id: 0,
@@ -476,6 +477,7 @@ mod tests {
             normals: None,
             tangents: None,
             colors: None,
+            bone_mappings: None,
             model_min: [0.0; 3],
             model_max: [3.0, 1.0, 0.0],
             scaling_min: [0.0; 3],
@@ -601,6 +603,7 @@ mod tests {
             normals: None,
             tangents: None,
             colors: None,
+            bone_mappings: None,
             model_min: [0.0; 3],
             model_max: [1.0; 3],
             scaling_min: [0.0; 3],

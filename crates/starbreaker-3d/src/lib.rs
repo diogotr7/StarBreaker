@@ -1,3 +1,4 @@
+pub mod animation;
 pub mod dequant;
 pub mod error;
 pub(crate) mod gltf;
