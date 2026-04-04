@@ -1075,20 +1075,11 @@ impl GlbBuilder {
 
         let joint_base = self.nodes_json.len() as u32;
 
-        // 1. Create joint nodes with LOCAL transforms (rest pose from .chr).
+        // 1. Create joint nodes with relative (local) transforms from .chr.
         for (i, bone) in bones.iter().enumerate() {
-            let (world_rot, world_pos) = world_transforms[i];
-
-            let (local_pos, local_rot) = if bone.parent_index >= 0
-                && (bone.parent_index as usize) < bones.len()
-            {
-                let pi = bone.parent_index as usize;
-                let (parent_rot, parent_pos) = world_transforms[pi];
-                let inv_parent = parent_rot.inverse();
-                (inv_parent * (world_pos - parent_pos), inv_parent * world_rot)
-            } else {
-                (world_pos, world_rot)
-            };
+            let rr = bone.relative_rotation;
+            let local_rot = glam::Quat::from_xyzw(rr[1], rr[2], rr[3], rr[0]); // wxyz → xyzw
+            let local_pos = glam::Vec3::from(bone.relative_position);
 
             let node_idx = self.nodes_json.len() as u32;
             self.nodes_json.push(json::Node {

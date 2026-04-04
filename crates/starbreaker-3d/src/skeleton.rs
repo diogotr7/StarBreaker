@@ -24,6 +24,10 @@ pub struct Bone {
     pub world_position: [f32; 3],
     /// World-space rotation quaternion [w, x, y, z]
     pub world_rotation: [f32; 4],
+    /// Parent-relative position [x, y, z]
+    pub relative_position: [f32; 3],
+    /// Parent-relative rotation quaternion [w, x, y, z]
+    pub relative_rotation: [f32; 4],
 }
 
 // ── Binary layouts ──────────────────────────────────────────────────────────
@@ -76,13 +80,15 @@ const _: () = {
 // ── Parsing ─────────────────────────────────────────────────────────────────
 
 impl RawQuatTrans {
-    fn to_bone(&self, name: String, controller_id: u32, parent_index: i32) -> Bone {
+    fn to_bone(&self, relative: &RawQuatTrans, name: String, controller_id: u32, parent_index: i32) -> Bone {
         Bone {
             name,
             controller_id,
             parent_index,
             world_rotation: [self.qw, self.qx, self.qy, self.qz],
             world_position: [self.tx, self.ty, self.tz],
+            relative_rotation: [relative.qw, relative.qx, relative.qy, relative.qz],
+            relative_position: [relative.tx, relative.ty, relative.tz],
         }
     }
 }
@@ -147,7 +153,7 @@ fn parse_compiled_bones_v900(data: &[u8]) -> Option<Vec<Bone>> {
     let bones: Vec<Bone> = entries
         .iter()
         .zip(names)
-        .map(|(e, name)| e.world.to_bone(name, e.controller_id, e.parent_index))
+        .map(|(e, name)| e.world.to_bone(&e.relative, name, e.controller_id, e.parent_index))
         .collect();
 
     log_bones(&bones, "v900");
@@ -174,15 +180,16 @@ fn parse_compiled_bones_v901(data: &[u8]) -> Option<Vec<Bone>> {
     let string_bytes = r.read_bytes(string_table_size).ok()?;
     let names = parse_bone_names(string_bytes, num_bones)?;
 
-    // Skip relative transforms, read world transforms
-    r.read_slice::<RawQuatTrans>(num_bones).ok()?; // relative (skip)
+    // Read relative transforms, then world transforms
+    let relative_transforms = r.read_slice::<RawQuatTrans>(num_bones).ok()?;
     let world_transforms = r.read_slice::<RawQuatTrans>(num_bones).ok()?;
 
     let bones: Vec<Bone> = entries
         .iter()
         .zip(names)
+        .zip(relative_transforms.iter())
         .zip(world_transforms.iter())
-        .map(|((e, name), qt)| qt.to_bone(name, e.controller_id, e.parent_index as i32))
+        .map(|(((e, name), rel), wld)| wld.to_bone(rel, name, e.controller_id, e.parent_index as i32))
         .collect();
 
     log_bones(&bones, "v901");
