@@ -6,3 +6,4 @@
 //! - `.caf` — IVO single animation clip (rare for ships, most are packed into .dba)
 
 pub mod chrparams;
+pub mod dba;
