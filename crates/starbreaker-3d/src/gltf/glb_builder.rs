@@ -1080,18 +1080,30 @@ impl GlbBuilder {
                 // formula (u16 * scale + offset) already includes the rest position offset.
                 self.prepare_node_for_animation(node_idx as usize);
 
-                // Rotation channel — raw absolute values
+                // Rotation channel — ensure quaternion hemisphere consistency.
+                // q and -q are the same rotation, but linear interpolation between
+                // opposite-sign quaternions takes the long path → visible jerk/wobble.
                 if !bone_channel.rotations.is_empty() {
                     let times: Vec<f32> = bone_channel
                         .rotations
                         .iter()
                         .map(|kf| kf.time / fps)
                         .collect();
-                    let values: Vec<[f32; 4]> = bone_channel
+                    let mut values: Vec<[f32; 4]> = bone_channel
                         .rotations
                         .iter()
                         .map(|kf| kf.value)
                         .collect();
+                    // Flip quaternions to shortest path
+                    for i in 1..values.len() {
+                        let dot = values[i-1][0] * values[i][0]
+                                + values[i-1][1] * values[i][1]
+                                + values[i-1][2] * values[i][2]
+                                + values[i-1][3] * values[i][3];
+                        if dot < 0.0 {
+                            values[i] = [-values[i][0], -values[i][1], -values[i][2], -values[i][3]];
+                        }
+                    }
 
                     let time_acc = self.write_time_accessor(&times);
                     let rot_acc = self.write_vec4_accessor(&values);
