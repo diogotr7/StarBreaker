@@ -215,8 +215,7 @@ impl GlbBuilder {
         &mut self,
         mut child: crate::types::EntityPayload,
         scene_nodes: &[json::Index<json::Node>],
-        include_tangents: bool,
-        experimental_textures: bool,
+        material_mode: crate::pipeline::MaterialMode,
         fallback_palette: Option<&crate::mtl::TintPalette>,
         load_textures: &mut dyn FnMut(Option<&crate::mtl::MtlFile>) -> Option<crate::types::MaterialTextures>,
     ) {
@@ -240,8 +239,7 @@ impl GlbBuilder {
                 textures.as_ref(),
                 child.palette.as_ref().or(fallback_palette),
                 Some(&child.entity_name),
-                include_tangents,
-                experimental_textures,
+                material_mode,
             );
             drop(textures);
             child.mesh.positions = Vec::new();
@@ -420,8 +418,7 @@ impl GlbBuilder {
     pub fn attach_interiors(
         &mut self,
         interiors: &crate::pipeline::LoadedInteriors,
-        include_tangents: bool,
-        experimental_textures: bool,
+        material_mode: crate::pipeline::MaterialMode,
         fallback_palette: Option<&crate::mtl::TintPalette>,
         load_textures: &mut dyn FnMut(Option<&crate::mtl::MtlFile>) -> Option<crate::types::MaterialTextures>,
         load_interior_mesh: &mut dyn FnMut(
@@ -485,8 +482,7 @@ impl GlbBuilder {
                         textures.as_ref(),
                         palette,
                         Some(&interiors.unique_cgfs[mesh_array_idx].name),
-                        include_tangents,
-                        experimental_textures,
+                        material_mode,
                     );
                     packed_cache.insert(cache_key, packed.mesh_idx);
                     Some(packed.mesh_idx)
@@ -548,9 +544,10 @@ impl GlbBuilder {
         textures: Option<&MaterialTextures>,
         palette: Option<&crate::mtl::TintPalette>,
         mesh_name: Option<&str>,
-        include_tangents: bool,
-        experimental_textures: bool,
+        material_mode: crate::pipeline::MaterialMode,
     ) -> PackedMeshInfo {
+        let include_tangents = material_mode.include_tangents();
+        let experimental_textures = material_mode.experimental();
         // Ensure 4-byte alignment
         while !self.bin.len().is_multiple_of(4) {
             self.bin.push(0);
@@ -1015,13 +1012,12 @@ impl GlbBuilder {
             }
             let eo = &metadata.export_options;
             map.insert("export_options".into(), serde_json::json!({
-                "texture_mip": eo.texture_mip,
+                "material_mode": eo.material_mode,
+                "format": eo.format,
                 "lod_level": eo.lod_level,
+                "texture_mip": eo.texture_mip,
+                "include_attachments": eo.include_attachments,
                 "include_interior": eo.include_interior,
-                "include_tangents": eo.include_tangents,
-                "include_lights": eo.include_lights,
-                "include_textures": eo.include_textures,
-                "include_materials": eo.include_materials,
             }));
             Some(serde_json::value::RawValue::from_string(
                 serde_json::to_string(&serde_json::Value::Object(map))?

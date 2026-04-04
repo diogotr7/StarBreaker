@@ -23,48 +23,86 @@ type EntityPayload = (
     Vec<crate::skeleton::Bone>,
 );
 
+/// How materials are represented in the export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaterialMode {
+    /// No material data. Plain white surfaces.
+    None,
+    /// Tint colors from palette/layers, NoDraw hidden, glass marked as transmissive.
+    /// Material names and full MTL properties preserved in glTF extras.
+    /// Deterministic — only acts on unambiguous shader signals.
+    Colors,
+    /// Colors + diffuse/normal/roughness textures for materials with direct texture slots.
+    /// Tangents included automatically. Deterministic.
+    Textures,
+    /// Everything we can extract, correctness not guaranteed.
+    /// Includes layer textures, alpha mode inference, decal classification, roughness defaults.
+    All,
+}
+
+/// Output format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportFormat {
+    /// Standard render export (GLB with materials).
+    Glb,
+    /// 3D print export (STL, no materials, no decals, glass solid, no interior).
+    Stl,
+}
+
 /// Options for controlling the export pipeline.
 #[derive(Debug, Clone)]
 pub struct ExportOptions {
-    /// Include texture loading and embedding (disable for much smaller GLB files).
-    pub include_textures: bool,
-    /// Texture mip level to use (0 = full resolution, 2 = 1/4 res, 4 = 1/16 res).
-    /// Higher values = smaller textures = smaller GLB.
-    pub texture_mip: u32,
-    /// Use a lower LOD level (0 = highest detail, 1+ = lower).
-    /// Looks for `_lod{N}` variants of geometry files in the P4k.
-    pub lod_level: u32,
-    /// Include interior geometry from socpak object containers.
+    /// Output format.
+    pub format: ExportFormat,
+    /// Material detail level.
+    pub material_mode: MaterialMode,
+    /// Include attached items (weapons, thrusters, landing gear, seats, etc.)
+    pub include_attachments: bool,
+    /// Include interior rooms from socpak object containers.
     pub include_interior: bool,
-    /// Include normal map textures.
-    pub include_normals: bool,
-    /// Include lights from interior socpak containers.
-    pub include_lights: bool,
-    /// Include tangent data (disable to reduce GLB size when tangents are not needed).
-    pub include_tangents: bool,
-    /// Include material data (.mtl parsing, palette colors, material extras).
-    /// When disabled, all surfaces are plain white — useful for debugging geometry.
-    pub include_materials: bool,
-    /// Use aggressive texture matching: apply normal/roughness textures even when
-    /// they come from a different texture set than the diffuse (different UV space).
-    /// This can produce specular noise on some materials but preserves more detail
-    /// on materials where the UV mapping happens to work.
-    pub experimental_textures: bool,
+    /// LOD level (0 = highest detail, 1+ = lower).
+    pub lod_level: u32,
+    /// Texture mip level (0 = full resolution, 2 = 1/4 res, 4 = 1/16 res).
+    pub texture_mip: u32,
 }
 
 impl Default for ExportOptions {
     fn default() -> Self {
         Self {
-            include_textures: true,
-            texture_mip: 2,
-            lod_level: 1,
+            format: ExportFormat::Glb,
+            material_mode: MaterialMode::Textures,
+            include_attachments: true,
             include_interior: true,
-            include_normals: true,
-            include_lights: true,
-            include_tangents: true,
-            include_materials: true,
-            experimental_textures: false,
+            lod_level: 1,
+            texture_mip: 2,
         }
+    }
+}
+
+impl MaterialMode {
+    pub fn include_materials(&self) -> bool {
+        !matches!(self, MaterialMode::None)
+    }
+    pub fn include_textures(&self) -> bool {
+        matches!(self, MaterialMode::Textures | MaterialMode::All)
+    }
+    pub fn include_tangents(&self) -> bool {
+        matches!(self, MaterialMode::Textures | MaterialMode::All)
+    }
+    pub fn include_normals(&self) -> bool {
+        matches!(self, MaterialMode::Textures | MaterialMode::All)
+    }
+    pub fn experimental(&self) -> bool {
+        matches!(self, MaterialMode::All)
+    }
+    pub fn include_lights(&self) -> bool {
+        !matches!(self, MaterialMode::None)
+    }
+}
+
+impl ExportFormat {
+    pub fn is_stl(&self) -> bool {
+        matches!(self, ExportFormat::Stl)
     }
 }
 
@@ -138,7 +176,7 @@ fn export_entity_payload_cached(
     let (mesh, mtl_file, textures, nmc, skeleton_bones, primary_path) =
         load_geometry_parts(p4k, &geometry_path, &material_path, opts, png_cache, false)?;
 
-    if !opts.include_materials {
+    if !opts.material_mode.include_materials() {
         return Ok((mesh, None, None, nmc, None, primary_path, material_path, skeleton_bones));
     }
 
@@ -177,7 +215,7 @@ fn export_entity_from_paths_cached(
     let (mesh, mtl_file, textures, nmc, _skeleton_bones, primary_path) =
         load_geometry_parts(p4k, geometry_path, material_path, opts, png_cache, use_model_bbox)?;
 
-    if !opts.include_materials {
+    if !opts.material_mode.include_materials() {
         return Ok((mesh, None, None, nmc, None, primary_path, material_path.to_string(), Vec::new()));
     }
 
@@ -214,7 +252,7 @@ fn load_geometry_parts(
         load_single_mesh(p4k, &primary_path, effective_material, opts, png_cache, use_model_bbox)?;
 
     // Merge additional parts (CA_BONE/CA_SKIN attachments from CDF).
-    let no_tex_opts = ExportOptions { include_textures: false, ..opts.clone() };
+    let no_tex_opts = ExportOptions { material_mode: MaterialMode::Colors, ..opts.clone() };
     for part in &resolved.parts[1..] {
         match load_single_mesh(p4k, &part.path, material_path, &no_tex_opts, png_cache, use_model_bbox) {
             Ok((mut extra_mesh, _, _, _)) => {
@@ -266,52 +304,59 @@ pub fn assemble_glb_with_loadout(
         export_entity_payload(db, p4k, record, opts)?;
     log::info!("[mem-pipeline] root exported: {} verts", root_mesh.positions.len());
 
+    // Check for equipped paint item and resolve its SubGeometry palette/material override.
+    let (root_palette, root_mtl) = resolve_paint_override(
+        db, p4k, record, &tree.root, root_palette, root_mtl, opts,
+    );
+
     // Load landing gear as separate child entities attached to NMC nodes.
     // Landing gear CDF geometry attaches to NMC helper bones (e.g. hardpoint_landing_gear_front).
     // Adding them as EntityPayloads lets the existing scene graph handle positioning.
     let no_tex_opts = ExportOptions {
-        include_textures: false,
+        material_mode: MaterialMode::Colors,
         ..opts.clone()
     };
     let gear_parts = query_landing_gear(db, record);
     let mut child_payloads: Vec<EntityPayload> = Vec::new();
-    for (gear_path, bone_name) in &gear_parts {
-        match export_entity_from_paths(p4k, gear_path, "", &no_tex_opts) {
-            Ok((gear_mesh, gear_mtl, _, gear_nmc, _, _, _, _)) => {
-                let verts = gear_mesh.positions.len();
-                child_payloads.push(EntityPayload {
-                    mesh: gear_mesh,
-                    materials: gear_mtl,
-                    textures: None,
-                    nmc: gear_nmc,
-                    palette: root_palette.clone(),
-                    bones: Vec::new(),
-                    entity_name: gear_path.rsplit('/').next().unwrap_or(gear_path).to_string(),
-                    parent_node_name: bone_name.clone(),
-                    parent_entity_name: resolved.entity_name.clone(),
-                    no_rotation: false,
-                    offset_position: [0.0; 3],
-                    offset_rotation: [0.0; 3],
-                });
-                log::info!("  landing gear '{gear_path}' → '{bone_name}', {verts} verts");
+    if opts.include_attachments {
+        for (gear_path, bone_name) in &gear_parts {
+            match export_entity_from_paths(p4k, gear_path, "", &no_tex_opts) {
+                Ok((gear_mesh, gear_mtl, _, gear_nmc, _, _, _, _)) => {
+                    let verts = gear_mesh.positions.len();
+                    child_payloads.push(EntityPayload {
+                        mesh: gear_mesh,
+                        materials: gear_mtl,
+                        textures: None,
+                        nmc: gear_nmc,
+                        palette: root_palette.clone(),
+                        bones: Vec::new(),
+                        entity_name: gear_path.rsplit('/').next().unwrap_or(gear_path).to_string(),
+                        parent_node_name: bone_name.clone(),
+                        parent_entity_name: resolved.entity_name.clone(),
+                        no_rotation: false,
+                        offset_position: [0.0; 3],
+                        offset_rotation: [0.0; 3],
+                    });
+                    log::info!("  landing gear '{gear_path}' → '{bone_name}', {verts} verts");
+                }
+                Err(e) => log::warn!("  landing gear '{gear_path}' failed: {e}"),
             }
-            Err(e) => log::warn!("  landing gear '{gear_path}' failed: {e}"),
         }
+        flatten_resolved_tree(
+            &resolved.children,
+            &resolved.entity_name,
+            None,
+            db,
+            p4k,
+            &no_tex_opts,
+            &mut child_payloads,
+        );
     }
-    flatten_resolved_tree(
-        &resolved.children,
-        &resolved.entity_name,
-        None,
-        db,
-        p4k,
-        &no_tex_opts,
-        &mut child_payloads,
-    );
     let total_child_verts: usize = child_payloads.iter().map(|c| c.mesh.positions.len()).sum();
     log::info!("[mem-pipeline] flattened: {} payloads, {} total verts", child_payloads.len(), total_child_verts);
 
     // Interior discovery (no mesh loading — JIT during GLB packing).
-    let loaded_interiors = if opts.include_interior {
+    let loaded_interiors = if opts.include_interior && !opts.format.is_stl() {
         load_interiors(db, p4k, record, opts)
     } else {
         LoadedInteriors::default()
@@ -331,12 +376,12 @@ pub fn assemble_glb_with_loadout(
     // Texture loading callback: called JIT per entity during GLB packing.
     let mut png_cache = PngCache::new();
     let mut tex_loader: Box<dyn FnMut(Option<&crate::mtl::MtlFile>) -> Option<MaterialTextures>> =
-        if !opts.include_textures {
+        if !opts.material_mode.include_textures() {
             Box::new(|_| None)
         } else {
             let mip = opts.texture_mip;
-            let include_normals = opts.include_normals;
-            let experimental_textures = opts.experimental_textures;
+            let include_normals = opts.material_mode.include_normals();
+            let experimental_textures = opts.material_mode.experimental();
             Box::new(move |mtl: Option<&crate::mtl::MtlFile>| {
                 mtl.map(|m| load_material_textures(p4k, m, mip, &mut png_cache, include_normals, experimental_textures))
             })
@@ -392,20 +437,18 @@ pub fn assemble_glb_with_loadout(
             load_interior_mesh: &mut interior_mesh_loader,
         },
         &crate::gltf::GlbOptions {
-            include_tangents: opts.include_tangents,
-            experimental_textures: opts.experimental_textures,
+            material_mode: opts.material_mode,
             metadata: crate::gltf::GlbMetadata {
                 entity_name: Some(resolved.entity_name.clone()),
                 geometry_path: Some(geometry_path.clone()),
                 material_path: Some(material_path.clone()),
                 export_options: crate::gltf::ExportOptionsMetadata {
-                    texture_mip: opts.texture_mip,
+                    material_mode: format!("{:?}", opts.material_mode),
+                    format: format!("{:?}", opts.format),
                     lod_level: opts.lod_level,
+                    texture_mip: opts.texture_mip,
+                    include_attachments: opts.include_attachments,
                     include_interior: opts.include_interior,
-                    include_tangents: opts.include_tangents,
-                    include_lights: opts.include_lights,
-                    include_textures: opts.include_textures,
-                    include_materials: opts.include_materials,
                 },
             },
             fallback_palette: root_palette,
@@ -582,10 +625,15 @@ pub fn resolve_loadout_meshes(
     let resolved = resolve_geometry_files(p4k, &geometry_path)?;
     let bones = load_skeleton(p4k, resolved.skeleton_path.as_deref());
 
-    // Check if mesh companion exists
+    // Check if mesh companion exists.
+    // CDF files don't have companion files — check for the CDF itself.
     let p4k_geom_path = datacore_path_to_p4k(&geometry_path);
-    let companion = resolve_companion_path(p4k, &p4k_geom_path, opts.lod_level);
-    let has_geometry = p4k.entry_case_insensitive(&companion).is_some();
+    let has_geometry = if geometry_path.to_lowercase().ends_with(".cdf") {
+        p4k.entry_case_insensitive(&p4k_geom_path).is_some()
+    } else {
+        let companion = resolve_companion_path(p4k, &p4k_geom_path, opts.lod_level);
+        p4k.entry_case_insensitive(&companion).is_some()
+    };
 
     // Load invisible port flags from vehicle XML (empty for non-vehicles).
     let invisible_ports = load_invisible_ports(db, p4k, record);
@@ -761,12 +809,17 @@ fn resolve_children(
             let (nmc, _mtl) = load_nmc_and_material(p4k, geom_path, mat_path);
 
             // Probe whether mesh companion exists.
+            // CDF files don't have companion files — check for the CDF itself.
             let p4k_geom_path = datacore_path_to_p4k(geom_path);
-            let companion = resolve_companion_path(p4k, &p4k_geom_path, opts.lod_level);
-            let has_geometry = p4k.entry_case_insensitive(&companion).is_some();
+            let has_geometry = if geom_path.to_lowercase().ends_with(".cdf") {
+                p4k.entry_case_insensitive(&p4k_geom_path).is_some()
+            } else {
+                let companion = resolve_companion_path(p4k, &p4k_geom_path, opts.lod_level);
+                p4k.entry_case_insensitive(&companion).is_some()
+            };
 
             if !has_geometry {
-                log::warn!("  {} -> mesh not found: {}", node.entity_name, companion);
+                log::warn!("  {} -> mesh not found: {}", node.entity_name, p4k_geom_path);
             }
 
             if node.offset_position != [0.0; 3] || node.offset_rotation != [0.0; 3] {
@@ -862,7 +915,7 @@ fn load_interiors(
         }
     }
 
-    build_interiors_from_payloads(db, &payloads, opts.include_lights)
+    build_interiors_from_payloads(db, &payloads, opts.material_mode.include_lights())
 }
 
 /// Shared interior building: dedup CGFs, resolve GUIDs, collect placements and lights.
@@ -1595,6 +1648,184 @@ fn resolve_material(
     try_load_mtl(p4k, &mtl_p4k_path)
 }
 
+/// Resolve paint-based palette and material overrides from an equipped paint item.
+///
+/// Finds the paint item in the loadout (hardpoint_paint), extracts the `@Tag` from its
+/// AttachDef.Tags, matches it against the entity's SubGeometry entries, and returns the
+/// overridden palette and material. Falls through to the originals if no paint is found.
+fn resolve_paint_override(
+    db: &Database,
+    p4k: &MappedP4k,
+    entity_record: &Record,
+    root_node: &starbreaker_datacore::loadout::LoadoutNode,
+    default_palette: Option<mtl::TintPalette>,
+    default_mtl: Option<mtl::MtlFile>,
+    opts: &ExportOptions,
+) -> (Option<mtl::TintPalette>, Option<mtl::MtlFile>) {
+    // Find paint item in loadout children.
+    let paint_node = root_node.children.iter()
+        .find(|c| c.item_port_name.to_lowercase().contains("paint"));
+    let Some(paint_node) = paint_node else {
+        return (default_palette, default_mtl);
+    };
+
+    // Query the paint item's AttachDef.Tags to find the @SubGeometry selector.
+    let tags = db
+        .compile_path::<String>(
+            paint_node.record.struct_id(),
+            "Components[SAttachableComponentParams].AttachDef.Tags",
+        )
+        .ok()
+        .and_then(|c| db.query_single::<String>(&c, &paint_node.record).ok().flatten())
+        .unwrap_or_default();
+
+    // Extract @Tag from the tags string (e.g., "Paint_Gladius @GladiusPirate" → "GladiusPirate").
+    let subgeo_tag = tags.split_whitespace()
+        .find_map(|t| t.strip_prefix('@'));
+    let Some(subgeo_tag) = subgeo_tag else {
+        log::info!("  paint '{}' has no @Tag in '{tags}', using default palette", paint_node.entity_name);
+        return (default_palette, default_mtl);
+    };
+    log::info!("  paint '{}' selects SubGeometry tag '{subgeo_tag}'", paint_node.entity_name);
+
+    // Query SubGeometry entries via the full SGeometryResourceParams component Value tree
+    // (same approach as loadout.rs query_sub_geometry — querying SubGeometry directly
+    // can truncate the array).
+    use starbreaker_datacore::query::value::Value;
+    let compiled = match db.compile_path::<Value>(
+        entity_record.struct_id(),
+        "Components[SGeometryResourceParams]",
+    ) {
+        Ok(c) => c,
+        Err(_) => return (default_palette, default_mtl),
+    };
+    let components = db.query::<Value>(&compiled, entity_record).unwrap_or_default();
+
+    for component in &components {
+        let geom_node = match get_value_field(component, "Geometry") {
+            Some(g) => g,
+            None => continue,
+        };
+        let sub_arr = match get_value_array(geom_node, "SubGeometry") {
+            Some(a) => a,
+            None => continue,
+        };
+
+        for (idx, sub) in sub_arr.iter().enumerate() {
+            let tag = get_value_string(sub, "Tags").unwrap_or("");
+            if !tag.eq_ignore_ascii_case(subgeo_tag) {
+                continue;
+            }
+            log::info!("  matched SubGeometry[{idx}] tag='{tag}'");
+
+            // Extract palette from this SubGeometry's Geometry.Palette.RootRecord.root
+            let palette = (|| -> Option<mtl::TintPalette> {
+                let geom_data = get_value_field(sub, "Geometry")?;
+                let palette_ref = get_value_field(geom_data, "Palette")?;
+                let root_record = get_value_field(palette_ref, "RootRecord")?;
+                let root = get_value_field(root_record, "root")?;
+
+                let read_entry = |entry_name: &str| -> [f32; 3] {
+                    let entry = get_value_field(root, entry_name);
+                    let tint = entry.and_then(|e| get_value_field(e, "tintColor"));
+                    let r = tint.and_then(|t| get_value_u8(t, "r")).unwrap_or(128);
+                    let g = tint.and_then(|t| get_value_u8(t, "g")).unwrap_or(128);
+                    let b = tint.and_then(|t| get_value_u8(t, "b")).unwrap_or(128);
+                    [
+                        srgb_to_linear(r as f32 / 255.0),
+                        srgb_to_linear(g as f32 / 255.0),
+                        srgb_to_linear(b as f32 / 255.0),
+                    ]
+                };
+                Some(mtl::TintPalette {
+                    primary: read_entry("entryA"),
+                    secondary: read_entry("entryB"),
+                    tertiary: read_entry("entryC"),
+                    glass: read_entry("glassColor"),
+                })
+            })();
+
+            if let Some(ref p) = palette {
+                log::info!(
+                    "  paint palette: primary=[{:.2},{:.2},{:.2}] secondary=[{:.2},{:.2},{:.2}]",
+                    p.primary[0], p.primary[1], p.primary[2],
+                    p.secondary[0], p.secondary[1], p.secondary[2],
+                );
+            }
+
+            // Extract material override.
+            let mtl_path = get_value_field(sub, "Geometry")
+                .and_then(|g| get_value_field(g, "Material"))
+                .and_then(|m| get_value_string(m, "path"))
+                .filter(|p| !p.is_empty());
+
+            let mtl = if let Some(mtl_path) = mtl_path {
+                log::info!("  paint material override: {mtl_path}");
+                let p4k_path = datacore_path_to_p4k(mtl_path);
+                try_load_mtl(p4k, &p4k_path).or(default_mtl)
+            } else {
+                default_mtl
+            };
+
+            return (palette.or(default_palette), mtl);
+        }
+    }
+
+    log::warn!("  paint tag '{subgeo_tag}' not found in SubGeometry entries");
+    (default_palette, default_mtl)
+}
+
+/// Helper: get an object field from a DataCore Value.
+fn get_value_field<'v, 'a>(val: &'v starbreaker_datacore::query::value::Value<'a>, name: &str) -> Option<&'v starbreaker_datacore::query::value::Value<'a>> {
+    if let starbreaker_datacore::query::value::Value::Object { fields, .. } = val {
+        fields.iter().find(|(k, _)| *k == name).map(|(_, v)| v)
+    } else {
+        None
+    }
+}
+
+/// Helper: get a string field from a DataCore Value.
+fn get_value_string<'a>(val: &starbreaker_datacore::query::value::Value<'a>, name: &str) -> Option<&'a str> {
+    if let starbreaker_datacore::query::value::Value::Object { fields, .. } = val {
+        for (k, v) in fields {
+            if *k == name {
+                if let starbreaker_datacore::query::value::Value::String(s) = v {
+                    return Some(s);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Helper: get an array field from a DataCore Value.
+fn get_value_array<'v, 'a>(val: &'v starbreaker_datacore::query::value::Value<'a>, name: &str) -> Option<&'v Vec<starbreaker_datacore::query::value::Value<'a>>> {
+    if let starbreaker_datacore::query::value::Value::Object { fields, .. } = val {
+        for (k, v) in fields {
+            if *k == name {
+                if let starbreaker_datacore::query::value::Value::Array(arr) = v {
+                    return Some(arr);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Helper: get a u8 field from a DataCore Value.
+fn get_value_u8(val: &starbreaker_datacore::query::value::Value, name: &str) -> Option<u8> {
+    if let starbreaker_datacore::query::value::Value::Object { fields, .. } = val {
+        for (k, v) in fields {
+            if *k == name {
+                if let starbreaker_datacore::query::value::Value::UInt8(n) = v {
+                    return Some(*n);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Query the default tint palette colors from a DataCore entity.
 ///
 /// Strategy:
@@ -1626,6 +1857,15 @@ fn query_tint_palette(db: &Database, record: &Record) -> Option<mtl::TintPalette
     query_tint_from_record(db, palette_record)
 }
 
+/// Convert an sRGB 0.0-1.0 component to linear.
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
 /// Read tint palette colors from a path through an entity record.
 fn query_tint_from_path(db: &Database, record: &Record, base: &str) -> Option<mtl::TintPalette> {
     let query_rgb = |entry: &str| -> [f32; 3] {
@@ -1635,7 +1875,8 @@ fn query_tint_from_path(db: &Database, record: &Record, base: &str) -> Option<mt
             if let Ok(compiled) = db.compile_path::<u8>(record.struct_id(), &path)
                 && let Ok(Some(v)) = db.query_single::<u8>(&compiled, record)
             {
-                rgb[i] = v as f32 / 255.0;
+                // DataCore stores palette colors as SRGB8 — convert to linear for glTF PBR.
+                rgb[i] = srgb_to_linear(v as f32 / 255.0);
             }
         }
         rgb
@@ -2204,12 +2445,12 @@ fn load_single_mesh(
 
     let (nmc, mtl_file) = load_nmc_and_material(p4k, geometry_path, material_path);
 
-    let textures = if !opts.include_textures {
+    let textures = if !opts.material_mode.include_textures() {
         None
     } else {
         mtl_file
             .as_ref()
-            .map(|mtl| load_material_textures(p4k, mtl, opts.texture_mip, png_cache, opts.include_normals, opts.experimental_textures))
+            .map(|mtl| load_material_textures(p4k, mtl, opts.texture_mip, png_cache, opts.material_mode.include_normals(), opts.material_mode.experimental()))
     };
 
     let mesh = crate::parse_skin_with_options(&mesh_bytes, use_model_bbox)?;
@@ -2245,10 +2486,10 @@ pub fn socpaks_to_glb(
         }
     }
 
-    let interiors = build_interiors_from_payloads(db, &payloads, opts.include_lights);
+    let interiors = build_interiors_from_payloads(db, &payloads, opts.material_mode.include_lights());
 
     let no_tex_opts = ExportOptions {
-        include_textures: false,
+        material_mode: MaterialMode::Colors,
         ..opts.clone()
     };
     let mut no_tex: Box<dyn FnMut(Option<&crate::mtl::MtlFile>) -> Option<MaterialTextures>> =
@@ -2298,20 +2539,18 @@ pub fn socpaks_to_glb(
             load_interior_mesh: &mut interior_mesh_loader,
         },
         &crate::gltf::GlbOptions {
-            include_tangents: false,
-            experimental_textures: opts.experimental_textures,
+            material_mode: opts.material_mode,
             metadata: crate::gltf::GlbMetadata {
                 entity_name: None,
                 geometry_path: None,
                 material_path: None,
                 export_options: crate::gltf::ExportOptionsMetadata {
-                    texture_mip: opts.texture_mip,
+                    material_mode: format!("{:?}", opts.material_mode),
+                    format: format!("{:?}", opts.format),
                     lod_level: opts.lod_level,
+                    texture_mip: opts.texture_mip,
+                    include_attachments: opts.include_attachments,
                     include_interior: opts.include_interior,
-                    include_tangents: false,
-                    include_lights: opts.include_lights,
-                    include_textures: false,
-                    include_materials: opts.include_materials,
                 },
             },
             fallback_palette: None,

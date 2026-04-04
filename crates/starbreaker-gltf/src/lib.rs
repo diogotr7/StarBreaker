@@ -13,7 +13,8 @@ pub mod types;
 
 pub use error::Error;
 pub use pipeline::{
-    ExportOptions, ExportResult, assemble_glb_with_loadout,
+    ExportFormat, ExportOptions, ExportResult, MaterialMode,
+    assemble_glb_with_loadout,
     dump_hierarchy, load_invisible_ports, resolve_loadout_meshes, socpaks_to_glb,
 };
 pub use types::Mesh;
@@ -76,20 +77,18 @@ pub fn skin_to_glb(data: &[u8]) -> Result<Vec<u8>, Error> {
             load_interior_mesh: &mut |_| None,
         },
         &gltf::GlbOptions {
-            include_tangents: true,
-            experimental_textures: false,
+            material_mode: pipeline::MaterialMode::None,
             metadata: gltf::GlbMetadata {
                 entity_name: None,
                 geometry_path: None,
                 material_path: None,
                 export_options: gltf::ExportOptionsMetadata {
-                    texture_mip: 0,
+                    material_mode: "None".to_string(),
+                    format: "Glb".to_string(),
                     lod_level: 0,
+                    texture_mip: 0,
+                    include_attachments: false,
                     include_interior: false,
-                    include_tangents: true,
-                    include_lights: false,
-                    include_textures: false,
-                    include_materials: false,
                 },
             },
             fallback_palette: None,

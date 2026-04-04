@@ -27,8 +27,7 @@ pub struct GlbLoaders<'a> {
 }
 
 pub struct GlbOptions {
-    pub include_tangents: bool,
-    pub experimental_textures: bool,
+    pub material_mode: crate::pipeline::MaterialMode,
     pub metadata: GlbMetadata,
     pub fallback_palette: Option<crate::mtl::TintPalette>,
 }
@@ -41,13 +40,12 @@ pub struct GlbMetadata {
 }
 
 pub struct ExportOptionsMetadata {
-    pub texture_mip: u32,
+    pub material_mode: String,
+    pub format: String,
     pub lod_level: u32,
+    pub texture_mip: u32,
+    pub include_attachments: bool,
     pub include_interior: bool,
-    pub include_tangents: bool,
-    pub include_lights: bool,
-    pub include_textures: bool,
-    pub include_materials: bool,
 }
 
 
@@ -142,8 +140,7 @@ pub fn write_glb(
             input.root_textures.as_ref(),
             input.root_palette.as_ref(),
             None,
-            opts.include_tangents,
-            opts.experimental_textures,
+            opts.material_mode,
         );
         drop(input.root_textures);
 
@@ -173,7 +170,7 @@ pub fn write_glb(
     // ---- Attach child entities ----
     let num_children = input.children.len();
     for (i, child) in input.children.into_iter().enumerate() {
-        builder.attach_child_entity(child, &scene_nodes, opts.include_tangents, opts.experimental_textures, opts.fallback_palette.as_ref(), loaders.load_textures);
+        builder.attach_child_entity(child, &scene_nodes, opts.material_mode, opts.fallback_palette.as_ref(), loaders.load_textures);
         if (i + 1) % 20 == 0 || i + 1 == num_children {
             log::info!("[mem-phase] children {}/{}, bin={}MB", i + 1, num_children, builder.bin.len() / 1_048_576);
         }
@@ -182,7 +179,7 @@ pub fn write_glb(
     log::info!("[mem-phase] children done, bin={}MB", builder.bin.len() / 1_048_576);
     // ---- Interior mesh instancing ----
     let (interior_scene_nodes, all_lights) = builder.attach_interiors(
-        &input.interiors, opts.include_tangents, opts.experimental_textures, opts.fallback_palette.as_ref(), loaders.load_textures, loaders.load_interior_mesh,
+        &input.interiors, opts.material_mode, opts.fallback_palette.as_ref(), loaders.load_textures, loaders.load_interior_mesh,
     );
     scene_nodes.extend(interior_scene_nodes);
     log::info!("[mem-phase] interiors done, bin={}MB", builder.bin.len() / 1_048_576);
@@ -269,20 +266,18 @@ mod tests {
 
     fn default_opts() -> GlbOptions {
         GlbOptions {
-            include_tangents: true,
-            experimental_textures: false,
+            material_mode: crate::pipeline::MaterialMode::None,
             metadata: GlbMetadata {
                 entity_name: None,
                 geometry_path: None,
                 material_path: None,
                 export_options: ExportOptionsMetadata {
-                    texture_mip: 0,
+                    material_mode: "None".to_string(),
+                    format: "Glb".to_string(),
                     lod_level: 0,
+                    texture_mip: 0,
+                    include_attachments: false,
                     include_interior: false,
-                    include_tangents: true,
-                    include_lights: false,
-                    include_textures: false,
-                    include_materials: true,
                 },
             },
             fallback_palette: None,
