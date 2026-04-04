@@ -948,13 +948,16 @@ impl GlbBuilder {
     /// glTF requires TRS (not matrix) on nodes targeted by animation channels.
     /// If the node already has rotation/translation set, or has no matrix, this is a no-op.
     /// Decompose an animated node's matrix into TRS (required by glTF spec).
-    /// No-op if the node already uses TRS or has no matrix.
-    fn prepare_node_for_animation(&mut self, node_idx: usize) {
+    /// Returns the rest translation (needed to offset additive position keyframes).
+    fn prepare_node_for_animation(&mut self, node_idx: usize) -> glam::Vec3 {
         let node = &self.nodes_json[node_idx];
+        // Already decomposed
         if node.rotation.is_some() || node.translation.is_some() {
-            return;
+            return node.translation.map(glam::Vec3::from).unwrap_or(glam::Vec3::ZERO);
         }
-        let Some(matrix) = node.matrix else { return };
+        let Some(matrix) = node.matrix else {
+            return glam::Vec3::ZERO;
+        };
 
         let m = glam::Mat4::from_cols_array(&matrix);
         let (scale, rot, trans) = m.to_scale_rotation_translation();
@@ -966,6 +969,7 @@ impl GlbBuilder {
         if (scale - glam::Vec3::ONE).length() > 1e-5 {
             node.scale = Some(scale.into());
         }
+        trans
     }
 
     /// Write an array of f32 scalar values to the binary buffer and create an accessor.
@@ -1077,9 +1081,9 @@ impl GlbBuilder {
                 matched += 1;
 
                 // Decompose node's matrix to TRS (required by glTF for animation targets).
-                // DBA animations provide ABSOLUTE local transforms — they replace
-                // the node's TRS, matching the rest pose at frame 0.
-                self.prepare_node_for_animation(node_idx as usize);
+                // DBA rotations are ABSOLUTE (replace the node's rotation).
+                // DBA positions are ADDITIVE (delta from rest position).
+                let rest_pos = self.prepare_node_for_animation(node_idx as usize);
 
                 // Rotation channel — raw absolute values
                 if !bone_channel.rotations.is_empty() {
@@ -1118,7 +1122,7 @@ impl GlbBuilder {
                     });
                 }
 
-                // Translation channel — raw absolute values
+                // Translation channel — additive: rest_pos + anim_delta
                 if !bone_channel.positions.is_empty() {
                     let times: Vec<f32> = bone_channel
                         .positions
@@ -1128,7 +1132,10 @@ impl GlbBuilder {
                     let values: Vec<[f32; 3]> = bone_channel
                         .positions
                         .iter()
-                        .map(|kf| kf.value)
+                        .map(|kf| {
+                            let delta = glam::Vec3::from(kf.value);
+                            (rest_pos + delta).into()
+                        })
                         .collect();
 
                     let time_acc = self.write_time_accessor(&times);
