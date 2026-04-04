@@ -947,31 +947,69 @@ impl GlbBuilder {
     ///
     /// glTF requires TRS (not matrix) on nodes targeted by animation channels.
     /// If the node already has rotation/translation set, or has no matrix, this is a no-op.
-    fn decompose_node_matrix_to_trs(&mut self, node_idx: usize) {
+    /// Prepare a node for animation by moving its rest pose into a static parent.
+    ///
+    /// DBA animations provide transforms relative to the bind pose (identity).
+    /// If we just replace the node's TRS with animation values, we lose the rest
+    /// pose offset (e.g. the ladder jumps from the cockpit entrance to the origin).
+    ///
+    /// Solution: insert a static parent that holds the rest pose matrix, and set
+    /// the animated node to identity TRS. The animation then operates relative to
+    /// the rest pose, which is correct.
+    ///
+    /// ```text
+    /// Before:  [parent] → [node  matrix=rest_pose, mesh=M]
+    /// After:   [parent] → [node_rest  matrix=rest_pose] → [node  trs=identity, mesh=M, animated]
+    /// ```
+    fn reparent_for_animation(&mut self, node_idx: usize) {
         let node = &self.nodes_json[node_idx];
-        // Already has TRS — nothing to do.
+        // Already set up for animation (has TRS, no matrix).
         if node.rotation.is_some() || node.translation.is_some() {
             return;
         }
+        // No matrix = identity rest pose, just convert to TRS.
         let Some(matrix) = node.matrix else {
+            // Identity rest pose — no reparenting needed, just ensure TRS.
             return;
         };
-        let m = glam::Mat4::from_cols_array(&matrix);
-        let (scale, rotation, translation) = m.to_scale_rotation_translation();
 
+        // Create a new static parent node that holds the rest pose.
+        let rest_node_idx = self.nodes_json.len() as u32;
+        let rest_name = self.nodes_json[node_idx].name.as_ref()
+            .map(|n| format!("{n}_rest"))
+            .unwrap_or_else(|| format!("anim_rest_{node_idx}"));
+
+        self.nodes_json.push(json::Node {
+            name: Some(rest_name),
+            matrix: Some(matrix),
+            children: Some(vec![json::Index::new(node_idx as u32)]),
+            ..Default::default()
+        });
+
+        // Find the current parent of this node and replace the child reference.
+        let target = json::Index::new(node_idx as u32);
+        let replacement = json::Index::new(rest_node_idx);
+        for i in 0..self.nodes_json.len() - 1 { // -1 to skip the new rest node
+            let has_child = self.nodes_json[i].children.as_ref()
+                .map(|ch| ch.contains(&target))
+                .unwrap_or(false);
+            if has_child {
+                if let Some(ref mut children) = self.nodes_json[i].children {
+                    for c in children.iter_mut() {
+                        if *c == target {
+                            *c = replacement;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+
+        // Clear the animated node's matrix, set to identity TRS.
         let node = &mut self.nodes_json[node_idx];
         node.matrix = None;
-        node.translation = Some(translation.into());
-        node.rotation = Some(json::scene::UnitQuaternion([
-            rotation.x, rotation.y, rotation.z, rotation.w,
-        ]));
-        // Only set scale if it's not ~identity.
-        if (scale.x - 1.0).abs() > 1e-5
-            || (scale.y - 1.0).abs() > 1e-5
-            || (scale.z - 1.0).abs() > 1e-5
-        {
-            node.scale = Some(scale.into());
-        }
+        // Leave translation/rotation/scale as None = identity.
+        // The animation will replace these.
     }
 
     /// Write an array of f32 scalar values to the binary buffer and create an accessor.
@@ -1083,7 +1121,7 @@ impl GlbBuilder {
                 matched += 1;
 
                 // Ensure this node uses TRS instead of matrix (required for animation targets).
-                self.decompose_node_matrix_to_trs(node_idx as usize);
+                self.reparent_for_animation(node_idx as usize);
 
                 // Rotation channel
                 if !bone_channel.rotations.is_empty() {
