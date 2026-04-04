@@ -28,6 +28,8 @@ pub(crate) struct GlbBuilder {
     pub mat_dedup: HashMap<String, u32>,
     /// Maps lowercased node/entity name → glTF node index.
     pub node_name_to_idx: HashMap<String, u32>,
+    /// Completed animation clips ready for glTF serialization.
+    pub animations_json: Vec<json::Animation>,
 }
 
 /// Texture dedup cache: maps (len, first_8_bytes_hash) → (offset, len) in binary buffer.
@@ -89,6 +91,7 @@ impl GlbBuilder {
             tex_cache: HashMap::new(),
             mat_dedup: HashMap::new(),
             node_name_to_idx: HashMap::new(),
+            animations_json: Vec::new(),
         }
     }
 
@@ -938,6 +941,242 @@ impl GlbBuilder {
         root_nodes
     }
 
+    // ─── Animation export helpers ────────────────────────────────────────────
+
+    /// Decompose a node's 4x4 column-major matrix into TRS components.
+    ///
+    /// glTF requires TRS (not matrix) on nodes targeted by animation channels.
+    /// If the node already has rotation/translation set, or has no matrix, this is a no-op.
+    fn decompose_node_matrix_to_trs(&mut self, node_idx: usize) {
+        let node = &self.nodes_json[node_idx];
+        // Already has TRS — nothing to do.
+        if node.rotation.is_some() || node.translation.is_some() {
+            return;
+        }
+        let Some(matrix) = node.matrix else {
+            return;
+        };
+        let m = glam::Mat4::from_cols_array(&matrix);
+        let (scale, rotation, translation) = m.to_scale_rotation_translation();
+
+        let node = &mut self.nodes_json[node_idx];
+        node.matrix = None;
+        node.translation = Some(translation.into());
+        node.rotation = Some(json::scene::UnitQuaternion([
+            rotation.x, rotation.y, rotation.z, rotation.w,
+        ]));
+        // Only set scale if it's not ~identity.
+        if (scale.x - 1.0).abs() > 1e-5
+            || (scale.y - 1.0).abs() > 1e-5
+            || (scale.z - 1.0).abs() > 1e-5
+        {
+            node.scale = Some(scale.into());
+        }
+    }
+
+    /// Write an array of f32 scalar values to the binary buffer and create an accessor.
+    /// Returns the accessor index. Used for animation time tracks.
+    fn write_time_accessor(&mut self, times: &[f32]) -> u32 {
+        let byte_offset = self.bin.len();
+        for &t in times {
+            self.bin.extend_from_slice(&t.to_le_bytes());
+        }
+        // Pad to 4-byte alignment (f32 is already 4 bytes, but be safe).
+        while self.bin.len() % 4 != 0 {
+            self.bin.push(0);
+        }
+        let byte_length = times.len() * 4;
+        let min = times.iter().copied().reduce(f32::min).unwrap_or(0.0);
+        let max = times.iter().copied().reduce(f32::max).unwrap_or(0.0);
+        super::add_vertex_accessor(
+            &mut self.buffer_views,
+            &mut self.accessors,
+            byte_offset,
+            byte_length,
+            times.len(),
+            json::accessor::Type::Scalar,
+            Some((&[min], &[max])),
+        )
+        .expect("write_time_accessor: times must not be empty")
+    }
+
+    /// Write an array of [f32; 4] values and create a VEC4 accessor. Returns accessor index.
+    fn write_vec4_accessor(&mut self, values: &[[f32; 4]]) -> u32 {
+        let byte_offset = self.bin.len();
+        for v in values {
+            for &f in v {
+                self.bin.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+        while self.bin.len() % 4 != 0 {
+            self.bin.push(0);
+        }
+        let byte_length = values.len() * 16;
+        super::add_vertex_accessor(
+            &mut self.buffer_views,
+            &mut self.accessors,
+            byte_offset,
+            byte_length,
+            values.len(),
+            json::accessor::Type::Vec4,
+            None,
+        )
+        .expect("write_vec4_accessor: values must not be empty")
+    }
+
+    /// Write an array of [f32; 3] values and create a VEC3 accessor. Returns accessor index.
+    fn write_vec3_accessor(&mut self, values: &[[f32; 3]]) -> u32 {
+        let byte_offset = self.bin.len();
+        for v in values {
+            for &f in v {
+                self.bin.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+        while self.bin.len() % 4 != 0 {
+            self.bin.push(0);
+        }
+        let byte_length = values.len() * 12;
+        super::add_vertex_accessor(
+            &mut self.buffer_views,
+            &mut self.accessors,
+            byte_offset,
+            byte_length,
+            values.len(),
+            json::accessor::Type::Vec3,
+            None,
+        )
+        .expect("write_vec3_accessor: values must not be empty")
+    }
+
+    /// Add animation clips to the GLB.
+    ///
+    /// Builds a CRC32 reverse-map from `node_name_to_idx`, then for each clip
+    /// writes time/rotation/translation accessors and creates glTF animation
+    /// samplers + channels targeting the matched skeleton/NMC nodes.
+    pub fn add_animations(&mut self, clips: &[crate::animation::dba::AnimationClip]) {
+        if clips.is_empty() {
+            return;
+        }
+
+        // Build reverse map: bone_hash (CRC32 of lowercase name) → glTF node index.
+        let hash_to_node: HashMap<u32, u32> = self
+            .node_name_to_idx
+            .iter()
+            .map(|(name, &idx)| (crc32fast::hash(name.as_bytes()), idx))
+            .collect();
+
+        for clip in clips {
+            let fps = if clip.fps > 0.0 { clip.fps } else { 30.0 };
+            let mut samplers: Vec<json::animation::Sampler> = Vec::new();
+            let mut channels: Vec<json::animation::Channel> = Vec::new();
+            let mut matched = 0u32;
+            let mut skipped = 0u32;
+
+            for bone_channel in &clip.channels {
+                let Some(&node_idx) = hash_to_node.get(&bone_channel.bone_hash) else {
+                    skipped += 1;
+                    continue;
+                };
+                matched += 1;
+
+                // Ensure this node uses TRS instead of matrix (required for animation targets).
+                self.decompose_node_matrix_to_trs(node_idx as usize);
+
+                // Rotation channel
+                if !bone_channel.rotations.is_empty() {
+                    let times: Vec<f32> = bone_channel
+                        .rotations
+                        .iter()
+                        .map(|kf| kf.time / fps)
+                        .collect();
+                    let values: Vec<[f32; 4]> = bone_channel
+                        .rotations
+                        .iter()
+                        .map(|kf| kf.value)
+                        .collect();
+
+                    let time_acc = self.write_time_accessor(&times);
+                    let rot_acc = self.write_vec4_accessor(&values);
+
+                    let sampler_idx = samplers.len() as u32;
+                    samplers.push(json::animation::Sampler {
+                        input: json::Index::new(time_acc),
+                        interpolation: Checked::Valid(json::animation::Interpolation::Linear),
+                        output: json::Index::new(rot_acc),
+                        extensions: None,
+                        extras: Default::default(),
+                    });
+                    channels.push(json::animation::Channel {
+                        sampler: json::Index::new(sampler_idx),
+                        target: json::animation::Target {
+                            node: json::Index::new(node_idx),
+                            path: Checked::Valid(json::animation::Property::Rotation),
+                            extensions: None,
+                            extras: Default::default(),
+                        },
+                        extensions: None,
+                        extras: Default::default(),
+                    });
+                }
+
+                // Translation channel
+                if !bone_channel.positions.is_empty() {
+                    let times: Vec<f32> = bone_channel
+                        .positions
+                        .iter()
+                        .map(|kf| kf.time / fps)
+                        .collect();
+                    let values: Vec<[f32; 3]> = bone_channel
+                        .positions
+                        .iter()
+                        .map(|kf| kf.value)
+                        .collect();
+
+                    let time_acc = self.write_time_accessor(&times);
+                    let pos_acc = self.write_vec3_accessor(&values);
+
+                    let sampler_idx = samplers.len() as u32;
+                    samplers.push(json::animation::Sampler {
+                        input: json::Index::new(time_acc),
+                        interpolation: Checked::Valid(json::animation::Interpolation::Linear),
+                        output: json::Index::new(pos_acc),
+                        extensions: None,
+                        extras: Default::default(),
+                    });
+                    channels.push(json::animation::Channel {
+                        sampler: json::Index::new(sampler_idx),
+                        target: json::animation::Target {
+                            node: json::Index::new(node_idx),
+                            path: Checked::Valid(json::animation::Property::Translation),
+                            extensions: None,
+                            extras: Default::default(),
+                        },
+                        extensions: None,
+                        extras: Default::default(),
+                    });
+                }
+            }
+
+            log::info!(
+                "animation '{}': {} bones matched, {} skipped, {} samplers",
+                clip.name,
+                matched,
+                skipped,
+                samplers.len()
+            );
+
+            if !channels.is_empty() {
+                self.animations_json.push(json::Animation {
+                    name: Some(clip.name.clone()),
+                    channels,
+                    samplers,
+                    extensions: None,
+                    extras: Default::default(),
+                });
+            }
+        }
+    }
+
     /// Finalize the GLB: add coordinate root, serialize JSON + binary to GLB bytes.
     /// `lights` is the list of KHR_lights_punctual lights (empty for no lights).
     pub fn finalize(
@@ -1046,6 +1285,7 @@ impl GlbBuilder {
             textures: self.textures_json,
             samplers: self.samplers_json,
             nodes: self.nodes_json,
+            animations: self.animations_json,
             scenes: scenes_json,
             scene: Some(json::Index::new(0)),
             extensions_used,
