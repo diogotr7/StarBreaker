@@ -127,6 +127,78 @@ pub(crate) fn is_identity_or_zero(m: &[[f32; 4]; 3]) -> bool {
     true
 }
 
+/// Build a standalone skinned animated GLB from CDF components.
+///
+/// This bypasses the full loadout pipeline and directly combines a `.skin` mesh,
+/// `.chr` skeleton, and optional `.dba` animation into a single GLB file with
+/// proper skin (joint nodes + inverse bind matrices) and animation tracks.
+pub fn skinned_mesh_to_glb(
+    skin_data: &[u8],
+    chr_data: &[u8],
+    dba_data: Option<&[u8]>,
+) -> Result<Vec<u8>, Error> {
+    let mesh = crate::parse_skin(skin_data)?;
+    let bones = crate::skeleton::parse_skeleton(chr_data)
+        .ok_or_else(|| Error::Other("Failed to parse skeleton".into()))?;
+
+    let animations = match dba_data {
+        Some(data) => crate::animation::dba::parse_dba(data)?.clips,
+        None => Vec::new(),
+    };
+
+    let mut builder = GlbBuilder::new();
+    let packed = builder.pack_mesh(
+        &mesh,
+        None,
+        None,
+        None,
+        None,
+        crate::pipeline::MaterialMode::None,
+    );
+
+    // Create mesh node
+    let mesh_node_idx = builder.nodes_json.len() as u32;
+    builder.nodes_json.push(json::Node {
+        mesh: Some(json::Index::new(packed.mesh_idx)),
+        name: Some("Mesh".into()),
+        ..Default::default()
+    });
+
+    // Add skin (creates joint nodes + inverse bind matrices)
+    let controller_id_map = builder.add_skin(&bones, mesh_node_idx);
+
+    // Add animations (matched by controller_id)
+    if !animations.is_empty() {
+        builder.add_animations(&animations, Some(&controller_id_map));
+    }
+
+    // Scene nodes: mesh + root joint nodes
+    let mut scene_nodes = vec![json::Index::new(mesh_node_idx)];
+    for bone in bones.iter() {
+        if bone.parent_index < 0 || bone.parent_index as usize >= bones.len() {
+            if let Some(&joint_idx) = controller_id_map.get(&bone.controller_id) {
+                scene_nodes.push(json::Index::new(joint_idx));
+            }
+        }
+    }
+
+    let metadata = GlbMetadata {
+        entity_name: None,
+        geometry_path: None,
+        material_path: None,
+        export_options: ExportOptionsMetadata {
+            material_mode: "None".into(),
+            format: "Glb".into(),
+            lod_level: 0,
+            texture_mip: 0,
+            include_attachments: false,
+            include_interior: false,
+        },
+    };
+
+    builder.finalize(scene_nodes, Vec::new(), &metadata)
+}
+
 pub fn write_glb(
     input: GlbInput,
     loaders: &mut GlbLoaders<'_>,

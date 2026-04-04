@@ -17,6 +17,7 @@ pub use pipeline::{
     assemble_glb_with_loadout, assemble_glb_with_loadout_and_animations, export_entity_payload,
     dump_hierarchy, load_invisible_ports, resolve_loadout_meshes, socpaks_to_glb,
 };
+pub use gltf::skinned_mesh_to_glb;
 pub use types::Mesh;
 
 use starbreaker_chunks::ChunkFile;
