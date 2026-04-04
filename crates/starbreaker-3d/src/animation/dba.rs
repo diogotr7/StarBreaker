@@ -63,14 +63,17 @@ struct ControllerEntry {
     pos_data_offset: u32,
 }
 
-/// DBA metadata entry (44 bytes per animation).
+/// DBA metadata entry (48 = 0x30 bytes per animation).
 #[derive(Debug)]
 struct DbaMetaEntry {
     flags: u32,
+    _unknown0: u32,
+    _unknown1: u32,
     fps: u16,
     num_controllers: u16,
-    _unknown1: u32,
     _unknown2: u32,
+    _unknown3: u32,
+    end_frame: u32,
     start_rotation: [f32; 4],
     start_position: [f32; 3],
 }
@@ -289,37 +292,58 @@ fn parse_single_block(data: &[u8], start: usize, bone_count: usize) -> Result<Ve
 // ─── DBA metadata parsing ───────────────────────────────────────────────────
 
 /// Parse DBA metadata chunk: animation entries + name string table.
+/// Entry layout (0x30 = 48 bytes each):
+/// ```text
+/// +0x00: flags (u32)
+/// +0x04: unknown (u32)
+/// +0x08: unknown (u32)
+/// +0x0C: fps (u16)
+/// +0x0E: num_controllers (u16)
+/// +0x10: unknown (u32)
+/// +0x14: unknown (u32)
+/// +0x18: end_frame (u32)
+/// +0x1C: start_rotation (quat, 16 bytes)
+/// +0x2C: start_position (vec3, 12 bytes)
+/// ```
 fn parse_dba_metadata(data: &[u8]) -> Vec<(String, DbaMetaEntry)> {
     if data.len() < 4 {
         return Vec::new();
     }
     let count = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
-    let entry_size = 44;
+    let entry_size = 48; // 0x30
     let entries_end = 4 + count * entry_size;
     if entries_end > data.len() {
+        log::warn!("DBA metadata: {} entries × {} bytes = {} exceeds chunk size {}",
+            count, entry_size, entries_end, data.len());
         return Vec::new();
     }
 
     let mut entries = Vec::with_capacity(count);
     for i in 0..count {
         let o = 4 + i * entry_size;
+        // v0x902 layout: 48 bytes per entry
+        // +0x00: unknown0 (4), +0x04: unknown1 (4), +0x08: flags (4)
+        // +0x0C: fps (2), +0x0E: num_controllers (2)
+        // +0x10: unknown2 (4), +0x14: unknown3 (4)
+        // +0x18: end_frame (4)
+        // +0x1C: start_rotation (16)
+        // +0x2C: padding/unknown (4)
         let entry = DbaMetaEntry {
-            flags: u32::from_le_bytes(data[o..o + 4].try_into().unwrap()),
-            fps: u16::from_le_bytes(data[o + 4..o + 6].try_into().unwrap()),
-            num_controllers: u16::from_le_bytes(data[o + 6..o + 8].try_into().unwrap()),
-            _unknown1: u32::from_le_bytes(data[o + 8..o + 12].try_into().unwrap()),
-            _unknown2: u32::from_le_bytes(data[o + 12..o + 16].try_into().unwrap()),
+            _unknown0: u32::from_le_bytes(data[o..o + 4].try_into().unwrap()),
+            _unknown1: u32::from_le_bytes(data[o + 4..o + 8].try_into().unwrap()),
+            flags: u32::from_le_bytes(data[o + 8..o + 12].try_into().unwrap()),
+            fps: u16::from_le_bytes(data[o + 12..o + 14].try_into().unwrap()),
+            num_controllers: u16::from_le_bytes(data[o + 14..o + 16].try_into().unwrap()),
+            _unknown2: u32::from_le_bytes(data[o + 16..o + 20].try_into().unwrap()),
+            _unknown3: u32::from_le_bytes(data[o + 20..o + 24].try_into().unwrap()),
+            end_frame: u32::from_le_bytes(data[o + 24..o + 28].try_into().unwrap()),
             start_rotation: [
-                f32::from_le_bytes(data[o + 16..o + 20].try_into().unwrap()),
-                f32::from_le_bytes(data[o + 20..o + 24].try_into().unwrap()),
-                f32::from_le_bytes(data[o + 24..o + 28].try_into().unwrap()),
                 f32::from_le_bytes(data[o + 28..o + 32].try_into().unwrap()),
-            ],
-            start_position: [
                 f32::from_le_bytes(data[o + 32..o + 36].try_into().unwrap()),
                 f32::from_le_bytes(data[o + 36..o + 40].try_into().unwrap()),
                 f32::from_le_bytes(data[o + 40..o + 44].try_into().unwrap()),
             ],
+            start_position: [0.0; 3], // Not stored in v0x902 (only 4 bytes left)
         };
         entries.push(entry);
     }
