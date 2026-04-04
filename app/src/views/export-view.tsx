@@ -32,24 +32,18 @@ export function ExportView() {
 
   const lod = useExportStore((s) => s.lod);
   const mip = useExportStore((s) => s.mip);
-  const includeTextures = useExportStore((s) => s.includeTextures);
+  const materialMode = useExportStore((s) => s.materialMode);
+  const format = useExportStore((s) => s.format);
+  const includeAttachments = useExportStore((s) => s.includeAttachments);
   const includeInterior = useExportStore((s) => s.includeInterior);
-  const includeNormals = useExportStore((s) => s.includeNormals);
-  const includeLights = useExportStore((s) => s.includeLights);
-  const includeTangents = useExportStore((s) => s.includeTangents);
-  const includeMaterials = useExportStore((s) => s.includeMaterials);
-  const experimentalTextures = useExportStore((s) => s.experimentalTextures);
   const threads = useExportStore((s) => s.threads);
   const outputDir = useExportStore((s) => s.outputDir);
   const setLod = useExportStore((s) => s.setLod);
   const setMip = useExportStore((s) => s.setMip);
-  const setIncludeTextures = useExportStore((s) => s.setIncludeTextures);
+  const setMaterialMode = useExportStore((s) => s.setMaterialMode);
+  const setFormat = useExportStore((s) => s.setFormat);
+  const setIncludeAttachments = useExportStore((s) => s.setIncludeAttachments);
   const setIncludeInterior = useExportStore((s) => s.setIncludeInterior);
-  const setIncludeNormals = useExportStore((s) => s.setIncludeNormals);
-  const setIncludeLights = useExportStore((s) => s.setIncludeLights);
-  const setIncludeTangents = useExportStore((s) => s.setIncludeTangents);
-  const setIncludeMaterials = useExportStore((s) => s.setIncludeMaterials);
-  const setExperimentalTextures = useExportStore((s) => s.setExperimentalTextures);
   const setThreads = useExportStore((s) => s.setThreads);
   const setOutputDir = useExportStore((s) => s.setOutputDir);
 
@@ -141,13 +135,10 @@ export function ExportView() {
       output_dir: outputDir!,
       lod,
       mip,
-      include_textures: includeTextures,
+      material_mode: materialMode,
+      format: format,
+      include_attachments: includeAttachments,
       include_interior: includeInterior,
-      include_normals: includeNormals,
-      include_lights: includeLights,
-      include_tangents: includeTangents,
-      include_materials: includeMaterials,
-      experimental_textures: experimentalTextures,
       threads,
     };
     setExporting(true);
@@ -389,17 +380,47 @@ export function ExportView() {
             </div>
           </div>
 
+          {/* Material Mode */}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs text-text-sub">Material Mode</span>
+            <select
+              value={materialMode}
+              onChange={(e) => setMaterialMode(e.target.value)}
+              className="bg-surface/50 border border-border rounded-md px-3 py-1.5 text-xs text-text
+                         outline-none focus:ring-1 focus:ring-ring cursor-pointer"
+            >
+              <option value="none">None</option>
+              <option value="colors">Colors</option>
+              <option value="textures">Textures</option>
+              <option value="all">All</option>
+            </select>
+          </div>
+
+          {/* Format */}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs text-text-sub">Format</span>
+            <select
+              value={format}
+              onChange={(e) => setFormat(e.target.value)}
+              className="bg-surface/50 border border-border rounded-md px-3 py-1.5 text-xs text-text
+                         outline-none focus:ring-1 focus:ring-ring cursor-pointer"
+            >
+              <option value="glb">GLB</option>
+              <option value="stl">STL</option>
+            </select>
+          </div>
+
           {/* Toggles */}
           <div className="flex flex-col gap-2">
             <label className="flex items-center gap-2.5 cursor-pointer group">
               <input
                 type="checkbox"
-                checked={includeTextures}
-                onChange={(e) => setIncludeTextures(e.target.checked)}
+                checked={includeAttachments}
+                onChange={(e) => setIncludeAttachments(e.target.checked)}
                 className="accent-accent w-3.5 h-3.5 rounded"
               />
               <span className="text-xs text-text-sub group-hover:text-text transition-colors">
-                Include textures
+                Include attachments
               </span>
             </label>
             <label className="flex items-center gap-2.5 cursor-pointer group">
@@ -411,61 +432,6 @@ export function ExportView() {
               />
               <span className="text-xs text-text-sub group-hover:text-text transition-colors">
                 Include interiors
-              </span>
-            </label>
-            <label className="flex items-center gap-2.5 cursor-pointer group">
-              <input
-                type="checkbox"
-                checked={includeNormals}
-                onChange={(e) => setIncludeNormals(e.target.checked)}
-                className="accent-accent w-3.5 h-3.5 rounded"
-              />
-              <span className="text-xs text-text-sub group-hover:text-text transition-colors">
-                Include normals
-              </span>
-            </label>
-            <label className="flex items-center gap-2.5 cursor-pointer group">
-              <input
-                type="checkbox"
-                checked={includeLights}
-                onChange={(e) => setIncludeLights(e.target.checked)}
-                className="accent-accent w-3.5 h-3.5 rounded"
-              />
-              <span className="text-xs text-text-sub group-hover:text-text transition-colors">
-                Include lights
-              </span>
-            </label>
-            <label className="flex items-center gap-2.5 cursor-pointer group">
-              <input
-                type="checkbox"
-                checked={includeTangents}
-                onChange={(e) => setIncludeTangents(e.target.checked)}
-                className="accent-accent w-3.5 h-3.5 rounded"
-              />
-              <span className="text-xs text-text-sub group-hover:text-text transition-colors">
-                Include tangents
-              </span>
-            </label>
-            <label className="flex items-center gap-2.5 cursor-pointer group">
-              <input
-                type="checkbox"
-                checked={includeMaterials}
-                onChange={(e) => setIncludeMaterials(e.target.checked)}
-                className="accent-accent w-3.5 h-3.5 rounded"
-              />
-              <span className="text-xs text-text-sub group-hover:text-text transition-colors">
-                Include materials
-              </span>
-            </label>
-            <label className="flex items-center gap-2.5 cursor-pointer group" title="Apply normal/roughness textures even when UV spaces may not match. Can cause specular noise on some materials.">
-              <input
-                type="checkbox"
-                checked={experimentalTextures}
-                onChange={(e) => setExperimentalTextures(e.target.checked)}
-                className="accent-accent w-3.5 h-3.5 rounded"
-              />
-              <span className="text-xs text-text-sub group-hover:text-text transition-colors">
-                Experimental textures
               </span>
             </label>
           </div>

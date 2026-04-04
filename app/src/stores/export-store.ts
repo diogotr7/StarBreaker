@@ -27,24 +27,18 @@ interface ExportState {
   // Export options
   lod: number;
   mip: number;
-  includeTextures: boolean;
+  materialMode: string;
+  format: string;
+  includeAttachments: boolean;
   includeInterior: boolean;
-  includeNormals: boolean;
-  includeLights: boolean;
-  includeTangents: boolean;
-  includeMaterials: boolean;
-  experimentalTextures: boolean;
   threads: number;
   outputDir: string | null;
   setLod: (v: number) => void;
   setMip: (v: number) => void;
-  setIncludeTextures: (v: boolean) => void;
+  setMaterialMode: (v: string) => void;
+  setFormat: (v: string) => void;
+  setIncludeAttachments: (v: boolean) => void;
   setIncludeInterior: (v: boolean) => void;
-  setIncludeNormals: (v: boolean) => void;
-  setIncludeLights: (v: boolean) => void;
-  setIncludeTangents: (v: boolean) => void;
-  setIncludeMaterials: (v: boolean) => void;
-  setExperimentalTextures: (v: boolean) => void;
   setThreads: (v: number) => void;
   setOutputDir: (dir: string | null) => void;
 
@@ -66,13 +60,10 @@ type PersistedExportState = Pick<
   ExportState,
   | "lod"
   | "mip"
-  | "includeTextures"
+  | "materialMode"
+  | "format"
+  | "includeAttachments"
   | "includeInterior"
-  | "includeNormals"
-  | "includeLights"
-  | "includeTangents"
-  | "includeMaterials"
-  | "experimentalTextures"
   | "threads"
   | "outputDir"
   | "hideNpcVariants"
@@ -116,24 +107,18 @@ export const useExportStore = create<ExportState>()(
 
   lod: 1,
   mip: 2,
-  includeTextures: true,
+  materialMode: "textures",
+  format: "glb",
+  includeAttachments: true,
   includeInterior: true,
-  includeNormals: true,
-  includeLights: true,
-  includeTangents: true,
-  includeMaterials: true,
-  experimentalTextures: false,
   threads: 0,
   outputDir: null,
   setLod: (v) => set({ lod: v }),
   setMip: (v) => set({ mip: v }),
-  setIncludeTextures: (v) => set({ includeTextures: v }),
+  setMaterialMode: (v) => set({ materialMode: v }),
+  setFormat: (v) => set({ format: v }),
+  setIncludeAttachments: (v) => set({ includeAttachments: v }),
   setIncludeInterior: (v) => set({ includeInterior: v }),
-  setIncludeNormals: (v) => set({ includeNormals: v }),
-  setIncludeLights: (v) => set({ includeLights: v }),
-  setIncludeTangents: (v) => set({ includeTangents: v }),
-  setIncludeMaterials: (v) => set({ includeMaterials: v }),
-  setExperimentalTextures: (v) => set({ experimentalTextures: v }),
   setThreads: (v) => set({ threads: v }),
   setOutputDir: (dir) => set({ outputDir: dir }),
 
@@ -163,13 +148,10 @@ export const useExportStore = create<ExportState>()(
       partialize: (s) => ({
         lod: s.lod,
         mip: s.mip,
-        includeTextures: s.includeTextures,
+        materialMode: s.materialMode,
+        format: s.format,
+        includeAttachments: s.includeAttachments,
         includeInterior: s.includeInterior,
-        includeNormals: s.includeNormals,
-        includeLights: s.includeLights,
-        includeTangents: s.includeTangents,
-        includeMaterials: s.includeMaterials,
-        experimentalTextures: s.experimentalTextures,
         threads: s.threads,
         outputDir: s.outputDir,
         hideNpcVariants: s.hideNpcVariants,

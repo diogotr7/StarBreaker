@@ -115,13 +115,10 @@ export interface ExportRequest {
   output_dir: string;
   lod: number;
   mip: number;
-  include_textures: boolean;
+  material_mode: string;
+  format: string;
+  include_attachments: boolean;
   include_interior: boolean;
-  include_normals: boolean;
-  include_lights: boolean;
-  include_tangents: boolean;
-  include_materials: boolean;
-  experimental_textures: boolean;
   threads: number;
 }
 
