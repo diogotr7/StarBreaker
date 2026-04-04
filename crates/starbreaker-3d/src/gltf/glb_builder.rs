@@ -1174,13 +1174,8 @@ impl GlbBuilder {
         self.nodes_json[mesh_node_idx as usize].skin =
             Some(json::Index::new(skin_idx));
 
-        // Attach skeleton root joint(s) as children of the mesh node so they
-        // are part of the scene graph (glTF requires joint nodes to be in the scene).
-        for (i, bone) in bones.iter().enumerate() {
-            if bone.parent_index < 0 {
-                self.append_child_to_node(mesh_node_idx, joint_base + i as u32);
-            }
-        }
+        // Note: caller must add root joint nodes to the scene (glTF requires
+        // joint nodes to be reachable from the scene graph).
 
         controller_id_map
     }
