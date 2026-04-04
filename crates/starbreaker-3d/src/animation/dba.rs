@@ -63,19 +63,27 @@ struct ControllerEntry {
     pos_data_offset: u32,
 }
 
-/// DBA metadata entry (48 = 0x30 bytes per animation).
+/// DBA metadata entry (48 = 0x30 bytes per animation, v0x902).
+///
+/// Layout (verified by hex dump of Gladius DBA):
+/// ```text
+/// +0x00: flags0 (u32)
+/// +0x04: flags1 (u32)
+/// +0x08: fps (u16)
+/// +0x0A: num_controllers (u16)
+/// +0x0C: unknown_a (u16)
+/// +0x0E: unknown_b (u16)
+/// +0x10: unknown_c (u32)
+/// +0x14: end_frame (u32)
+/// +0x18: start_rotation (f32 × 4, quaternion)
+/// +0x28: padding/unknown (8 bytes)
+/// ```
 #[derive(Debug)]
 struct DbaMetaEntry {
-    flags: u32,
-    _unknown0: u32,
-    _unknown1: u32,
     fps: u16,
-    num_controllers: u16,
-    _unknown2: u32,
-    _unknown3: u32,
-    end_frame: u32,
-    start_rotation: [f32; 4],
-    start_position: [f32; 3],
+    _num_controllers: u16,
+    _end_frame: u32,
+    _start_rotation: [f32; 4],
 }
 
 /// IVO chunk type IDs for animation data.
@@ -104,7 +112,9 @@ pub fn parse_dba(data: &[u8]) -> Result<AnimationDatabase, Error> {
         return Err(Error::Other("No DBA data chunk found".into()));
     };
 
-    let data_bytes = ivo.chunk_data(db_data);
+    // Use file data from chunk offset (not bounded chunk_data) because DBA controller
+    // offsets can reference keyframe data that extends past the IVO chunk boundary.
+    let data_bytes = &ivo.file_data()[db_data.offset as usize..];
     let meta_bytes = db_meta_chunk.map(|c| ivo.chunk_data(c));
 
     // Parse metadata entries (animation names + fps).
@@ -247,21 +257,17 @@ fn parse_single_block(data: &[u8], start: usize, bone_count: usize) -> Result<Ve
 
     let mut channels = Vec::with_capacity(bone_count);
     for (i, (ctrl_offset, ctrl)) in controllers.iter().enumerate() {
-        if i == 0 && ctrl.num_rot_keys > 0 {
-            log::debug!("ctrl[0] at offset 0x{:x}: rot_keys={} rot_fmt=0x{:04x} rot_time_off=0x{:x} rot_data_off=0x{:x} -> abs data at 0x{:x}",
-                ctrl_offset, ctrl.num_rot_keys, ctrl.rot_format_flags,
-                ctrl.rot_time_offset, ctrl.rot_data_offset,
-                ctrl_offset + ctrl.rot_data_offset as usize);
-        }
-        // Offsets in the controller entry are relative to the start of the chunk data
-        // (not relative to the controller entry itself as in some other CryEngine formats).
+        // All controller offsets are relative to the start of the controller entry itself.
+        // (confirmed via cgf-converter: controllerStart + ctrl.RotDataOffset)
+        let base = *ctrl_offset;
+
         let rotations = if ctrl.num_rot_keys > 0 {
             let times = if ctrl.rot_time_offset > 0 {
-                read_time_keys(data, ctrl.rot_time_offset as usize, ctrl.num_rot_keys as usize, ctrl.rot_format_flags)?
+                read_time_keys(data, base + ctrl.rot_time_offset as usize, ctrl.num_rot_keys as usize, ctrl.rot_format_flags)?
             } else {
                 (0..ctrl.num_rot_keys as usize).map(|t| t as f32).collect()
             };
-            let values = read_rotation_keys(data, ctrl.rot_data_offset as usize, ctrl.num_rot_keys as usize, ctrl.rot_format_flags)?;
+            let values = read_rotation_keys(data, base + ctrl.rot_data_offset as usize, ctrl.num_rot_keys as usize, ctrl.rot_format_flags)?;
             times.into_iter().zip(values).map(|(t, v)| Keyframe { time: t, value: v }).collect()
         } else {
             Vec::new()
@@ -269,11 +275,11 @@ fn parse_single_block(data: &[u8], start: usize, bone_count: usize) -> Result<Ve
 
         let positions = if ctrl.num_pos_keys > 0 {
             let times = if ctrl.pos_time_offset > 0 {
-                read_time_keys(data, ctrl.pos_time_offset as usize, ctrl.num_pos_keys as usize, ctrl.pos_format_flags)?
+                read_time_keys(data, base + ctrl.pos_time_offset as usize, ctrl.num_pos_keys as usize, ctrl.pos_format_flags)?
             } else {
                 (0..ctrl.num_pos_keys as usize).map(|t| t as f32).collect()
             };
-            let values = read_position_keys(data, ctrl.pos_data_offset as usize, ctrl.num_pos_keys as usize, ctrl.pos_format_flags)?;
+            let values = read_position_keys(data, base + ctrl.pos_data_offset as usize, ctrl.num_pos_keys as usize, ctrl.pos_format_flags)?;
             times.into_iter().zip(values).map(|(t, v)| Keyframe { time: t, value: v }).collect()
         } else {
             Vec::new()
@@ -321,29 +327,16 @@ fn parse_dba_metadata(data: &[u8]) -> Vec<(String, DbaMetaEntry)> {
     let mut entries = Vec::with_capacity(count);
     for i in 0..count {
         let o = 4 + i * entry_size;
-        // v0x902 layout: 48 bytes per entry
-        // +0x00: unknown0 (4), +0x04: unknown1 (4), +0x08: flags (4)
-        // +0x0C: fps (2), +0x0E: num_controllers (2)
-        // +0x10: unknown2 (4), +0x14: unknown3 (4)
-        // +0x18: end_frame (4)
-        // +0x1C: start_rotation (16)
-        // +0x2C: padding/unknown (4)
         let entry = DbaMetaEntry {
-            _unknown0: u32::from_le_bytes(data[o..o + 4].try_into().unwrap()),
-            _unknown1: u32::from_le_bytes(data[o + 4..o + 8].try_into().unwrap()),
-            flags: u32::from_le_bytes(data[o + 8..o + 12].try_into().unwrap()),
-            fps: u16::from_le_bytes(data[o + 12..o + 14].try_into().unwrap()),
-            num_controllers: u16::from_le_bytes(data[o + 14..o + 16].try_into().unwrap()),
-            _unknown2: u32::from_le_bytes(data[o + 16..o + 20].try_into().unwrap()),
-            _unknown3: u32::from_le_bytes(data[o + 20..o + 24].try_into().unwrap()),
-            end_frame: u32::from_le_bytes(data[o + 24..o + 28].try_into().unwrap()),
-            start_rotation: [
+            fps: u16::from_le_bytes(data[o + 8..o + 10].try_into().unwrap()),
+            _num_controllers: u16::from_le_bytes(data[o + 10..o + 12].try_into().unwrap()),
+            _end_frame: u32::from_le_bytes(data[o + 20..o + 24].try_into().unwrap()),
+            _start_rotation: [
+                f32::from_le_bytes(data[o + 24..o + 28].try_into().unwrap()),
                 f32::from_le_bytes(data[o + 28..o + 32].try_into().unwrap()),
                 f32::from_le_bytes(data[o + 32..o + 36].try_into().unwrap()),
                 f32::from_le_bytes(data[o + 36..o + 40].try_into().unwrap()),
-                f32::from_le_bytes(data[o + 40..o + 44].try_into().unwrap()),
             ],
-            start_position: [0.0; 3], // Not stored in v0x902 (only 4 bytes left)
         };
         entries.push(entry);
     }
@@ -363,27 +356,23 @@ fn parse_dba_metadata(data: &[u8]) -> Vec<(String, DbaMetaEntry)> {
 
 /// Parse AnimInfo chunk (48 bytes).
 struct AnimInfo {
-    flags: u32,
     fps: u16,
-    num_bones: u16,
-    end_frame: u32,
 }
 
 fn parse_anim_info(data: &[u8]) -> AnimInfo {
     AnimInfo {
-        flags: u32::from_le_bytes(data[0..4].try_into().unwrap_or([0; 4])),
         fps: u16::from_le_bytes(data[4..6].try_into().unwrap_or([0; 2])),
-        num_bones: u16::from_le_bytes(data[6..8].try_into().unwrap_or([0; 2])),
-        end_frame: u32::from_le_bytes(data[12..16].try_into().unwrap_or([0; 4])),
     }
 }
 
 // ─── Time key reading ───────────────────────────────────────────────────────
 
 fn read_time_keys(data: &[u8], offset: usize, count: usize, format_flags: u16) -> Result<Vec<f32>, Error> {
-    let time_format = format_flags & 0xFF;
+    // cgf-converter: GetTimeFormat extracts low nibble (& 0x0F), not low byte
+    let time_format = format_flags & 0x0F;
     match time_format {
         // Format 0x00: byte array — each key is 1 byte, used directly as frame number
+        // (covers format flags 0x8040 → 0x40 & 0x0F = 0x00)
         0x00 => {
             if offset + count > data.len() {
                 return Err(Error::Other(format!("Time keys overflow at 0x{offset:x}")));
@@ -414,10 +403,20 @@ fn read_time_keys(data: &[u8], offset: usize, count: usize, format_flags: u16) -
 
 // ─── Rotation key reading ───────────────────────────────────────────────────
 
-fn read_rotation_keys(data: &[u8], offset: usize, count: usize, _format_flags: u16) -> Result<Vec<[f32; 4]>, Error> {
-    // IVO DBA/CAF always uses uncompressed quaternions (16 bytes each: x,y,z,w).
-    // The format flags control the TIME encoding, not the rotation compression.
-    read_uncompressed_quats(data, offset, count)
+fn read_rotation_keys(data: &[u8], offset: usize, count: usize, format_flags: u16) -> Result<Vec<[f32; 4]>, Error> {
+    // High byte of format_flags determines rotation compression:
+    //   0x80 = uncompressed quaternion (16 bytes per key)
+    //   0x82 = SmallTree48BitQuat (6 bytes per key)
+    // Low nibble determines time format (handled separately).
+    let rot_format = format_flags >> 8;
+    match rot_format {
+        0x80 => read_uncompressed_quats(data, offset, count),
+        0x82 => read_small_tree_48bit_quats(data, offset, count),
+        _ => {
+            log::warn!("Unknown rotation format 0x{rot_format:02x}, falling back to SmallTree48Bit");
+            read_small_tree_48bit_quats(data, offset, count)
+        }
+    }
 }
 
 fn read_uncompressed_quats(data: &[u8], offset: usize, count: usize) -> Result<Vec<[f32; 4]>, Error> {
@@ -460,22 +459,24 @@ fn decode_small_tree_quat_48(packed: u64) -> [f32; 4] {
     const SCALE: f32 = 23170.0;
     const RANGE: f32 = std::f32::consts::FRAC_1_SQRT_2; // 0.707106781186
 
-    // 3-bit index of largest component
+    // 3-bit index of largest component in [w,x,y,z] order
     let largest_idx = (packed >> 45) & 0x7;
-    // 3 × 15-bit values
+    // 3 × 15-bit stored components (the 3 smallest)
     let v0 = ((packed >> 0) & 0x7FFF) as f32 / SCALE - RANGE;
     let v1 = ((packed >> 15) & 0x7FFF) as f32 / SCALE - RANGE;
     let v2 = ((packed >> 30) & 0x7FFF) as f32 / SCALE - RANGE;
 
-    // Reconstruct the 4th component from unit quaternion constraint
+    // Reconstruct the 4th (largest) component from unit quaternion constraint
     let w_sq = 1.0 - v0 * v0 - v1 * v1 - v2 * v2;
-    let w = if w_sq > 0.0 { w_sq.sqrt() } else { 0.0 };
+    let largest = if w_sq > 0.0 { w_sq.sqrt() } else { 0.0 };
 
+    // The 3-bit index uses [w,x,y,z] convention (0=W, 1=X, 2=Y, 3=Z).
+    // Remap to [x,y,z,w] output order and insert reconstructed component.
     match largest_idx {
-        0 => [w, v0, v1, v2],
-        1 => [v0, w, v1, v2],
-        2 => [v0, v1, w, v2],
-        _ => [v0, v1, v2, w],
+        0 => [v0, v1, v2, largest], // W largest → output [x, y, z, W]
+        1 => [largest, v0, v1, v2], // X largest → output [X, y, z, w]
+        2 => [v0, largest, v1, v2], // Y largest → output [x, Y, z, w]
+        _ => [v0, v1, largest, v2], // Z largest → output [x, y, Z, w]
     }
 }
 
@@ -510,14 +511,14 @@ fn read_position_keys(data: &[u8], offset: usize, count: usize, format_flags: u1
     }
 }
 
-/// SNORM full positions: 24-byte header (min Vec3 + max Vec3), then 6 bytes per key (3 × i16 SNORM).
+/// SNORM full positions: 24-byte header (channelMask Vec3 + scale Vec3), then 6 bytes per key (3 × i16 SNORM).
+/// Decode: (snorm / 32767.0) * scale
 fn read_snorm_full_positions(data: &[u8], offset: usize, count: usize) -> Result<Vec<[f32; 3]>, Error> {
     if offset + 24 + count * 6 > data.len() {
         return Err(Error::Other(format!("SNORM full positions overflow at 0x{offset:x}")));
     }
-    let min = read_vec3(data, offset);
-    let max = read_vec3(data, offset + 12);
-    let range = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+    let _channel_mask = read_vec3(data, offset);
+    let scale = read_vec3(data, offset + 12);
 
     Ok((0..count).map(|i| {
         let o = offset + 24 + i * 6;
@@ -525,28 +526,28 @@ fn read_snorm_full_positions(data: &[u8], offset: usize, count: usize) -> Result
         let sy = i16::from_le_bytes(data[o + 2..o + 4].try_into().unwrap());
         let sz = i16::from_le_bytes(data[o + 4..o + 6].try_into().unwrap());
         [
-            min[0] + (sx as f32 / 32767.0 + 1.0) * 0.5 * range[0],
-            min[1] + (sy as f32 / 32767.0 + 1.0) * 0.5 * range[1],
-            min[2] + (sz as f32 / 32767.0 + 1.0) * 0.5 * range[2],
+            (sx as f32 / 32767.0) * scale[0],
+            (sy as f32 / 32767.0) * scale[1],
+            (sz as f32 / 32767.0) * scale[2],
         ]
     }).collect())
 }
 
-/// SNORM packed positions: 24-byte header + variable bytes per key.
-/// Only encodes channels that actually change (active channel mask in header).
+/// SNORM packed positions: 24-byte header (channelMask Vec3 + scale Vec3) + variable bytes per key.
+/// Only encodes channels that are active (channelMask < FLT_MAX sentinel).
 fn read_snorm_packed_positions(data: &[u8], offset: usize, count: usize) -> Result<Vec<[f32; 3]>, Error> {
     if offset + 24 > data.len() {
         return Err(Error::Other(format!("SNORM packed header overflow at 0x{offset:x}")));
     }
-    let min = read_vec3(data, offset);
-    let max = read_vec3(data, offset + 12);
-    let range = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+    let channel_mask = read_vec3(data, offset);
+    let scale = read_vec3(data, offset + 12);
 
-    // Determine active channels: channels with non-zero range
+    // Channel is active if mask value < FLT_MAX sentinel (~3.4e38)
+    const FLT_MAX_SENTINEL: f32 = 3.0e38;
     let active: [bool; 3] = [
-        range[0].abs() > 1e-10,
-        range[1].abs() > 1e-10,
-        range[2].abs() > 1e-10,
+        channel_mask[0] < FLT_MAX_SENTINEL,
+        channel_mask[1] < FLT_MAX_SENTINEL,
+        channel_mask[2] < FLT_MAX_SENTINEL,
     ];
     let bytes_per_key: usize = active.iter().filter(|&&a| a).count() * 2;
 
@@ -557,12 +558,12 @@ fn read_snorm_packed_positions(data: &[u8], offset: usize, count: usize) -> Resu
 
     Ok((0..count).map(|i| {
         let o = data_start + i * bytes_per_key;
-        let mut pos = min;
+        let mut pos = [0.0f32; 3];
         let mut byte_offset = 0;
         for ch in 0..3 {
             if active[ch] {
                 let sv = i16::from_le_bytes(data[o + byte_offset..o + byte_offset + 2].try_into().unwrap());
-                pos[ch] = min[ch] + (sv as f32 / 32767.0 + 1.0) * 0.5 * range[ch];
+                pos[ch] = (sv as f32 / 32767.0) * scale[ch];
                 byte_offset += 2;
             }
         }
