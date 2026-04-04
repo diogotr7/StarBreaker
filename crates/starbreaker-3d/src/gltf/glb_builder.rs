@@ -1058,12 +1058,15 @@ impl GlbBuilder {
             return;
         }
 
-        // Build reverse map: bone_hash (CRC32 of lowercase name) → glTF node index.
-        let hash_to_node: HashMap<u32, u32> = self
-            .node_name_to_idx
-            .iter()
-            .map(|(name, &idx)| (crc32fast::hash(name.as_bytes()), idx))
-            .collect();
+        // Build reverse map: bone_hash (CRC32 of ORIGINAL CASE name) → glTF node index.
+        // DBA bone hashes use CRC32 of the case-sensitive bone name, NOT lowercase.
+        let mut hash_to_node: HashMap<u32, u32> = HashMap::new();
+        for (&idx_val) in self.node_name_to_idx.values() {
+            if let Some(ref name) = self.nodes_json[idx_val as usize].name {
+                let hash = crc32fast::hash(name.as_bytes());
+                hash_to_node.insert(hash, idx_val);
+            }
+        }
 
         for clip in clips {
             let fps = if clip.fps > 0.0 { clip.fps } else { 30.0 };

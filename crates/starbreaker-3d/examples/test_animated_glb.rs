@@ -23,13 +23,17 @@ fn main() {
 
     // Find entity
     let entity_search_lower = entity_search.to_lowercase();
+    // Two-pass: exact match first, then substring
     let record = db
         .records_by_type_name("EntityClassDefinition")
         .find(|r| {
-            db.resolve_string2(r.name_offset)
-                .to_lowercase()
-                .contains(&entity_search_lower)
+            let name = db.resolve_string2(r.name_offset);
+            let short = name.rsplit('.').next().unwrap_or(name);
+            short.eq_ignore_ascii_case(entity_search)
         })
+        .or_else(|| db.records_by_type_name("EntityClassDefinition").find(|r| {
+            db.resolve_string2(r.name_offset).to_lowercase().contains(&entity_search_lower)
+        }))
         .unwrap_or_else(|| panic!("No entity matching '{entity_search}'"));
 
     let entity_name = db.resolve_string2(record.name_offset);
@@ -50,19 +54,20 @@ fn main() {
             .expect("failed to export entity");
 
     eprintln!(
-        "Geometry: {} verts, {} nodes",
+        "Geometry: {} verts, {} nodes, {} skeleton bones",
         mesh.positions.len(),
-        nmc.as_ref().map(|n| n.nodes.len()).unwrap_or(0)
+        nmc.as_ref().map(|n| n.nodes.len()).unwrap_or(0),
+        skeleton_bones.len()
     );
 
-    // Find and parse DBA
-    let dba_search_lower = dba_search.to_lowercase();
+    // Find and parse DBA (normalize slashes — P4k uses backslashes)
+    let dba_search_lower = dba_search.to_lowercase().replace('/', "\\");
     let dba_entry = p4k
         .entries()
         .iter()
         .find(|e| {
-            e.name.to_lowercase().contains(&dba_search_lower)
-                && e.name.to_lowercase().ends_with(".dba")
+            let name = e.name.to_lowercase();
+            name.contains(&dba_search_lower) && name.ends_with(".dba")
         })
         .unwrap_or_else(|| panic!("No .dba matching '{dba_search}'"));
 
