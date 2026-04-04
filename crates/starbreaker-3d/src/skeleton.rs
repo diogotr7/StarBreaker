@@ -16,6 +16,10 @@ use zerocopy::{FromBytes, Immutable, KnownLayout};
 #[derive(Debug, Clone)]
 pub struct Bone {
     pub name: String,
+    /// Animation controller ID — used by DBA animation system to match bones.
+    pub controller_id: u32,
+    /// Parent bone index (-1 for root).
+    pub parent_index: i32,
     /// World-space position [x, y, z]
     pub world_position: [f32; 3],
     /// World-space rotation quaternion [w, x, y, z]
@@ -72,9 +76,11 @@ const _: () = {
 // ── Parsing ─────────────────────────────────────────────────────────────────
 
 impl RawQuatTrans {
-    fn to_bone(&self, name: String) -> Bone {
+    fn to_bone(&self, name: String, controller_id: u32, parent_index: i32) -> Bone {
         Bone {
             name,
+            controller_id,
+            parent_index,
             world_rotation: [self.qw, self.qx, self.qy, self.qz],
             world_position: [self.tx, self.ty, self.tz],
         }
@@ -141,7 +147,7 @@ fn parse_compiled_bones_v900(data: &[u8]) -> Option<Vec<Bone>> {
     let bones: Vec<Bone> = entries
         .iter()
         .zip(names)
-        .map(|(e, name)| e.world.to_bone(name))
+        .map(|(e, name)| e.world.to_bone(name, e.controller_id, e.parent_index))
         .collect();
 
     log_bones(&bones, "v900");
@@ -161,8 +167,8 @@ fn parse_compiled_bones_v901(data: &[u8]) -> Option<Vec<Bone>> {
         return None;
     }
 
-    // Skip compact bone entries
-    r.read_slice::<BoneEntryV901>(num_bones).ok()?;
+    // Read compact bone entries (metadata: controller_id, parent_index, etc.)
+    let entries = r.read_slice::<BoneEntryV901>(num_bones).ok()?;
 
     // Read string table
     let string_bytes = r.read_bytes(string_table_size).ok()?;
@@ -172,10 +178,11 @@ fn parse_compiled_bones_v901(data: &[u8]) -> Option<Vec<Bone>> {
     r.read_slice::<RawQuatTrans>(num_bones).ok()?; // relative (skip)
     let world_transforms = r.read_slice::<RawQuatTrans>(num_bones).ok()?;
 
-    let bones: Vec<Bone> = world_transforms
+    let bones: Vec<Bone> = entries
         .iter()
         .zip(names)
-        .map(|(qt, name)| qt.to_bone(name))
+        .zip(world_transforms.iter())
+        .map(|((e, name), qt)| qt.to_bone(name, e.controller_id, e.parent_index as i32))
         .collect();
 
     log_bones(&bones, "v901");
