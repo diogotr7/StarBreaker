@@ -511,43 +511,48 @@ fn read_position_keys(data: &[u8], offset: usize, count: usize, format_flags: u1
     }
 }
 
-/// SNORM full positions: 24-byte header (channelMask Vec3 + scale Vec3), then 6 bytes per key (3 × i16 SNORM).
-/// Decode: (snorm / 32767.0) * scale
+/// SNORM full positions: 24-byte header (channelMask Vec3 + scale Vec3), then 6 bytes per key.
+/// Decode: channelMask[i] + (snorm / 32767.0) * scale[i]
+/// channelMask provides the offset (center), scale provides the half-range.
 fn read_snorm_full_positions(data: &[u8], offset: usize, count: usize) -> Result<Vec<[f32; 3]>, Error> {
     if offset + 24 + count * 6 > data.len() {
         return Err(Error::Other(format!("SNORM full positions overflow at 0x{offset:x}")));
     }
-    let _channel_mask = read_vec3(data, offset);
+    let center = read_vec3(data, offset);
     let scale = read_vec3(data, offset + 12);
+
+    // Log header for debugging SNORM issues
+    log::debug!("SNORM full: center=[{:.4},{:.4},{:.4}] scale=[{:.4},{:.4},{:.4}] count={count}",
+        center[0], center[1], center[2], scale[0], scale[1], scale[2]);
 
     Ok((0..count).map(|i| {
         let o = offset + 24 + i * 6;
-        let sx = i16::from_le_bytes(data[o..o + 2].try_into().unwrap());
-        let sy = i16::from_le_bytes(data[o + 2..o + 4].try_into().unwrap());
-        let sz = i16::from_le_bytes(data[o + 4..o + 6].try_into().unwrap());
+        let ux = u16::from_le_bytes(data[o..o + 2].try_into().unwrap());
+        let uy = u16::from_le_bytes(data[o + 2..o + 4].try_into().unwrap());
+        let uz = u16::from_le_bytes(data[o + 4..o + 6].try_into().unwrap());
         [
-            (sx as f32 / 32767.0) * scale[0],
-            (sy as f32 / 32767.0) * scale[1],
-            (sz as f32 / 32767.0) * scale[2],
+            center[0] + (ux as f32 / 65535.0 * 2.0 - 1.0) * scale[0],
+            center[1] + (uy as f32 / 65535.0 * 2.0 - 1.0) * scale[1],
+            center[2] + (uz as f32 / 65535.0 * 2.0 - 1.0) * scale[2],
         ]
     }).collect())
 }
 
 /// SNORM packed positions: 24-byte header (channelMask Vec3 + scale Vec3) + variable bytes per key.
 /// Only encodes channels that are active (channelMask < FLT_MAX sentinel).
+/// Decode: channelMask[i] + (snorm / 32767.0) * scale[i]
 fn read_snorm_packed_positions(data: &[u8], offset: usize, count: usize) -> Result<Vec<[f32; 3]>, Error> {
     if offset + 24 > data.len() {
         return Err(Error::Other(format!("SNORM packed header overflow at 0x{offset:x}")));
     }
-    let channel_mask = read_vec3(data, offset);
+    let center = read_vec3(data, offset);
     let scale = read_vec3(data, offset + 12);
 
-    // Channel is active if mask value < FLT_MAX sentinel (~3.4e38)
     const FLT_MAX_SENTINEL: f32 = 3.0e38;
     let active: [bool; 3] = [
-        channel_mask[0] < FLT_MAX_SENTINEL,
-        channel_mask[1] < FLT_MAX_SENTINEL,
-        channel_mask[2] < FLT_MAX_SENTINEL,
+        center[0].abs() < FLT_MAX_SENTINEL,
+        center[1].abs() < FLT_MAX_SENTINEL,
+        center[2].abs() < FLT_MAX_SENTINEL,
     ];
     let bytes_per_key: usize = active.iter().filter(|&&a| a).count() * 2;
 
@@ -562,8 +567,9 @@ fn read_snorm_packed_positions(data: &[u8], offset: usize, count: usize) -> Resu
         let mut byte_offset = 0;
         for ch in 0..3 {
             if active[ch] {
-                let sv = i16::from_le_bytes(data[o + byte_offset..o + byte_offset + 2].try_into().unwrap());
-                pos[ch] = (sv as f32 / 32767.0) * scale[ch];
+                // Read as unsigned u16 [0..65535] and map to [center-|scale|, center+|scale|]
+                let uv = u16::from_le_bytes(data[o + byte_offset..o + byte_offset + 2].try_into().unwrap());
+                pos[ch] = center[ch] + (uv as f32 / 65535.0 * 2.0 - 1.0) * scale[ch];
                 byte_offset += 2;
             }
         }
