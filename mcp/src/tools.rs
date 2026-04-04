@@ -104,6 +104,14 @@ pub struct MtlSummaryRequest {
     pub path: String,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct P4kExtractRequest {
+    #[schemars(description = "P4k paths or glob patterns to extract (e.g. ['Data/Objects/Spaceships/AEGS/AEGS_Gladius/*', 'Data/Objects/foo.cgf'])")]
+    pub paths: Vec<String>,
+    #[schemars(description = "Output directory (default: tmp/p4k/ relative to working dir). Preserves P4k directory structure.")]
+    pub output_dir: Option<String>,
+}
+
 
 pub struct StarBreakerMcp {
     p4k_path: Option<std::path::PathBuf>,
@@ -776,6 +784,148 @@ impl StarBreakerMcp {
             }
         }
 
+        out
+    }
+
+    #[tool(description = "Extract files from the P4k archive to disk. Supports glob patterns (e.g. 'Data/Objects/Spaceships/AEGS/AEGS_Gladius/*'). CryXML files are auto-decoded to XML. Returns a listing of extracted files with sizes.")]
+    fn p4k_extract(&self, Parameters(req): Parameters<P4kExtractRequest>) -> String {
+        use std::fmt::Write;
+
+        if req.paths.is_empty() {
+            return "Error: paths array is empty".to_string();
+        }
+
+        let output_dir = std::path::PathBuf::from(
+            req.output_dir.as_deref().unwrap_or("tmp/p4k"),
+        );
+
+        // Collect all P4k entry paths for glob matching
+        let all_entries: Vec<&str> = self.p4k().entries().iter().map(|e| e.name.as_str()).collect();
+
+        // Resolve each input path/glob to matching P4k entries
+        let mut matched_paths: Vec<String> = Vec::new();
+        let mut warnings: Vec<String> = Vec::new();
+
+        for pattern in &req.paths {
+            let normalized = Self::normalize_p4k_path(pattern);
+
+            // Check if it's a glob pattern
+            if normalized.contains('*') || normalized.contains('?') || normalized.contains('[') {
+                // Convert backslashes to forward slashes for glob matching, then back
+                let glob_pattern = normalized.replace('\\', "/");
+                let matcher = match globset::GlobBuilder::new(&glob_pattern)
+                    .case_insensitive(true)
+                    .literal_separator(false)
+                    .build()
+                {
+                    Ok(g) => match g.compile_matcher() {
+                        m => m,
+                    },
+                    Err(e) => {
+                        warnings.push(format!("WARN: invalid glob '{}': {e}", pattern));
+                        continue;
+                    }
+                };
+
+                let mut count = 0;
+                for entry_path in &all_entries {
+                    let forward = entry_path.replace('\\', "/");
+                    if matcher.is_match(&forward) {
+                        matched_paths.push(entry_path.to_string());
+                        count += 1;
+                    }
+                }
+                if count == 0 {
+                    warnings.push(format!("WARN: no matches for '{}'", pattern));
+                }
+            } else {
+                // Exact path — try direct lookup with case-insensitive fallback
+                if self.p4k().entry(&normalized).is_some() {
+                    matched_paths.push(normalized);
+                } else if let Some(entry) = self.p4k().entry_case_insensitive(&normalized) {
+                    matched_paths.push(entry.name.clone());
+                } else {
+                    warnings.push(format!("WARN: not found '{}'", pattern));
+                }
+            }
+        }
+
+        if matched_paths.is_empty() && warnings.is_empty() {
+            return "No files matched".to_string();
+        }
+
+        // Deduplicate
+        matched_paths.sort();
+        matched_paths.dedup();
+
+        // CryXML-eligible extensions
+        let cryxml_exts = [".xml", ".mtl", ".chrparams", ".cdf", ".adb", ".comb", ".entxml"];
+
+        // Extract files
+        let mut results: Vec<(String, u64, bool)> = Vec::new(); // (path, size_on_disk, was_cryxml)
+        let mut errors: Vec<String> = Vec::new();
+        let mut total_bytes: u64 = 0;
+
+        for p4k_path in &matched_paths {
+            let data = match self.p4k().read_file(p4k_path) {
+                Ok(d) => d,
+                Err(e) => {
+                    errors.push(format!("ERROR: {p4k_path}: {e}"));
+                    continue;
+                }
+            };
+
+            // Try CryXML decode for eligible extensions
+            let lower = p4k_path.to_lowercase();
+            let is_cryxml_ext = cryxml_exts.iter().any(|ext| lower.ends_with(ext));
+            let (output_data, was_cryxml) = if is_cryxml_ext {
+                if let Ok(xml) = starbreaker_cryxml::from_bytes(&data) {
+                    (format!("{xml}").into_bytes(), true)
+                } else {
+                    (data, false)
+                }
+            } else {
+                (data, false)
+            };
+
+            let dest = output_dir.join(p4k_path.replace('\\', "/"));
+            if let Some(parent) = dest.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    errors.push(format!("ERROR: mkdir {}: {e}", parent.display()));
+                    continue;
+                }
+            }
+
+            let size = output_data.len() as u64;
+            if let Err(e) = std::fs::write(&dest, &output_data) {
+                errors.push(format!("ERROR: write {}: {e}", dest.display()));
+                continue;
+            }
+
+            total_bytes += size;
+            results.push((p4k_path.clone(), size, was_cryxml));
+        }
+
+        // Format output
+        let mut out = String::new();
+        let _ = writeln!(out, "Extracted {} files to {}\n", results.len(), output_dir.display());
+
+        for warning in &warnings {
+            let _ = writeln!(out, "  {warning}");
+        }
+        for error in &errors {
+            let _ = writeln!(out, "  {error}");
+        }
+        if !warnings.is_empty() || !errors.is_empty() {
+            let _ = writeln!(out);
+        }
+
+        for (path, size, was_cryxml) in &results {
+            let annotation = if *was_cryxml { "  (CryXML -> XML)" } else { "" };
+            let _ = writeln!(out, "  {:<70} {:>10}{}", path, format_size(*size), annotation);
+        }
+
+        let _ = writeln!(out, "\nTotal: {}", format_size(total_bytes));
         out
     }
 

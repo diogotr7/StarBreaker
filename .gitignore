@@ -8,6 +8,8 @@ exports/
 .mcp.json
 mcp/starbreaker-mcp.exe
 
+tmp/
+
 research/
 
 scripts/

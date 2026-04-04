@@ -18,6 +18,7 @@ log = "0.4"
 env_logger = "0.11"
 base64 = "0.22"
 anyhow = "1"
+globset = "0.4"
 
 image = "0.25"
 
