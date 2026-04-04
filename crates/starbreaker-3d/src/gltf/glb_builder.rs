@@ -184,10 +184,10 @@ impl GlbBuilder {
                 [cols[2], cols[6], cols[10], cols[14]],
             ];
 
-            let matrix = if super::gltf::is_identity_or_zero(&bone_matrix) {
+            let matrix = if super::is_identity_or_zero(&bone_matrix) {
                 None
             } else {
-                Some(super::gltf::mat3x4_to_gltf(&bone_matrix))
+                Some(super::mat3x4_to_gltf(&bone_matrix))
             };
 
             self.nodes_json.push(json::Node {
@@ -655,20 +655,20 @@ impl GlbBuilder {
         }
 
         // Vertex accessors
-        let pos_accessor_idx = super::gltf::add_vertex_accessor(
+        let pos_accessor_idx = super::add_vertex_accessor(
             &mut self.buffer_views, &mut self.accessors, pos_offset, pos_len,
             mesh.positions.len(), json::accessor::Type::Vec3, Some((&pos_min, &pos_max)),
         ).unwrap_or(0);
 
-        let uv_accessor_idx = super::gltf::add_vertex_accessor(
+        let uv_accessor_idx = super::add_vertex_accessor(
             &mut self.buffer_views, &mut self.accessors, uv_offset, uv_len,
             mesh.uvs.as_ref().map_or(0, |v| v.len()), json::accessor::Type::Vec2, None,
         );
-        let normal_accessor_idx = super::gltf::add_vertex_accessor(
+        let normal_accessor_idx = super::add_vertex_accessor(
             &mut self.buffer_views, &mut self.accessors, normal_offset, normal_len,
             mesh.normals.as_ref().map_or(0, |v| v.len()), json::accessor::Type::Vec3, None,
         );
-        let tangent_accessor_idx = super::gltf::add_vertex_accessor(
+        let tangent_accessor_idx = super::add_vertex_accessor(
             &mut self.buffer_views, &mut self.accessors, tangent_offset, tangent_len,
             mesh.tangents.as_ref().map_or(0, |v| v.len()), json::accessor::Type::Vec4, None,
         );
@@ -917,10 +917,10 @@ impl GlbBuilder {
                 .iter()
                 .map(|&c| json::Index::new(node_base + c))
                 .collect();
-            let matrix = if super::gltf::is_identity_or_zero(&nmc_node.bone_to_world) {
+            let matrix = if super::is_identity_or_zero(&nmc_node.bone_to_world) {
                 None
             } else {
-                Some(super::gltf::mat3x4_to_gltf(&nmc_node.bone_to_world))
+                Some(super::mat3x4_to_gltf(&nmc_node.bone_to_world))
             };
             let node_idx = self.nodes_json.len() as u32;
             if !nmc_node.name.is_empty() {
@@ -944,7 +944,7 @@ impl GlbBuilder {
         mut self,
         scene_nodes: Vec<json::Index<json::Node>>,
         lights: Vec<crate::types::LightInfo>,
-        metadata: &super::gltf::GlbMetadata,
+        metadata: &super::GlbMetadata,
     ) -> Result<Vec<u8>, Error> {
         // Wrap all content under CryEngine Z-up → glTF Y-up rotation root.
         let coord_root_idx = self.nodes_json.len() as u32;

@@ -1,6 +1,5 @@
 pub mod dequant;
 pub mod error;
-pub(crate) mod glb_builder;
 pub(crate) mod gltf;
 pub(crate) mod included_objects;
 pub mod ivo;

@@ -1,3 +1,5 @@
+mod glb_builder;
+
 use gltf_json as json;
 use json::validation::Checked;
 
@@ -5,7 +7,7 @@ use crate::error::Error;
 use crate::nmc::NodeMeshCombo;
 use crate::types::{MaterialTextures, Mesh};
 
-use crate::glb_builder::GlbBuilder;
+use glb_builder::GlbBuilder;
 
 /// All input data for building a GLB file.
 pub struct GlbInput {
