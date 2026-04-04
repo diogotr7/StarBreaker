@@ -293,7 +293,7 @@ fn export(search: String, output: Option<PathBuf>, p4k_path: Option<PathBuf>) ->
 
     eprintln!("Found: {}", entry.name);
     let data = p4k.read(entry)?;
-    let glb = starbreaker_gltf::skin_to_glb(&data)?;
+    let glb = starbreaker_3d::skin_to_glb(&data)?;
 
     let output = output.unwrap_or_else(|| {
         let stem = entry.name.rsplit(['/', '\\']).next().unwrap_or("output");

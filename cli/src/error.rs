@@ -32,7 +32,7 @@ pub enum CliError {
     #[error(transparent)]
     Chf(#[from] ChfError),
     #[error(transparent)]
-    Gltf(#[from] starbreaker_gltf::Error),
+    Gltf(#[from] starbreaker_3d::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

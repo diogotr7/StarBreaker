@@ -1,5 +1,5 @@
 [package]
-name = "starbreaker-gltf"
+name = "starbreaker-3d"
 version.workspace = true
 edition = "2024"
 

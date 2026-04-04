@@ -28,7 +28,7 @@ fn main() {
     eprintln!("File: {}", entry.name);
     let data = p4k.read_file(&entry.name).expect("failed to read");
 
-    let bones = starbreaker_gltf::skeleton::parse_skeleton(&data).unwrap_or_default();
+    let bones = starbreaker_3d::skeleton::parse_skeleton(&data).unwrap_or_default();
     eprintln!("Bones: {}", bones.len());
     for (i, bone) in bones.iter().enumerate() {
         println!(

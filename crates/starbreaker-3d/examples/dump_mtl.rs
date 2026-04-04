@@ -15,7 +15,7 @@ fn main() {
 
     eprintln!("File: {}", entry.name);
     let data = p4k.read_file(&entry.name).expect("failed to read");
-    let mtl = starbreaker_gltf::mtl::parse_mtl(&data).expect("failed to parse");
+    let mtl = starbreaker_3d::mtl::parse_mtl(&data).expect("failed to parse");
 
     println!("Materials: {}", mtl.materials.len());
     for (i, m) in mtl.materials.iter().enumerate() {

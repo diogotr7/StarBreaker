@@ -20,14 +20,14 @@ fn main() {
     }
 
     let mut positional = Vec::new();
-    let mut opts = starbreaker_gltf::ExportOptions {
-        material_mode: starbreaker_gltf::MaterialMode::Colors,
+    let mut opts = starbreaker_3d::ExportOptions {
+        material_mode: starbreaker_3d::MaterialMode::Colors,
         ..Default::default()
     };
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--textures" => opts.material_mode = starbreaker_gltf::MaterialMode::Textures,
+            "--textures" => opts.material_mode = starbreaker_3d::MaterialMode::Textures,
             "--mip" => {
                 i += 1;
                 opts.texture_mip = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(2);
@@ -91,7 +91,7 @@ fn main() {
         })
         .collect();
 
-    match starbreaker_gltf::socpaks_to_glb(&db, &p4k, &socpak_paths, &opts) {
+    match starbreaker_3d::socpaks_to_glb(&db, &p4k, &socpak_paths, &opts) {
         Ok(glb) => {
             eprintln!("GLB size: {} bytes", glb.len());
             std::fs::write(&output, &glb).expect("failed to write output");

@@ -1,6 +1,6 @@
 //! Search P4k for .mtl files with non-white Diffuse colors.
 //! Prints the most colorful materials found.
-use starbreaker_gltf::mtl;
+use starbreaker_3d::mtl;
 
 fn main() {
     eprintln!("Opening P4k...");

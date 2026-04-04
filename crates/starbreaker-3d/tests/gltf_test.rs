@@ -10,10 +10,10 @@ fn read_if_exists(path: &str) -> Option<Vec<u8>> {
 }
 
 use starbreaker_chunks::ChunkFile;
-use starbreaker_gltf::dequant::dequantize_position;
-use starbreaker_gltf::ivo::material::MaterialName;
-use starbreaker_gltf::ivo::skin::{PositionData, SkinMesh};
-use starbreaker_gltf::{parse_skin, skin_to_glb};
+use starbreaker_3d::dequant::dequantize_position;
+use starbreaker_3d::ivo::material::MaterialName;
+use starbreaker_3d::ivo::skin::{PositionData, SkinMesh};
+use starbreaker_3d::{parse_skin, skin_to_glb};
 
 // Tests that require extracted game data on disk are ignored by default.
 // Run with: cargo test -- --ignored
@@ -98,7 +98,7 @@ fn dequantize_positions_match_bounds() {
         .iter()
         .find(|c| c.chunk_type == 0xB8757777)
         .expect("no IvoSkin2 chunk found");
-    let skin_mesh = starbreaker_gltf::ivo::skin::SkinMesh::read(ivo.chunk_data(skin_entry))
+    let skin_mesh = starbreaker_3d::ivo::skin::SkinMesh::read(ivo.chunk_data(skin_entry))
         .expect("failed to parse IvoSkin2");
 
     let positions = match &skin_mesh.streams.positions {

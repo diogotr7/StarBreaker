@@ -14,7 +14,7 @@ starbreaker-chunks = { path = "../crates/starbreaker-chunks" }
 starbreaker-chf = { path = "../crates/starbreaker-chf" }
 starbreaker-p4k = { path = "../crates/starbreaker-p4k" }
 starbreaker-datacore = { path = "../crates/starbreaker-datacore" }
-starbreaker-gltf = { path = "../crates/starbreaker-gltf" }
+starbreaker-3d = { path = "../crates/starbreaker-3d" }
 starbreaker-cryxml = { path = "../crates/starbreaker-cryxml" }
 starbreaker-dds = { path = "../crates/starbreaker-dds" }
 

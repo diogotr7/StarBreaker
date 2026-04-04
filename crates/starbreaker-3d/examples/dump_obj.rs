@@ -23,7 +23,7 @@ fn main() {
 
     eprintln!("File: {}", entry.name);
     let data = p4k.read(entry).expect("extract failed");
-    let mesh = starbreaker_gltf::parse_skin(&data).expect("parse failed");
+    let mesh = starbreaker_3d::parse_skin(&data).expect("parse failed");
     eprintln!("model_min: {:?}", mesh.model_min);
     eprintln!("model_max: {:?}", mesh.model_max);
     eprintln!("scaling_min: {:?}", mesh.scaling_min);

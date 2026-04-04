@@ -548,7 +548,7 @@ impl StarBreakerMcp {
                 if let Some(nmc_chunk) = ivo.chunks().iter().find(|c| c.chunk_type == starbreaker_chunks::known_types::ivo::NODE_MESH_COMBOS) {
                     let nmc_data = ivo.chunk_data(nmc_chunk);
                     // Try parsing NMC — use the full file data since parse_nmc_full expects the whole file
-                    if let Some((nodes, _mat_indices)) = starbreaker_gltf::nmc::parse_nmc_full(&data) {
+                    if let Some((nodes, _mat_indices)) = starbreaker_3d::nmc::parse_nmc_full(&data) {
                         let _ = writeln!(out, "\nNMC Nodes ({}):", nodes.len());
                         for (i, node) in nodes.iter().enumerate() {
                             let parent = node.parent_index.map(|p| format!("{p}")).unwrap_or_else(|| "root".to_string());

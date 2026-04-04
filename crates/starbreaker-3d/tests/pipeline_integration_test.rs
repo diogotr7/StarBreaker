@@ -25,13 +25,13 @@ fn assemble_glb_produces_valid_glb() {
     let p4k = MappedP4k::open(p4k_path).unwrap();
 
     // Find an EntityClassDefinition with geometry
-    let opts = starbreaker_gltf::ExportOptions::default();
+    let opts = starbreaker_3d::ExportOptions::default();
     let mut found = None;
     for record in db.records() {
         let struct_name = db.struct_name(record.struct_id());
         if struct_name == "EntityClassDefinition" {
             let tree = starbreaker_datacore::loadout::resolve_loadout(&db, record);
-            match starbreaker_gltf::assemble_glb_with_loadout(&db, &p4k, record, &tree, &opts) {
+            match starbreaker_3d::assemble_glb_with_loadout(&db, &p4k, record, &tree, &opts) {
                 Ok(result) => {
                     found = Some((db.resolve_string2(record.name_offset).to_string(), result));
                     break;
@@ -104,14 +104,14 @@ fn depth_limit_preserves_gladius_loadout() {
     );
 
     // Export must succeed with geometry
-    let opts = starbreaker_gltf::ExportOptions {
-        material_mode: starbreaker_gltf::MaterialMode::Colors,
+    let opts = starbreaker_3d::ExportOptions {
+        material_mode: starbreaker_3d::MaterialMode::Colors,
         include_interior: false,
         lod_level: 0,
         texture_mip: 0,
         ..Default::default()
     };
-    let result = starbreaker_gltf::assemble_glb_with_loadout(&db, &p4k, record, &tree, &opts)
+    let result = starbreaker_3d::assemble_glb_with_loadout(&db, &p4k, record, &tree, &opts)
         .expect("Gladius export failed");
 
     // Must have at least 45 child meshes (hull + thrusters + guns + missiles + components)
@@ -172,14 +172,14 @@ fn depth_limit_preserves_idris_p_collector_military() {
     );
 
     // Export must succeed
-    let opts = starbreaker_gltf::ExportOptions {
-        material_mode: starbreaker_gltf::MaterialMode::Colors,
+    let opts = starbreaker_3d::ExportOptions {
+        material_mode: starbreaker_3d::MaterialMode::Colors,
         include_interior: false,
         lod_level: 2,
         texture_mip: 0,
         ..Default::default()
     };
-    let result = starbreaker_gltf::assemble_glb_with_loadout(&db, &p4k, record, &tree, &opts)
+    let result = starbreaker_3d::assemble_glb_with_loadout(&db, &p4k, record, &tree, &opts)
         .expect("Idris P Collector Military export failed");
 
     assert!(

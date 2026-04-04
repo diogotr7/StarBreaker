@@ -93,7 +93,7 @@ fn export(
     }
 
     let idx = EntityIndex::new(&db);
-    let export_opts = starbreaker_gltf::ExportOptions::from(&opts);
+    let export_opts = starbreaker_3d::ExportOptions::from(&opts);
     let output = output.unwrap_or_else(|| PathBuf::from(format!("{name}.glb")));
 
     crate::log_mem_stats("before loadout resolve");
@@ -107,7 +107,7 @@ fn export(
     }
 
     if dump_hierarchy {
-        let json = starbreaker_gltf::dump_hierarchy(&db, &p4k, record, &tree);
+        let json = starbreaker_3d::dump_hierarchy(&db, &p4k, record, &tree);
         let json_path = output.with_extension("json");
         std::fs::write(&json_path, &json)
             .map_err(|e| CliError::IoPath { source: e, path: json_path.display().to_string() })?;
@@ -116,7 +116,7 @@ fn export(
     }
 
     crate::log_mem_stats("before export");
-    let result = starbreaker_gltf::assemble_glb_with_loadout(&db, &p4k, record, &tree, &export_opts)?;
+    let result = starbreaker_3d::assemble_glb_with_loadout(&db, &p4k, record, &tree, &export_opts)?;
 
     crate::log_mem_stats("after export");
     eprintln!("Geometry: {}", result.geometry_path);

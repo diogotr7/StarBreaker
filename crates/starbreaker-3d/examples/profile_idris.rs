@@ -9,8 +9,8 @@ use starbreaker_datacore::loadout::{EntityIndex, resolve_loadout_indexed};
 fn main() {
     env_logger::init();
 
-    let opts = starbreaker_gltf::ExportOptions {
-        material_mode: starbreaker_gltf::MaterialMode::Textures,
+    let opts = starbreaker_3d::ExportOptions {
+        material_mode: starbreaker_3d::MaterialMode::Textures,
         include_interior: true,
         lod_level: 0,
         texture_mip: 0,
@@ -41,7 +41,7 @@ fn main() {
     let tree = resolve_loadout_indexed(&idx, record);
 
     let t0 = std::time::Instant::now();
-    let result = starbreaker_gltf::assemble_glb_with_loadout(&db, &p4k, record, &tree, &opts)
+    let result = starbreaker_3d::assemble_glb_with_loadout(&db, &p4k, record, &tree, &opts)
         .expect("export failed");
     let elapsed = t0.elapsed();
 

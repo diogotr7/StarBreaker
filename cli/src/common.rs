@@ -54,23 +54,23 @@ pub struct ExportOpts {
     pub no_interior: bool,
 }
 
-impl From<&ExportOpts> for starbreaker_gltf::ExportOptions {
+impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
     fn from(opts: &ExportOpts) -> Self {
         let material_mode = match opts.materials.to_lowercase().as_str() {
-            "none" => starbreaker_gltf::MaterialMode::None,
-            "colors" => starbreaker_gltf::MaterialMode::Colors,
-            "textures" => starbreaker_gltf::MaterialMode::Textures,
-            "all" => starbreaker_gltf::MaterialMode::All,
+            "none" => starbreaker_3d::MaterialMode::None,
+            "colors" => starbreaker_3d::MaterialMode::Colors,
+            "textures" => starbreaker_3d::MaterialMode::Textures,
+            "all" => starbreaker_3d::MaterialMode::All,
             other => {
                 eprintln!("Unknown material mode '{other}', using 'textures'");
-                starbreaker_gltf::MaterialMode::Textures
+                starbreaker_3d::MaterialMode::Textures
             }
         };
         let format = match opts.format.to_lowercase().as_str() {
-            "stl" => starbreaker_gltf::ExportFormat::Stl,
-            _ => starbreaker_gltf::ExportFormat::Glb,
+            "stl" => starbreaker_3d::ExportFormat::Stl,
+            _ => starbreaker_3d::ExportFormat::Glb,
         };
-        starbreaker_gltf::ExportOptions {
+        starbreaker_3d::ExportOptions {
             format,
             material_mode,
             include_attachments: !opts.no_attachments,

@@ -1,6 +1,6 @@
 use starbreaker_common::GuidParseError;
 use starbreaker_datacore::error::{ExportError, ParseError, QueryError};
-use starbreaker_gltf;
+use starbreaker_3d;
 use starbreaker_p4k::P4kError;
 use starbreaker_wem::WemError;
 use starbreaker_wwise::BnkError;
@@ -20,7 +20,7 @@ pub enum AppError {
     #[error(transparent)]
     Wem(#[from] WemError),
     #[error(transparent)]
-    Gltf(#[from] starbreaker_gltf::Error),
+    Gltf(#[from] starbreaker_3d::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

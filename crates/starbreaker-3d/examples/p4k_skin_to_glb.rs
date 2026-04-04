@@ -55,7 +55,7 @@ fn main() {
     let data = p4k.read(entry).expect("failed to extract from P4k");
     eprintln!("Extracted {} bytes, converting to GLB...", data.len());
 
-    match starbreaker_gltf::skin_to_glb(&data) {
+    match starbreaker_3d::skin_to_glb(&data) {
         Ok(glb) => {
             std::fs::write(&output, &glb).expect("failed to write output");
             eprintln!("Written {} bytes to {output}", glb.len());

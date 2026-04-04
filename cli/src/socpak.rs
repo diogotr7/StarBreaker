@@ -61,8 +61,8 @@ fn export(
     }
 
     eprintln!("Found {} socpak files", socpak_paths.len());
-    let export_opts = starbreaker_gltf::ExportOptions::from(&opts);
-    let glb = starbreaker_gltf::socpaks_to_glb(&db, &p4k, &socpak_paths, &export_opts)?;
+    let export_opts = starbreaker_3d::ExportOptions::from(&opts);
+    let glb = starbreaker_3d::socpaks_to_glb(&db, &p4k, &socpak_paths, &export_opts)?;
 
     let output = output.unwrap_or_else(|| PathBuf::from(format!("{pattern}.glb")));
     std::fs::write(&output, &glb)

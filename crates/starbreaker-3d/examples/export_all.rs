@@ -19,8 +19,8 @@ fn main() {
     });
     std::fs::create_dir_all(&output_dir).expect("failed to create output dir");
 
-    let opts = starbreaker_gltf::ExportOptions {
-        material_mode: starbreaker_gltf::MaterialMode::Colors,
+    let opts = starbreaker_3d::ExportOptions {
+        material_mode: starbreaker_3d::MaterialMode::Colors,
         include_interior: false,
         lod_level: 1,
         texture_mip: 1,
@@ -91,7 +91,7 @@ fn main() {
 
                     let tree = resolve_loadout_indexed(&idx, record);
                     let result =
-                        starbreaker_gltf::assemble_glb_with_loadout(db, p4k, record, &tree, opts);
+                        starbreaker_3d::assemble_glb_with_loadout(db, p4k, record, &tree, opts);
 
                     match result {
                         Ok(res) => {

@@ -420,16 +420,16 @@ pub async fn start_export(
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
     let material_mode = match request.material_mode.to_lowercase().as_str() {
-        "none" => starbreaker_gltf::MaterialMode::None,
-        "colors" => starbreaker_gltf::MaterialMode::Colors,
-        "all" => starbreaker_gltf::MaterialMode::All,
-        _ => starbreaker_gltf::MaterialMode::Textures,
+        "none" => starbreaker_3d::MaterialMode::None,
+        "colors" => starbreaker_3d::MaterialMode::Colors,
+        "all" => starbreaker_3d::MaterialMode::All,
+        _ => starbreaker_3d::MaterialMode::Textures,
     };
     let format = match request.format.to_lowercase().as_str() {
-        "stl" => starbreaker_gltf::ExportFormat::Stl,
-        _ => starbreaker_gltf::ExportFormat::Glb,
+        "stl" => starbreaker_3d::ExportFormat::Stl,
+        _ => starbreaker_3d::ExportFormat::Glb,
     };
-    let opts = starbreaker_gltf::ExportOptions {
+    let opts = starbreaker_3d::ExportOptions {
         format,
         material_mode,
         include_attachments: request.include_attachments,
@@ -578,14 +578,14 @@ fn export_single(
     p4k: &MappedP4k,
     record_id: &CigGuid,
     output_path: &Path,
-    opts: &starbreaker_gltf::ExportOptions,
+    opts: &starbreaker_3d::ExportOptions,
 ) -> Result<(), AppError> {
     let record = db
         .record_by_id(record_id)
         .ok_or_else(|| AppError::Internal("record not found".into()))?;
     let idx = starbreaker_datacore::loadout::EntityIndex::new(db);
     let tree = starbreaker_datacore::loadout::resolve_loadout_indexed(&idx, record);
-    let result = starbreaker_gltf::assemble_glb_with_loadout(db, p4k, record, &tree, opts)?;
+    let result = starbreaker_3d::assemble_glb_with_loadout(db, p4k, record, &tree, opts)?;
     std::fs::write(output_path, &result.glb)?;
     Ok(())
 }
@@ -628,7 +628,7 @@ pub fn preview_geometry(
         .read_file(&companion)
         .or_else(|_| p4k.read_file(&primary))?;
 
-    let glb = starbreaker_gltf::skin_to_glb(&data)?;
+    let glb = starbreaker_3d::skin_to_glb(&data)?;
     Ok(glb)
 }
 

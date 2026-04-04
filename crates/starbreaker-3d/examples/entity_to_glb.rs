@@ -22,13 +22,13 @@ fn main() {
 
     // Parse args: positional (entity_name, output) and flags
     let mut positional = Vec::new();
-    let mut opts = starbreaker_gltf::ExportOptions::default();
+    let mut opts = starbreaker_3d::ExportOptions::default();
     let mut dump_hierarchy = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--no-textures" => opts.material_mode = starbreaker_gltf::MaterialMode::Colors,
-            "--no-materials" => opts.material_mode = starbreaker_gltf::MaterialMode::None,
+            "--no-textures" => opts.material_mode = starbreaker_3d::MaterialMode::Colors,
+            "--no-materials" => opts.material_mode = starbreaker_3d::MaterialMode::None,
             "--no-interior" => opts.include_interior = false,
             "--no-attachments" => opts.include_attachments = false,
             "--dump-hierarchy" => dump_hierarchy = true,
@@ -116,7 +116,7 @@ fn main() {
         eprintln!();
 
         if dump_hierarchy {
-            let json = starbreaker_gltf::dump_hierarchy(&db, &p4k, record, &tree);
+            let json = starbreaker_3d::dump_hierarchy(&db, &p4k, record, &tree);
             let json_output = output.replace(".glb", ".json");
             std::fs::write(&json_output, &json).expect("failed to write hierarchy JSON");
             eprintln!("Hierarchy written to {json_output}");
@@ -124,7 +124,7 @@ fn main() {
         }
 
         let export_result =
-            starbreaker_gltf::assemble_glb_with_loadout(&db, &p4k, record, &tree, &opts);
+            starbreaker_3d::assemble_glb_with_loadout(&db, &p4k, record, &tree, &opts);
         match export_result {
             Ok(result) => {
                 // Skip .cdf files — character definition, not direct geometry

@@ -5343,17 +5343,39 @@ dependencies = [
  "rayon",
  "regex",
  "serde_json",
+ "starbreaker-3d",
  "starbreaker-chf",
  "starbreaker-chunks",
  "starbreaker-common",
  "starbreaker-cryxml",
  "starbreaker-datacore",
  "starbreaker-dds",
- "starbreaker-gltf",
  "starbreaker-p4k",
  "starbreaker-wem",
  "starbreaker-wwise",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "starbreaker-3d"
+version = "0.2.1"
+dependencies = [
+ "env_logger",
+ "glam",
+ "gltf-json",
+ "half",
+ "image",
+ "log",
+ "rayon",
+ "serde_json",
+ "starbreaker-chunks",
+ "starbreaker-common",
+ "starbreaker-cryxml",
+ "starbreaker-datacore",
+ "starbreaker-dds",
+ "starbreaker-p4k",
+ "thiserror 2.0.18",
+ "zerocopy",
 ]
 
 [[package]]
@@ -5367,11 +5389,11 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "starbreaker-3d",
  "starbreaker-common",
  "starbreaker-cryxml",
  "starbreaker-datacore",
  "starbreaker-dds",
- "starbreaker-gltf",
  "starbreaker-p4k",
  "starbreaker-wem",
  "starbreaker-wwise",
@@ -5464,28 +5486,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "starbreaker-gltf"
-version = "0.2.1"
-dependencies = [
- "env_logger",
- "glam",
- "gltf-json",
- "half",
- "image",
- "log",
- "rayon",
- "serde_json",
- "starbreaker-chunks",
- "starbreaker-common",
- "starbreaker-cryxml",
- "starbreaker-datacore",
- "starbreaker-dds",
- "starbreaker-p4k",
- "thiserror 2.0.18",
- "zerocopy",
-]
-
-[[package]]
 name = "starbreaker-mcp"
 version = "0.1.0"
 dependencies = [
@@ -5499,12 +5499,12 @@ dependencies = [
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "starbreaker-3d",
  "starbreaker-chunks",
  "starbreaker-common",
  "starbreaker-cryxml",
  "starbreaker-datacore",
  "starbreaker-dds",
- "starbreaker-gltf",
  "starbreaker-p4k",
  "tokio",
 ]
