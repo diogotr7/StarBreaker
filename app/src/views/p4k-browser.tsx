@@ -104,10 +104,18 @@ function TreeItem({
 
   return (
     <div>
-      <button
+      <div
+        role="button"
+        tabIndex={0}
         onClick={() => {
           if (node.isDir) onToggle(node.path);
           onSelect(node.path);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            if (node.isDir) onToggle(node.path);
+            onSelect(node.path);
+          }
         }}
         className={`
           w-full text-left px-2 py-1 text-sm flex items-center gap-1.5 cursor-pointer
@@ -187,7 +195,7 @@ function TreeItem({
             )}
           </>
         )}
-      </button>
+      </div>
 
       {node.isDir &&
         node.expanded &&

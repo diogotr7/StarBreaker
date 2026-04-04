@@ -312,15 +312,20 @@ pub fn assemble_glb_with_loadout(
     // Load landing gear as separate child entities attached to NMC nodes.
     // Landing gear CDF geometry attaches to NMC helper bones (e.g. hardpoint_landing_gear_front).
     // Adding them as EntityPayloads lets the existing scene graph handle positioning.
-    let no_tex_opts = ExportOptions {
-        material_mode: MaterialMode::Colors,
+    // Children skip textures to save memory, but never exceed the user's material mode.
+    let child_material_mode = match opts.material_mode {
+        MaterialMode::None => MaterialMode::None,
+        _ => MaterialMode::Colors,
+    };
+    let child_opts = ExportOptions {
+        material_mode: child_material_mode,
         ..opts.clone()
     };
     let gear_parts = query_landing_gear(db, record);
     let mut child_payloads: Vec<EntityPayload> = Vec::new();
     if opts.include_attachments {
         for (gear_path, bone_name) in &gear_parts {
-            match export_entity_from_paths(p4k, gear_path, "", &no_tex_opts) {
+            match export_entity_from_paths(p4k, gear_path, "", &child_opts) {
                 Ok((gear_mesh, gear_mtl, _, gear_nmc, _, _, _, _)) => {
                     let verts = gear_mesh.positions.len();
                     child_payloads.push(EntityPayload {
@@ -348,7 +353,7 @@ pub fn assemble_glb_with_loadout(
             None,
             db,
             p4k,
-            &no_tex_opts,
+            &child_opts,
             &mut child_payloads,
         );
     }
@@ -399,7 +404,7 @@ pub fn assemble_glb_with_loadout(
                 p4k,
                 &entry.cgf_path,
                 entry.material_path.as_deref(),
-                &no_tex_opts,
+                &child_opts,
                 &mut interior_png_cache,
                 false,
             ) {

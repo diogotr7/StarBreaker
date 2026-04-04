@@ -86,7 +86,9 @@ impl SubMaterial {
         let mask = &self.string_gen_mask;
         // Decals use alpha blending for layering on top of hull geometry.
         // MeshDecal shader is always a decal overlay, even without %DECAL flag.
-        if mask.contains("%DECAL") || mask.contains("STENCIL_MAP") || self.shader == "MeshDecal" {
+        // Note: STENCIL_MAP on non-MeshDecal shaders (e.g. HardSurface camo paints)
+        // is for the stencil pattern system, NOT alpha blending — don't treat as decal.
+        if mask.contains("%DECAL") || self.shader == "MeshDecal" {
             return AlphaConfig::Blend;
         }
         if self.alpha_test > 0.0 {
@@ -111,10 +113,14 @@ impl SubMaterial {
         {
             return true;
         }
-        // Decals without a diffuse texture AND without vertex colors have no alpha source —
-        // they'd render as solid colored rectangles covering the hull.
-        if self.is_decal() && self.diffuse_tex.is_none() && !mask.contains("%VERTCOLORS") {
-            return true;
+        // Decals without a diffuse texture need some alpha source to look correct.
+        // STENCIL_MAP decals get their pattern from $TintPaletteDecal (a virtual texture
+        // we can't resolve) — hide them even if they have vertex colors.
+        // Other decals without diffuse need vertex colors for alpha.
+        if self.is_decal() && self.diffuse_tex.is_none() {
+            if mask.contains("STENCIL_MAP") || !mask.contains("%VERTCOLORS") {
+                return true;
+            }
         }
         false
     }
@@ -122,7 +128,7 @@ impl SubMaterial {
     /// Whether this material is a decal overlay (needs alpha texture to look correct).
     pub fn is_decal(&self) -> bool {
         let mask = &self.string_gen_mask;
-        mask.contains("%DECAL") || mask.contains("STENCIL_MAP") || self.shader == "MeshDecal"
+        mask.contains("%DECAL") || self.shader == "MeshDecal"
     }
 
     /// Whether this material uses a glass shader (GlassPBR).
@@ -214,7 +220,7 @@ impl SubMaterial {
 
     pub fn is_double_sided(&self) -> bool {
         let mask = &self.string_gen_mask;
-        mask.contains("%DECAL") || mask.contains("STENCIL_MAP") || self.shader == "MeshDecal"
+        mask.contains("%DECAL") || self.shader == "MeshDecal"
     }
 }
 

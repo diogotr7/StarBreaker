@@ -61,7 +61,6 @@ type PersistedExportState = Pick<
   | "lod"
   | "mip"
   | "materialMode"
-  | "format"
   | "includeAttachments"
   | "includeInterior"
   | "threads"
@@ -149,7 +148,6 @@ export const useExportStore = create<ExportState>()(
         lod: s.lod,
         mip: s.mip,
         materialMode: s.materialMode,
-        format: s.format,
         includeAttachments: s.includeAttachments,
         includeInterior: s.includeInterior,
         threads: s.threads,

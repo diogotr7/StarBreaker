@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use clap::Args;
 use starbreaker_p4k::MappedP4k;
 
 use crate::error::Result;
@@ -33,49 +32,51 @@ pub fn load_dcb_bytes(
 }
 
 /// Shared glTF export options.
-#[derive(Args, Clone)]
+#[derive(clap::Args, Debug)]
 pub struct ExportOpts {
-    /// Skip texture embedding
-    #[arg(long)]
-    pub no_textures: bool,
-    /// Skip normal map and roughness textures
-    #[arg(long)]
-    pub no_normals: bool,
+    /// Material detail: none, colors, textures, all
+    #[arg(long, default_value = "textures")]
+    pub materials: String,
+    /// Output format: glb or stl
+    #[arg(long, default_value = "glb")]
+    pub format: String,
     /// Texture mip level (0=full, 2=1/4 res, 4=1/16 res)
     #[arg(long, default_value = "2")]
     pub mip: u32,
     /// LOD level (0=highest detail, 1+=lower)
     #[arg(long, default_value = "1")]
     pub lod: u32,
+    /// Skip attached items (weapons, thrusters, landing gear)
+    #[arg(long)]
+    pub no_attachments: bool,
     /// Skip interior geometry from socpak containers
     #[arg(long)]
     pub no_interior: bool,
-    /// Skip lights from interior socpak containers
-    #[arg(long)]
-    pub no_lights: bool,
-    /// Skip tangent data in the GLB output
-    #[arg(long)]
-    pub no_tangents: bool,
-    /// Skip material data (pure white geometry)
-    #[arg(long)]
-    pub no_materials: bool,
-    /// Enable experimental texture matching (may cause specular noise on some materials)
-    #[arg(long)]
-    pub experimental_textures: bool,
 }
 
 impl From<&ExportOpts> for starbreaker_gltf::ExportOptions {
     fn from(opts: &ExportOpts) -> Self {
+        let material_mode = match opts.materials.to_lowercase().as_str() {
+            "none" => starbreaker_gltf::MaterialMode::None,
+            "colors" => starbreaker_gltf::MaterialMode::Colors,
+            "textures" => starbreaker_gltf::MaterialMode::Textures,
+            "all" => starbreaker_gltf::MaterialMode::All,
+            other => {
+                eprintln!("Unknown material mode '{other}', using 'textures'");
+                starbreaker_gltf::MaterialMode::Textures
+            }
+        };
+        let format = match opts.format.to_lowercase().as_str() {
+            "stl" => starbreaker_gltf::ExportFormat::Stl,
+            _ => starbreaker_gltf::ExportFormat::Glb,
+        };
         starbreaker_gltf::ExportOptions {
-            include_textures: !opts.no_textures,
-            include_normals: !opts.no_normals,
+            format,
+            material_mode,
+            include_attachments: !opts.no_attachments,
+            include_interior: !opts.no_interior,
             texture_mip: opts.mip,
             lod_level: opts.lod,
-            include_interior: !opts.no_interior,
-            include_lights: !opts.no_lights,
-            include_tangents: !opts.no_tangents,
-            include_materials: !opts.no_materials,
-            experimental_textures: opts.experimental_textures,
         }
     }
 }

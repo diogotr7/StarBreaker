@@ -9,6 +9,7 @@
     "dialog:default",
     "updater:default",
     "process:allow-restart",
-    "store:default"
+    "store:default",
+    "log:default"
   ]
 }

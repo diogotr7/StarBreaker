@@ -1,6 +1,6 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
@@ -132,10 +132,7 @@ pub async fn open_p4k(
         let poll_thread = std::thread::spawn(move || {
             loop {
                 let (fraction, message) = progress_poll.get();
-                let _ = app_clone.emit(
-                    "load-progress",
-                    LoadProgress { fraction, message },
-                );
+                let _ = app_clone.emit("load-progress", LoadProgress { fraction, message });
                 if fraction >= 1.0 {
                     break;
                 }
@@ -159,8 +156,7 @@ pub async fn open_p4k(
         Ok::<_, AppError>((p4k, dcb_bytes, loc_map, record_index))
     })
     .await
-    .map_err(|e| AppError::Internal(format!("task join error: {e}")))?
-    ?;
+    .map_err(|e| AppError::Internal(format!("task join error: {e}")))??;
 
     let entry_count = mapped.len();
     let total_bytes: u64 = mapped.entries().iter().map(|e| e.uncompressed_size).sum();
@@ -171,14 +167,19 @@ pub async fn open_p4k(
     *state.localization.lock() = loc_map;
     *state.record_index.lock() = Some(record_index);
 
-    Ok(P4kInfo { entry_count, total_bytes })
+    Ok(P4kInfo {
+        entry_count,
+        total_bytes,
+    })
 }
 
 /// List only subdirectory names under a path (fast — no file data serialized).
 #[tauri::command]
 pub fn list_subdirs(state: State<'_, AppState>, path: String) -> Result<Vec<String>, AppError> {
     let guard = state.p4k.lock();
-    let p4k = guard.as_ref().ok_or_else(|| AppError::Internal("P4k not loaded".into()))?;
+    let p4k = guard
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("P4k not loaded".into()))?;
 
     Ok(p4k.list_subdirs(&path))
 }
@@ -187,7 +188,9 @@ pub fn list_subdirs(state: State<'_, AppState>, path: String) -> Result<Vec<Stri
 #[tauri::command]
 pub fn list_dir(state: State<'_, AppState>, path: String) -> Result<Vec<DirEntryDto>, AppError> {
     let guard = state.p4k.lock();
-    let p4k = guard.as_ref().ok_or_else(|| AppError::Internal("P4k not loaded".into()))?;
+    let p4k = guard
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("P4k not loaded".into()))?;
 
     let entries = p4k.list_dir(&path);
     let dtos = entries
@@ -229,7 +232,10 @@ pub struct CategoryDto {
 pub async fn scan_categories(state: State<'_, AppState>) -> Result<Vec<CategoryDto>, AppError> {
     let dcb_bytes = {
         let guard = state.dcb_bytes.lock();
-        guard.as_ref().ok_or_else(|| AppError::Internal("DataCore not loaded".into()))?.clone()
+        guard
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("DataCore not loaded".into()))?
+            .clone()
     };
     let loc = {
         let guard = state.localization.lock();
@@ -392,11 +398,17 @@ pub async fn start_export(
     // Clone data out of state
     let p4k = {
         let guard = state.p4k.lock();
-        guard.as_ref().ok_or_else(|| AppError::Internal("P4k not loaded".into()))?.clone()
+        guard
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("P4k not loaded".into()))?
+            .clone()
     };
     let dcb_bytes = {
         let guard = state.dcb_bytes.lock();
-        guard.as_ref().ok_or_else(|| AppError::Internal("DataCore not loaded".into()))?.clone()
+        guard
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("DataCore not loaded".into()))?
+            .clone()
     };
     let cancel = state.export_cancel.clone();
 
@@ -425,6 +437,16 @@ pub async fn start_export(
         texture_mip: request.mip,
         lod_level: request.lod,
     };
+
+    log::info!(
+        "[export] material_mode={:?} format={:?} include_interior={} include_attachments={} lod={} mip={}",
+        opts.material_mode,
+        opts.format,
+        opts.include_interior,
+        opts.include_attachments,
+        opts.lod_level,
+        opts.texture_mip
+    );
 
     let names = request.names;
     let output_dir = request.output_dir;
@@ -458,7 +480,11 @@ pub async fn start_export(
         let num_threads = if request.threads > 0 {
             request.threads
         } else {
-            (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) / 2).max(2)
+            (std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+                / 2)
+            .max(2)
         };
         let pool = match rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads)
@@ -480,33 +506,17 @@ pub async fn start_export(
         };
 
         pool.install(|| {
-        use rayon::prelude::*;
-        record_ids.par_iter().zip(names.par_iter()).zip(id_strings.par_iter()).for_each(|((record_id, name), id_str)| {
-            if cancel.load(Ordering::Relaxed) {
-                return;
-            }
+            use rayon::prelude::*;
+            record_ids
+                .par_iter()
+                .zip(names.par_iter())
+                .zip(id_strings.par_iter())
+                .for_each(|((record_id, name), id_str)| {
+                    if cancel.load(Ordering::Relaxed) {
+                        return;
+                    }
 
-            let i = completed.fetch_add(1, Ordering::Relaxed);
-            let _ = app.emit(
-                "export-progress",
-                ExportProgress {
-                    current: i + 1,
-                    total,
-                    entity_name: name.clone(),
-                    entity_id: id_str.clone(),
-                    error: None,
-                },
-            );
-
-            let filename = format!("{}.glb", sanitize_filename(name));
-            let output_path = std::path::PathBuf::from(&output_dir).join(&filename);
-
-            match export_single(&db, &p4k, record_id, &output_path, &opts) {
-                Ok(()) => {
-                    success.fetch_add(1, Ordering::Relaxed);
-                    succeeded_ids.lock().unwrap().push(id_str.clone());
-                }
-                Err(e) => {
+                    let i = completed.fetch_add(1, Ordering::Relaxed);
                     let _ = app.emit(
                         "export-progress",
                         ExportProgress {
@@ -514,20 +524,43 @@ pub async fn start_export(
                             total,
                             entity_name: name.clone(),
                             entity_id: id_str.clone(),
-                            error: Some(format!("{name}: {e}")),
+                            error: None,
                         },
                     );
-                    errors.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-        });
+
+                    let filename = format!("{}.glb", sanitize_filename(name));
+                    let output_path = std::path::PathBuf::from(&output_dir).join(&filename);
+
+                    match export_single(&db, &p4k, record_id, &output_path, &opts) {
+                        Ok(()) => {
+                            success.fetch_add(1, Ordering::Relaxed);
+                            succeeded_ids.lock().unwrap().push(id_str.clone());
+                        }
+                        Err(e) => {
+                            let _ = app.emit(
+                                "export-progress",
+                                ExportProgress {
+                                    current: i + 1,
+                                    total,
+                                    entity_name: name.clone(),
+                                    entity_id: id_str.clone(),
+                                    error: Some(format!("{name}: {e}")),
+                                },
+                            );
+                            errors.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                });
         }); // pool.install
 
-        let _ = app.emit("export-done", ExportDone {
-            success: success.load(Ordering::Relaxed),
-            errors: errors.load(Ordering::Relaxed),
-            succeeded_ids: succeeded_ids.into_inner().unwrap(),
-        });
+        let _ = app.emit(
+            "export-done",
+            ExportDone {
+                success: success.load(Ordering::Relaxed),
+                errors: errors.load(Ordering::Relaxed),
+                succeeded_ids: succeeded_ids.into_inner().unwrap(),
+            },
+        );
     });
 
     Ok(())
@@ -583,9 +616,7 @@ pub fn preview_geometry(
         .clone();
 
     // Resolve companion: .skinm -> .skin, .cgfm -> .cgf
-    let primary = if path.ends_with('m')
-        && (path.ends_with(".skinm") || path.ends_with(".cgfm"))
-    {
+    let primary = if path.ends_with('m') && (path.ends_with(".skinm") || path.ends_with(".cgfm")) {
         path[..path.len() - 1].to_string()
     } else {
         path.clone()
@@ -603,10 +634,7 @@ pub fn preview_geometry(
 
 /// Decode a CryXMLB file from the P4K and return it as formatted XML text.
 #[tauri::command]
-pub fn preview_xml(
-    state: tauri::State<'_, AppState>,
-    path: String,
-) -> Result<String, AppError> {
+pub fn preview_xml(state: tauri::State<'_, AppState>, path: String) -> Result<String, AppError> {
     let p4k = state
         .p4k
         .lock()
@@ -628,10 +656,7 @@ pub fn preview_xml(
 /// Read a raw file from the P4K. Used for images (PNG, TGA, etc.) that
 /// don't need server-side decoding.
 #[tauri::command]
-pub fn read_p4k_file(
-    state: tauri::State<'_, AppState>,
-    path: String,
-) -> Result<Vec<u8>, AppError> {
+pub fn read_p4k_file(state: tauri::State<'_, AppState>, path: String) -> Result<Vec<u8>, AppError> {
     let p4k = state
         .p4k
         .lock()
@@ -679,7 +704,11 @@ pub async fn extract_p4k_folder(
             .split(',')
             .map(|s| {
                 let s = s.trim().to_lowercase();
-                if s.starts_with('.') { s } else { format!(".{s}") }
+                if s.starts_with('.') {
+                    s
+                } else {
+                    format!(".{s}")
+                }
             })
             .filter(|s| s.len() > 1)
             .collect();
@@ -695,7 +724,9 @@ pub async fn extract_p4k_folder(
                     return true;
                 }
                 let name_lower = e.name.to_lowercase();
-                extensions.iter().any(|ext| name_lower.ends_with(ext.as_str()))
+                extensions
+                    .iter()
+                    .any(|ext| name_lower.ends_with(ext.as_str()))
             })
             .collect();
 
@@ -704,12 +735,20 @@ pub async fn extract_p4k_folder(
 
         for (i, entry) in entries.iter().enumerate() {
             if i % 50 == 0 || i + 1 == count {
-                let short_name = entry.name.rsplit('\\').next().unwrap_or(&entry.name).to_string();
-                let _ = app.emit("folder-extract-progress", FolderExtractProgress {
-                    current: i + 1,
-                    total: count,
-                    name: short_name,
-                });
+                let short_name = entry
+                    .name
+                    .rsplit('\\')
+                    .next()
+                    .unwrap_or(&entry.name)
+                    .to_string();
+                let _ = app.emit(
+                    "folder-extract-progress",
+                    FolderExtractProgress {
+                        current: i + 1,
+                        total: count,
+                        name: short_name,
+                    },
+                );
             }
             let rel = entry.name.replace('\\', "/");
             let dest = out.join(&rel);
@@ -775,9 +814,7 @@ pub fn preview_dds(
         return Err(AppError::Internal("DDS has no mip data".into()));
     }
 
-    let mip_level = mip
-        .unwrap_or(0)
-        .min(dds.mip_count() - 1);
+    let mip_level = mip.unwrap_or(0).min(dds.mip_count() - 1);
     let (width, height) = dds.dimensions(mip_level);
     let rgba = dds.decode_rgba(mip_level)?;
 

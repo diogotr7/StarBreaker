@@ -1,5 +1,9 @@
 # StarBreaker - Claude Code Instructions
 
+## Building
+
+Use `cargo build` (debug) for iteration, NOT `cargo build --release`. Debug profile is `[optimized + debuginfo]` in this workspace — fast enough for testing. Release builds take much longer and are only needed for deployment. Only use `--release` for MCP server deployment or final binaries.
+
 ## Python
 
 Always use `uv run python` instead of `python`, `python3`, or `py` when running Python scripts or one-liners. This project uses `uv` for Python tooling.

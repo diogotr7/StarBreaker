@@ -382,32 +382,33 @@ export function ExportView() {
 
           {/* Material Mode */}
           <div className="flex flex-col gap-1.5">
-            <span className="text-xs text-text-sub">Material Mode</span>
-            <select
-              value={materialMode}
-              onChange={(e) => setMaterialMode(e.target.value)}
-              className="bg-surface/50 border border-border rounded-md px-3 py-1.5 text-xs text-text
-                         outline-none focus:ring-1 focus:ring-ring cursor-pointer"
-            >
-              <option value="none">None</option>
-              <option value="colors">Colors</option>
-              <option value="textures">Textures</option>
-              <option value="all">All</option>
-            </select>
-          </div>
-
-          {/* Format */}
-          <div className="flex flex-col gap-1.5">
-            <span className="text-xs text-text-sub">Format</span>
-            <select
-              value={format}
-              onChange={(e) => setFormat(e.target.value)}
-              className="bg-surface/50 border border-border rounded-md px-3 py-1.5 text-xs text-text
-                         outline-none focus:ring-1 focus:ring-ring cursor-pointer"
-            >
-              <option value="glb">GLB</option>
-              <option value="stl">STL</option>
-            </select>
+            <span className="text-xs text-text-sub">Materials</span>
+            <div className="flex flex-col gap-1">
+              {([
+                { value: "none", label: "None", tip: "Geometry only, no material data. Plain white surfaces." },
+                { value: "colors", label: "Colors", tip: "Palette and layer tint colors applied. No textures. Small file size." },
+                { value: "textures", label: "Textures", tip: "Colors + diffuse, normal, and roughness textures for materials that have them." },
+                { value: "all", label: "All (experimental)", tip: "Everything including heuristic approximations. Layer textures, alpha inference, decal classification. May not be correct." },
+              ] as const).map((opt) => (
+                <label
+                  key={opt.value}
+                  className="flex items-center gap-2 cursor-pointer group"
+                  title={opt.tip}
+                >
+                  <input
+                    type="radio"
+                    name="materialMode"
+                    value={opt.value}
+                    checked={materialMode === opt.value}
+                    onChange={() => setMaterialMode(opt.value)}
+                    className="accent-accent w-3 h-3"
+                  />
+                  <span className="text-xs text-text-sub group-hover:text-text transition-colors">
+                    {opt.label}
+                  </span>
+                </label>
+              ))}
+            </div>
           </div>
 
           {/* Toggles */}
