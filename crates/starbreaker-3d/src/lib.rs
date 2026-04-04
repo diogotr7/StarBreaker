@@ -71,6 +71,7 @@ pub fn skin_to_glb(data: &[u8]) -> Result<Vec<u8>, Error> {
             skeleton_bones: Vec::new(),
             children: Vec::new(),
             interiors: pipeline::LoadedInteriors::default(),
+            animations: Vec::new(),
         },
         &mut gltf::GlbLoaders {
             load_textures: &mut |_| None,

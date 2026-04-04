@@ -19,6 +19,7 @@ pub struct GlbInput {
     pub skeleton_bones: Vec<crate::skeleton::Bone>,
     pub children: Vec<crate::types::EntityPayload>,
     pub interiors: crate::pipeline::LoadedInteriors,
+    pub animations: Vec<crate::animation::dba::AnimationClip>,
 }
 
 pub struct GlbLoaders<'a> {
@@ -186,6 +187,11 @@ pub fn write_glb(
     scene_nodes.extend(interior_scene_nodes);
     log::info!("[mem-phase] interiors done, bin={}MB", builder.bin.len() / 1_048_576);
 
+    // ---- Animation tracks ----
+    if !input.animations.is_empty() {
+        builder.add_animations(&input.animations);
+    }
+
     // ---- Entity + palette extras on root node ----
     {
         let mut map = serde_json::Map::new();
@@ -298,6 +304,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_| None,
@@ -318,6 +325,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_| None,

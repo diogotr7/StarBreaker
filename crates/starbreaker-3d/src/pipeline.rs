@@ -436,6 +436,7 @@ pub fn assemble_glb_with_loadout(
             skeleton_bones: root_bones,
             children: child_payloads,
             interiors: loaded_interiors,
+            animations: Vec::new(),
         },
         &mut crate::gltf::GlbLoaders {
             load_textures: &mut tex_loader,
@@ -2539,6 +2540,7 @@ pub fn socpaks_to_glb(
             skeleton_bones: Vec::new(),
             children: Vec::new(),
             interiors,
+            animations: Vec::new(),
         },
         &mut crate::gltf::GlbLoaders {
             load_textures: &mut no_tex,
