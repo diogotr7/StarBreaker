@@ -363,20 +363,19 @@ pub struct ExportDone {
     pub succeeded_ids: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 pub struct ExportRequest {
     pub record_ids: Vec<String>,
     pub names: Vec<String>,
     pub output_dir: String,
     pub lod: u32,
     pub mip: u32,
-    pub include_textures: bool,
+    /// "none", "colors", "textures", "all"
+    pub material_mode: String,
+    /// "glb" or "stl"
+    pub format: String,
+    pub include_attachments: bool,
     pub include_interior: bool,
-    pub include_normals: bool,
-    pub include_lights: bool,
-    pub include_tangents: bool,
-    pub include_materials: bool,
-    pub experimental_textures: bool,
     pub threads: usize,
 }
 
@@ -408,16 +407,23 @@ pub async fn start_export(
         .map(|s| s.parse::<CigGuid>())
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
+    let material_mode = match request.material_mode.to_lowercase().as_str() {
+        "none" => starbreaker_gltf::MaterialMode::None,
+        "colors" => starbreaker_gltf::MaterialMode::Colors,
+        "all" => starbreaker_gltf::MaterialMode::All,
+        _ => starbreaker_gltf::MaterialMode::Textures,
+    };
+    let format = match request.format.to_lowercase().as_str() {
+        "stl" => starbreaker_gltf::ExportFormat::Stl,
+        _ => starbreaker_gltf::ExportFormat::Glb,
+    };
     let opts = starbreaker_gltf::ExportOptions {
-        include_textures: request.include_textures,
+        format,
+        material_mode,
+        include_attachments: request.include_attachments,
+        include_interior: request.include_interior,
         texture_mip: request.mip,
         lod_level: request.lod,
-        include_interior: request.include_interior,
-        include_normals: request.include_normals,
-        include_lights: request.include_lights,
-        include_tangents: request.include_tangents,
-        include_materials: request.include_materials,
-        experimental_textures: request.experimental_textures,
     };
 
     let names = request.names;
