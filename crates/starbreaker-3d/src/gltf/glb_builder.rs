@@ -30,6 +30,8 @@ pub(crate) struct GlbBuilder {
     pub node_name_to_idx: HashMap<String, u32>,
     /// Completed animation clips ready for glTF serialization.
     pub animations_json: Vec<json::Animation>,
+    /// Skin definitions (joints + inverse bind matrices).
+    pub skins_json: Vec<json::Skin>,
 }
 
 /// Texture dedup cache: maps (len, first_8_bytes_hash) → (offset, len) in binary buffer.
@@ -47,6 +49,10 @@ pub(crate) struct PackedMeshInfo {
     pub submesh_mat_indices: Vec<u32>,
     /// Per-submesh: the index accessor for this submesh, or None if skipped (e.g. NoDraw).
     pub submesh_idx_accessors: Vec<Option<u32>>,
+    /// JOINTS_0 accessor index (u16×4 per vertex), present on skinned meshes.
+    pub joints_accessor_idx: Option<u32>,
+    /// WEIGHTS_0 accessor index (f32×4 per vertex), present on skinned meshes.
+    pub weights_accessor_idx: Option<u32>,
 }
 
 
@@ -92,6 +98,7 @@ impl GlbBuilder {
             mat_dedup: HashMap::new(),
             node_name_to_idx: HashMap::new(),
             animations_json: Vec::new(),
+            skins_json: Vec::new(),
         }
     }
 
@@ -268,6 +275,8 @@ impl GlbBuilder {
                         tangent_accessor_idx: None,
                         submesh_mat_indices: Vec::new(),
                         submesh_idx_accessors: Vec::new(),
+                        joints_accessor_idx: None,
+                        weights_accessor_idx: None,
                     }),
                     child_nmc,
                     &child.mesh.submeshes,
@@ -603,6 +612,35 @@ impl GlbBuilder {
             }
         }
 
+        // Pack bone mappings (JOINTS_0 + WEIGHTS_0) for skinned meshes.
+        let joints_offset = self.bin.len();
+        let mut joints_byte_len = 0usize;
+        let weights_offset;
+        let mut weights_byte_len = 0usize;
+        if let Some(bone_maps) = &mesh.bone_mappings {
+            // JOINTS_0: 4×u16 per vertex (8 bytes each).
+            for bm in bone_maps {
+                for &idx in &bm.bone_indices {
+                    self.bin.extend_from_slice(&idx.to_le_bytes());
+                }
+            }
+            joints_byte_len = bone_maps.len() * 8;
+            // Ensure alignment before weights.
+            while self.bin.len() % 4 != 0 {
+                self.bin.push(0);
+            }
+            // WEIGHTS_0: 4×f32 per vertex (16 bytes each).
+            weights_offset = self.bin.len();
+            for bm in bone_maps {
+                for &w in &bm.weights {
+                    self.bin.extend_from_slice(&w.to_le_bytes());
+                }
+            }
+            weights_byte_len = bone_maps.len() * 16;
+        } else {
+            weights_offset = self.bin.len();
+        }
+
         // Pad to 4-byte boundary before indices
         while !self.bin.len().is_multiple_of(4) {
             self.bin.push(0);
@@ -674,6 +712,48 @@ impl GlbBuilder {
         let tangent_accessor_idx = super::add_vertex_accessor(
             &mut self.buffer_views, &mut self.accessors, tangent_offset, tangent_len,
             mesh.tangents.as_ref().map_or(0, |v| v.len()), json::accessor::Type::Vec4, None,
+        );
+
+        // JOINTS_0 accessor (U16×4 — custom, can't use add_vertex_accessor which hardcodes F32).
+        let joints_accessor_idx = if joints_byte_len > 0 {
+            let vertex_count = mesh.bone_mappings.as_ref().map_or(0, |v| v.len());
+            let bv_idx = self.buffer_views.len() as u32;
+            self.buffer_views.push(json::buffer::View {
+                buffer: json::Index::new(0),
+                byte_offset: Some(json::validation::USize64(joints_offset as u64)),
+                byte_length: json::validation::USize64(joints_byte_len as u64),
+                byte_stride: None,
+                target: Some(Checked::Valid(json::buffer::Target::ArrayBuffer)),
+                name: None,
+                extensions: None,
+                extras: Default::default(),
+            });
+            let acc_idx = self.accessors.len() as u32;
+            self.accessors.push(json::Accessor {
+                buffer_view: Some(json::Index::new(bv_idx)),
+                byte_offset: Some(json::validation::USize64(0)),
+                count: json::validation::USize64(vertex_count as u64),
+                component_type: Checked::Valid(json::accessor::GenericComponentType(
+                    json::accessor::ComponentType::U16,
+                )),
+                type_: Checked::Valid(json::accessor::Type::Vec4),
+                min: None,
+                max: None,
+                name: None,
+                normalized: false,
+                sparse: None,
+                extensions: None,
+                extras: Default::default(),
+            });
+            Some(acc_idx)
+        } else {
+            None
+        };
+
+        // WEIGHTS_0 accessor (F32×4).
+        let weights_accessor_idx = super::add_vertex_accessor(
+            &mut self.buffer_views, &mut self.accessors, weights_offset, weights_byte_len,
+            mesh.bone_mappings.as_ref().map_or(0, |v| v.len()), json::accessor::Type::Vec4, None,
         );
 
         // Index buffer view
@@ -790,6 +870,18 @@ impl GlbBuilder {
                     json::Index::new(tangent_idx),
                 );
             }
+            if let Some(j) = joints_accessor_idx {
+                attributes.insert(
+                    Checked::Valid(json::mesh::Semantic::Joints(0)),
+                    json::Index::new(j),
+                );
+            }
+            if let Some(w) = weights_accessor_idx {
+                attributes.insert(
+                    Checked::Valid(json::mesh::Semantic::Weights(0)),
+                    json::Index::new(w),
+                );
+            }
 
             primitives.push(json::mesh::Primitive {
                 attributes,
@@ -819,6 +911,8 @@ impl GlbBuilder {
             tangent_accessor_idx,
             submesh_mat_indices,
             submesh_idx_accessors,
+            joints_accessor_idx,
+            weights_accessor_idx,
         }
     }
 
@@ -880,6 +974,18 @@ impl GlbBuilder {
                             json::Index::new(n),
                         );
                     }
+                    if let Some(j) = packed.joints_accessor_idx {
+                        attributes.insert(
+                            Checked::Valid(json::mesh::Semantic::Joints(0)),
+                            json::Index::new(j),
+                        );
+                    }
+                    if let Some(w) = packed.weights_accessor_idx {
+                        attributes.insert(
+                            Checked::Valid(json::mesh::Semantic::Weights(0)),
+                            json::Index::new(w),
+                        );
+                    }
                     primitives.push(json::mesh::Primitive {
                         attributes,
                         indices: Some(json::Index::new(idx_acc)),
@@ -939,6 +1045,144 @@ impl GlbBuilder {
         }
 
         root_nodes
+    }
+
+    // ─── Skinning ────────────────────────────────────────────────────────────
+
+    /// Create a glTF skin from skeleton bones.
+    /// Creates joint nodes with parent-child hierarchy, computes inverse bind matrices.
+    /// Returns controller_id → joint_node_idx map for animation matching.
+    pub fn add_skin(
+        &mut self,
+        bones: &[crate::skeleton::Bone],
+        mesh_node_idx: u32,
+    ) -> std::collections::HashMap<u32, u32> {
+        let mut controller_id_map: HashMap<u32, u32> = HashMap::new();
+        if bones.is_empty() {
+            return controller_id_map;
+        }
+
+        // Precompute world transforms for each bone.
+        let world_transforms: Vec<(glam::Quat, glam::Vec3)> = bones
+            .iter()
+            .map(|b| {
+                let wr = b.world_rotation;
+                let rot = glam::Quat::from_xyzw(wr[1], wr[2], wr[3], wr[0]);
+                let trans = glam::Vec3::from(b.world_position);
+                (rot, trans)
+            })
+            .collect();
+
+        let joint_base = self.nodes_json.len() as u32;
+
+        // 1. Create joint nodes with LOCAL transforms.
+        for (i, bone) in bones.iter().enumerate() {
+            let (world_rot, world_pos) = world_transforms[i];
+
+            let (translation, rotation) = if bone.parent_index < 0 {
+                // Root bone: local = world.
+                (world_pos, world_rot)
+            } else {
+                // Child bone: local = inverse(parent_world) * child_world.
+                let pi = bone.parent_index as usize;
+                let (parent_rot, parent_pos) = world_transforms[pi];
+                let parent_mat =
+                    glam::Mat4::from_rotation_translation(parent_rot, parent_pos);
+                let child_mat =
+                    glam::Mat4::from_rotation_translation(world_rot, world_pos);
+                let local_mat = parent_mat.inverse() * child_mat;
+                let (_s, r, t) = local_mat.to_scale_rotation_translation();
+                (t, r)
+            };
+
+            let node_idx = self.nodes_json.len() as u32;
+            self.nodes_json.push(json::Node {
+                name: Some(bone.name.clone()),
+                translation: Some(translation.into()),
+                rotation: Some(json::scene::UnitQuaternion([
+                    rotation.x, rotation.y, rotation.z, rotation.w,
+                ])),
+                ..Default::default()
+            });
+
+            controller_id_map.insert(bone.controller_id, node_idx);
+            self.node_name_to_idx
+                .entry(bone.name.to_lowercase())
+                .or_insert(node_idx);
+        }
+
+        // 2. Set parent-child relationships on joint nodes.
+        for (i, bone) in bones.iter().enumerate() {
+            if bone.parent_index >= 0 {
+                let parent_joint_idx = joint_base + bone.parent_index as u32;
+                let child_joint_idx = joint_base + i as u32;
+                self.append_child_to_node(parent_joint_idx, child_joint_idx);
+            }
+        }
+
+        // 3. Compute inverse bind matrices and write to binary buffer.
+        while self.bin.len() % 4 != 0 {
+            self.bin.push(0);
+        }
+        let ibm_offset = self.bin.len();
+        for (world_rot, world_pos) in &world_transforms {
+            let world_mat =
+                glam::Mat4::from_rotation_translation(*world_rot, *world_pos);
+            let ibm = world_mat.inverse();
+            // Write column-major 4x4 f32 (64 bytes).
+            for &f in &ibm.to_cols_array() {
+                self.bin.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+        let ibm_byte_length = bones.len() * 64;
+
+        // 4. Create IBM accessor (Mat4 type).
+        let ibm_accessor_idx = super::add_vertex_accessor(
+            &mut self.buffer_views,
+            &mut self.accessors,
+            ibm_offset,
+            ibm_byte_length,
+            bones.len(),
+            json::accessor::Type::Mat4,
+            None,
+        )
+        .expect("add_skin: bones must not be empty");
+
+        // 5. Build joints array.
+        let joints: Vec<json::Index<json::Node>> = (0..bones.len() as u32)
+            .map(|i| json::Index::new(joint_base + i))
+            .collect();
+
+        // Find skeleton root (first bone with parent_index < 0).
+        let skeleton_root = bones
+            .iter()
+            .position(|b| b.parent_index < 0)
+            .map(|i| json::Index::new(joint_base + i as u32));
+
+        // 6. Create glTF Skin.
+        let skin_idx = self.skins_json.len() as u32;
+        self.skins_json.push(json::Skin {
+            inverse_bind_matrices: Some(json::Index::new(ibm_accessor_idx)),
+            joints,
+            name: Some("Armature".into()),
+            skeleton: skeleton_root,
+            extensions: None,
+            extras: Default::default(),
+        });
+
+        // 7. Set skin on mesh node.
+        self.nodes_json[mesh_node_idx as usize].skin =
+            Some(json::Index::new(skin_idx));
+
+        // Attach skeleton root joint(s) as children of the mesh node so they
+        // are part of the scene graph (glTF requires joint nodes to be in the scene).
+        for (i, bone) in bones.iter().enumerate() {
+            if bone.parent_index < 0 {
+                self.append_child_to_node(mesh_node_idx, joint_base + i as u32);
+            }
+        }
+
+        controller_id_map
     }
 
     // ─── Animation export helpers ────────────────────────────────────────────
@@ -1046,20 +1290,29 @@ impl GlbBuilder {
     /// Builds a CRC32 reverse-map from `node_name_to_idx`, then for each clip
     /// writes time/rotation/translation accessors and creates glTF animation
     /// samplers + channels targeting the matched skeleton/NMC nodes.
-    pub fn add_animations(&mut self, clips: &[crate::animation::dba::AnimationClip]) {
+    pub fn add_animations(
+        &mut self,
+        clips: &[crate::animation::dba::AnimationClip],
+        controller_id_map: Option<&std::collections::HashMap<u32, u32>>,
+    ) {
         if clips.is_empty() {
             return;
         }
 
-        // Build reverse map: bone_hash (CRC32 of ORIGINAL CASE name) → glTF node index.
-        // DBA bone hashes use CRC32 of the case-sensitive bone name, NOT lowercase.
-        let mut hash_to_node: HashMap<u32, u32> = HashMap::new();
-        for (&idx_val) in self.node_name_to_idx.values() {
-            if let Some(ref name) = self.nodes_json[idx_val as usize].name {
-                let hash = crc32fast::hash(name.as_bytes());
-                hash_to_node.insert(hash, idx_val);
+        // Build reverse map: bone_hash → glTF node index.
+        // When a controller_id_map is provided (from add_skin), use it directly.
+        // Otherwise, build from node names via CRC32 (DBA hashes use original-case names).
+        let hash_to_node: HashMap<u32, u32> = if let Some(cid_map) = controller_id_map {
+            cid_map.clone()
+        } else {
+            let mut map = HashMap::new();
+            for &idx_val in self.node_name_to_idx.values() {
+                if let Some(ref name) = self.nodes_json[idx_val as usize].name {
+                    map.insert(crc32fast::hash(name.as_bytes()), idx_val);
+                }
             }
-        }
+            map
+        };
 
         for clip in clips {
             let fps = if clip.fps > 0.0 { clip.fps } else { 30.0 };
@@ -1296,6 +1549,7 @@ impl GlbBuilder {
             samplers: self.samplers_json,
             nodes: self.nodes_json,
             animations: self.animations_json,
+            skins: self.skins_json,
             scenes: scenes_json,
             scene: Some(json::Index::new(0)),
             extensions_used,

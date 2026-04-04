@@ -189,7 +189,7 @@ pub fn write_glb(
 
     // ---- Animation tracks ----
     if !input.animations.is_empty() {
-        builder.add_animations(&input.animations);
+        builder.add_animations(&input.animations, None);
     }
 
     // ---- Entity + palette extras on root node ----
