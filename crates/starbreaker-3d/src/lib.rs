@@ -14,7 +14,7 @@ pub mod types;
 pub use error::Error;
 pub use pipeline::{
     ExportFormat, ExportOptions, ExportResult, MaterialMode,
-    assemble_glb_with_loadout, export_entity_payload,
+    assemble_glb_with_loadout, assemble_glb_with_loadout_and_animations, export_entity_payload,
     dump_hierarchy, load_invisible_ports, resolve_loadout_meshes, socpaks_to_glb,
 };
 pub use types::Mesh;

@@ -293,6 +293,18 @@ pub fn assemble_glb_with_loadout(
     tree: &starbreaker_datacore::loadout::LoadoutTree,
     opts: &ExportOptions,
 ) -> Result<ExportResult, Error> {
+    assemble_glb_with_loadout_and_animations(db, p4k, record, tree, opts, Vec::new())
+}
+
+/// Like `assemble_glb_with_loadout` but with animation clips injected into the GLB.
+pub fn assemble_glb_with_loadout_and_animations(
+    db: &Database,
+    p4k: &MappedP4k,
+    record: &Record,
+    tree: &starbreaker_datacore::loadout::LoadoutTree,
+    opts: &ExportOptions,
+    animations: Vec<crate::animation::dba::AnimationClip>,
+) -> Result<ExportResult, Error> {
     use crate::types::EntityPayload;
 
     log::info!("[mem-pipeline] resolving loadout meshes...");
@@ -436,7 +448,7 @@ pub fn assemble_glb_with_loadout(
             skeleton_bones: root_bones,
             children: child_payloads,
             interiors: loaded_interiors,
-            animations: Vec::new(),
+            animations,
         },
         &mut crate::gltf::GlbLoaders {
             load_textures: &mut tex_loader,
