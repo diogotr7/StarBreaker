@@ -5383,6 +5383,7 @@ dependencies = [
 name = "starbreaker-3d"
 version = "0.2.1"
 dependencies = [
+ "crc32fast",
  "env_logger",
  "glam",
  "gltf-json",

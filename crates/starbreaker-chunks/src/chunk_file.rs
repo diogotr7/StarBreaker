@@ -73,6 +73,11 @@ impl<'a> IvoChunkFile<'a> {
         let end = start + entry.size;
         &self.data[start..end]
     }
+
+    /// Returns the full file data.
+    pub fn file_data(&self) -> &'a [u8] {
+        self.data
+    }
 }
 
 /// A parsed CrCh chunk file.

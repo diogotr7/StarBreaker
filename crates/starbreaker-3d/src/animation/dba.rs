@@ -495,6 +495,7 @@ fn decode_small_tree_quat_48(s0: u16, s1: u16, s2: u16) -> [f32; 4] {
 
 fn read_position_keys(data: &[u8], offset: usize, count: usize, format_flags: u16) -> Result<Vec<[f32; 3]>, Error> {
     let pos_format = format_flags >> 8;
+    log::trace!("pos_format=0x{pos_format:02X} flags=0x{format_flags:04X} count={count}");
     match pos_format {
         // 0xC0: uncompressed float Vector3 (12 bytes per key)
         0xC0 => {
@@ -530,6 +531,8 @@ fn read_snorm_full_positions(data: &[u8], offset: usize, count: usize) -> Result
     }
     let scale = read_vec3(data, offset);
     let pos_offset = read_vec3(data, offset + 12);
+    log::trace!("SNORM_full: scale=[{:.6},{:.6},{:.6}] offset=[{:.4},{:.4},{:.4}] count={count}",
+        scale[0], scale[1], scale[2], pos_offset[0], pos_offset[1], pos_offset[2]);
 
     Ok((0..count).map(|i| {
         let o = offset + 24 + i * 6;

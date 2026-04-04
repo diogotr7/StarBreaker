@@ -1075,7 +1075,11 @@ impl GlbBuilder {
 
         let joint_base = self.nodes_json.len() as u32;
 
-        // 1. Create joint nodes with relative (local) transforms from .chr.
+        // 1. Create joint nodes.
+        // Bones targeted by animation get identity (animation provides local TRS).
+        // Bones NOT targeted keep their rest pose from .chr.
+        // We don't know which bones are animated yet, so set rest pose for all;
+        // add_animations will call prepare_node_for_animation to reset animated ones.
         for (i, bone) in bones.iter().enumerate() {
             let rr = bone.relative_rotation;
             let local_rot = glam::Quat::from_xyzw(rr[1], rr[2], rr[3], rr[0]); // wxyz → xyzw
