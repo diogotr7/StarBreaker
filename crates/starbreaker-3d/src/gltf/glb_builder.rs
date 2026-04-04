@@ -947,69 +947,30 @@ impl GlbBuilder {
     ///
     /// glTF requires TRS (not matrix) on nodes targeted by animation channels.
     /// If the node already has rotation/translation set, or has no matrix, this is a no-op.
-    /// Prepare a node for animation by moving its rest pose into a static parent.
-    ///
-    /// DBA animations provide transforms relative to the bind pose (identity).
-    /// If we just replace the node's TRS with animation values, we lose the rest
-    /// pose offset (e.g. the ladder jumps from the cockpit entrance to the origin).
-    ///
-    /// Solution: insert a static parent that holds the rest pose matrix, and set
-    /// the animated node to identity TRS. The animation then operates relative to
-    /// the rest pose, which is correct.
-    ///
-    /// ```text
-    /// Before:  [parent] → [node  matrix=rest_pose, mesh=M]
-    /// After:   [parent] → [node_rest  matrix=rest_pose] → [node  trs=identity, mesh=M, animated]
-    /// ```
-    fn reparent_for_animation(&mut self, node_idx: usize) {
+    /// Get the rest pose (translation, rotation) for an animated node.
+    /// Decomposes the node's matrix and converts to TRS (glTF requirement).
+    /// Returns (translation, rotation) or (zero, identity) if no matrix.
+    fn prepare_node_for_animation(&mut self, node_idx: usize) -> (glam::Vec3, glam::Quat) {
         let node = &self.nodes_json[node_idx];
-        // Already set up for animation (has TRS, no matrix).
-        if node.rotation.is_some() || node.translation.is_some() {
-            return;
-        }
-        // No matrix = identity rest pose, just convert to TRS.
-        let Some(matrix) = node.matrix else {
-            // Identity rest pose — no reparenting needed, just ensure TRS.
-            return;
-        };
-
-        // Create a new static parent node that holds the rest pose.
-        let rest_node_idx = self.nodes_json.len() as u32;
-        let rest_name = self.nodes_json[node_idx].name.as_ref()
-            .map(|n| format!("{n}_rest"))
-            .unwrap_or_else(|| format!("anim_rest_{node_idx}"));
-
-        self.nodes_json.push(json::Node {
-            name: Some(rest_name),
-            matrix: Some(matrix),
-            children: Some(vec![json::Index::new(node_idx as u32)]),
-            ..Default::default()
-        });
-
-        // Find the current parent of this node and replace the child reference.
-        let target = json::Index::new(node_idx as u32);
-        let replacement = json::Index::new(rest_node_idx);
-        for i in 0..self.nodes_json.len() - 1 { // -1 to skip the new rest node
-            let has_child = self.nodes_json[i].children.as_ref()
-                .map(|ch| ch.contains(&target))
-                .unwrap_or(false);
-            if has_child {
-                if let Some(ref mut children) = self.nodes_json[i].children {
-                    for c in children.iter_mut() {
-                        if *c == target {
-                            *c = replacement;
-                        }
-                    }
-                }
-                break;
+        let (translation, rotation) = if let Some(matrix) = node.matrix {
+            let m = glam::Mat4::from_cols_array(&matrix);
+            let (scale, rot, trans) = m.to_scale_rotation_translation();
+            let node = &mut self.nodes_json[node_idx];
+            node.matrix = None;
+            node.translation = Some(trans.into());
+            node.rotation = Some(json::scene::UnitQuaternion([rot.x, rot.y, rot.z, rot.w]));
+            if (scale - glam::Vec3::ONE).length() > 1e-5 {
+                node.scale = Some(scale.into());
             }
-        }
-
-        // Clear the animated node's matrix, set to identity TRS.
-        let node = &mut self.nodes_json[node_idx];
-        node.matrix = None;
-        // Leave translation/rotation/scale as None = identity.
-        // The animation will replace these.
+            (trans, rot)
+        } else if let Some(ref r) = node.rotation {
+            let rot = glam::Quat::from_xyzw(r.0[0], r.0[1], r.0[2], r.0[3]);
+            let trans = node.translation.map(glam::Vec3::from).unwrap_or(glam::Vec3::ZERO);
+            (trans, rot)
+        } else {
+            (glam::Vec3::ZERO, glam::Quat::IDENTITY)
+        };
+        (translation, rotation)
     }
 
     /// Write an array of f32 scalar values to the binary buffer and create an accessor.
@@ -1120,10 +1081,12 @@ impl GlbBuilder {
                 };
                 matched += 1;
 
-                // Ensure this node uses TRS instead of matrix (required for animation targets).
-                self.reparent_for_animation(node_idx as usize);
+                // Decompose node's matrix to TRS and get rest pose for baking.
+                // DBA animations are relative to bind pose (identity), so we
+                // compose rest_pose * anim_value for each keyframe.
+                let (rest_pos, rest_rot) = self.prepare_node_for_animation(node_idx as usize);
 
-                // Rotation channel
+                // Rotation channel — bake: rest_rot * anim_rot
                 if !bone_channel.rotations.is_empty() {
                     let times: Vec<f32> = bone_channel
                         .rotations
@@ -1133,7 +1096,13 @@ impl GlbBuilder {
                     let values: Vec<[f32; 4]> = bone_channel
                         .rotations
                         .iter()
-                        .map(|kf| kf.value)
+                        .map(|kf| {
+                            let anim_rot = glam::Quat::from_xyzw(
+                                kf.value[0], kf.value[1], kf.value[2], kf.value[3],
+                            );
+                            let baked = rest_rot * anim_rot;
+                            [baked.x, baked.y, baked.z, baked.w]
+                        })
                         .collect();
 
                     let time_acc = self.write_time_accessor(&times);
@@ -1160,7 +1129,7 @@ impl GlbBuilder {
                     });
                 }
 
-                // Translation channel
+                // Translation channel — bake: rest_pos + rest_rot * anim_pos
                 if !bone_channel.positions.is_empty() {
                     let times: Vec<f32> = bone_channel
                         .positions
@@ -1170,7 +1139,11 @@ impl GlbBuilder {
                     let values: Vec<[f32; 3]> = bone_channel
                         .positions
                         .iter()
-                        .map(|kf| kf.value)
+                        .map(|kf| {
+                            let anim_pos = glam::Vec3::from(kf.value);
+                            let baked = rest_pos + rest_rot * anim_pos;
+                            baked.into()
+                        })
                         .collect();
 
                     let time_acc = self.write_time_accessor(&times);

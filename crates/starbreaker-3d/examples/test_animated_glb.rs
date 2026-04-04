@@ -44,7 +44,7 @@ fn main() {
         material_mode: starbreaker_3d::MaterialMode::None,
         lod_level: 0,
         texture_mip: 0,
-        include_attachments: false,
+        include_attachments: true,
         include_interior: false,
         ..Default::default()
     };
@@ -109,7 +109,7 @@ fn main() {
                     format: "Glb".into(),
                     lod_level: 0,
                     texture_mip: 0,
-                    include_attachments: false,
+                    include_attachments: true,
                     include_interior: false,
                 },
             },
