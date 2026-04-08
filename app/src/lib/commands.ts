@@ -119,6 +119,7 @@ export interface ExportRequest {
   format: string;
   include_attachments: boolean;
   include_interior: boolean;
+  include_lights: boolean;
   threads: number;
 }
 

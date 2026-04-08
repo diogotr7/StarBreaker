@@ -36,6 +36,7 @@ export function ExportView() {
   const format = useExportStore((s) => s.format);
   const includeAttachments = useExportStore((s) => s.includeAttachments);
   const includeInterior = useExportStore((s) => s.includeInterior);
+  const includeLights = useExportStore((s) => s.includeLights);
   const threads = useExportStore((s) => s.threads);
   const outputDir = useExportStore((s) => s.outputDir);
   const setLod = useExportStore((s) => s.setLod);
@@ -44,6 +45,7 @@ export function ExportView() {
   const setFormat = useExportStore((s) => s.setFormat);
   const setIncludeAttachments = useExportStore((s) => s.setIncludeAttachments);
   const setIncludeInterior = useExportStore((s) => s.setIncludeInterior);
+  const setIncludeLights = useExportStore((s) => s.setIncludeLights);
   const setThreads = useExportStore((s) => s.setThreads);
   const setOutputDir = useExportStore((s) => s.setOutputDir);
 
@@ -139,6 +141,7 @@ export function ExportView() {
       format: format,
       include_attachments: includeAttachments,
       include_interior: includeInterior,
+      include_lights: includeLights,
       threads,
     };
     setExporting(true);
@@ -433,6 +436,17 @@ export function ExportView() {
               />
               <span className="text-xs text-text-sub group-hover:text-text transition-colors">
                 Include interiors
+              </span>
+            </label>
+            <label className="flex items-center gap-2.5 cursor-pointer group">
+              <input
+                type="checkbox"
+                checked={includeLights}
+                onChange={(e) => setIncludeLights(e.target.checked)}
+                className="accent-accent w-3.5 h-3.5 rounded"
+              />
+              <span className="text-xs text-text-sub group-hover:text-text transition-colors">
+                Include lights
               </span>
             </label>
           </div>

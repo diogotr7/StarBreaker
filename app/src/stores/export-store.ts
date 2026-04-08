@@ -31,6 +31,7 @@ interface ExportState {
   format: string;
   includeAttachments: boolean;
   includeInterior: boolean;
+  includeLights: boolean;
   threads: number;
   outputDir: string | null;
   setLod: (v: number) => void;
@@ -39,6 +40,7 @@ interface ExportState {
   setFormat: (v: string) => void;
   setIncludeAttachments: (v: boolean) => void;
   setIncludeInterior: (v: boolean) => void;
+  setIncludeLights: (v: boolean) => void;
   setThreads: (v: number) => void;
   setOutputDir: (dir: string | null) => void;
 
@@ -63,6 +65,7 @@ type PersistedExportState = Pick<
   | "materialMode"
   | "includeAttachments"
   | "includeInterior"
+  | "includeLights"
   | "threads"
   | "outputDir"
   | "hideNpcVariants"
@@ -110,6 +113,7 @@ export const useExportStore = create<ExportState>()(
   format: "glb",
   includeAttachments: true,
   includeInterior: true,
+  includeLights: true,
   threads: 0,
   outputDir: null,
   setLod: (v) => set({ lod: v }),
@@ -118,6 +122,7 @@ export const useExportStore = create<ExportState>()(
   setFormat: (v) => set({ format: v }),
   setIncludeAttachments: (v) => set({ includeAttachments: v }),
   setIncludeInterior: (v) => set({ includeInterior: v }),
+  setIncludeLights: (v) => set({ includeLights: v }),
   setThreads: (v) => set({ threads: v }),
   setOutputDir: (dir) => set({ outputDir: dir }),
 
@@ -150,6 +155,7 @@ export const useExportStore = create<ExportState>()(
         materialMode: s.materialMode,
         includeAttachments: s.includeAttachments,
         includeInterior: s.includeInterior,
+        includeLights: s.includeLights,
         threads: s.threads,
         outputDir: s.outputDir,
         hideNpcVariants: s.hideNpcVariants,

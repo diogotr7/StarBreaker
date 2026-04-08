@@ -60,6 +60,8 @@ pub struct ExportOptions {
     pub include_attachments: bool,
     /// Include interior rooms from socpak object containers.
     pub include_interior: bool,
+    /// Include lights from interior object containers (KHR_lights_punctual).
+    pub include_lights: bool,
     /// LOD level (0 = highest detail, 1+ = lower).
     pub lod_level: u32,
     /// Texture mip level (0 = full resolution, 2 = 1/4 res, 4 = 1/16 res).
@@ -73,6 +75,7 @@ impl Default for ExportOptions {
             material_mode: MaterialMode::Textures,
             include_attachments: true,
             include_interior: true,
+            include_lights: true,
             lod_level: 1,
             texture_mip: 2,
         }
@@ -94,9 +97,6 @@ impl MaterialMode {
     }
     pub fn experimental(&self) -> bool {
         matches!(self, MaterialMode::All)
-    }
-    pub fn include_lights(&self) -> bool {
-        !matches!(self, MaterialMode::None)
     }
 }
 
@@ -920,7 +920,7 @@ fn load_interiors(
         }
     }
 
-    build_interiors_from_payloads(db, &payloads, opts.material_mode.include_lights())
+    build_interiors_from_payloads(db, &payloads, opts.include_lights)
 }
 
 /// Shared interior building: dedup CGFs, resolve GUIDs, collect placements and lights.
@@ -2491,7 +2491,7 @@ pub fn socpaks_to_glb(
         }
     }
 
-    let interiors = build_interiors_from_payloads(db, &payloads, opts.material_mode.include_lights());
+    let interiors = build_interiors_from_payloads(db, &payloads, opts.include_lights);
 
     let no_tex_opts = ExportOptions {
         material_mode: MaterialMode::Colors,

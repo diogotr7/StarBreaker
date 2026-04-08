@@ -52,6 +52,9 @@ pub struct ExportOpts {
     /// Skip interior geometry from socpak containers
     #[arg(long)]
     pub no_interior: bool,
+    /// Skip lights from interior containers
+    #[arg(long)]
+    pub no_lights: bool,
 }
 
 impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
@@ -75,6 +78,7 @@ impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
             material_mode,
             include_attachments: !opts.no_attachments,
             include_interior: !opts.no_interior,
+            include_lights: !opts.no_lights,
             texture_mip: opts.mip,
             lod_level: opts.lod,
         }

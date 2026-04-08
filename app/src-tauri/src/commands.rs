@@ -382,6 +382,7 @@ pub struct ExportRequest {
     pub format: String,
     pub include_attachments: bool,
     pub include_interior: bool,
+    pub include_lights: bool,
     pub threads: usize,
 }
 
@@ -434,16 +435,18 @@ pub async fn start_export(
         material_mode,
         include_attachments: request.include_attachments,
         include_interior: request.include_interior,
+        include_lights: request.include_lights,
         texture_mip: request.mip,
         lod_level: request.lod,
     };
 
     log::info!(
-        "[export] material_mode={:?} format={:?} include_interior={} include_attachments={} lod={} mip={}",
+        "[export] material_mode={:?} format={:?} include_interior={} include_attachments={} include_lights={} lod={} mip={}",
         opts.material_mode,
         opts.format,
         opts.include_interior,
         opts.include_attachments,
+        opts.include_lights,
         opts.lod_level,
         opts.texture_mip
     );
