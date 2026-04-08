@@ -197,7 +197,7 @@ fn skin_to_glb_from_real_file() {
         return;
     };
 
-    let glb = skin_to_glb(&data).expect("skin_to_glb failed");
+    let glb = skin_to_glb(&data, None).expect("skin_to_glb failed");
     assert!(glb.len() > 12);
     assert_eq!(&glb[0..4], b"glTF");
 
@@ -215,7 +215,7 @@ fn skin_to_glb_cgf_file() {
         return;
     };
 
-    match skin_to_glb(&data) {
+    match skin_to_glb(&data, None) {
         Ok(glb) => {
             println!("cgf → glb: {} bytes", glb.len());
         }

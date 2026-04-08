@@ -618,20 +618,24 @@ pub fn preview_geometry(
         .ok_or_else(|| AppError::Internal("P4K not loaded".into()))?
         .clone();
 
-    // Resolve companion: .skinm -> .skin, .cgfm -> .cgf
-    let primary = if path.ends_with('m') && (path.ends_with(".skinm") || path.ends_with(".cgfm")) {
+    // Resolve companion: .skinm -> .skin, .cgfm -> .cgf, .cgam -> .cga
+    let primary = if path.ends_with('m') && (path.ends_with(".skinm") || path.ends_with(".cgfm") || path.ends_with(".cgam")) {
         path[..path.len() - 1].to_string()
     } else {
         path.clone()
     };
 
-    // Try reading the companion file first (has vertex data), fall back to primary
+    // Read companion file (vertex data) — fall back to primary if no companion exists
     let companion = format!("{primary}m");
     let data = p4k
         .read_file(&companion)
         .or_else(|_| p4k.read_file(&primary))?;
 
-    let glb = starbreaker_3d::skin_to_glb(&data)?;
+    // Read primary file for NMC transforms (scene graph hierarchy).
+    // The NMC chunk lives in the .cgf/.skin/.cga, not the companion .cgfm/.skinm/.cgam.
+    let metadata = p4k.read_file(&primary).ok();
+
+    let glb = starbreaker_3d::skin_to_glb(&data, metadata.as_deref())?;
     Ok(glb)
 }
 

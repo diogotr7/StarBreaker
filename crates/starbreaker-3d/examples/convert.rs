@@ -17,7 +17,7 @@ fn main() {
     let data = std::fs::read(input).expect("failed to read input file");
     println!("input: {} ({} bytes)", input, data.len());
 
-    match starbreaker_3d::skin_to_glb(&data) {
+    match starbreaker_3d::skin_to_glb(&data, None) {
         Ok(glb) => {
             std::fs::write(&output, &glb).expect("failed to write output");
             println!("output: {} ({} bytes)", output, glb.len());

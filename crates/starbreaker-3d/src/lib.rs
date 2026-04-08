@@ -58,14 +58,22 @@ pub(crate) fn parse_skin_with_options(data: &[u8], use_model_bbox: bool) -> Resu
 }
 
 /// Parse a `.skin`/`.cgf` IVO file and convert to GLB in one step.
-pub fn skin_to_glb(data: &[u8]) -> Result<Vec<u8>, Error> {
+/// If `metadata` is provided (the primary `.cgf`/`.skin` bytes), NMC transforms
+/// are parsed from it and applied to the scene graph.
+pub fn skin_to_glb(data: &[u8], metadata: Option<&[u8]>) -> Result<Vec<u8>, Error> {
     let mesh = parse_skin(data)?;
+    let root_nmc = metadata
+        .and_then(nmc::parse_nmc_full)
+        .map(|(nodes, mat_indices)| nmc::NodeMeshCombo {
+            nodes,
+            material_indices: mat_indices,
+        });
     gltf::write_glb(
         gltf::GlbInput {
             root_mesh: Some(mesh),
             root_materials: None,
             root_textures: None,
-            root_nmc: None,
+            root_nmc,
             root_palette: None,
             skeleton_bones: Vec::new(),
             children: Vec::new(),
