@@ -42,7 +42,6 @@ export function ExportView() {
   const setLod = useExportStore((s) => s.setLod);
   const setMip = useExportStore((s) => s.setMip);
   const setMaterialMode = useExportStore((s) => s.setMaterialMode);
-  const setFormat = useExportStore((s) => s.setFormat);
   const setIncludeAttachments = useExportStore((s) => s.setIncludeAttachments);
   const setIncludeInterior = useExportStore((s) => s.setIncludeInterior);
   const setIncludeLights = useExportStore((s) => s.setIncludeLights);

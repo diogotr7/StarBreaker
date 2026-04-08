@@ -53,6 +53,14 @@ export function GeometryPreview({ path }: Props) {
     dir.position.set(5, 10, 7);
     scene.add(dir);
 
+    // Ground grid
+    const grid = new THREE.GridHelper(50, 50, 0x555555, 0x333333);
+    scene.add(grid);
+
+    // Axes helper (R=X, G=Y, B=Z)
+    const axes = new THREE.AxesHelper(2);
+    scene.add(axes);
+
     // Render loop
     let animId = 0;
     const animate = () => {
