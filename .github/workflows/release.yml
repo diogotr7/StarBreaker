@@ -38,15 +38,14 @@ jobs:
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
+        with:
+          shared-key: cache-${{ matrix.platform }}
+          cache-on-failure: true
+          save-if: false
 
       - name: Install frontend dependencies
         working-directory: app
         run: npm ci
-
-      - name: Use lld linker (Windows)
-        if: matrix.platform == 'windows-latest'
-        shell: bash
-        run: echo "RUSTFLAGS=-C link-arg=-fuse-ld=lld" >> "$GITHUB_ENV"
 
       - name: Build CLI
         run: cargo build --release --package starbreaker
