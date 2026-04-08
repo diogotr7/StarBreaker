@@ -266,9 +266,12 @@ fn walk_attribute<W: Write>(
                 let variant = ptr.instance_index as u16 as u32;
                 let sub = walk_struct_at_index(ctx, ptr.struct_index, variant)?;
                 let mut attrs = sub.attrs;
-                attrs.push(("__type".to_owned(), struct_name.to_owned()));
                 if prop_struct_index >= 0 && ptr.struct_index != prop_struct_index {
+                    let base_name = ctx.db.resolve_string2(ctx.db.struct_def(prop_struct_index).name_offset);
+                    attrs.push(("__type".to_owned(), base_name.to_owned()));
                     attrs.push(("__polymorphicType".to_owned(), struct_name.to_owned()));
+                } else {
+                    attrs.push(("__type".to_owned(), struct_name.to_owned()));
                 }
                 // Wrap: <fieldName><StructName attrs...>children</StructName></fieldName>
                 let inner = XmlNode {
@@ -371,9 +374,12 @@ fn walk_array<W: Write>(
                         ptr.instance_index as u16 as u32,
                     )?;
                     let mut attrs = sub.attrs;
-                    attrs.push(("__type".to_owned(), struct_name.to_owned()));
                     if prop_struct_index >= 0 && ptr.struct_index != prop_struct_index {
+                        let base_name = ctx.db.resolve_string2(ctx.db.struct_def(prop_struct_index).name_offset);
+                        attrs.push(("__type".to_owned(), base_name.to_owned()));
                         attrs.push(("__polymorphicType".to_owned(), struct_name.to_owned()));
+                    } else {
+                        attrs.push(("__type".to_owned(), struct_name.to_owned()));
                     }
                     Some(XmlNode {
                         tag: struct_name.to_owned(),
@@ -395,9 +401,12 @@ fn walk_array<W: Write>(
                         ptr.instance_index as u16 as u32,
                     )?;
                     let mut attrs = sub.attrs;
-                    attrs.push(("__type".to_owned(), struct_name.to_owned()));
                     if prop_struct_index >= 0 && ptr.struct_index != prop_struct_index {
+                        let base_name = ctx.db.resolve_string2(ctx.db.struct_def(prop_struct_index).name_offset);
+                        attrs.push(("__type".to_owned(), base_name.to_owned()));
                         attrs.push(("__polymorphicType".to_owned(), struct_name.to_owned()));
+                    } else {
+                        attrs.push(("__type".to_owned(), struct_name.to_owned()));
                     }
                     Some(XmlNode {
                         tag: struct_name.to_owned(),
