@@ -5487,7 +5487,7 @@ dependencies = [
 
 [[package]]
 name = "starbreaker-mcp"
-version = "0.1.0"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
