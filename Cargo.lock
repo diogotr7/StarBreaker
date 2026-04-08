@@ -5329,7 +5329,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "starbreaker"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -5358,7 +5358,7 @@ dependencies = [
 
 [[package]]
 name = "starbreaker-3d"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "env_logger",
  "glam",
@@ -5380,7 +5380,7 @@ dependencies = [
 
 [[package]]
 name = "starbreaker-app"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "futures-lite",
  "image",
@@ -5412,7 +5412,7 @@ dependencies = [
 
 [[package]]
 name = "starbreaker-chf"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "crc32c",
  "hex",
@@ -5427,7 +5427,7 @@ dependencies = [
 
 [[package]]
 name = "starbreaker-chunks"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "starbreaker-common",
  "thiserror 2.0.18",
@@ -5436,7 +5436,7 @@ dependencies = [
 
 [[package]]
 name = "starbreaker-common"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "crc32c",
  "criterion",
@@ -5449,7 +5449,7 @@ dependencies = [
 
 [[package]]
 name = "starbreaker-cryxml"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "starbreaker-common",
  "thiserror 2.0.18",
@@ -5458,7 +5458,7 @@ dependencies = [
 
 [[package]]
 name = "starbreaker-datacore"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "criterion",
  "log",
@@ -5476,7 +5476,7 @@ dependencies = [
 
 [[package]]
 name = "starbreaker-dds"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bcdec_rs",
  "image",
@@ -5511,7 +5511,7 @@ dependencies = [
 
 [[package]]
 name = "starbreaker-p4k"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "aes",
  "cbc",
@@ -5526,7 +5526,7 @@ dependencies = [
 
 [[package]]
 name = "starbreaker-wem"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "starbreaker-common",
  "thiserror 2.0.18",
@@ -5536,7 +5536,7 @@ dependencies = [
 
 [[package]]
 name = "starbreaker-wwise"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "quick-xml 0.37.5",
  "serde",
