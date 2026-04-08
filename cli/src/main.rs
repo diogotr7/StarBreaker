@@ -13,7 +13,6 @@ mod wwise;
 
 use clap::{Parser, Subcommand};
 
-// ── Tracking allocator ──────────────────────────────────────────────────────
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
@@ -150,9 +149,7 @@ fn main() {
         }
         .to_string()
     });
-    env_logger::Builder::new()
-        .parse_filters(&env_filter)
-        .init();
+    env_logger::Builder::new().parse_filters(&env_filter).init();
 
     if cli.mem_cap > 0 {
         set_mem_cap(cli.mem_cap * 1_048_576);
