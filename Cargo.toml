@@ -17,8 +17,7 @@ opt-level = 3
 # Release builds: full optimization + fat LTO (CI-only, not for local dev)
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
+lto = "thin"
 strip = true
 
 
