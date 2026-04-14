@@ -25,6 +25,7 @@ pub(crate) struct GlbBuilder {
     pub meshes_json: Vec<json::Mesh>,
     pub nodes_json: Vec<json::Node>,
     pub tex_cache: TexCache,
+    pub tex_json_dedup: HashMap<(usize, usize), u32>,
     pub mat_dedup: HashMap<String, u32>,
     /// Maps lowercased node/entity name → glTF node index.
     pub node_name_to_idx: HashMap<String, u32>,
@@ -87,6 +88,7 @@ impl GlbBuilder {
             meshes_json: Vec::new(),
             nodes_json: Vec::new(),
             tex_cache: HashMap::new(),
+            tex_json_dedup: HashMap::new(),
             mat_dedup: HashMap::new(),
             node_name_to_idx: HashMap::new(),
         }
@@ -703,10 +705,9 @@ impl GlbBuilder {
             });
         }
 
-        let mut tex_json_dedup: HashMap<(usize, usize), u32> = HashMap::new();
-        let submaterial_texture_idx = regions_to_gltf_textures_deduped(&texture_regions, &mut self.buffer_views, &mut self.images_json, &mut self.textures_json, &mut tex_json_dedup);
-        let submaterial_normal_idx = regions_to_gltf_textures_deduped(&normal_regions, &mut self.buffer_views, &mut self.images_json, &mut self.textures_json, &mut tex_json_dedup);
-        let submaterial_roughness_idx = regions_to_gltf_textures_deduped(&roughness_regions, &mut self.buffer_views, &mut self.images_json, &mut self.textures_json, &mut tex_json_dedup);
+        let submaterial_texture_idx = regions_to_gltf_textures_deduped(&texture_regions, &mut self.buffer_views, &mut self.images_json, &mut self.textures_json, &mut self.tex_json_dedup);
+        let submaterial_normal_idx = regions_to_gltf_textures_deduped(&normal_regions, &mut self.buffer_views, &mut self.images_json, &mut self.textures_json, &mut self.tex_json_dedup);
+        let submaterial_roughness_idx = regions_to_gltf_textures_deduped(&roughness_regions, &mut self.buffer_views, &mut self.images_json, &mut self.textures_json, &mut self.tex_json_dedup);
 
         // Build materials with dedup
         let submesh_mat_indices = build_materials(
@@ -1164,7 +1165,7 @@ fn build_materials(
     submeshes.iter().map(|sub| {
         let mat = build_material(sub, materials, palette, submaterial_texture_idx, submaterial_normal_idx, submaterial_roughness_idx, experimental_textures);
         let key = format!(
-            "{}|{:?}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}",
+            "{}|{:?}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{:?}",
             mat.name.as_deref().unwrap_or(""),
             mat.pbr_metallic_roughness.base_color_factor,
             mat.pbr_metallic_roughness.metallic_factor,
@@ -1174,6 +1175,10 @@ fn build_materials(
             mat.alpha_cutoff,
             mat.pbr_metallic_roughness.base_color_texture.as_ref().map(|t| t.index),
             mat.normal_texture.as_ref().map(|t| t.index),
+            mat.pbr_metallic_roughness
+                .metallic_roughness_texture
+                .as_ref()
+                .map(|t| t.index),
         );
         *mat_dedup.entry(key).or_insert_with(|| {
             let idx = materials_json.len() as u32;

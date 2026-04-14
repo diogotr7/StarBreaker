@@ -286,6 +286,78 @@ mod tests {
         }
     }
 
+    fn textured_opts() -> GlbOptions {
+        let mut opts = default_opts();
+        opts.material_mode = crate::pipeline::MaterialMode::Textures;
+        opts.metadata.export_options.material_mode = "Textures".to_string();
+        opts
+    }
+
+    fn shared_png() -> Vec<u8> {
+        vec![
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0,
+            0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156,
+            99, 248, 255, 255, 63, 0, 5, 254, 2, 254, 167, 53, 129, 132, 0, 0, 0, 0, 73, 69,
+            78, 68, 174, 66, 96, 130,
+        ]
+    }
+
+    fn shared_material_file() -> crate::mtl::MtlFile {
+        crate::mtl::MtlFile {
+            materials: vec![crate::mtl::SubMaterial {
+                name: "shared".into(),
+                shader: "Illum".into(),
+                diffuse: [1.0, 1.0, 1.0],
+                opacity: 1.0,
+                alpha_test: 0.0,
+                string_gen_mask: String::new(),
+                is_nodraw: false,
+                specular: [0.04, 0.04, 0.04],
+                shininess: 128.0,
+                emissive: [0.0, 0.0, 0.0],
+                glow: 0.0,
+                surface_type: String::new(),
+                diffuse_tex: Some("shared_diffuse.dds".into()),
+                normal_tex: None,
+                layers: Vec::new(),
+                palette_tint: 0,
+            }],
+            source_path: Some("Data/Objects/shared.mtl".into()),
+        }
+    }
+
+    fn shared_textures() -> crate::types::MaterialTextures {
+        crate::types::MaterialTextures {
+            diffuse: vec![Some(shared_png())],
+            normal: vec![None],
+            roughness: vec![None],
+        }
+    }
+
+    fn child_entity(entity_name: &str, materials: crate::mtl::MtlFile) -> crate::types::EntityPayload {
+        crate::types::EntityPayload {
+            mesh: triangle_mesh(),
+            materials: Some(materials),
+            textures: None,
+            nmc: None,
+            palette: None,
+            bones: Vec::new(),
+            entity_name: entity_name.into(),
+            parent_node_name: String::new(),
+            parent_entity_name: String::new(),
+            no_rotation: false,
+            offset_position: [0.0; 3],
+            offset_rotation: [0.0; 3],
+        }
+    }
+
+    fn glb_json(glb: &[u8]) -> serde_json::Value {
+        let json_len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        let json_bytes = &glb[20..20 + json_len];
+        let json_str = std::str::from_utf8(json_bytes).expect("JSON not valid UTF-8");
+        serde_json::from_str(json_str).expect("GLB JSON should parse")
+    }
+
     fn call_write_glb(mesh: Mesh) -> Result<Vec<u8>, crate::error::Error> {
         write_glb(
             GlbInput {
@@ -358,6 +430,47 @@ mod tests {
                 u32::from_le_bytes(glb[bin_offset + 4..bin_offset + 8].try_into().unwrap());
             assert_eq!(bin_type, 0x004E4942, "second chunk should be BIN");
         }
+    }
+
+    #[test]
+    fn write_glb_deduplicates_shared_child_materials_and_textures() {
+        let shared_materials = shared_material_file();
+        let children = vec![
+            child_entity("child_a", shared_materials.clone()),
+            child_entity("child_b", shared_materials),
+        ];
+
+        let glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: None,
+                root_textures: None,
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children,
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_| Some(shared_textures()),
+                load_interior_mesh: &mut |_| None,
+            },
+            &textured_opts(),
+        )
+        .expect("write_glb failed");
+
+        let json = glb_json(&glb);
+        let material_count = json["materials"].as_array().map_or(0, |a| a.len());
+        let texture_count = json["textures"].as_array().map_or(0, |a| a.len());
+        let image_count = json["images"].as_array().map_or(0, |a| a.len());
+
+        // Root mesh contributes one default material. The two identical child entities
+        // should share one glTF material, one glTF texture, and one glTF image.
+        assert_eq!(
+            (material_count, texture_count, image_count),
+            (2, 1, 1),
+            "expected shared child material/texture/image entries to dedupe across children",
+        );
     }
 
     #[test]
