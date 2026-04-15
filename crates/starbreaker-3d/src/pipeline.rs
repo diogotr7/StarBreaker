@@ -625,6 +625,117 @@ fn load_child_mesh(
     })
 }
 
+struct ChildPayloadSpec {
+    child: crate::types::ResolvedNode,
+    parent_entity_name: String,
+    parent_node_name: String,
+    no_rotation: bool,
+}
+
+fn collect_child_payload_specs(
+    children: &[crate::types::ResolvedNode],
+    parent_entity_name: &str,
+    override_attachment: Option<(&str, bool)>,
+    out: &mut Vec<ChildPayloadSpec>,
+) {
+    for child in children {
+        let (attach_name, no_rotation) = match override_attachment {
+            Some((name, parent_no_rot)) => (name.to_string(), child.no_rotation || parent_no_rot),
+            None => (child.attachment_name.clone(), child.no_rotation),
+        };
+
+        let child_creates_nodes = child.has_geometry || child.nmc.is_some();
+        if child_creates_nodes {
+            out.push(ChildPayloadSpec {
+                child: child.clone_payload_source(),
+                parent_entity_name: parent_entity_name.to_string(),
+                parent_node_name: attach_name,
+                no_rotation,
+            });
+            collect_child_payload_specs(&child.children, &child.entity_name, None, out);
+        } else {
+            collect_child_payload_specs(
+                &child.children,
+                parent_entity_name,
+                Some((&child.attachment_name, child.no_rotation)),
+                out,
+            );
+        }
+    }
+}
+
+fn empty_child_mesh() -> crate::types::Mesh {
+    crate::types::Mesh {
+        positions: Vec::new(),
+        indices: Vec::new(),
+        uvs: None,
+        secondary_uvs: None,
+        normals: None,
+        tangents: None,
+        colors: None,
+        submeshes: Vec::new(),
+        model_min: [0.0; 3],
+        model_max: [0.0; 3],
+        scaling_min: [0.0; 3],
+        scaling_max: [0.0; 3],
+    }
+}
+
+fn load_child_payloads(
+    specs: Vec<ChildPayloadSpec>,
+    db: &Database,
+    p4k: &MappedP4k,
+    opts: &ExportOptions,
+) -> Vec<crate::types::EntityPayload> {
+    use rayon::prelude::*;
+
+    specs
+        .par_iter()
+        .filter_map(|spec| {
+            let child = &spec.child;
+            if child.has_geometry {
+                let (mesh, mtl, nmc, palette, bones, geometry_path, material_path) =
+                    load_child_mesh(child, db, p4k, opts)?;
+                Some(crate::types::EntityPayload {
+                    mesh,
+                    materials: mtl,
+                    textures: None,
+                    nmc,
+                    palette,
+                    geometry_path,
+                    material_path,
+                    bones,
+                    entity_name: child.entity_name.clone(),
+                    parent_node_name: spec.parent_node_name.clone(),
+                    parent_entity_name: spec.parent_entity_name.clone(),
+                    no_rotation: spec.no_rotation,
+                    offset_position: child.offset_position,
+                    offset_rotation: child.offset_rotation,
+                })
+            } else if child.nmc.is_some() {
+                Some(crate::types::EntityPayload {
+                    mesh: empty_child_mesh(),
+                    materials: None,
+                    textures: None,
+                    nmc: child.nmc.clone(),
+                    palette: None,
+                    geometry_path: child.geometry_path.clone().unwrap_or_default(),
+                    material_path: child.material_path.clone().unwrap_or_default(),
+                    bones: Vec::new(),
+                    entity_name: child.entity_name.clone(),
+                    parent_node_name: spec.parent_node_name.clone(),
+                    parent_entity_name: spec.parent_entity_name.clone(),
+                    no_rotation: spec.no_rotation,
+                    offset_position: child.offset_position,
+                    offset_rotation: child.offset_rotation,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Flatten a resolved tree into EntityPayload list, loading meshes on demand.
 ///
 /// When `override_attachment` is Some, the first level of children uses that
@@ -638,96 +749,9 @@ fn flatten_resolved_tree(
     opts: &ExportOptions,
     out: &mut Vec<crate::types::EntityPayload>,
 ) {
-    for child in children {
-        let (attach_name, no_rotation) = match override_attachment {
-            Some((name, parent_no_rot)) => (name.to_string(), child.no_rotation || parent_no_rot),
-            None => (child.attachment_name.clone(), child.no_rotation),
-        };
-
-        let child_creates_nodes = if child.has_geometry {
-            if let Some((mesh, mtl, nmc, palette, bones, geometry_path, material_path)) = load_child_mesh(child, db, p4k, opts) {
-                out.push(crate::types::EntityPayload {
-                    mesh,
-                    materials: mtl,
-                    textures: None,
-                    nmc,
-                    palette,
-                    geometry_path,
-                    material_path,
-                    bones,
-                    entity_name: child.entity_name.clone(),
-                    parent_node_name: attach_name,
-                    parent_entity_name: parent_entity_name.to_string(),
-                    no_rotation,
-                    offset_position: child.offset_position,
-                    offset_rotation: child.offset_rotation,
-                });
-                true
-            } else {
-                false
-            }
-        } else if child.nmc.is_some() {
-            // No mesh geometry but has NMC (helpers/bones) — emit an empty-mesh
-            // payload so NMC nodes enter the scene graph and provide correct
-            // transforms for children (e.g., missile racks with attachment points).
-            let empty_mesh = crate::types::Mesh {
-                positions: Vec::new(),
-                indices: Vec::new(),
-                uvs: None,
-                secondary_uvs: None,
-                normals: None,
-                tangents: None,
-                colors: None,
-                submeshes: Vec::new(),
-                model_min: [0.0; 3],
-                model_max: [0.0; 3],
-                scaling_min: [0.0; 3],
-                scaling_max: [0.0; 3],
-            };
-            out.push(crate::types::EntityPayload {
-                mesh: empty_mesh,
-                materials: None,
-                textures: None,
-                nmc: child.nmc.clone(),
-                palette: None,
-                geometry_path: child.geometry_path.clone().unwrap_or_default(),
-                material_path: child.material_path.clone().unwrap_or_default(),
-                bones: Vec::new(),
-                entity_name: child.entity_name.clone(),
-                parent_node_name: attach_name,
-                parent_entity_name: parent_entity_name.to_string(),
-                no_rotation,
-                offset_position: child.offset_position,
-                offset_rotation: child.offset_rotation,
-            });
-            true
-        } else {
-            false
-        };
-
-        if child_creates_nodes {
-            flatten_resolved_tree(
-                &child.children,
-                &child.entity_name,
-                None,
-                db,
-                p4k,
-                opts,
-                out,
-            );
-        } else {
-            // No geometry — reparent grandchildren to this child's attachment point.
-            flatten_resolved_tree(
-                &child.children,
-                parent_entity_name,
-                Some((&child.attachment_name, child.no_rotation)),
-                db,
-                p4k,
-                opts,
-                out,
-            );
-        }
-    }
+    let mut specs = Vec::new();
+    collect_child_payload_specs(children, parent_entity_name, override_attachment, &mut specs);
+    out.extend(load_child_payloads(specs, db, p4k, opts));
 }
 
 // ── Shared loadout resolution ────────────────────────────────────────────────
@@ -3709,6 +3733,7 @@ pub fn dump_hierarchy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use starbreaker_datacore::types::{CigGuid, StringId, StringId2};
 
     fn sample_export_result(kind: ExportKind, glb: Vec<u8>) -> ExportResult {
         ExportResult {
@@ -3718,6 +3743,44 @@ mod tests {
             decomposed: None,
             geometry_path: "objects/test.skin".to_string(),
             material_path: "objects/test.mtl".to_string(),
+        }
+    }
+
+    fn dummy_record() -> starbreaker_datacore::types::Record {
+        starbreaker_datacore::types::Record {
+            name_offset: StringId2(-1),
+            file_name_offset: StringId(0),
+            tag_offset: StringId2(-1),
+            struct_index: 0,
+            id: CigGuid::EMPTY,
+            instance_index: 0,
+            struct_size: 0,
+        }
+    }
+
+    fn resolved_node(
+        entity_name: &str,
+        attachment_name: &str,
+        has_geometry: bool,
+        with_nmc: bool,
+        children: Vec<crate::types::ResolvedNode>,
+    ) -> crate::types::ResolvedNode {
+        crate::types::ResolvedNode {
+            entity_name: entity_name.to_string(),
+            attachment_name: attachment_name.to_string(),
+            no_rotation: false,
+            offset_position: [0.0; 3],
+            offset_rotation: [0.0; 3],
+            nmc: with_nmc.then_some(crate::nmc::NodeMeshCombo {
+                nodes: Vec::new(),
+                material_indices: Vec::new(),
+            }),
+            bones: Vec::new(),
+            has_geometry,
+            record: dummy_record(),
+            geometry_path: has_geometry.then(|| format!("Data/Objects/{entity_name}.skin")),
+            material_path: has_geometry.then(|| format!("Data/Objects/{entity_name}.mtl")),
+            children,
         }
     }
 
@@ -3736,6 +3799,40 @@ mod tests {
 
         let empty = sample_export_result(ExportKind::Bundled, Vec::new());
         assert_eq!(empty.bundled_bytes(), None);
+    }
+
+    #[test]
+    fn collect_child_payload_specs_preserves_reparenting_and_helper_nodes() {
+        let proxy = resolved_node(
+            "proxy",
+            "hardpoint_proxy",
+            false,
+            false,
+            vec![resolved_node("weapon", "hardpoint_weapon", true, false, Vec::new())],
+        );
+        let rack = resolved_node(
+            "rack",
+            "hardpoint_rack",
+            false,
+            true,
+            vec![resolved_node("missile", "hardpoint_missile", true, false, Vec::new())],
+        );
+
+        let mut specs = Vec::new();
+        collect_child_payload_specs(&[proxy, rack], "root_ship", None, &mut specs);
+
+        assert_eq!(specs.len(), 3);
+        assert_eq!(specs[0].child.entity_name, "weapon");
+        assert_eq!(specs[0].parent_entity_name, "root_ship");
+        assert_eq!(specs[0].parent_node_name, "hardpoint_proxy");
+
+        assert_eq!(specs[1].child.entity_name, "rack");
+        assert_eq!(specs[1].parent_entity_name, "root_ship");
+        assert_eq!(specs[1].parent_node_name, "hardpoint_rack");
+
+        assert_eq!(specs[2].child.entity_name, "missile");
+        assert_eq!(specs[2].parent_entity_name, "rack");
+        assert_eq!(specs[2].parent_node_name, "hardpoint_missile");
     }
 
     #[test]
