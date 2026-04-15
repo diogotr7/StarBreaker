@@ -338,6 +338,24 @@ impl ResolvedNode {
             children: Vec::new(), // Children handled separately
         }
     }
+
+    /// Clone only the payload-relevant fields for deferred mesh loading.
+    pub fn clone_payload_source(&self) -> ResolvedNode {
+        ResolvedNode {
+            entity_name: self.entity_name.clone(),
+            attachment_name: self.attachment_name.clone(),
+            no_rotation: self.no_rotation,
+            offset_position: self.offset_position,
+            offset_rotation: self.offset_rotation,
+            nmc: self.nmc.clone(),
+            bones: self.bones.clone(),
+            has_geometry: self.has_geometry,
+            record: self.record,
+            geometry_path: self.geometry_path.clone(),
+            material_path: self.material_path.clone(),
+            children: Vec::new(),
+        }
+    }
 }
 
 /// All the data needed to add one child entity's geometry to a glTF scene.
