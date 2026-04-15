@@ -7,6 +7,7 @@ pub struct Mesh {
     pub positions: Vec<[f32; 3]>,
     pub indices: Vec<u32>,
     pub uvs: Option<Vec<[f32; 2]>>,
+    pub secondary_uvs: Option<Vec<[f32; 2]>>,
     pub normals: Option<Vec<[f32; 3]>>,
     pub tangents: Option<Vec<[f32; 4]>>,
     pub colors: Option<Vec<[u8; 4]>>,
@@ -38,8 +39,25 @@ impl Mesh {
         let index_offset = self.indices.len() as u32;
 
         self.positions.extend(other.positions);
-        if let (Some(a), Some(b)) = (&mut self.uvs, other.uvs) {
-            a.extend(b);
+        match (&mut self.uvs, other.uvs) {
+            (Some(a), Some(b)) => a.extend(b),
+            (Some(a), None) => a.resize(self.positions.len(), [0.0, 0.0]),
+            (None, Some(b)) => {
+                let mut padded = vec![[0.0, 0.0]; vertex_offset as usize];
+                padded.extend(b);
+                self.uvs = Some(padded);
+            }
+            (None, None) => {}
+        }
+        match (&mut self.secondary_uvs, other.secondary_uvs) {
+            (Some(a), Some(b)) => a.extend(b),
+            (Some(a), None) => a.resize(self.positions.len(), [0.0, 0.0]),
+            (None, Some(b)) => {
+                let mut padded = vec![[0.0, 0.0]; vertex_offset as usize];
+                padded.extend(b);
+                self.secondary_uvs = Some(padded);
+            }
+            (None, None) => {}
         }
         if let (Some(a), Some(b)) = (&mut self.normals, other.normals) {
             a.extend(b);
@@ -155,6 +173,11 @@ pub fn build_mesh_with_bbox(skin: &SkinMesh, materials: &[MaterialName], use_mod
                 .collect(),
         )
     };
+    let secondary_uvs: Option<Vec<[f32; 2]>> = skin.streams.secondary_uvs.as_ref().map(|uvs| {
+        uvs.iter()
+            .map(|uv| dequant::decode_half2(*uv))
+            .collect()
+    });
 
     let submeshes = skin
         .submeshes
@@ -225,6 +248,7 @@ pub fn build_mesh_with_bbox(skin: &SkinMesh, materials: &[MaterialName], use_mod
         positions,
         indices,
         uvs,
+        secondary_uvs,
         normals,
         tangents: tangents_out,
         colors: skin.streams.colors.clone(),
@@ -406,6 +430,7 @@ mod tests {
                     [32767, 32767, 32767],    // SNorm +1 → bbox max
                 ]),
                 uvs: vec![[0x0000, 0x0000], [0x3C00, 0x3C00], [0x3800, 0x3800]],
+                secondary_uvs: Some(vec![[0x3800, 0x0000], [0x0000, 0x3800], [0x3C00, 0x0000]]),
                 indices: vec![0, 1, 2],
                 colors: None,
                 tangents: None,
@@ -433,5 +458,10 @@ mod tests {
         assert_eq!(uvs[0], [0.0, 0.0]);
         assert_eq!(uvs[1], [1.0, 1.0]);
         assert_eq!(uvs[2], [0.5, 0.5]);
+
+        let secondary_uvs = mesh.secondary_uvs.as_ref().unwrap();
+        assert_eq!(secondary_uvs[0], [0.5, 0.0]);
+        assert_eq!(secondary_uvs[1], [0.0, 0.5]);
+        assert_eq!(secondary_uvs[2], [1.0, 0.0]);
     }
 }
