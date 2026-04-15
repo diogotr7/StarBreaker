@@ -15,6 +15,40 @@ fn bundled_extension(format: starbreaker_3d::ExportFormat) -> &'static str {
     }
 }
 
+fn prepare_decomposed_output_root(output: &PathBuf, explicit_output: bool) -> Result<()> {
+    if output.exists() {
+        if output.is_file() {
+            return Err(CliError::InvalidInput(format!(
+                "decomposed output root '{}' already exists as a file",
+                output.display(),
+            )));
+        }
+
+        if explicit_output {
+            let mut entries = std::fs::read_dir(output)
+                .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
+            if entries
+                .next()
+                .transpose()
+                .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?
+                .is_some()
+            {
+                return Err(CliError::InvalidInput(format!(
+                    "decomposed output directory '{}' must be empty or absent",
+                    output.display(),
+                )));
+            }
+        } else {
+            std::fs::remove_dir_all(output)
+                .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
+        }
+    }
+
+    std::fs::create_dir_all(output)
+        .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
+    Ok(())
+}
+
 #[derive(Subcommand)]
 pub enum EntityCommand {
     /// Export entity to a bundled file
@@ -101,8 +135,14 @@ fn export(
 
     let idx = EntityIndex::new(&db);
     let export_opts = starbreaker_3d::ExportOptions::from(&opts);
+    let explicit_output = output.is_some();
     let output = output.unwrap_or_else(|| {
-        PathBuf::from(format!("{name}.{}", bundled_extension(export_opts.format)))
+        match export_opts.kind {
+            starbreaker_3d::ExportKind::Bundled => {
+                PathBuf::from(format!("{name}.{}", bundled_extension(export_opts.format)))
+            }
+            starbreaker_3d::ExportKind::Decomposed => PathBuf::from(name.clone()),
+        }
     });
 
     crate::log_mem_stats("before loadout resolve");
@@ -126,19 +166,38 @@ fn export(
 
     crate::log_mem_stats("before export");
     let result = starbreaker_3d::assemble_glb_with_loadout(&db, &p4k, record, &tree, &export_opts)?;
-    let bundled_bytes = result.bundled_bytes().ok_or_else(|| {
-        CliError::InvalidInput(format!(
-            "entity export returned non-bundled output for {:?}",
-            result.kind,
-        ))
-    })?;
-
     crate::log_mem_stats("after export");
     eprintln!("Geometry: {}", result.geometry_path);
     eprintln!("Material: {}", result.material_path);
-    eprintln!("Bundled export size: {} bytes", bundled_bytes.len());
-    std::fs::write(&output, bundled_bytes)
-        .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
+    match result.kind {
+        starbreaker_3d::ExportKind::Bundled => {
+            let bundled_bytes = result.bundled_bytes().ok_or_else(|| {
+                CliError::InvalidInput(format!(
+                    "entity export returned non-bundled output for {:?}",
+                    result.kind,
+                ))
+            })?;
+            eprintln!("Bundled export size: {} bytes", bundled_bytes.len());
+            std::fs::write(&output, bundled_bytes)
+                .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
+        }
+        starbreaker_3d::ExportKind::Decomposed => {
+            let decomposed = result.decomposed.as_ref().ok_or_else(|| {
+                CliError::InvalidInput("entity export returned no decomposed files".into())
+            })?;
+            eprintln!("Decomposed export file count: {}", decomposed.files.len());
+            prepare_decomposed_output_root(&output, explicit_output)?;
+            for file in &decomposed.files {
+                let output_path = output.join(&file.relative_path);
+                if let Some(parent) = output_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| CliError::IoPath { source: e, path: parent.display().to_string() })?;
+                }
+                std::fs::write(&output_path, &file.bytes)
+                    .map_err(|e| CliError::IoPath { source: e, path: output_path.display().to_string() })?;
+            }
+        }
+    }
     crate::log_mem_stats("after write");
     eprintln!("Written to {}", output.display());
     Ok(())
