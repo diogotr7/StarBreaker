@@ -80,7 +80,7 @@ pub fn skin_to_glb(data: &[u8], metadata: Option<&[u8]>) -> Result<Vec<u8>, Erro
             interiors: pipeline::LoadedInteriors::default(),
         },
         &mut gltf::GlbLoaders {
-            load_textures: &mut |_| None,
+            load_textures: &mut |_, _| None,
             load_interior_mesh: &mut |_| None,
         },
         &gltf::GlbOptions {
