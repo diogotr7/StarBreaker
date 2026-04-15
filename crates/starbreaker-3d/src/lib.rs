@@ -12,7 +12,7 @@ pub mod types;
 
 pub use error::Error;
 pub use pipeline::{
-    ExportFormat, ExportOptions, ExportResult, MaterialMode,
+    ExportFormat, ExportKind, ExportOptions, ExportResult, MaterialMode,
     assemble_glb_with_loadout,
     dump_hierarchy, load_invisible_ports, resolve_loadout_meshes, socpaks_to_glb,
 };
@@ -90,6 +90,7 @@ pub fn skin_to_glb(data: &[u8], metadata: Option<&[u8]>) -> Result<Vec<u8>, Erro
                 geometry_path: None,
                 material_path: None,
                 export_options: gltf::ExportOptionsMetadata {
+                    kind: "Bundled".to_string(),
                     material_mode: "None".to_string(),
                     format: "Glb".to_string(),
                     lod_level: 0,
