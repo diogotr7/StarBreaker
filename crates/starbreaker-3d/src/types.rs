@@ -260,6 +260,12 @@ pub fn build_mesh_with_bbox(skin: &SkinMesh, materials: &[MaterialName], use_mod
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextureTransformInfo {
+    pub scale: [f32; 2],
+    pub tex_coord: u32,
+}
+
 /// Loaded texture data for glTF embedding, indexed by submaterial.
 pub struct MaterialTextures {
     /// Per-submaterial: Some(png_bytes) for diffuse texture, None if missing.
@@ -270,6 +276,18 @@ pub struct MaterialTextures {
     /// Extracted from the alpha channel of `_ddna` normal maps (per-pixel smoothness).
     /// Stored as glTF metallicRoughness: G=roughness (1-smoothness), B=metallic (0), R=0.
     pub roughness: Vec<Option<Vec<u8>>>,
+    /// Per-submaterial: Some(png_bytes) for emissive output, None if missing.
+    pub emissive: Vec<Option<Vec<u8>>>,
+    /// Per-submaterial: Some(png_bytes) for occlusion output, None if missing.
+    pub occlusion: Vec<Option<Vec<u8>>>,
+    /// Per-submaterial: simple texture transforms that can survive directly in glTF.
+    pub diffuse_transform: Vec<Option<TextureTransformInfo>>,
+    pub normal_transform: Vec<Option<TextureTransformInfo>>,
+    pub roughness_transform: Vec<Option<TextureTransformInfo>>,
+    pub emissive_transform: Vec<Option<TextureTransformInfo>>,
+    pub occlusion_transform: Vec<Option<TextureTransformInfo>>,
+    /// Per-submaterial tags describing deliberate bundled-mode fallbacks.
+    pub bundled_fallbacks: Vec<Vec<String>>,
 }
 
 /// A resolved loadout node — lightweight metadata for attachment resolution.
