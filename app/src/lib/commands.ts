@@ -115,6 +115,7 @@ export interface ExportRequest {
   output_dir: string;
   lod: number;
   mip: number;
+  export_kind: string;
   material_mode: string;
   format: string;
   include_attachments: boolean;
