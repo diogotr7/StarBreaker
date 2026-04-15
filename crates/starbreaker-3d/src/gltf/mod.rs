@@ -1602,6 +1602,42 @@ mod tests {
     }
 
     #[test]
+    fn write_glb_does_not_reload_child_textures_when_payload_is_preloaded() {
+        let mut child = child_entity("child_thruster", shared_material_file());
+        child.textures = Some(shared_textures());
+        let mut child_texture_loads = 0;
+
+        write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: None,
+                root_textures: None,
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children: vec![child],
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_, _| {
+                    child_texture_loads += 1;
+                    Some(shared_textures())
+                },
+                load_interior_mesh: &mut |_| None,
+            },
+            &{
+                let mut opts = textured_opts();
+                opts.material_mode = crate::pipeline::MaterialMode::All;
+                opts.metadata.export_options.material_mode = "All".to_string();
+                opts
+            },
+        )
+        .expect("write_glb failed");
+
+        assert_eq!(child_texture_loads, 0, "child payloads with preloaded textures should not trigger texture reloads during GLB packing");
+    }
+
+    #[test]
     fn mul_3x4_translation_composition() {
         // A translates by (1,0,0), B translates by (0,2,0)
         let a: [[f32; 4]; 3] = [
