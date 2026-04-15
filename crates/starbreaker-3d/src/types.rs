@@ -267,6 +267,7 @@ pub struct TextureTransformInfo {
 }
 
 /// Loaded texture data for glTF embedding, indexed by submaterial.
+#[derive(Debug, Clone)]
 pub struct MaterialTextures {
     /// Per-submaterial: Some(png_bytes) for diffuse texture, None if missing.
     pub diffuse: Vec<Option<Vec<u8>>>,
