@@ -1,4 +1,5 @@
 pub mod dequant;
+pub(crate) mod decomposed;
 pub mod error;
 pub(crate) mod gltf;
 pub(crate) mod included_objects;
