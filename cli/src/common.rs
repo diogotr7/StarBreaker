@@ -34,6 +34,9 @@ pub fn load_dcb_bytes(
 /// Shared glTF export options.
 #[derive(clap::Args, Debug)]
 pub struct ExportOpts {
+    /// Export kind: bundled or decomposed
+    #[arg(long, default_value = "bundled")]
+    pub kind: String,
     /// Material detail: none, colors, textures, all
     #[arg(long, default_value = "textures")]
     pub materials: String,
@@ -59,6 +62,10 @@ pub struct ExportOpts {
 
 impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
     fn from(opts: &ExportOpts) -> Self {
+        let kind = match opts.kind.to_lowercase().as_str() {
+            "decomposed" => starbreaker_3d::ExportKind::Decomposed,
+            _ => starbreaker_3d::ExportKind::Bundled,
+        };
         let material_mode = match opts.materials.to_lowercase().as_str() {
             "none" => starbreaker_3d::MaterialMode::None,
             "colors" => starbreaker_3d::MaterialMode::Colors,
@@ -74,7 +81,7 @@ impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
             _ => starbreaker_3d::ExportFormat::Glb,
         };
         starbreaker_3d::ExportOptions {
-            kind: starbreaker_3d::ExportKind::Bundled,
+            kind,
             format,
             material_mode,
             include_attachments: !opts.no_attachments,
