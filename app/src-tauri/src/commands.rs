@@ -546,13 +546,15 @@ pub async fn start_export(
                         return;
                     }
 
+                    let export_name = export_entity_name(name);
+
                     let i = completed.fetch_add(1, Ordering::Relaxed);
                     let _ = app.emit(
                         "export-progress",
                         ExportProgress {
                             current: i + 1,
                             total,
-                            entity_name: name.clone(),
+                            entity_name: export_name.clone(),
                             entity_id: id_str.clone(),
                             error: None,
                         },
@@ -560,7 +562,7 @@ pub async fn start_export(
 
                     let filename = format!(
                         "{}.{}",
-                        sanitize_filename(name),
+                        sanitize_filename(&export_name),
                         bundled_extension(opts.format),
                     );
                     let output_path = match opts.kind {
@@ -568,7 +570,8 @@ pub async fn start_export(
                             std::path::PathBuf::from(&output_dir).join(&filename)
                         }
                         starbreaker_3d::ExportKind::Decomposed => {
-                            std::path::PathBuf::from(&output_dir).join(sanitize_filename(name))
+                            std::path::PathBuf::from(&output_dir)
+                                .join(sanitize_filename(&export_name))
                         }
                     };
 
@@ -583,9 +586,9 @@ pub async fn start_export(
                                 ExportProgress {
                                     current: i + 1,
                                     total,
-                                    entity_name: name.clone(),
+                                    entity_name: export_name.clone(),
                                     entity_id: id_str.clone(),
-                                    error: Some(format!("{name}: {e}")),
+                                    error: Some(format!("{export_name}: {e}")),
                                 },
                             );
                             errors.fetch_add(1, Ordering::Relaxed);
@@ -654,6 +657,15 @@ fn export_single(
     Ok(())
 }
 
+fn export_entity_name(name: &str) -> String {
+    let trimmed = name.trim_matches('"');
+    trimmed
+        .rsplit('.')
+        .next()
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
 /// Sanitize a filename by replacing invalid characters with underscores.
 fn sanitize_filename(name: &str) -> String {
     name.chars()
@@ -662,6 +674,17 @@ fn sanitize_filename(name: &str) -> String {
             _ => c,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::export_entity_name;
+
+    #[test]
+    fn export_entity_name_strips_record_prefix_and_quotes() {
+        assert_eq!(export_entity_name("EntityClassDefinition.ARGO_MOLE\""), "ARGO_MOLE");
+        assert_eq!(export_entity_name("ARGO_MOLE"), "ARGO_MOLE");
+    }
 }
 
 /// Generate a GLB preview for a geometry file in the P4K.
