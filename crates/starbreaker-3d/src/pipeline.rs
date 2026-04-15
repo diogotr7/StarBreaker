@@ -695,6 +695,25 @@ struct ChildPayloadSpec {
     no_rotation: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ChildPayloadCacheKey {
+    record_id: starbreaker_datacore::types::CigGuid,
+    geometry_path: Option<String>,
+    material_path: Option<String>,
+}
+
+#[derive(Clone)]
+struct LoadedChildPayload {
+    mesh: crate::types::Mesh,
+    materials: Option<mtl::MtlFile>,
+    textures: Option<MaterialTextures>,
+    nmc: Option<nmc::NodeMeshCombo>,
+    palette: Option<mtl::TintPalette>,
+    bones: Vec<crate::skeleton::Bone>,
+    geometry_path: String,
+    material_path: String,
+}
+
 fn collect_child_payload_specs(
     children: &[crate::types::ResolvedNode],
     parent_entity_name: &str,
@@ -744,6 +763,52 @@ fn empty_child_mesh() -> crate::types::Mesh {
     }
 }
 
+fn build_child_payload_cache_key(child: &crate::types::ResolvedNode) -> ChildPayloadCacheKey {
+    ChildPayloadCacheKey {
+        record_id: child.record.id,
+        geometry_path: child.geometry_path.clone(),
+        material_path: child.material_path.clone(),
+    }
+}
+
+fn load_child_payload_asset(
+    child: &crate::types::ResolvedNode,
+    db: &Database,
+    p4k: &MappedP4k,
+    mesh_opts: &ExportOptions,
+    final_material_mode: MaterialMode,
+) -> Option<LoadedChildPayload> {
+    let (mesh, mtl, nmc, palette, bones, geometry_path, material_path) =
+        load_child_mesh(child, db, p4k, mesh_opts)?;
+    let textures = if final_material_mode.include_textures() {
+        mtl.as_ref().map(|materials| {
+            let mut png_cache = PngCache::new();
+            load_material_textures(
+                p4k,
+                materials,
+                palette.as_ref(),
+                mesh_opts.texture_mip,
+                &mut png_cache,
+                final_material_mode.include_normals(),
+                final_material_mode.experimental(),
+            )
+        })
+    } else {
+        None
+    };
+
+    Some(LoadedChildPayload {
+        mesh,
+        materials: mtl,
+        textures,
+        nmc,
+        palette,
+        bones,
+        geometry_path,
+        material_path,
+    })
+}
+
 fn load_child_payloads(
     specs: Vec<ChildPayloadSpec>,
     db: &Database,
@@ -753,38 +818,51 @@ fn load_child_payloads(
 ) -> Vec<crate::types::EntityPayload> {
     use rayon::prelude::*;
 
+    let mut unique_children = Vec::new();
+    let mut unique_child_indices = std::collections::HashMap::new();
+    let mut spec_asset_indices = Vec::with_capacity(specs.len());
+
+    for spec in &specs {
+        let child = &spec.child;
+        if !child.has_geometry {
+            spec_asset_indices.push(None);
+            continue;
+        }
+
+        let cache_key = build_child_payload_cache_key(child);
+        let unique_index = if let Some(&index) = unique_child_indices.get(&cache_key) {
+            index
+        } else {
+            let index = unique_children.len();
+            unique_children.push(child.clone_payload_source());
+            unique_child_indices.insert(cache_key, index);
+            index
+        };
+        spec_asset_indices.push(Some(unique_index));
+    }
+
+    let loaded_assets: Vec<Option<LoadedChildPayload>> = unique_children
+        .into_par_iter()
+        .map(|child| load_child_payload_asset(&child, db, p4k, mesh_opts, final_material_mode))
+        .collect();
+
     specs
-        .par_iter()
-        .filter_map(|spec| {
+        .into_iter()
+        .enumerate()
+        .filter_map(|(spec_index, spec)| {
             let child = &spec.child;
             if child.has_geometry {
-                let (mesh, mtl, nmc, palette, bones, geometry_path, material_path) =
-                    load_child_mesh(child, db, p4k, mesh_opts)?;
-                let textures = if final_material_mode.include_textures() {
-                    mtl.as_ref().map(|materials| {
-                        let mut png_cache = PngCache::new();
-                        load_material_textures(
-                            p4k,
-                            materials,
-                            palette.as_ref(),
-                            mesh_opts.texture_mip,
-                            &mut png_cache,
-                            final_material_mode.include_normals(),
-                            final_material_mode.experimental(),
-                        )
-                    })
-                } else {
-                    None
-                };
+                let asset_index = spec_asset_indices[spec_index]?;
+                let loaded = loaded_assets.get(asset_index)?.as_ref()?;
                 Some(crate::types::EntityPayload {
-                    mesh,
-                    materials: mtl,
-                    textures,
-                    nmc,
-                    palette,
-                    geometry_path,
-                    material_path,
-                    bones,
+                    mesh: loaded.mesh.clone(),
+                    materials: loaded.materials.clone(),
+                    textures: loaded.textures.clone(),
+                    nmc: loaded.nmc.clone(),
+                    palette: loaded.palette.clone(),
+                    geometry_path: loaded.geometry_path.clone(),
+                    material_path: loaded.material_path.clone(),
+                    bones: loaded.bones.clone(),
                     entity_name: child.entity_name.clone(),
                     parent_node_name: spec.parent_node_name.clone(),
                     parent_entity_name: spec.parent_entity_name.clone(),
