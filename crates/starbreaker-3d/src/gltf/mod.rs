@@ -690,6 +690,8 @@ mod tests {
             textures: None,
             nmc: None,
             palette: None,
+            geometry_path: format!("Data/Objects/{entity_name}.skin"),
+            material_path: format!("Data/Objects/{entity_name}.mtl"),
             bones: Vec::new(),
             entity_name: entity_name.into(),
             parent_node_name: String::new(),
