@@ -106,6 +106,43 @@ struct LiveryUsage {
     material_sidecars: BTreeSet<String>,
 }
 
+fn export_entity_basename(name: &str) -> &str {
+    let trimmed = name.trim_matches('"');
+    trimmed.rsplit('.').next().unwrap_or(trimmed)
+}
+
+fn clean_export_label(name: &str) -> String {
+    let mut cleaned = String::new();
+    let mut last_was_space = false;
+
+    for ch in name.chars() {
+        if ch.is_alphanumeric() {
+            cleaned.push(ch);
+            last_was_space = false;
+        } else if ch.is_whitespace() || matches!(ch, '_' | '-') {
+            if !cleaned.is_empty() && !last_was_space {
+                cleaned.push(' ');
+                last_was_space = true;
+            }
+        }
+    }
+
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        export_entity_basename(name).replace('_', " ")
+    } else {
+        cleaned.to_string()
+    }
+}
+
+fn package_directory_name(entity_name: &str) -> String {
+    clean_export_label(export_entity_basename(entity_name))
+}
+
+fn package_relative_path(package_name: &str, file_name: &str) -> String {
+    format!("Packages/{package_name}/{file_name}")
+}
+
 pub(crate) fn write_decomposed_export(
     p4k: &MappedP4k,
     input: DecomposedInput,
@@ -119,9 +156,14 @@ pub(crate) fn write_decomposed_export(
     let mut png_cache = PngCache::new();
     let mut palette_records = BTreeMap::new();
     let mut livery_usage = BTreeMap::new();
+    let package_name = package_directory_name(&input.entity_name);
+    let scene_manifest_path = package_relative_path(&package_name, "scene.json");
+    let palettes_manifest_path = package_relative_path(&package_name, "palettes.json");
+    let liveries_manifest_path = package_relative_path(&package_name, "liveries.json");
 
     let root_mesh_asset = write_mesh_asset(
         &mut files,
+        p4k,
         &input.entity_name,
         &input.geometry_path,
         &input.root_mesh,
@@ -134,6 +176,7 @@ pub(crate) fn write_decomposed_export(
             p4k,
             &mut png_cache,
             &mut texture_cache,
+            &palettes_manifest_path,
             &input.entity_name,
             &input.geometry_path,
             &input.material_path,
@@ -157,6 +200,7 @@ pub(crate) fn write_decomposed_export(
     for child in &input.children {
         let mesh_asset = write_mesh_asset(
             &mut files,
+            p4k,
             &child.entity_name,
             &child.geometry_path,
             &child.mesh,
@@ -169,6 +213,7 @@ pub(crate) fn write_decomposed_export(
                 p4k,
                 &mut png_cache,
                 &mut texture_cache,
+                &palettes_manifest_path,
                 &child.entity_name,
                 &child.geometry_path,
                 &child.material_path,
@@ -190,8 +235,8 @@ pub(crate) fn write_decomposed_export(
 
         child_instances.push(SceneInstanceRecord {
             entity_name: child.entity_name.clone(),
-            geometry_path: child.geometry_path.clone(),
-            material_path: child.material_path.clone(),
+            geometry_path: normalize_source_path(p4k, &child.geometry_path),
+            material_path: normalize_source_path(p4k, &child.material_path),
             mesh_asset,
             material_sidecar,
             palette_id,
@@ -227,6 +272,7 @@ pub(crate) fn write_decomposed_export(
                 };
                 let mesh_asset = write_mesh_asset(
                     &mut files,
+                    p4k,
                     &entry.name,
                     &entry.cgf_path,
                     &mesh,
@@ -239,6 +285,7 @@ pub(crate) fn write_decomposed_export(
                         p4k,
                         &mut png_cache,
                         &mut texture_cache,
+                        &palettes_manifest_path,
                         &entry.name,
                         &entry.cgf_path,
                         entry.material_path.as_deref().unwrap_or(""),
@@ -259,8 +306,11 @@ pub(crate) fn write_decomposed_export(
             );
 
             placements.push(InteriorPlacementRecord {
-                cgf_path: entry.cgf_path.clone(),
-                material_path: entry.material_path.clone(),
+                cgf_path: normalize_source_path(p4k, &entry.cgf_path),
+                material_path: entry
+                    .material_path
+                    .as_ref()
+                    .map(|path| normalize_source_path(p4k, path)),
                 mesh_asset,
                 material_sidecar,
                 entity_class_guid: None,
@@ -294,8 +344,9 @@ pub(crate) fn write_decomposed_export(
 
     let scene_manifest = build_scene_manifest_value(
         &input.entity_name,
-        &input.geometry_path,
-        &input.material_path,
+        &package_name,
+        &normalize_source_path(p4k, &input.geometry_path),
+        &normalize_source_path(p4k, &input.material_path),
         &root_mesh_asset,
         root_material_sidecar.as_deref(),
         root_palette_id.as_deref(),
@@ -303,15 +354,15 @@ pub(crate) fn write_decomposed_export(
         &interior_records,
         opts,
     );
-    insert_json_file(&mut files, "scene.json".to_string(), scene_manifest);
+    insert_json_file(&mut files, scene_manifest_path, scene_manifest);
     insert_json_file(
         &mut files,
-        "palettes/palettes.json".to_string(),
+        palettes_manifest_path.clone(),
         build_palette_manifest_value(&palette_records),
     );
     insert_json_file(
         &mut files,
-        "liveries/liveries.json".to_string(),
+        liveries_manifest_path,
         build_livery_manifest_value(&livery_usage),
     );
 
@@ -325,6 +376,7 @@ pub(crate) fn write_decomposed_export(
 
 fn build_scene_manifest_value(
     entity_name: &str,
+    package_name: &str,
     geometry_path: &str,
     material_path: &str,
     root_mesh_asset: &str,
@@ -338,8 +390,10 @@ fn build_scene_manifest_value(
         "version": 1,
         "export_kind": "Decomposed",
         "package_rule": {
-            "root": "caller_selected_package_root",
-            "paths_are_relative": true,
+            "root": "caller_selected_export_root",
+            "package_dir": format!("Packages/{package_name}"),
+            "paths_are_relative_to_export_root": true,
+            "shared_asset_root": "Data",
             "normalized_p4k_relative_paths": true,
         },
         "root_entity": {
@@ -433,6 +487,7 @@ fn interior_container_json(container: &InteriorContainerRecord) -> serde_json::V
 
 fn write_mesh_asset(
     files: &mut BTreeMap<String, Vec<u8>>,
+    p4k: &MappedP4k,
     fallback_name: &str,
     geometry_path: &str,
     mesh: &Mesh,
@@ -454,7 +509,7 @@ fn write_mesh_asset(
 
     let mut no_textures_fn = no_textures;
     let mut no_interiors_fn = no_interiors;
-    let requested_path = mesh_asset_relative_path(geometry_path, fallback_name);
+    let requested_path = mesh_asset_relative_path(p4k, geometry_path, fallback_name);
     let glb = crate::gltf::write_glb(
         GlbInput {
             root_mesh: Some(mesh.clone()),
@@ -497,13 +552,15 @@ fn write_material_sidecar(
     p4k: &MappedP4k,
     png_cache: &mut PngCache,
     texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    palettes_manifest_path: &str,
     fallback_name: &str,
     geometry_path: &str,
     material_path: &str,
     materials: &MtlFile,
     texture_mip: u32,
 ) -> String {
-    let source_material_path = material_source_path(materials, material_path, geometry_path);
+    let normalized_geometry_path = normalize_source_path(p4k, geometry_path);
+    let source_material_path = material_source_path(p4k, materials, material_path, geometry_path);
     let relative_path = material_sidecar_relative_path(&source_material_path, fallback_name);
     let extracted = materials
         .materials
@@ -521,9 +578,10 @@ fn write_material_sidecar(
         .collect::<Vec<_>>();
     let value = build_material_sidecar_value(
         materials,
-        geometry_path,
+        &normalized_geometry_path,
         &source_material_path,
         &relative_path,
+        palettes_manifest_path,
         &extracted,
     );
     insert_json_file(files, relative_path, value)
@@ -556,7 +614,7 @@ fn extract_material_entry(
         ) {
             direct_texture_exports.push(TextureExportRef {
                 role: "diffuse".to_string(),
-                source_path: normalize_source_path(path),
+                source_path: normalize_source_path(p4k, path),
                 export_path,
                 export_kind: "source".to_string(),
             });
@@ -574,7 +632,7 @@ fn extract_material_entry(
         ) {
             direct_texture_exports.push(TextureExportRef {
                 role: "normal_gloss".to_string(),
-                source_path: normalize_source_path(path),
+                source_path: normalize_source_path(p4k, path),
                 export_path,
                 export_kind: "source".to_string(),
             });
@@ -595,7 +653,7 @@ fn extract_material_entry(
             ) {
                 derived_texture_exports.push(TextureExportRef {
                     role: "roughness".to_string(),
-                    source_path: normalize_source_path(path),
+                    source_path: normalize_source_path(p4k, path),
                     export_path,
                     export_kind: "roughness_from_normal_gloss".to_string(),
                 });
@@ -607,7 +665,7 @@ fn extract_material_entry(
         .layers
         .iter()
         .map(|layer| {
-            let layer_material_path = normalize_source_path(&layer.path);
+            let layer_material_path = normalize_source_path(p4k, &layer.path);
             let layer_mtl = crate::pipeline::try_load_mtl(p4k, &crate::pipeline::datacore_path_to_p4k(&layer.path));
             let layer_sub = layer_mtl.as_ref().and_then(|mtl| mtl.materials.first());
             let diffuse_export_path = layer_sub
@@ -671,6 +729,7 @@ fn build_material_sidecar_value(
     geometry_path: &str,
     source_material_path: &str,
     relative_path: &str,
+    palettes_manifest_path: &str,
     extracted: &[ExtractedMaterialEntry],
 ) -> serde_json::Value {
     let source_stem = source_material_path
@@ -686,7 +745,7 @@ fn build_material_sidecar_value(
         "geometry_path": geometry_path,
         "normalized_export_relative_path": relative_path,
         "palette_contract": {
-            "shared_manifest": "palettes/palettes.json",
+            "shared_manifest": palettes_manifest_path,
             "scene_instance_field": "palette_id",
         },
         "submaterials": materials.materials.iter().enumerate().map(|(index, material)| {
@@ -743,7 +802,7 @@ fn build_submaterial_json(
             let palette_channel = palette_channel_json(layer.palette_tint, false);
             serde_json::json!({
                 "index": layer_index,
-                "source_material_path": normalize_source_path(&layer.path),
+                "source_material_path": extracted_layer.map(|layer| layer.source_material_path.clone()).unwrap_or_else(|| layer.path.clone()),
                 "tint_color": layer.tint_color,
                 "palette_channel": palette_channel,
                 "uv_tiling": layer.uv_tiling,
@@ -784,7 +843,7 @@ fn build_slot_export_value(
     binding: &SemanticTextureBinding,
     texture_mip: u32,
 ) -> serde_json::Value {
-    let source_path = slot_source_path(binding);
+    let source_path = slot_source_path(Some(p4k), binding);
     let export_flavor = slot_texture_flavor(binding.role);
     let export_path = if binding.is_virtual {
         None
@@ -810,11 +869,12 @@ fn build_slot_export_value(
     })
 }
 
-fn slot_source_path(binding: &SemanticTextureBinding) -> String {
+fn slot_source_path(p4k: Option<&MappedP4k>, binding: &SemanticTextureBinding) -> String {
     if binding.is_virtual {
         binding.path.clone()
     } else {
-        normalize_source_path(&binding.path)
+        p4k.map(|archive| normalize_source_path(archive, &binding.path))
+            .unwrap_or_else(|| normalize_requested_source_path(&binding.path))
     }
 }
 
@@ -827,7 +887,7 @@ fn export_texture_asset(
     flavor: TextureFlavor,
     texture_mip: u32,
 ) -> Option<String> {
-    let normalized_source = normalize_source_path(source_path);
+    let normalized_source = normalize_source_path(p4k, source_path);
     let cache_key = (normalized_source.to_lowercase(), flavor);
     if let Some(existing) = texture_cache.get(&cache_key) {
         return Some(existing.clone());
@@ -860,7 +920,7 @@ fn export_texture_asset(
         }
     }?;
 
-    let requested_path = texture_relative_path(source_path, flavor);
+    let requested_path = texture_relative_path(p4k, source_path, flavor);
     let stored_path = insert_binary_file(files, requested_path, bytes);
     texture_cache.insert(cache_key, stored_path.clone());
     Some(stored_path)
@@ -897,54 +957,57 @@ fn register_livery_usage(
     }
 }
 
-fn material_source_path(materials: &MtlFile, material_path: &str, geometry_path: &str) -> String {
+fn material_source_path(
+    p4k: &MappedP4k,
+    materials: &MtlFile,
+    material_path: &str,
+    geometry_path: &str,
+) -> String {
     if !material_path.is_empty() {
-        normalize_source_path(material_path)
+        normalize_source_path(p4k, material_path)
     } else if let Some(source_path) = materials.source_path.as_ref() {
-        normalize_source_path(source_path)
+        normalize_source_path(p4k, source_path)
     } else if geometry_path.is_empty() {
         "Data/generated/generated.mtl".to_string()
     } else {
-        replace_extension(&normalize_source_path(geometry_path), ".mtl")
+        replace_extension(&normalize_source_path(p4k, geometry_path), ".mtl")
     }
 }
 
-fn mesh_asset_relative_path(geometry_path: &str, fallback_name: &str) -> String {
+fn mesh_asset_relative_path(p4k: &MappedP4k, geometry_path: &str, fallback_name: &str) -> String {
     if geometry_path.is_empty() {
-        format!("meshes/generated/{}.glb", sanitize_identifier(fallback_name))
+        format!("Data/generated/{}.glb", sanitize_identifier(fallback_name))
     } else {
-        format!("meshes/{}", replace_extension(&normalize_source_path(geometry_path), ".glb"))
+        replace_extension(&normalize_source_path(p4k, geometry_path), ".glb")
     }
 }
 
 fn material_sidecar_relative_path(source_material_path: &str, fallback_name: &str) -> String {
     if source_material_path.is_empty() {
-        format!("materials/generated/{}.materials.json", sanitize_identifier(fallback_name))
+        format!("Data/generated/{}.materials.json", sanitize_identifier(fallback_name))
     } else {
-        format!(
-            "materials/{}",
-            replace_extension(source_material_path, ".materials.json")
-        )
+        replace_extension(source_material_path, ".materials.json")
     }
 }
 
-fn texture_relative_path(source_path: &str, flavor: TextureFlavor) -> String {
-    let normalized = normalize_source_path(source_path);
+fn texture_relative_path(p4k: &MappedP4k, source_path: &str, flavor: TextureFlavor) -> String {
+    let normalized = normalize_source_path(p4k, source_path);
     match flavor {
-        TextureFlavor::Generic => format!("textures/{}", replace_extension(&normalized, ".png")),
-        TextureFlavor::Normal => format!(
-            "textures/{}",
-            suffix_before_extension(&normalized, ".normal", ".png")
-        ),
-        TextureFlavor::Roughness => format!(
-            "textures/{}",
-            suffix_before_extension(&normalized, ".roughness", ".png")
-        ),
+        TextureFlavor::Generic => replace_extension(&normalized, ".png"),
+        TextureFlavor::Normal => suffix_before_extension(&normalized, ".normal", ".png"),
+        TextureFlavor::Roughness => suffix_before_extension(&normalized, ".roughness", ".png"),
     }
 }
 
-fn normalize_source_path(path: &str) -> String {
+fn normalize_requested_source_path(path: &str) -> String {
     crate::pipeline::datacore_path_to_p4k(path).replace('\\', "/")
+}
+
+fn normalize_source_path(p4k: &MappedP4k, path: &str) -> String {
+    let p4k_path = crate::pipeline::datacore_path_to_p4k(path);
+    p4k.entry_case_insensitive(&p4k_path)
+        .map(|entry| entry.name.replace('\\', "/"))
+        .unwrap_or_else(|| normalize_requested_source_path(path))
 }
 
 fn replace_extension(path: &str, new_extension: &str) -> String {
@@ -1002,6 +1065,7 @@ fn insert_binary_file(
     requested_path: String,
     bytes: Vec<u8>,
 ) -> String {
+    let requested_path = canonicalize_output_path_case(files, &requested_path);
     if let Some(existing) = files.get(&requested_path) {
         if existing == &bytes {
             return requested_path;
@@ -1017,6 +1081,43 @@ fn insert_binary_file(
     }
     files.insert(candidate.clone(), bytes);
     candidate
+}
+
+fn canonicalize_output_path_case(files: &BTreeMap<String, Vec<u8>>, requested_path: &str) -> String {
+    let mut prefixes = String::new();
+    let mut canonical_parts = Vec::new();
+
+    for (depth, part) in requested_path.split('/').enumerate() {
+        if depth > 0 {
+            prefixes.push('/');
+        }
+        prefixes.push_str(&part.to_ascii_lowercase());
+
+        let canonical_part = files
+            .keys()
+            .find_map(|existing| existing_segment_case(existing, depth, &prefixes))
+            .unwrap_or_else(|| part.to_string());
+        canonical_parts.push(canonical_part);
+    }
+
+    canonical_parts.join("/")
+}
+
+fn existing_segment_case(path: &str, depth: usize, lowercase_prefix: &str) -> Option<String> {
+    let parts = path.split('/').collect::<Vec<_>>();
+    if parts.len() <= depth {
+        return None;
+    }
+    let existing_prefix = parts[..=depth]
+        .iter()
+        .map(|part| part.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join("/");
+    if existing_prefix == lowercase_prefix {
+        Some(parts[depth].to_string())
+    } else {
+        None
+    }
 }
 
 fn hashed_variant_path(path: &str, bytes: &[u8]) -> String {
@@ -1172,11 +1273,11 @@ mod tests {
     #[test]
     fn normalize_source_paths_keep_data_prefix_and_slashes() {
         assert_eq!(
-            normalize_source_path("Objects/Ships/Test/hull_diff.dds"),
+            normalize_requested_source_path("Objects/Ships/Test/hull_diff.dds"),
             "Data/Objects/Ships/Test/hull_diff.dds"
         );
         assert_eq!(
-            normalize_source_path("Data\\Objects\\Ships\\Test\\hull_diff.dds"),
+            normalize_requested_source_path("Data\\Objects\\Ships\\Test\\hull_diff.dds"),
             "Data/Objects/Ships/Test/hull_diff.dds"
         );
     }
@@ -1184,16 +1285,24 @@ mod tests {
     #[test]
     fn texture_relative_paths_keep_role_specific_suffixes() {
         assert_eq!(
-            texture_relative_path("Objects/Ships/Test/hull_diff.dds", TextureFlavor::Generic),
-            "textures/Data/Objects/Ships/Test/hull_diff.png"
+            replace_extension(&normalize_requested_source_path("Objects/Ships/Test/hull_diff.dds"), ".png"),
+            "Data/Objects/Ships/Test/hull_diff.png"
         );
         assert_eq!(
-            texture_relative_path("Objects/Ships/Test/hull_ddna.dds", TextureFlavor::Normal),
-            "textures/Data/Objects/Ships/Test/hull_ddna.normal.png"
+            suffix_before_extension(
+                &normalize_requested_source_path("Objects/Ships/Test/hull_ddna.dds"),
+                ".normal",
+                ".png",
+            ),
+            "Data/Objects/Ships/Test/hull_ddna.normal.png"
         );
         assert_eq!(
-            texture_relative_path("Objects/Ships/Test/hull_ddna.dds", TextureFlavor::Roughness),
-            "textures/Data/Objects/Ships/Test/hull_ddna.roughness.png"
+            suffix_before_extension(
+                &normalize_requested_source_path("Objects/Ships/Test/hull_ddna.dds"),
+                ".roughness",
+                ".png",
+            ),
+            "Data/Objects/Ships/Test/hull_ddna.roughness.png"
         );
     }
 
@@ -1209,25 +1318,25 @@ mod tests {
                 "role": "base_color",
                 "is_virtual": false,
                 "source_path": "Data/Objects/Ships/Test/hull_diff.dds",
-                "export_path": "textures/Data/Objects/Ships/Test/hull_diff.png",
+                "export_path": "Data/Objects/Ships/Test/hull_diff.png",
                 "export_kind": "source",
             })],
             direct_texture_exports: vec![TextureExportRef {
                 role: "diffuse".into(),
                 source_path: "Data/Objects/Ships/Test/hull_diff.dds".into(),
-                export_path: "textures/Data/Objects/Ships/Test/hull_diff.png".into(),
+                export_path: "Data/Objects/Ships/Test/hull_diff.png".into(),
                 export_kind: "source".into(),
             }],
             layer_exports: vec![LayerTextureExport {
                 source_material_path: "Data/libs/materials/metal/test_layer.mtl".into(),
-                diffuse_export_path: Some("textures/Data/libs/materials/metal/test_layer.png".into()),
-                normal_export_path: Some("textures/Data/libs/materials/metal/test_layer.normal.png".into()),
-                roughness_export_path: Some("textures/Data/libs/materials/metal/test_layer.roughness.png".into()),
+                diffuse_export_path: Some("Data/libs/materials/metal/test_layer.png".into()),
+                normal_export_path: Some("Data/libs/materials/metal/test_layer.normal.png".into()),
+                roughness_export_path: Some("Data/libs/materials/metal/test_layer.roughness.png".into()),
             }],
             derived_texture_exports: vec![TextureExportRef {
                 role: "roughness".into(),
                 source_path: "Data/Objects/Ships/Test/hull_ddna.dds".into(),
-                export_path: "textures/Data/Objects/Ships/Test/hull_ddna.roughness.png".into(),
+                export_path: "Data/Objects/Ships/Test/hull_ddna.roughness.png".into(),
                 export_kind: "roughness_from_normal_gloss".into(),
             }],
         }];
@@ -1236,7 +1345,8 @@ mod tests {
             &materials,
             "Data/Objects/Ships/Test/hull.skin",
             "Data/Objects/Ships/Test/hull.mtl",
-            "materials/Data/Objects/Ships/Test/hull.materials.json",
+            "Data/Objects/Ships/Test/hull.materials.json",
+            "Packages/ARGO MOLE/palettes.json",
             &extracted,
         );
 
@@ -1258,7 +1368,7 @@ mod tests {
             is_virtual: true,
         };
 
-        assert_eq!(slot_source_path(&binding), "$TintPaletteDecal");
+        assert_eq!(slot_source_path(None, &binding), "$TintPaletteDecal");
     }
 
     #[test]
@@ -1271,8 +1381,8 @@ mod tests {
                 palette_source_name: Some("vehicle.palette.test".to_string()),
                 entity_names: ["child_a".to_string(), "child_b".to_string()].into_iter().collect(),
                 material_sidecars: [
-                    "materials/Data/Objects/A.materials.json".to_string(),
-                    "materials/Data/Objects/B.materials.json".to_string(),
+                    "Data/Objects/A.materials.json".to_string(),
+                    "Data/Objects/B.materials.json".to_string(),
                 ]
                 .into_iter()
                 .collect(),
@@ -1323,8 +1433,8 @@ mod tests {
             entity_name: "child_a".into(),
             geometry_path: "Data/Objects/Ships/Test/child.skin".into(),
             material_path: "Data/Objects/Ships/Test/child.mtl".into(),
-            mesh_asset: "meshes/Data/Objects/Ships/Test/child.glb".into(),
-            material_sidecar: Some("materials/Data/Objects/Ships/Test/child.materials.json".into()),
+            mesh_asset: "Data/Objects/Ships/Test/child.glb".into(),
+            material_sidecar: Some("Data/Objects/Ships/Test/child.materials.json".into()),
             palette_id: Some("palette/test".into()),
             parent_node_name: Some("hardpoint_weapon_left".into()),
             parent_entity_name: Some("root".into()),
@@ -1344,8 +1454,8 @@ mod tests {
             placements: vec![InteriorPlacementRecord {
                 cgf_path: "Data/Objects/Ships/Test/interior_panel.cgf".into(),
                 material_path: Some("Data/Objects/Ships/Test/interior_panel.mtl".into()),
-                mesh_asset: "meshes/Data/Objects/Ships/Test/interior_panel.glb".into(),
-                material_sidecar: Some("materials/Data/Objects/Ships/Test/interior_panel.materials.json".into()),
+                mesh_asset: "Data/Objects/Ships/Test/interior_panel.glb".into(),
+                material_sidecar: Some("Data/Objects/Ships/Test/interior_panel.materials.json".into()),
                 entity_class_guid: Some("1234".into()),
                 transform: [
                     [1.0, 0.0, 0.0, 0.0],
@@ -1359,32 +1469,37 @@ mod tests {
 
         let value = build_scene_manifest_value(
             "root",
+            "ARGO MOLE",
             "Data/Objects/Ships/Test/root.skin",
             "Data/Objects/Ships/Test/root.mtl",
-            "meshes/Data/Objects/Ships/Test/root.glb",
-            Some("materials/Data/Objects/Ships/Test/root.materials.json"),
+            "Data/Objects/Ships/Test/root.glb",
+            Some("Data/Objects/Ships/Test/root.materials.json"),
             Some("palette/root"),
             &[child],
             &[interior],
             &ExportOptions::default(),
         );
 
-        assert_eq!(value["root_entity"]["mesh_asset"], serde_json::json!("meshes/Data/Objects/Ships/Test/root.glb"));
-        assert_eq!(value["children"][0]["mesh_asset"], serde_json::json!("meshes/Data/Objects/Ships/Test/child.glb"));
+        assert_eq!(value["root_entity"]["mesh_asset"], serde_json::json!("Data/Objects/Ships/Test/root.glb"));
+        assert_eq!(value["children"][0]["mesh_asset"], serde_json::json!("Data/Objects/Ships/Test/child.glb"));
         assert_eq!(value["children"][0]["parent_node_name"], serde_json::json!("hardpoint_weapon_left"));
-        assert_eq!(value["interiors"][0]["placements"][0]["mesh_asset"], serde_json::json!("meshes/Data/Objects/Ships/Test/interior_panel.glb"));
+        assert_eq!(value["interiors"][0]["placements"][0]["mesh_asset"], serde_json::json!("Data/Objects/Ships/Test/interior_panel.glb"));
+        assert_eq!(value["package_rule"]["package_dir"], serde_json::json!("Packages/ARGO MOLE"));
         assert_eq!(value["package_rule"]["normalized_p4k_relative_paths"], serde_json::json!(true));
     }
 
     #[test]
     fn normalized_relative_paths_join_beneath_selected_base_directory() {
         let base_dir = std::path::PathBuf::from("/tmp/export-root");
-        let texture_path = texture_relative_path("Objects/Ships/Test/hull_diff.dds", TextureFlavor::Generic);
+        let texture_path = replace_extension(
+            &normalize_requested_source_path("Objects/Ships/Test/hull_diff.dds"),
+            ".png",
+        );
         let full_path = base_dir.join(texture_path);
 
         assert_eq!(
             full_path.to_string_lossy(),
-            "/tmp/export-root/textures/Data/Objects/Ships/Test/hull_diff.png"
+            "/tmp/export-root/Data/Objects/Ships/Test/hull_diff.png"
         );
     }
 }
