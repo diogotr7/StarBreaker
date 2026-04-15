@@ -125,6 +125,7 @@ pub struct SubMeshDescriptor {
 pub struct DataStreams {
     pub positions: PositionData,
     pub uvs: Vec<[u16; 2]>,
+    pub secondary_uvs: Option<Vec<[u16; 2]>>,
     pub indices: Vec<u32>,
     pub colors: Option<Vec<[u8; 4]>>,
     pub tangents: Option<TangentData>,
@@ -235,6 +236,7 @@ impl SkinMesh {
     fn read_streams(reader: &mut SpanReader, info: &MeshInfo) -> Result<DataStreams, Error> {
         let mut positions: Option<PositionData> = None;
         let mut uvs: Option<Vec<[u16; 2]>> = None;
+        let mut secondary_uvs: Option<Vec<[u16; 2]>> = None;
         let mut indices: Option<Vec<u32>> = None;
         let mut colors: Option<Vec<[u8; 4]>> = None;
         let mut tangents: Option<TangentData> = None;
@@ -321,8 +323,9 @@ impl SkinMesh {
                         normals = Some(NormalData::Float(
                             reader.read_slice::<[f32; 3]>(num_verts)?.to_vec(),
                         ));
+                    } else if element_size == 4 {
+                        secondary_uvs = Some(reader.read_slice::<[u16; 2]>(num_verts)?.to_vec());
                     } else {
-                        // elem_size=4: second UV set, not normals. Skip.
                         reader.advance(element_size as usize * num_verts)?;
                     }
                 }
@@ -377,6 +380,7 @@ impl SkinMesh {
                 chunk_type: stream_type::IVOVERTSUVS,
             })?,
             uvs: uvs.unwrap_or_default(),
+            secondary_uvs,
             indices: indices.ok_or(Error::MissingChunk {
                 chunk_type: stream_type::IVOINDICES,
             })?,
