@@ -27,6 +27,7 @@ interface ExportState {
   // Export options
   lod: number;
   mip: number;
+  exportKind: string;
   materialMode: string;
   format: string;
   includeAttachments: boolean;
@@ -36,6 +37,7 @@ interface ExportState {
   outputDir: string | null;
   setLod: (v: number) => void;
   setMip: (v: number) => void;
+  setExportKind: (v: string) => void;
   setMaterialMode: (v: string) => void;
   setFormat: (v: string) => void;
   setIncludeAttachments: (v: boolean) => void;
@@ -62,6 +64,7 @@ type PersistedExportState = Pick<
   ExportState,
   | "lod"
   | "mip"
+  | "exportKind"
   | "materialMode"
   | "includeAttachments"
   | "includeInterior"
@@ -109,6 +112,7 @@ export const useExportStore = create<ExportState>()(
 
   lod: 1,
   mip: 2,
+  exportKind: "bundled",
   materialMode: "textures",
   format: "glb",
   includeAttachments: true,
@@ -118,6 +122,7 @@ export const useExportStore = create<ExportState>()(
   outputDir: null,
   setLod: (v) => set({ lod: v }),
   setMip: (v) => set({ mip: v }),
+  setExportKind: (v) => set({ exportKind: v }),
   setMaterialMode: (v) => set({ materialMode: v }),
   setFormat: (v) => set({ format: v }),
   setIncludeAttachments: (v) => set({ includeAttachments: v }),
@@ -152,6 +157,7 @@ export const useExportStore = create<ExportState>()(
       partialize: (s) => ({
         lod: s.lod,
         mip: s.mip,
+        exportKind: s.exportKind,
         materialMode: s.materialMode,
         includeAttachments: s.includeAttachments,
         includeInterior: s.includeInterior,
