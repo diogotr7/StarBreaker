@@ -32,6 +32,7 @@ export function ExportView() {
 
   const lod = useExportStore((s) => s.lod);
   const mip = useExportStore((s) => s.mip);
+  const exportKind = useExportStore((s) => s.exportKind);
   const materialMode = useExportStore((s) => s.materialMode);
   const format = useExportStore((s) => s.format);
   const includeAttachments = useExportStore((s) => s.includeAttachments);
@@ -41,6 +42,7 @@ export function ExportView() {
   const outputDir = useExportStore((s) => s.outputDir);
   const setLod = useExportStore((s) => s.setLod);
   const setMip = useExportStore((s) => s.setMip);
+  const setExportKind = useExportStore((s) => s.setExportKind);
   const setMaterialMode = useExportStore((s) => s.setMaterialMode);
   const setIncludeAttachments = useExportStore((s) => s.setIncludeAttachments);
   const setIncludeInterior = useExportStore((s) => s.setIncludeInterior);
@@ -136,6 +138,7 @@ export function ExportView() {
       output_dir: outputDir!,
       lod,
       mip,
+      export_kind: exportKind,
       material_mode: materialMode,
       format: format,
       include_attachments: includeAttachments,
@@ -379,6 +382,35 @@ export function ExportView() {
             <div className="flex justify-between text-[10px] text-text-faint">
               <span>Auto</span>
               <span>{navigator.hardwareConcurrency || 16}</span>
+            </div>
+          </div>
+
+          {/* Export Kind */}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs text-text-sub">Package</span>
+            <div className="flex flex-col gap-1">
+              {([
+                { value: "bundled", label: "Bundled", tip: "Single-file export for direct viewing in stock tools." },
+                { value: "decomposed", label: "Decomposed", tip: "Reusable mesh assets, canonical textures, and JSON sidecars for Blender reconstruction." },
+              ] as const).map((opt) => (
+                <label
+                  key={opt.value}
+                  className="flex items-center gap-2 cursor-pointer group"
+                  title={opt.tip}
+                >
+                  <input
+                    type="radio"
+                    name="exportKind"
+                    value={opt.value}
+                    checked={exportKind === opt.value}
+                    onChange={() => setExportKind(opt.value)}
+                    className="accent-accent w-3 h-3"
+                  />
+                  <span className="text-xs text-text-sub group-hover:text-text transition-colors">
+                    {opt.label}
+                  </span>
+                </label>
+              ))}
             </div>
           </div>
 
