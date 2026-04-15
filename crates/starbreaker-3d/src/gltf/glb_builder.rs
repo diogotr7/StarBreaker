@@ -1664,7 +1664,9 @@ fn build_scene_mesh_reuse_key(
 
 /// Serialize a glTF Root + binary buffer into a GLB byte vector.
 fn serialize_glb(root: &json::Root, bin: &[u8]) -> Result<Vec<u8>, Error> {
-    let json_bytes = serde_json::to_vec(root).map_err(|e| Error::Gltf(e.to_string()))?;
+    let mut json_value = serde_json::to_value(root).map_err(|e| Error::Gltf(e.to_string()))?;
+    strip_null_texture_transform_texcoords(&mut json_value);
+    let json_bytes = serde_json::to_vec(&json_value).map_err(|e| Error::Gltf(e.to_string()))?;
 
     let json_padding = (4 - json_bytes.len() % 4) % 4;
     let json_padded_len = json_bytes.len() + json_padding;
@@ -1688,6 +1690,29 @@ fn serialize_glb(root: &json::Root, bin: &[u8]) -> Result<Vec<u8>, Error> {
     glb.extend(std::iter::repeat_n(0u8, bin_padding));
 
     Ok(glb)
+}
+
+fn strip_null_texture_transform_texcoords(value: &mut serde_json::Value) {
+    fn recurse(value: &mut serde_json::Value, in_texture_transform: bool) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if in_texture_transform && matches!(map.get("texCoord"), Some(serde_json::Value::Null)) {
+                    map.remove("texCoord");
+                }
+                for (key, child) in map.iter_mut() {
+                    recurse(child, key == "KHR_texture_transform");
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    recurse(item, false);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    recurse(value, false);
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────────
