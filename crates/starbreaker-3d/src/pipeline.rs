@@ -40,6 +40,15 @@ pub enum MaterialMode {
     All,
 }
 
+/// Top-level export kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportKind {
+    /// Bundled scene export using a single-file artifact such as GLB.
+    Bundled,
+    /// Decomposed scene export using reusable assets and sidecar metadata.
+    Decomposed,
+}
+
 /// Output format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportFormat {
@@ -52,6 +61,8 @@ pub enum ExportFormat {
 /// Options for controlling the export pipeline.
 #[derive(Debug, Clone)]
 pub struct ExportOptions {
+    /// Top-level export kind.
+    pub kind: ExportKind,
     /// Output format.
     pub format: ExportFormat,
     /// Material detail level.
@@ -71,6 +82,7 @@ pub struct ExportOptions {
 impl Default for ExportOptions {
     fn default() -> Self {
         Self {
+            kind: ExportKind::Bundled,
             format: ExportFormat::Glb,
             material_mode: MaterialMode::Textures,
             include_attachments: true,
@@ -106,14 +118,65 @@ impl ExportFormat {
     }
 }
 
-/// Result of exporting an entity record to GLB.
+/// Placeholder for a future decomposed export package.
+#[derive(Debug, Clone, Default)]
+pub struct DecomposedExport {
+    pub files: Vec<ExportedFile>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExportedFile {
+    pub relative_path: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Result of exporting an entity record.
 pub struct ExportResult {
-    /// The GLB binary data.
+    /// The top-level export kind used for this result.
+    pub kind: ExportKind,
+    /// The requested bundled output format when `kind` is `Bundled`.
+    pub format: ExportFormat,
+    /// The bundled artifact bytes for the current export path.
+    ///
+    /// This remains named `glb` for compatibility with the existing bundled API.
     pub glb: Vec<u8>,
+    /// Placeholder for future decomposed results.
+    pub decomposed: Option<DecomposedExport>,
     /// The geometry file path from DataCore (e.g., "objects/ships/aegs/aegs_gladius.skin").
     pub geometry_path: String,
     /// The material file path from DataCore (e.g., "objects/ships/aegs/aegs_gladius.mtl").
     pub material_path: String,
+}
+
+impl ExportResult {
+    pub fn bundled_bytes(&self) -> Option<&[u8]> {
+        if self.kind == ExportKind::Bundled && !self.glb.is_empty() {
+            Some(self.glb.as_slice())
+        } else {
+            None
+        }
+    }
+}
+
+fn ensure_supported_export_kind(opts: &ExportOptions) -> Result<(), Error> {
+    if opts.kind == ExportKind::Bundled {
+        Ok(())
+    } else {
+        Err(Error::UnsupportedExportKind(format!("{:?}", opts.kind)))
+    }
+}
+
+fn ensure_supported_export_format(opts: &ExportOptions) -> Result<(), Error> {
+    if opts.format == ExportFormat::Glb {
+        Ok(())
+    } else {
+        Err(Error::UnsupportedExportFormat(format!("{:?}", opts.format)))
+    }
+}
+
+fn ensure_supported_export_options(opts: &ExportOptions) -> Result<(), Error> {
+    ensure_supported_export_kind(opts)?;
+    ensure_supported_export_format(opts)
 }
 
 /// Export a single entity's mesh, materials, textures, NMC, and palette from DataCore + P4k.
@@ -293,6 +356,8 @@ pub fn assemble_glb_with_loadout(
     tree: &starbreaker_datacore::loadout::LoadoutTree,
     opts: &ExportOptions,
 ) -> Result<ExportResult, Error> {
+    ensure_supported_export_options(opts)?;
+
     use crate::types::EntityPayload;
 
     log::info!("[mem-pipeline] resolving loadout meshes...");
@@ -306,7 +371,7 @@ pub fn assemble_glb_with_loadout(
 
     // Check for equipped paint item and resolve its SubGeometry palette/material override.
     let (root_palette, root_mtl) = resolve_paint_override(
-        db, p4k, record, &tree.root, root_palette, root_mtl, opts,
+        db, p4k, record, &tree.root, root_palette, root_mtl,
     );
 
     // Load landing gear as separate child entities attached to NMC nodes.
@@ -448,6 +513,7 @@ pub fn assemble_glb_with_loadout(
                 geometry_path: Some(geometry_path.clone()),
                 material_path: Some(material_path.clone()),
                 export_options: crate::gltf::ExportOptionsMetadata {
+                    kind: format!("{:?}", opts.kind),
                     material_mode: format!("{:?}", opts.material_mode),
                     format: format!("{:?}", opts.format),
                     lod_level: opts.lod_level,
@@ -461,7 +527,10 @@ pub fn assemble_glb_with_loadout(
     )?;
 
     Ok(ExportResult {
+        kind: opts.kind,
+        format: opts.format,
         glb,
+        decomposed: None,
         geometry_path,
         material_path,
     })
@@ -538,6 +607,7 @@ fn flatten_resolved_tree(
                 positions: Vec::new(),
                 indices: Vec::new(),
                 uvs: None,
+                secondary_uvs: None,
                 normals: None,
                 tangents: None,
                 colors: None,
@@ -1004,7 +1074,11 @@ fn build_interiors_from_payloads(
             let record = db.records_of_type(tpt_si).find(|r| {
                 db.resolve_string2(r.name_offset).to_lowercase().ends_with(&short_name)
             })?;
-            query_tint_from_record(db, record)
+            query_tint_from_record(
+                db,
+                record,
+                Some(short_name),
+            )
         });
 
         if let Some(ref p) = palette {
@@ -1665,7 +1739,6 @@ fn resolve_paint_override(
     root_node: &starbreaker_datacore::loadout::LoadoutNode,
     default_palette: Option<mtl::TintPalette>,
     default_mtl: Option<mtl::MtlFile>,
-    opts: &ExportOptions,
 ) -> (Option<mtl::TintPalette>, Option<mtl::MtlFile>) {
     // Find paint item in loadout children.
     let paint_node = root_node.children.iter()
@@ -1743,6 +1816,7 @@ fn resolve_paint_override(
                     ]
                 };
                 Some(mtl::TintPalette {
+                    source_name: None,
                     primary: read_entry("entryA"),
                     secondary: read_entry("entryB"),
                     tertiary: read_entry("entryC"),
@@ -1838,17 +1912,18 @@ fn get_value_u8(val: &starbreaker_datacore::query::value::Value, name: &str) -> 
 ///    correct TintPaletteTree record, works when RootRecord is populated).
 /// 2. Fallback: search for a TintPaletteTree record matching the entity name.
 fn query_tint_palette(db: &Database, record: &Record) -> Option<mtl::TintPalette> {
+    let entity_name = db.resolve_string2(record.name_offset);
+    let short_name = entity_name.rsplit('.').next().unwrap_or(entity_name).to_lowercase();
+
     // Strategy 1: Query through the entity's Reference path.
     // This follows Components[SGeometryResourceParams].Geometry.Geometry.Palette.RootRecord
     // through the Reference to the TintPaletteTree and reads colors directly.
     let base = "Components[SGeometryResourceParams].Geometry.Geometry.Palette.RootRecord.root";
-    if let Some(palette) = query_tint_from_path(db, record, base) {
+    if let Some(palette) = query_tint_from_path(db, record, base, Some(short_name.clone())) {
         return Some(palette);
     }
 
     // Strategy 2: Find TintPaletteTree record by entity name convention.
-    let entity_name = db.resolve_string2(record.name_offset);
-    let short_name = entity_name.rsplit('.').next().unwrap_or(entity_name).to_lowercase();
     let tpt_si = db.struct_id("TintPaletteTree")?;
     // Find an exact match first (e.g., "rsi_zeus_cl"), not a substring match
     // that could pick up a paint variant like "aegs_gladius_black_grey_grey_geometric".
@@ -1859,7 +1934,11 @@ fn query_tint_palette(db: &Database, record: &Record) -> Option<mtl::TintPalette
             rec_short == short_name
         })?;
 
-    query_tint_from_record(db, palette_record)
+    query_tint_from_record(
+        db,
+        palette_record,
+        Some(short_name),
+    )
 }
 
 /// Convert an sRGB 0.0-1.0 component to linear.
@@ -1872,7 +1951,12 @@ fn srgb_to_linear(c: f32) -> f32 {
 }
 
 /// Read tint palette colors from a path through an entity record.
-fn query_tint_from_path(db: &Database, record: &Record, base: &str) -> Option<mtl::TintPalette> {
+fn query_tint_from_path(
+    db: &Database,
+    record: &Record,
+    base: &str,
+    source_name: Option<String>,
+) -> Option<mtl::TintPalette> {
     let query_rgb = |entry: &str| -> [f32; 3] {
         let mut rgb = [0.5f32; 3];
         for (i, ch) in ["r", "g", "b"].iter().enumerate() {
@@ -1893,6 +1977,7 @@ fn query_tint_from_path(db: &Database, record: &Record, base: &str) -> Option<mt
     let _val = db.query_single::<u8>(&compiled, record).ok().flatten()?;
 
     Some(mtl::TintPalette {
+        source_name,
         primary: query_rgb("entryA"),
         secondary: query_rgb("entryB"),
         tertiary: query_rgb("entryC"),
@@ -1901,8 +1986,12 @@ fn query_tint_from_path(db: &Database, record: &Record, base: &str) -> Option<mt
 }
 
 /// Read tint palette colors from a TintPaletteTree record directly.
-fn query_tint_from_record(db: &Database, record: &Record) -> Option<mtl::TintPalette> {
-    query_tint_from_path(db, record, "root")
+fn query_tint_from_record(
+    db: &Database,
+    record: &Record,
+    source_name: Option<String>,
+) -> Option<mtl::TintPalette> {
+    query_tint_from_path(db, record, "root", source_name)
 }
 
 fn try_load_mtl(p4k: &MappedP4k, p4k_path: &str) -> Option<mtl::MtlFile> {
@@ -2476,6 +2565,8 @@ pub fn socpaks_to_glb(
 ) -> Result<Vec<u8>, Error> {
     use crate::socpak;
 
+    ensure_supported_export_options(opts)?;
+
     let identity: [[f32; 4]; 4] = [
         [1.0, 0.0, 0.0, 0.0],
         [0.0, 1.0, 0.0, 0.0],
@@ -2550,6 +2641,7 @@ pub fn socpaks_to_glb(
                 geometry_path: None,
                 material_path: None,
                 export_options: crate::gltf::ExportOptionsMetadata {
+                    kind: format!("{:?}", opts.kind),
                     material_mode: format!("{:?}", opts.material_mode),
                     format: format!("{:?}", opts.format),
                     lod_level: opts.lod_level,
@@ -2749,6 +2841,58 @@ pub fn dump_hierarchy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_export_result(kind: ExportKind, glb: Vec<u8>) -> ExportResult {
+        ExportResult {
+            kind,
+            format: ExportFormat::Glb,
+            glb,
+            decomposed: None,
+            geometry_path: "objects/test.skin".to_string(),
+            material_path: "objects/test.mtl".to_string(),
+        }
+    }
+
+    #[test]
+    fn export_options_default_to_bundled_kind() {
+        assert_eq!(ExportOptions::default().kind, ExportKind::Bundled);
+    }
+
+    #[test]
+    fn bundled_bytes_are_only_available_for_bundled_results() {
+        let bundled = sample_export_result(ExportKind::Bundled, vec![1, 2, 3]);
+        assert_eq!(bundled.bundled_bytes(), Some(&[1, 2, 3][..]));
+
+        let decomposed = sample_export_result(ExportKind::Decomposed, vec![1, 2, 3]);
+        assert_eq!(decomposed.bundled_bytes(), None);
+
+        let empty = sample_export_result(ExportKind::Bundled, Vec::new());
+        assert_eq!(empty.bundled_bytes(), None);
+    }
+
+    #[test]
+    fn export_kind_dispatch_rejects_decomposed_until_backend_exists() {
+        let opts = ExportOptions {
+            kind: ExportKind::Decomposed,
+            ..ExportOptions::default()
+        };
+
+        let err = ensure_supported_export_options(&opts)
+            .expect_err("decomposed export kind should be rejected");
+        assert!(matches!(err, Error::UnsupportedExportKind(kind) if kind == "Decomposed"));
+    }
+
+    #[test]
+    fn export_format_dispatch_rejects_stl_until_backend_exists() {
+        let opts = ExportOptions {
+            format: ExportFormat::Stl,
+            ..ExportOptions::default()
+        };
+
+        let err = ensure_supported_export_options(&opts)
+            .expect_err("stl export format should be rejected");
+        assert!(matches!(err, Error::UnsupportedExportFormat(format) if format == "Stl"));
+    }
 
     #[test]
     fn resolve_mtl_p4k_path_full_path() {
