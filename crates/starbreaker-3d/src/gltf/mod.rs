@@ -42,6 +42,7 @@ pub struct GlbMetadata {
 }
 
 pub struct ExportOptionsMetadata {
+    pub kind: String,
     pub material_mode: String,
     pub format: String,
     pub lod_level: u32,
@@ -247,6 +248,7 @@ mod tests {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             indices: vec![0, 1, 2],
             uvs: Some(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+            secondary_uvs: None,
             normals: None,
             tangents: None,
             colors: None,
@@ -266,6 +268,18 @@ mod tests {
         }
     }
 
+    fn colored_triangle_mesh() -> Mesh {
+        let mut mesh = triangle_mesh();
+        mesh.colors = Some(vec![[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]]);
+        mesh
+    }
+
+    fn multi_uv_triangle_mesh() -> Mesh {
+        let mut mesh = triangle_mesh();
+        mesh.secondary_uvs = Some(vec![[0.5, 0.0], [1.0, 0.5], [0.5, 1.0]]);
+        mesh
+    }
+
     fn default_opts() -> GlbOptions {
         GlbOptions {
             material_mode: crate::pipeline::MaterialMode::None,
@@ -274,6 +288,7 @@ mod tests {
                 geometry_path: None,
                 material_path: None,
                 export_options: ExportOptionsMetadata {
+                    kind: "Bundled".to_string(),
                     material_mode: "None".to_string(),
                     format: "Glb".to_string(),
                     lod_level: 0,
@@ -321,8 +336,159 @@ mod tests {
                 normal_tex: None,
                 layers: Vec::new(),
                 palette_tint: 0,
+                texture_slots: vec![crate::mtl::TextureSlotBinding {
+                    slot: "TexSlot1".into(),
+                    path: "shared_diffuse.dds".into(),
+                    is_virtual: false,
+                }],
+                public_params: Vec::new(),
             }],
             source_path: Some("Data/Objects/shared.mtl".into()),
+        }
+    }
+
+    fn layered_material_file() -> crate::mtl::MtlFile {
+        crate::mtl::MtlFile {
+            materials: vec![crate::mtl::SubMaterial {
+                name: "layered".into(),
+                shader: "LayerBlend_V2".into(),
+                diffuse: [1.0, 1.0, 1.0],
+                opacity: 1.0,
+                alpha_test: 0.0,
+                string_gen_mask: "%STENCIL_MAP".into(),
+                is_nodraw: false,
+                specular: [0.04, 0.04, 0.04],
+                shininess: 128.0,
+                emissive: [0.0, 0.0, 0.0],
+                glow: 0.0,
+                surface_type: String::new(),
+                diffuse_tex: None,
+                normal_tex: None,
+                layers: vec![
+                    crate::mtl::MatLayer {
+                        path: "libs/materials/base_steel.mtl".into(),
+                        tint_color: [1.0, 1.0, 1.0],
+                        palette_tint: 1,
+                        uv_tiling: 1.0,
+                    },
+                    crate::mtl::MatLayer {
+                        path: "libs/materials/wear_scratches.mtl".into(),
+                        tint_color: [0.8, 0.7, 0.6],
+                        palette_tint: 2,
+                        uv_tiling: 2.5,
+                    },
+                ],
+                palette_tint: 1,
+                texture_slots: vec![crate::mtl::TextureSlotBinding {
+                    slot: "TexSlot7".into(),
+                    path: "textures/stencil_mask.dds".into(),
+                    is_virtual: false,
+                }],
+                public_params: vec![crate::mtl::PublicParam {
+                    name: "WearAmount".into(),
+                    value: "0.35".into(),
+                }],
+            }],
+            source_path: Some("Data/Objects/layered.mtl".into()),
+        }
+    }
+
+    fn named_palette() -> crate::mtl::TintPalette {
+        crate::mtl::TintPalette {
+            source_name: Some("vehicle.palette.rsi_zeus_cl".into()),
+            primary: [0.1, 0.2, 0.3],
+            secondary: [0.4, 0.5, 0.6],
+            tertiary: [0.7, 0.8, 0.9],
+            glass: [0.2, 0.3, 0.4],
+        }
+    }
+
+    fn semantic_variant_material_file(pattern_index: &str) -> crate::mtl::MtlFile {
+        crate::mtl::MtlFile {
+            materials: vec![crate::mtl::SubMaterial {
+                name: "shared".into(),
+                shader: "Illum".into(),
+                diffuse: [1.0, 1.0, 1.0],
+                opacity: 1.0,
+                alpha_test: 0.0,
+                string_gen_mask: String::new(),
+                is_nodraw: false,
+                specular: [0.04, 0.04, 0.04],
+                shininess: 128.0,
+                emissive: [0.0, 0.0, 0.0],
+                glow: 0.0,
+                surface_type: String::new(),
+                diffuse_tex: Some("shared_diffuse.dds".into()),
+                normal_tex: None,
+                layers: Vec::new(),
+                palette_tint: 0,
+                texture_slots: vec![crate::mtl::TextureSlotBinding {
+                    slot: "TexSlot1".into(),
+                    path: "shared_diffuse.dds".into(),
+                    is_virtual: false,
+                }],
+                public_params: vec![crate::mtl::PublicParam {
+                    name: "PatternIndex".into(),
+                    value: pattern_index.into(),
+                }],
+            }],
+            source_path: Some("Data/Objects/shared.mtl".into()),
+        }
+    }
+
+    fn nodraw_material_file() -> crate::mtl::MtlFile {
+        crate::mtl::MtlFile {
+            materials: vec![crate::mtl::SubMaterial {
+                name: "nodraw_panel".into(),
+                shader: "NoDraw".into(),
+                diffuse: [1.0, 1.0, 1.0],
+                opacity: 1.0,
+                alpha_test: 0.0,
+                string_gen_mask: String::new(),
+                is_nodraw: true,
+                specular: [0.04, 0.04, 0.04],
+                shininess: 128.0,
+                emissive: [0.0, 0.0, 0.0],
+                glow: 0.0,
+                surface_type: String::new(),
+                diffuse_tex: None,
+                normal_tex: None,
+                layers: Vec::new(),
+                palette_tint: 0,
+                texture_slots: Vec::new(),
+                public_params: Vec::new(),
+            }],
+            source_path: Some("Data/Objects/nodraw.mtl".into()),
+        }
+    }
+
+    fn decal_material_file() -> crate::mtl::MtlFile {
+        crate::mtl::MtlFile {
+            materials: vec![crate::mtl::SubMaterial {
+                name: "livery_decal".into(),
+                shader: "MeshDecal".into(),
+                diffuse: [1.0, 1.0, 1.0],
+                opacity: 1.0,
+                alpha_test: 0.0,
+                string_gen_mask: "%DECAL".into(),
+                is_nodraw: false,
+                specular: [0.04, 0.04, 0.04],
+                shininess: 128.0,
+                emissive: [0.0, 0.0, 0.0],
+                glow: 0.0,
+                surface_type: String::new(),
+                diffuse_tex: Some("textures/livery_decal.dds".into()),
+                normal_tex: None,
+                layers: Vec::new(),
+                palette_tint: 0,
+                texture_slots: vec![crate::mtl::TextureSlotBinding {
+                    slot: "TexSlot1".into(),
+                    path: "textures/livery_decal.dds".into(),
+                    is_virtual: false,
+                }],
+                public_params: Vec::new(),
+            }],
+            source_path: Some("Data/Objects/decal.mtl".into()),
         }
     }
 
@@ -426,10 +592,25 @@ mod tests {
 
         let bin_offset = 20 + json_len;
         if glb.len() > bin_offset + 8 {
-            let bin_type =
-                u32::from_le_bytes(glb[bin_offset + 4..bin_offset + 8].try_into().unwrap());
+            let bin_type = u32::from_le_bytes(glb[bin_offset + 4..bin_offset + 8].try_into().unwrap());
             assert_eq!(bin_type, 0x004E4942, "second chunk should be BIN");
         }
+    }
+
+    #[test]
+    fn write_glb_exports_color_0_when_vertex_colors_exist() {
+        let glb = call_write_glb(colored_triangle_mesh()).expect("write_glb failed");
+        let root = glb_json(&glb);
+        let attributes = &root["meshes"][0]["primitives"][0]["attributes"];
+        assert!(attributes.get("COLOR_0").is_some(), "vertex colors should export as COLOR_0");
+    }
+
+    #[test]
+    fn write_glb_exports_texcoord_1_when_second_uvs_exist() {
+        let glb = call_write_glb(multi_uv_triangle_mesh()).expect("write_glb failed");
+        let root = glb_json(&glb);
+        let attributes = &root["meshes"][0]["primitives"][0]["attributes"];
+        assert!(attributes.get("TEXCOORD_1").is_some(), "second UVs should export as TEXCOORD_1");
     }
 
     #[test]
@@ -463,14 +644,220 @@ mod tests {
         let material_count = json["materials"].as_array().map_or(0, |a| a.len());
         let texture_count = json["textures"].as_array().map_or(0, |a| a.len());
         let image_count = json["images"].as_array().map_or(0, |a| a.len());
+        let mesh_count = json["meshes"].as_array().map_or(0, |a| a.len());
 
         // Root mesh contributes one default material. The two identical child entities
-        // should share one glTF material, one glTF texture, and one glTF image.
+        // should share one glTF material, one glTF texture, one glTF image, and one glTF mesh.
         assert_eq!(
-            (material_count, texture_count, image_count),
-            (2, 1, 1),
-            "expected shared child material/texture/image entries to dedupe across children",
+            (material_count, texture_count, image_count, mesh_count),
+            (2, 1, 1, 2),
+            "expected shared child material/texture/image/mesh entries to dedupe across children",
         );
+    }
+
+    #[test]
+    fn write_glb_preserves_layer_manifest_order_and_values() {
+        let glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: Some(layered_material_file()),
+                root_textures: None,
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &default_opts(),
+        )
+        .expect("write_glb failed");
+
+        let json = glb_json(&glb);
+        let manifest = &json["materials"][0]["extras"]["semantic"]["layer_manifest"];
+        let layers = manifest
+            .as_array()
+            .expect("layer manifest should be present as an array");
+
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[0]["index"], serde_json::json!(0));
+        assert_eq!(layers[0]["path"], serde_json::json!("libs/materials/base_steel.mtl"));
+        assert_eq!(layers[0]["palette_tint"], serde_json::json!(1));
+        assert_eq!(layers[1]["index"], serde_json::json!(1));
+        assert_eq!(layers[1]["path"], serde_json::json!("libs/materials/wear_scratches.mtl"));
+        let tint = layers[1]["tint_color"]
+            .as_array()
+            .expect("layer tint_color should be an array");
+        assert_eq!(tint.len(), 3);
+        assert!((tint[0].as_f64().unwrap() - 0.8).abs() < 1e-5);
+        assert!((tint[1].as_f64().unwrap() - 0.7).abs() < 1e-5);
+        assert!((tint[2].as_f64().unwrap() - 0.6).abs() < 1e-5);
+        assert_eq!(layers[1]["palette_tint"], serde_json::json!(2));
+        assert_eq!(layers[1]["uv_tiling"], serde_json::json!(2.5));
+    }
+
+    #[test]
+    fn write_glb_preserves_palette_routing_and_material_set_identity() {
+        let glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: Some(layered_material_file()),
+                root_textures: None,
+                root_nmc: None,
+                root_palette: Some(named_palette()),
+                skeleton_bones: Vec::new(),
+                children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &default_opts(),
+        )
+        .expect("write_glb failed");
+
+        let json = glb_json(&glb);
+        let semantic = &json["materials"][0]["extras"]["semantic"];
+        let palette = &semantic["palette"];
+        let palette_layers = palette["layers"]
+            .as_array()
+            .expect("palette layer routing should be present");
+        let resolved_color = palette["resolved_color"]
+            .as_array()
+            .expect("resolved palette color should be present");
+        let material_set_identity = &semantic["material_set_identity"];
+
+        assert_eq!(palette["source_name"], serde_json::json!("vehicle.palette.rsi_zeus_cl"));
+        assert_eq!(palette["material_channel"]["index"], serde_json::json!(1));
+        assert_eq!(palette["material_channel"]["name"], serde_json::json!("primary"));
+        assert_eq!(resolved_color.len(), 3);
+        assert!((resolved_color[0].as_f64().unwrap() - 0.1).abs() < 1e-5);
+        assert!((resolved_color[1].as_f64().unwrap() - 0.2).abs() < 1e-5);
+        assert!((resolved_color[2].as_f64().unwrap() - 0.3).abs() < 1e-5);
+        assert_eq!(palette_layers.len(), 2);
+        assert_eq!(palette_layers[0]["index"], serde_json::json!(0));
+        assert_eq!(palette_layers[0]["channel"]["name"], serde_json::json!("primary"));
+        assert_eq!(palette_layers[1]["index"], serde_json::json!(1));
+        assert_eq!(palette_layers[1]["channel"]["name"], serde_json::json!("secondary"));
+
+        assert_eq!(material_set_identity["source_path"], serde_json::json!("Data/Objects/layered.mtl"));
+        assert_eq!(material_set_identity["source_stem"], serde_json::json!("layered"));
+        assert_eq!(material_set_identity["submaterial_index"], serde_json::json!(0));
+        assert_eq!(material_set_identity["submaterial_name"], serde_json::json!("layered"));
+        assert_eq!(material_set_identity["slot_name"], serde_json::json!("test"));
+        assert_eq!(semantic["activation_state"]["state"], serde_json::json!("active"));
+        assert_eq!(semantic["activation_state"]["reason"], serde_json::json!("visible"));
+    }
+
+    #[test]
+    fn write_glb_preserves_inactive_submaterial_activation_state() {
+        let glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: Some(nodraw_material_file()),
+                root_textures: None,
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &default_opts(),
+        )
+        .expect("write_glb failed");
+
+        let json = glb_json(&glb);
+        let semantic = &json["materials"][0]["extras"]["semantic"];
+        assert_eq!(semantic["activation_state"]["state"], serde_json::json!("inactive"));
+        assert_eq!(semantic["activation_state"]["reason"], serde_json::json!("nodraw"));
+    }
+
+    #[test]
+    fn write_glb_marks_textureless_bundled_decals_inactive() {
+        let glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: Some(decal_material_file()),
+                root_textures: None,
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &default_opts(),
+        )
+        .expect("write_glb failed");
+
+        let json = glb_json(&glb);
+        let semantic = &json["materials"][0]["extras"]["semantic"];
+        assert_eq!(semantic["activation_state"]["state"], serde_json::json!("inactive"));
+        assert_eq!(
+            semantic["activation_state"]["reason"],
+            serde_json::json!("missing_base_color_texture"),
+        );
+    }
+
+    #[test]
+    fn write_glb_keeps_materials_distinct_when_semantic_metadata_differs() {
+        let children = vec![
+            child_entity("child_a", semantic_variant_material_file("1")),
+            child_entity("child_b", semantic_variant_material_file("2")),
+        ];
+
+        let glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: None,
+                root_textures: None,
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children,
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_| Some(shared_textures()),
+                load_interior_mesh: &mut |_| None,
+            },
+            &textured_opts(),
+        )
+        .expect("write_glb failed");
+
+        let json = glb_json(&glb);
+        let material_count = json["materials"].as_array().map_or(0, |a| a.len());
+        let texture_count = json["textures"].as_array().map_or(0, |a| a.len());
+        let image_count = json["images"].as_array().map_or(0, |a| a.len());
+        let mesh_count = json["meshes"].as_array().map_or(0, |a| a.len());
+        let pattern_indices: Vec<i64> = json["materials"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|material| {
+                material["extras"]["semantic"]["public_params"]["PatternIndex"].as_i64()
+            })
+            .collect();
+
+        assert_eq!(
+            (material_count, texture_count, image_count, mesh_count),
+            (3, 1, 1, 3),
+            "semantic metadata differences should prevent child materials and meshes from deduping",
+        );
+        assert_eq!(pattern_indices.len(), 2);
+        assert!(pattern_indices.contains(&1));
+        assert!(pattern_indices.contains(&2));
     }
 
     #[test]
@@ -586,6 +973,7 @@ mod tests {
             ],
             indices: vec![0, 1, 2, 3, 4, 5],
             uvs: None,
+            secondary_uvs: None,
             normals: None,
             tangents: None,
             colors: None,
@@ -711,6 +1099,7 @@ mod tests {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             indices: vec![0, 1, 2],
             uvs: None,
+            secondary_uvs: None,
             normals: None,
             tangents: None,
             colors: None,
