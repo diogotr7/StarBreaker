@@ -658,6 +658,25 @@ mod tests {
         }
     }
 
+    fn uv0_transform_textures() -> crate::types::MaterialTextures {
+        crate::types::MaterialTextures {
+            diffuse: vec![Some(shared_png())],
+            normal: vec![None],
+            roughness: vec![None],
+            emissive: vec![None],
+            occlusion: vec![None],
+            diffuse_transform: vec![Some(crate::types::TextureTransformInfo {
+                scale: [2.0, 1.5],
+                tex_coord: 0,
+            })],
+            normal_transform: vec![None],
+            roughness_transform: vec![None],
+            emissive_transform: vec![None],
+            occlusion_transform: vec![None],
+            bundled_fallbacks: vec![Vec::new()],
+        }
+    }
+
     fn screen_textures() -> crate::types::MaterialTextures {
         crate::types::MaterialTextures {
             diffuse: vec![Some(shared_png())],
@@ -1040,6 +1059,40 @@ mod tests {
         assert!(fallback_names.contains(&"stencil_fallback"));
         assert!(fallback_names.contains(&"screen_emissive_placeholder"));
         assert!(fallback_names.contains(&"occlusion_from_mask"));
+    }
+
+    #[test]
+    fn write_glb_omits_null_texcoord_from_uv0_texture_transform_extensions() {
+        let glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: Some(shared_material_file()),
+                root_textures: Some(uv0_transform_textures()),
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_, _| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &textured_opts(),
+        )
+        .expect("write_glb failed");
+
+        let json = glb_json(&glb);
+        let transform = &json["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["extensions"]["KHR_texture_transform"];
+        let transform_object = transform
+            .as_object()
+            .expect("base color texture transform should be present");
+
+        assert_eq!(json["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["texCoord"], serde_json::json!(0));
+        assert!(
+            transform_object.get("texCoord").is_none(),
+            "UV0 texture transforms must omit texCoord instead of serializing null"
+        );
     }
 
     #[test]
