@@ -6,6 +6,7 @@ use starbreaker_chunks::ChunkFile;
 /// Queried from DataCore TintPaletteTree via the entity's TintPaletteRef.
 #[derive(Debug, Clone, Default)]
 pub struct TintPalette {
+    pub source_name: Option<String>,
     pub primary: [f32; 3],   // entryA — main hull
     pub secondary: [f32; 3], // entryB — secondary panels
     pub tertiary: [f32; 3],  // entryC — accent
@@ -53,6 +54,10 @@ pub struct SubMaterial {
     pub layers: Vec<MatLayer>,
     /// Palette tint channel from first layer with PaletteTint > 0: 1=entryA, 2=entryB, 3=entryC, 0=none.
     pub palette_tint: u8,
+    /// All parsed texture bindings, including non-exported slots and virtual inputs.
+    pub texture_slots: Vec<TextureSlotBinding>,
+    /// PublicParams preserved as authored name/value pairs.
+    pub public_params: Vec<PublicParam>,
 }
 
 /// A single layer from a LayerBlend/HardSurface material's MatLayers section.
@@ -68,6 +73,139 @@ pub struct MatLayer {
     pub uv_tiling: f32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextureSlotBinding {
+    pub slot: String,
+    pub path: String,
+    pub is_virtual: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicParam {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShaderFamily {
+    HardSurface,
+    Layer,
+    LayerBlendV2,
+    Illum,
+    MeshDecal,
+    GlassPbr,
+    DisplayScreen,
+    UiPlane,
+    HumanSkinV2,
+    Eye,
+    HairPbr,
+    Organic,
+    Hologram,
+    HologramCig,
+    ShieldHolo,
+    UiMesh,
+    NoDraw,
+    Unknown,
+}
+
+impl ShaderFamily {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ShaderFamily::HardSurface => "HardSurface",
+            ShaderFamily::Layer => "Layer",
+            ShaderFamily::LayerBlendV2 => "LayerBlend_V2",
+            ShaderFamily::Illum => "Illum",
+            ShaderFamily::MeshDecal => "MeshDecal",
+            ShaderFamily::GlassPbr => "GlassPBR",
+            ShaderFamily::DisplayScreen => "DisplayScreen",
+            ShaderFamily::UiPlane => "UIPlane",
+            ShaderFamily::HumanSkinV2 => "HumanSkin_V2",
+            ShaderFamily::Eye => "Eye",
+            ShaderFamily::HairPbr => "HairPBR",
+            ShaderFamily::Organic => "Organic",
+            ShaderFamily::Hologram => "Hologram",
+            ShaderFamily::HologramCig => "HologramCIG",
+            ShaderFamily::ShieldHolo => "Shield_Holo",
+            ShaderFamily::UiMesh => "UIMesh",
+            ShaderFamily::NoDraw => "NoDraw",
+            ShaderFamily::Unknown => "Unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedStringGenMask {
+    pub tokens: Vec<String>,
+    pub has_decal: bool,
+    pub has_parallax_occlusion_mapping: bool,
+    pub has_stencil_map: bool,
+    pub has_iridescence: bool,
+    pub has_vertex_colors: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextureSemanticRole {
+    BaseColor,
+    AlternateBaseColor,
+    NormalGloss,
+    SpecularSupport,
+    Stencil,
+    Breakup,
+    Height,
+    Iridescence,
+    BlendMask,
+    WearMask,
+    HalControl,
+    ScreenMask,
+    ScreenPixelLayout,
+    Dirt,
+    WearGloss,
+    Opacity,
+    Subsurface,
+    PatternMask,
+    DecalSheet,
+    TintPaletteDecal,
+    RenderToTexture,
+    Unknown,
+}
+
+impl TextureSemanticRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TextureSemanticRole::BaseColor => "base_color",
+            TextureSemanticRole::AlternateBaseColor => "alternate_base_color",
+            TextureSemanticRole::NormalGloss => "normal_gloss",
+            TextureSemanticRole::SpecularSupport => "specular_support",
+            TextureSemanticRole::Stencil => "stencil",
+            TextureSemanticRole::Breakup => "breakup",
+            TextureSemanticRole::Height => "height",
+            TextureSemanticRole::Iridescence => "iridescence",
+            TextureSemanticRole::BlendMask => "blend_mask",
+            TextureSemanticRole::WearMask => "wear_mask",
+            TextureSemanticRole::HalControl => "hal_control",
+            TextureSemanticRole::ScreenMask => "screen_mask",
+            TextureSemanticRole::ScreenPixelLayout => "screen_pixel_layout",
+            TextureSemanticRole::Dirt => "dirt",
+            TextureSemanticRole::WearGloss => "wear_gloss",
+            TextureSemanticRole::Opacity => "opacity",
+            TextureSemanticRole::Subsurface => "subsurface",
+            TextureSemanticRole::PatternMask => "pattern_mask",
+            TextureSemanticRole::DecalSheet => "decal_sheet",
+            TextureSemanticRole::TintPaletteDecal => "tint_palette_decal",
+            TextureSemanticRole::RenderToTexture => "render_to_texture",
+            TextureSemanticRole::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticTextureBinding {
+    pub slot: String,
+    pub path: String,
+    pub is_virtual: bool,
+    pub role: TextureSemanticRole,
+}
+
 /// How a material's alpha should be handled in glTF.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AlphaConfig {
@@ -77,6 +215,64 @@ pub enum AlphaConfig {
 }
 
 impl SubMaterial {
+    pub fn shader_family(&self) -> ShaderFamily {
+        match self.shader.as_str() {
+            "HardSurface" => ShaderFamily::HardSurface,
+            "Layer" => ShaderFamily::Layer,
+            "LayerBlend_V2" => ShaderFamily::LayerBlendV2,
+            "Illum" => ShaderFamily::Illum,
+            "MeshDecal" => ShaderFamily::MeshDecal,
+            "GlassPBR" => ShaderFamily::GlassPbr,
+            "DisplayScreen" => ShaderFamily::DisplayScreen,
+            "UIPlane" => ShaderFamily::UiPlane,
+            "HumanSkin_V2" => ShaderFamily::HumanSkinV2,
+            "Eye" => ShaderFamily::Eye,
+            "HairPBR" => ShaderFamily::HairPbr,
+            "Organic" => ShaderFamily::Organic,
+            "Hologram" => ShaderFamily::Hologram,
+            "HologramCIG" => ShaderFamily::HologramCig,
+            "Shield_Holo" => ShaderFamily::ShieldHolo,
+            "UIMesh" => ShaderFamily::UiMesh,
+            "NoDraw" if self.is_nodraw => ShaderFamily::NoDraw,
+            "NoDraw" => ShaderFamily::NoDraw,
+            _ if self.is_nodraw => ShaderFamily::NoDraw,
+            _ => ShaderFamily::Unknown,
+        }
+    }
+
+    pub fn decoded_string_gen_mask(&self) -> DecodedStringGenMask {
+        let tokens: Vec<String> = self
+            .string_gen_mask
+            .split('%')
+            .filter(|token| !token.is_empty())
+            .map(|token| token.to_string())
+            .collect();
+        let has_token = |needle: &str| tokens.iter().any(|token| token.eq_ignore_ascii_case(needle));
+
+        DecodedStringGenMask {
+            has_decal: has_token("DECAL"),
+            has_parallax_occlusion_mapping: has_token("PARALLAX_OCCLUSION_MAPPING"),
+            has_stencil_map: has_token("STENCIL_MAP"),
+            has_iridescence: has_token("IRIDESCENCE"),
+            has_vertex_colors: has_token("VERTCOLORS"),
+            tokens,
+        }
+    }
+
+    pub fn semantic_texture_slots(&self) -> Vec<SemanticTextureBinding> {
+        let flags = self.decoded_string_gen_mask();
+
+        self.texture_slots
+            .iter()
+            .map(|binding| SemanticTextureBinding {
+                slot: binding.slot.clone(),
+                path: binding.path.clone(),
+                is_virtual: binding.is_virtual,
+                role: classify_texture_role(self, &flags, binding),
+            })
+            .collect()
+    }
+
     /// Determine alpha config from parsed .mtl attributes.
     /// Priority: NoDraw → StringGenMask decal flags → AlphaTest → Opacity → Opaque.
     pub fn alpha_config(&self) -> AlphaConfig {
@@ -287,6 +483,8 @@ fn parse_sub_material(
     let mut normal_tex = None;
     let mut layers = Vec::new();
     let mut palette_tint: u8 = 0;
+    let mut texture_slots = Vec::new();
+    let mut public_params = Vec::new();
 
     for child in xml.node_children(node) {
         match xml.node_tag(child) {
@@ -305,7 +503,13 @@ fn parse_sub_material(
                         }
                     }
                     if let Some(path) = file_path {
-                        if path.starts_with('$') {
+                        let is_virtual = path.starts_with('$');
+                        texture_slots.push(TextureSlotBinding {
+                            slot: slot.to_string(),
+                            path: path.clone(),
+                            is_virtual,
+                        });
+                        if is_virtual {
                             continue;
                         }
                         match slot {
@@ -345,6 +549,14 @@ fn parse_sub_material(
                     }
                 }
             }
+            "PublicParams" => {
+                for (key, val) in xml.node_attributes(child) {
+                    public_params.push(PublicParam {
+                        name: key.to_string(),
+                        value: val.to_string(),
+                    });
+                }
+            }
             _ => {}
         }
     }
@@ -366,6 +578,144 @@ fn parse_sub_material(
         normal_tex,
         layers,
         palette_tint,
+        texture_slots,
+        public_params,
+    }
+}
+
+fn classify_texture_role(
+    material: &SubMaterial,
+    flags: &DecodedStringGenMask,
+    binding: &TextureSlotBinding,
+) -> TextureSemanticRole {
+    let family = material.shader_family();
+    if binding.is_virtual {
+        if binding.path.eq_ignore_ascii_case("$TintPaletteDecal") {
+            return TextureSemanticRole::TintPaletteDecal;
+        }
+        if binding.path.eq_ignore_ascii_case("$RenderToTexture") {
+            return TextureSemanticRole::RenderToTexture;
+        }
+        return TextureSemanticRole::Unknown;
+    }
+
+    let path_lower = binding.path.to_lowercase();
+    let has_name = |needles: &[&str]| needles.iter().any(|needle| path_lower.contains(needle));
+    let has_public_param = |needles: &[&str]| {
+        material.public_params.iter().any(|param| {
+            let name = param.name.to_lowercase();
+            needles.iter().any(|needle| name.contains(needle))
+        })
+    };
+    let has_slot = |slot: &str| {
+        material
+            .texture_slots
+            .iter()
+            .any(|other| !other.is_virtual && other.slot.eq_ignore_ascii_case(slot))
+    };
+    let has_stencil_semantics = flags.has_stencil_map || has_public_param(&["stencil"]);
+    let has_height_semantics = flags.has_parallax_occlusion_mapping
+        || has_public_param(&["pom", "height", "displacement"]);
+    let is_normal_like = has_name(&["ddn", "ddna", "normal", "bump"]);
+    let is_breakup_like = has_name(&["breakup", "grime", "rust", "bleed", "dirt"]);
+    let is_height_like = has_name(&["disp", "height", "pom"]);
+    let is_iridescence_like = has_name(&["irid", "irides"]);
+    let is_mask_like = has_name(&["mask", "opacity", "alpha"]);
+    let is_decal_like = has_name(&["decal", "sticker", "emblem", "atlas"]);
+    let is_pixel_layout_like = has_name(&["pixel", "crt", "grid"]);
+
+    match family {
+        ShaderFamily::Layer | ShaderFamily::LayerBlendV2 => match binding.slot.as_str() {
+            "TexSlot1" => TextureSemanticRole::BaseColor,
+            "TexSlot2" if !has_slot("TexSlot3") || is_normal_like => TextureSemanticRole::NormalGloss,
+            "TexSlot3" if is_normal_like => TextureSemanticRole::NormalGloss,
+            "TexSlot3" | "TexSlot9" if flags.has_decal || is_decal_like => TextureSemanticRole::DecalSheet,
+            "TexSlot3" | "TexSlot9" => TextureSemanticRole::AlternateBaseColor,
+            "TexSlot4" => TextureSemanticRole::SpecularSupport,
+            "TexSlot5" if flags.has_iridescence || is_iridescence_like => TextureSemanticRole::Iridescence,
+            "TexSlot8" if has_height_semantics || is_height_like => TextureSemanticRole::Height,
+            "TexSlot11" => TextureSemanticRole::WearMask,
+            "TexSlot12" => TextureSemanticRole::BlendMask,
+            "TexSlot13" => TextureSemanticRole::HalControl,
+            _ => TextureSemanticRole::Unknown,
+        },
+        ShaderFamily::MeshDecal => match binding.slot.as_str() {
+            "TexSlot1" => TextureSemanticRole::BaseColor,
+            "TexSlot3" if is_normal_like => TextureSemanticRole::NormalGloss,
+            "TexSlot4" if has_height_semantics || is_height_like => TextureSemanticRole::Height,
+            "TexSlot4" => TextureSemanticRole::SpecularSupport,
+            "TexSlot5" if is_breakup_like => TextureSemanticRole::Breakup,
+            "TexSlot7" if has_stencil_semantics || has_name(&["stencil"]) => TextureSemanticRole::Stencil,
+            "TexSlot8" | "TexSlot9" if is_breakup_like => TextureSemanticRole::Breakup,
+            "TexSlot8" if has_height_semantics || is_height_like => TextureSemanticRole::Height,
+            "TexSlot9" if flags.has_decal || is_decal_like => TextureSemanticRole::DecalSheet,
+            _ => TextureSemanticRole::Unknown,
+        },
+        ShaderFamily::DisplayScreen | ShaderFamily::UiPlane => match binding.slot.as_str() {
+            "TexSlot1" => TextureSemanticRole::BaseColor,
+            "TexSlot2" | "TexSlot3" if is_normal_like => TextureSemanticRole::NormalGloss,
+            "TexSlot6" if is_mask_like || has_public_param(&["screen", "monitor", "wipe", "mask"]) => {
+                TextureSemanticRole::ScreenMask
+            }
+            "TexSlot10" | "TexSlot16" if is_mask_like || has_name(&["crack", "wipe", "pattern"]) => {
+                TextureSemanticRole::PatternMask
+            }
+            "TexSlot11" if is_breakup_like => TextureSemanticRole::Dirt,
+            "TexSlot17" if is_pixel_layout_like => TextureSemanticRole::ScreenPixelLayout,
+            _ => TextureSemanticRole::Unknown,
+        },
+        ShaderFamily::Organic => match binding.slot.as_str() {
+            "TexSlot1" => TextureSemanticRole::BlendMask,
+            "TexSlot2" if is_normal_like || !has_slot("TexSlot3") => TextureSemanticRole::NormalGloss,
+            "TexSlot3" => TextureSemanticRole::BaseColor,
+            "TexSlot8" if has_height_semantics || is_height_like => TextureSemanticRole::Height,
+            "TexSlot17" if is_mask_like => TextureSemanticRole::Opacity,
+            "TexSlot17" => TextureSemanticRole::Subsurface,
+            _ => TextureSemanticRole::Unknown,
+        },
+        ShaderFamily::GlassPbr => match binding.slot.as_str() {
+            "TexSlot2" if is_normal_like || !is_mask_like => TextureSemanticRole::NormalGloss,
+            "TexSlot6" => TextureSemanticRole::WearGloss,
+            "TexSlot10" | "TexSlot13" | "TexSlot16" if is_mask_like || has_name(&["crack", "pattern"]) => {
+                TextureSemanticRole::PatternMask
+            }
+            "TexSlot11" if is_breakup_like => TextureSemanticRole::Dirt,
+            _ => TextureSemanticRole::Unknown,
+        },
+        ShaderFamily::HumanSkinV2 => match binding.slot.as_str() {
+            "TexSlot1" => TextureSemanticRole::BaseColor,
+            "TexSlot2" if is_normal_like || !is_mask_like => TextureSemanticRole::NormalGloss,
+            "TexSlot4" => TextureSemanticRole::SpecularSupport,
+            "TexSlot12" => TextureSemanticRole::Opacity,
+            "TexSlot17" => TextureSemanticRole::Subsurface,
+            _ => TextureSemanticRole::Unknown,
+        },
+        ShaderFamily::HairPbr => match binding.slot.as_str() {
+            "TexSlot1" => TextureSemanticRole::Opacity,
+            "TexSlot4" => TextureSemanticRole::PatternMask,
+            _ => TextureSemanticRole::Unknown,
+        },
+        ShaderFamily::Eye => match binding.slot.as_str() {
+            "TexSlot1" => TextureSemanticRole::BaseColor,
+            "TexSlot2" if is_normal_like || !is_mask_like => TextureSemanticRole::NormalGloss,
+            _ => TextureSemanticRole::Unknown,
+        },
+        _ => match binding.slot.as_str() {
+            "TexSlot1" => TextureSemanticRole::BaseColor,
+            "TexSlot2" if is_normal_like || !is_mask_like => TextureSemanticRole::NormalGloss,
+            "TexSlot3" if is_normal_like => TextureSemanticRole::NormalGloss,
+            "TexSlot3" | "TexSlot9" if flags.has_decal || is_decal_like => TextureSemanticRole::DecalSheet,
+            "TexSlot3" | "TexSlot9" => TextureSemanticRole::AlternateBaseColor,
+            "TexSlot4" => TextureSemanticRole::SpecularSupport,
+            "TexSlot7" if has_stencil_semantics || has_name(&["stencil"]) => TextureSemanticRole::Stencil,
+            "TexSlot8" if has_stencil_semantics && is_breakup_like => TextureSemanticRole::Breakup,
+            "TexSlot8" if has_height_semantics || is_height_like => TextureSemanticRole::Height,
+            "TexSlot10" if flags.has_iridescence || is_iridescence_like => TextureSemanticRole::Iridescence,
+            "TexSlot11" if is_breakup_like => TextureSemanticRole::Dirt,
+            "TexSlot12" if is_mask_like => TextureSemanticRole::BlendMask,
+            "TexSlot17" if is_mask_like => TextureSemanticRole::Opacity,
+            _ => TextureSemanticRole::Unknown,
+        },
     }
 }
 
@@ -396,6 +746,29 @@ pub fn extract_mtl_name(data: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dummy_submaterial(shader: &str, string_gen_mask: &str) -> SubMaterial {
+        SubMaterial {
+            name: String::new(),
+            shader: shader.to_string(),
+            diffuse: [1.0, 1.0, 1.0],
+            opacity: 1.0,
+            alpha_test: 0.0,
+            string_gen_mask: string_gen_mask.to_string(),
+            is_nodraw: shader == "NoDraw",
+            specular: [0.04, 0.04, 0.04],
+            shininess: 128.0,
+            emissive: [0.0, 0.0, 0.0],
+            glow: 0.0,
+            surface_type: String::new(),
+            diffuse_tex: None,
+            normal_tex: None,
+            layers: Vec::new(),
+            palette_tint: 0,
+            texture_slots: Vec::new(),
+            public_params: Vec::new(),
+        }
+    }
 
     #[test]
     fn parse_rgb_valid_floats() {
@@ -431,5 +804,285 @@ mod tests {
     fn parse_rgb_with_spaces() {
         let result = parse_rgb("0.1, 0.2, 0.3");
         assert_eq!(result, [0.1, 0.2, 0.3]);
+    }
+
+    #[test]
+    fn shader_family_classifies_known_families() {
+        assert_eq!(dummy_submaterial("HardSurface", "").shader_family(), ShaderFamily::HardSurface);
+        assert_eq!(dummy_submaterial("HologramCIG", "").shader_family(), ShaderFamily::HologramCig);
+        assert_eq!(dummy_submaterial("NoDraw", "").shader_family(), ShaderFamily::NoDraw);
+        assert_eq!(dummy_submaterial("SomethingElse", "").shader_family(), ShaderFamily::Unknown);
+    }
+
+    #[test]
+    fn decoded_string_gen_mask_splits_tokens() {
+        let decoded = dummy_submaterial(
+            "HardSurface",
+            "%VERTCOLORS%PARALLAX_OCCLUSION_MAPPING%IRIDESCENCE%STENCIL_MAP",
+        )
+        .decoded_string_gen_mask();
+
+        assert_eq!(decoded.tokens.len(), 4);
+        assert!(decoded.has_vertex_colors);
+        assert!(decoded.has_parallax_occlusion_mapping);
+        assert!(decoded.has_iridescence);
+        assert!(decoded.has_stencil_map);
+        assert!(!decoded.has_decal);
+    }
+
+    #[test]
+    fn semantic_texture_slots_assign_roles() {
+        let mut material = dummy_submaterial(
+            "HardSurface",
+            "%PARALLAX_OCCLUSION_MAPPING%IRIDESCENCE%STENCIL_MAP",
+        );
+        material.texture_slots = vec![
+            TextureSlotBinding {
+                slot: "TexSlot1".into(),
+                path: "textures/base.tif".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot7".into(),
+                path: "textures/stencil_mask.tif".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot8".into(),
+                path: "textures/stencil_breakup.tif".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot10".into(),
+                path: "textures/iridescence_ramp.tif".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot9".into(),
+                path: "$RenderToTexture".into(),
+                is_virtual: true,
+            },
+        ];
+
+        let roles: Vec<TextureSemanticRole> = material
+            .semantic_texture_slots()
+            .into_iter()
+            .map(|binding| binding.role)
+            .collect();
+
+        assert_eq!(roles[0], TextureSemanticRole::BaseColor);
+        assert_eq!(roles[1], TextureSemanticRole::Stencil);
+        assert_eq!(roles[2], TextureSemanticRole::Breakup);
+        assert_eq!(roles[3], TextureSemanticRole::Iridescence);
+        assert_eq!(roles[4], TextureSemanticRole::RenderToTexture);
+    }
+
+    #[test]
+    fn layer_blend_semantic_slots_follow_family_patterns() {
+        let mut material = dummy_submaterial("LayerBlend_V2", "%DECAL%IRIDESCENCE");
+        material.texture_slots = vec![
+            TextureSlotBinding {
+                slot: "TexSlot3".into(),
+                path: "textures/fabric_ddna.dds".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot5".into(),
+                path: "textures/fabric_iridescence_ramp.dds".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot9".into(),
+                path: "textures/helmet_decal_sheet.dds".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot11".into(),
+                path: "textures/fabric_wear_mask.dds".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot12".into(),
+                path: "textures/fabric_blend_mask.dds".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot13".into(),
+                path: "textures/fabric_hal_control.dds".into(),
+                is_virtual: false,
+            },
+        ];
+
+        let roles: Vec<TextureSemanticRole> = material
+            .semantic_texture_slots()
+            .into_iter()
+            .map(|binding| binding.role)
+            .collect();
+
+        assert_eq!(roles[0], TextureSemanticRole::NormalGloss);
+        assert_eq!(roles[1], TextureSemanticRole::Iridescence);
+        assert_eq!(roles[2], TextureSemanticRole::DecalSheet);
+        assert_eq!(roles[3], TextureSemanticRole::WearMask);
+        assert_eq!(roles[4], TextureSemanticRole::BlendMask);
+        assert_eq!(roles[5], TextureSemanticRole::HalControl);
+    }
+
+    #[test]
+    fn mesh_decal_semantic_slots_capture_stencil_and_height_contracts() {
+        let mut material = dummy_submaterial("MeshDecal", "%STENCIL_MAP%STENCIL_AS_STICKER%PARALLAX_OCCLUSION_MAPPING");
+        material.texture_slots = vec![
+            TextureSlotBinding {
+                slot: "TexSlot4".into(),
+                path: "textures/decal_height.dds".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot7".into(),
+                path: "$TintPaletteDecal".into(),
+                is_virtual: true,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot8".into(),
+                path: "textures/decal_grime_breakup.dds".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot9".into(),
+                path: "textures/decal_rust_bleed.dds".into(),
+                is_virtual: false,
+            },
+        ];
+
+        let roles: Vec<TextureSemanticRole> = material
+            .semantic_texture_slots()
+            .into_iter()
+            .map(|binding| binding.role)
+            .collect();
+
+        assert_eq!(roles[0], TextureSemanticRole::Height);
+        assert_eq!(roles[1], TextureSemanticRole::TintPaletteDecal);
+        assert_eq!(roles[2], TextureSemanticRole::Breakup);
+        assert_eq!(roles[3], TextureSemanticRole::Breakup);
+    }
+
+    #[test]
+    fn display_screen_semantic_slots_capture_rtt_support_maps() {
+        let mut material = dummy_submaterial("DisplayScreen", "");
+        material.public_params = vec![PublicParam {
+            name: "MonitorMaskStrength".into(),
+            value: "1.0".into(),
+        }];
+        material.texture_slots = vec![
+            TextureSlotBinding {
+                slot: "TexSlot2".into(),
+                path: "textures/glass_scratched_a_ddna.dds".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot6".into(),
+                path: "textures/glass_screen_mask.dds".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot9".into(),
+                path: "$RenderToTexture".into(),
+                is_virtual: true,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot17".into(),
+                path: "textures/pixel_layout_crt.dds".into(),
+                is_virtual: false,
+            },
+        ];
+
+        let roles: Vec<TextureSemanticRole> = material
+            .semantic_texture_slots()
+            .into_iter()
+            .map(|binding| binding.role)
+            .collect();
+
+        assert_eq!(roles[0], TextureSemanticRole::NormalGloss);
+        assert_eq!(roles[1], TextureSemanticRole::ScreenMask);
+        assert_eq!(roles[2], TextureSemanticRole::RenderToTexture);
+        assert_eq!(roles[3], TextureSemanticRole::ScreenPixelLayout);
+    }
+
+    #[test]
+    fn organic_semantic_slots_do_not_assume_texslot1_is_base_color() {
+        let mut material = dummy_submaterial("Organic", "%HEIGHT_BLEND");
+        material.texture_slots = vec![
+            TextureSlotBinding {
+                slot: "TexSlot1".into(),
+                path: "textures/ast_blend_mask.dds".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot2".into(),
+                path: "textures/ast_surface_ddna.dds".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot3".into(),
+                path: "textures/ast_visible_diffuse.dds".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot17".into(),
+                path: "textures/meat_subsurface_helper.dds".into(),
+                is_virtual: false,
+            },
+        ];
+
+        let roles: Vec<TextureSemanticRole> = material
+            .semantic_texture_slots()
+            .into_iter()
+            .map(|binding| binding.role)
+            .collect();
+
+        assert_eq!(roles[0], TextureSemanticRole::BlendMask);
+        assert_eq!(roles[1], TextureSemanticRole::NormalGloss);
+        assert_eq!(roles[2], TextureSemanticRole::BaseColor);
+        assert_eq!(roles[3], TextureSemanticRole::Subsurface);
+    }
+
+    #[test]
+    fn semantic_preservation_fields_are_available() {
+        let mut material = dummy_submaterial("DisplayScreen", "%IRIDESCENCE%VERTCOLORS");
+        material.diffuse_tex = Some("textures/base.tif".into());
+        material.texture_slots = vec![
+            TextureSlotBinding {
+                slot: "TexSlot1".into(),
+                path: "textures/base.tif".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot10".into(),
+                path: "textures/iridescence_ramp.tif".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot9".into(),
+                path: "$RenderToTexture".into(),
+                is_virtual: true,
+            },
+        ];
+        material.public_params = vec![
+            PublicParam {
+                name: "DisplayScale".into(),
+                value: "2.5".into(),
+            },
+            PublicParam {
+                name: "ScreenOn".into(),
+                value: "1".into(),
+            },
+        ];
+
+        assert_eq!(material.texture_slots.len(), 3);
+        assert_eq!(material.public_params.len(), 2);
+        assert_eq!(material.diffuse_tex.as_deref(), Some("textures/base.tif"));
+        assert!(material
+            .texture_slots
+            .iter()
+            .any(|slot| slot.is_virtual && slot.path == "$RenderToTexture"));
     }
 }
