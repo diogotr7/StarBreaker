@@ -23,6 +23,18 @@ type EntityPayload = (
     Vec<crate::skeleton::Bone>,
 );
 
+type InteriorMeshAsset = (
+    crate::Mesh,
+    Option<mtl::MtlFile>,
+    Option<nmc::NodeMeshCombo>,
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PreloadedTextureKey {
+    material_source: String,
+    palette_hash: u64,
+}
+
 /// How materials are represented in the export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaterialMode {
@@ -402,10 +414,26 @@ pub fn assemble_glb_with_loadout(
             match export_entity_from_paths(p4k, gear_path, "", &child_opts) {
                 Ok((gear_mesh, gear_mtl, _, gear_nmc, _, gear_geometry_path, gear_material_path, _)) => {
                     let verts = gear_mesh.positions.len();
+                    let textures = if opts.material_mode.include_textures() {
+                        gear_mtl.as_ref().map(|materials| {
+                            let mut png_cache = PngCache::new();
+                            load_material_textures(
+                                p4k,
+                                materials,
+                                root_palette.as_ref(),
+                                opts.texture_mip,
+                                &mut png_cache,
+                                opts.material_mode.include_normals(),
+                                opts.material_mode.experimental(),
+                            )
+                        })
+                    } else {
+                        None
+                    };
                     child_payloads.push(EntityPayload {
                         mesh: gear_mesh,
                         materials: gear_mtl,
-                        textures: None,
+                        textures,
                         nmc: gear_nmc,
                         palette: root_palette.clone(),
                         geometry_path: gear_geometry_path,
@@ -430,6 +458,7 @@ pub fn assemble_glb_with_loadout(
             db,
             p4k,
             &child_opts,
+            opts.material_mode,
             &mut child_payloads,
         );
     }
@@ -454,7 +483,48 @@ pub fn assemble_glb_with_loadout(
         loaded_interiors.unique_cgfs.len()
     );
 
-    // Texture loading callback: called JIT per entity during GLB packing.
+    let mut preloaded_interior_meshes = if opts.kind == ExportKind::Bundled {
+        preload_interior_meshes(&loaded_interiors, p4k, &child_opts)
+    } else {
+        Vec::new()
+    };
+    if !preloaded_interior_meshes.is_empty() {
+        log::info!(
+            "[mem-pipeline] preloaded interior meshes: {}/{}",
+            preloaded_interior_meshes
+                .iter()
+                .filter(|asset| asset.is_some())
+                .count(),
+            preloaded_interior_meshes.len()
+        );
+    }
+    let mut preloaded_interior_textures = if opts.kind == ExportKind::Bundled {
+        preload_interior_textures(
+            &loaded_interiors,
+            &preloaded_interior_meshes,
+            root_palette.as_ref(),
+            p4k,
+            opts,
+        )
+    } else {
+        std::collections::HashMap::new()
+    };
+    if !preloaded_interior_textures.is_empty() {
+        log::info!(
+            "[mem-pipeline] preloaded interior texture sets: {}",
+            preloaded_interior_textures.len()
+        );
+    }
+    let preloaded_interior_mesh_indices: std::collections::HashMap<String, usize> =
+        loaded_interiors
+            .unique_cgfs
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry.cgf_path.clone(), index))
+            .collect();
+
+    // Texture loading callback: root/child entities fall back to the normal JIT
+    // path, while bundled interior meshes can consume preloaded texture sets.
     let mut png_cache = PngCache::new();
     let mut tex_loader: Box<
         dyn FnMut(
@@ -469,6 +539,16 @@ pub fn assemble_glb_with_loadout(
             let include_normals = opts.material_mode.include_normals();
             let experimental_textures = opts.material_mode.experimental();
             Box::new(move |mtl: Option<&crate::mtl::MtlFile>, palette: Option<&crate::mtl::TintPalette>| {
+                if let Some(material_source) = mtl.and_then(|materials| materials.source_path.as_ref()) {
+                    let cache_key = PreloadedTextureKey {
+                        material_source: material_source.to_ascii_lowercase(),
+                        palette_hash: tint_palette_hash(palette),
+                    };
+                    if let Some(textures) = preloaded_interior_textures.remove(&cache_key) {
+                        return Some(textures);
+                    }
+                }
+
                 mtl.map(|m| {
                     load_material_textures(
                         p4k,
@@ -483,38 +563,21 @@ pub fn assemble_glb_with_loadout(
             })
         };
 
-    // Interior mesh loader: called JIT per unique CGF during GLB packing.
     let mut interior_png_cache = PngCache::new();
-    // Interior CGFs: bake NMC transforms only when the scaling bbox differs from
-    // the model bbox (indicating multi-node vertex quantization). Use absolute
-    // world transforms (no root_inv) because root + child rotations cancel in
-    // the assembled model. When bboxes match, vertices are already correct.
+    // Bundled GLB exports preload unique interior CGFs in parallel, then fall
+    // back to on-demand loading for any cache misses and for decomposed exports.
     let mut interior_mesh_loader =
         |entry: &crate::pipeline::InteriorCgfEntry| -> Option<(crate::Mesh, Option<mtl::MtlFile>, Option<crate::nmc::NodeMeshCombo>)> {
-            match export_cgf_from_path(
-                p4k,
-                &entry.cgf_path,
-                entry.material_path.as_deref(),
-                &child_opts,
-                &mut interior_png_cache,
-                false,
-            ) {
-                Ok((mesh, mtl, _tex, nmc, _palette, _, _, _bones)) => {
-                    let needs_bake = mesh.scaling_min.iter().zip(&mesh.model_min)
-                        .chain(mesh.scaling_max.iter().zip(&mesh.model_max))
-                        .any(|(s, m)| (s - m).abs() > 0.01);
-                    let mesh = if needs_bake {
-                        bake_nmc_into_mesh(mesh, nmc.as_ref(), false)
-                    } else {
-                        mesh
-                    };
-                    Some((mesh, mtl, nmc))
-                }
-                Err(e) => {
-                    log::warn!("failed to load CGF {}: {e}", entry.cgf_path);
-                    None
+            if let Some(&index) = preloaded_interior_mesh_indices.get(&entry.cgf_path) {
+                if let Some(asset) = preloaded_interior_meshes
+                    .get_mut(index)
+                    .and_then(Option::take)
+                {
+                    return Some(asset);
                 }
             }
+
+            load_interior_mesh_asset(p4k, entry, &child_opts, &mut interior_png_cache)
         };
 
     if opts.kind == ExportKind::Decomposed {
@@ -685,7 +748,8 @@ fn load_child_payloads(
     specs: Vec<ChildPayloadSpec>,
     db: &Database,
     p4k: &MappedP4k,
-    opts: &ExportOptions,
+    mesh_opts: &ExportOptions,
+    final_material_mode: MaterialMode,
 ) -> Vec<crate::types::EntityPayload> {
     use rayon::prelude::*;
 
@@ -695,11 +759,27 @@ fn load_child_payloads(
             let child = &spec.child;
             if child.has_geometry {
                 let (mesh, mtl, nmc, palette, bones, geometry_path, material_path) =
-                    load_child_mesh(child, db, p4k, opts)?;
+                    load_child_mesh(child, db, p4k, mesh_opts)?;
+                let textures = if final_material_mode.include_textures() {
+                    mtl.as_ref().map(|materials| {
+                        let mut png_cache = PngCache::new();
+                        load_material_textures(
+                            p4k,
+                            materials,
+                            palette.as_ref(),
+                            mesh_opts.texture_mip,
+                            &mut png_cache,
+                            final_material_mode.include_normals(),
+                            final_material_mode.experimental(),
+                        )
+                    })
+                } else {
+                    None
+                };
                 Some(crate::types::EntityPayload {
                     mesh,
                     materials: mtl,
-                    textures: None,
+                    textures,
                     nmc,
                     palette,
                     geometry_path,
@@ -746,12 +826,13 @@ fn flatten_resolved_tree(
     override_attachment: Option<(&str, bool)>,
     db: &Database,
     p4k: &MappedP4k,
-    opts: &ExportOptions,
+    mesh_opts: &ExportOptions,
+    final_material_mode: MaterialMode,
     out: &mut Vec<crate::types::EntityPayload>,
 ) {
     let mut specs = Vec::new();
     collect_child_payload_specs(children, parent_entity_name, override_attachment, &mut specs);
-    out.extend(load_child_payloads(specs, db, p4k, opts));
+    out.extend(load_child_payloads(specs, db, p4k, mesh_opts, final_material_mode));
 }
 
 // ── Shared loadout resolution ────────────────────────────────────────────────
@@ -1389,6 +1470,165 @@ fn export_cgf_from_path(
         .unwrap_or(&clean_path);
     let mtl_path = material_path.unwrap_or("");
     export_entity_from_paths_cached(p4k, geometry_path, mtl_path, opts, png_cache, use_model_bbox)
+}
+
+fn load_interior_mesh_asset(
+    p4k: &MappedP4k,
+    entry: &InteriorCgfEntry,
+    opts: &ExportOptions,
+    png_cache: &mut PngCache,
+) -> Option<InteriorMeshAsset> {
+    match export_cgf_from_path(
+        p4k,
+        &entry.cgf_path,
+        entry.material_path.as_deref(),
+        opts,
+        png_cache,
+        false,
+    ) {
+        Ok((mesh, mtl, _tex, nmc, _palette, _, _, _bones)) => {
+            let needs_bake = mesh
+                .scaling_min
+                .iter()
+                .zip(&mesh.model_min)
+                .chain(mesh.scaling_max.iter().zip(&mesh.model_max))
+                .any(|(s, m)| (s - m).abs() > 0.01);
+            let mesh = if needs_bake {
+                bake_nmc_into_mesh(mesh, nmc.as_ref(), false)
+            } else {
+                mesh
+            };
+            Some((mesh, mtl, nmc))
+        }
+        Err(e) => {
+            log::warn!("failed to load CGF {}: {e}", entry.cgf_path);
+            None
+        }
+    }
+}
+
+fn preload_interior_meshes(
+    interiors: &LoadedInteriors,
+    p4k: &MappedP4k,
+    opts: &ExportOptions,
+) -> Vec<Option<InteriorMeshAsset>> {
+    use rayon::prelude::*;
+
+    interiors
+        .unique_cgfs
+        .par_iter()
+        .map(|entry| {
+            let mut png_cache = PngCache::new();
+            load_interior_mesh_asset(p4k, entry, opts, &mut png_cache)
+        })
+        .collect()
+}
+
+fn tint_palette_hash(palette: Option<&mtl::TintPalette>) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let Some(palette) = palette else {
+        return 0;
+    };
+
+    let mut hasher = std::hash::DefaultHasher::new();
+    for color in [palette.primary, palette.secondary, palette.tertiary, palette.glass] {
+        color[0].to_bits().hash(&mut hasher);
+        color[1].to_bits().hash(&mut hasher);
+        color[2].to_bits().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn collect_interior_palettes(
+    interiors: &LoadedInteriors,
+    fallback_palette: Option<&mtl::TintPalette>,
+) -> Vec<(u64, Option<mtl::TintPalette>)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut palettes = Vec::new();
+
+    for container in &interiors.containers {
+        let palette = container.palette.as_ref().or(fallback_palette).cloned();
+        let palette_hash = tint_palette_hash(palette.as_ref());
+        if seen.insert(palette_hash) {
+            palettes.push((palette_hash, palette));
+        }
+    }
+
+    palettes
+}
+
+fn preload_interior_textures(
+    interiors: &LoadedInteriors,
+    preloaded_meshes: &[Option<InteriorMeshAsset>],
+    fallback_palette: Option<&mtl::TintPalette>,
+    p4k: &MappedP4k,
+    opts: &ExportOptions,
+) -> std::collections::HashMap<PreloadedTextureKey, MaterialTextures> {
+    use rayon::prelude::*;
+
+    if !opts.material_mode.include_textures() {
+        return std::collections::HashMap::new();
+    }
+
+    let palettes = collect_interior_palettes(interiors, fallback_palette);
+    if palettes.is_empty() {
+        return std::collections::HashMap::new();
+    }
+
+    let mut unique_materials = std::collections::HashMap::<String, mtl::MtlFile>::new();
+    for asset in preloaded_meshes {
+        let Some((_, Some(materials), _)) = asset else {
+            continue;
+        };
+        let Some(source_path) = materials.source_path.as_ref() else {
+            continue;
+        };
+        unique_materials
+            .entry(source_path.to_ascii_lowercase())
+            .or_insert_with(|| materials.clone());
+    }
+
+    if unique_materials.is_empty() {
+        return std::collections::HashMap::new();
+    }
+
+    let jobs: Vec<(String, mtl::MtlFile, u64, Option<mtl::TintPalette>)> = unique_materials
+        .into_iter()
+        .flat_map(|(material_source, materials)| {
+            palettes.iter().map(move |(palette_hash, palette)| {
+                (
+                    material_source.clone(),
+                    materials.clone(),
+                    *palette_hash,
+                    palette.clone(),
+                )
+            })
+        })
+        .collect();
+
+    jobs
+        .into_par_iter()
+        .map(|(material_source, materials, palette_hash, palette)| {
+            let mut png_cache = PngCache::new();
+            let textures = load_material_textures(
+                p4k,
+                &materials,
+                palette.as_ref(),
+                opts.texture_mip,
+                &mut png_cache,
+                opts.material_mode.include_normals(),
+                opts.material_mode.experimental(),
+            );
+            (
+                PreloadedTextureKey {
+                    material_source,
+                    palette_hash,
+                },
+                textures,
+            )
+        })
+        .collect()
 }
 
 struct P4kSiblingReader<'a> {
