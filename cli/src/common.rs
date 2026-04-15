@@ -74,6 +74,7 @@ impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
             _ => starbreaker_3d::ExportFormat::Glb,
         };
         starbreaker_3d::ExportOptions {
+            kind: starbreaker_3d::ExportKind::Bundled,
             format,
             material_mode,
             include_attachments: !opts.no_attachments,
