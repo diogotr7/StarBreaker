@@ -15,37 +15,58 @@ fn bundled_extension(format: starbreaker_3d::ExportFormat) -> &'static str {
     }
 }
 
-fn prepare_decomposed_output_root(output: &PathBuf, explicit_output: bool) -> Result<()> {
-    if output.exists() {
-        if output.is_file() {
-            return Err(CliError::InvalidInput(format!(
-                "decomposed output root '{}' already exists as a file",
-                output.display(),
-            )));
-        }
+fn export_entity_name(name: &str) -> String {
+    let trimmed = name.trim_matches('"');
+    trimmed
+        .rsplit('.')
+        .next()
+        .unwrap_or(trimmed)
+        .to_string()
+}
 
-        if explicit_output {
-            let mut entries = std::fs::read_dir(output)
-                .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
-            if entries
-                .next()
-                .transpose()
-                .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?
-                .is_some()
-            {
-                return Err(CliError::InvalidInput(format!(
-                    "decomposed output directory '{}' must be empty or absent",
-                    output.display(),
-                )));
+fn sanitize_export_name(name: &str) -> String {
+    let mut cleaned = String::new();
+    let mut last_was_space = false;
+
+    for ch in name.chars() {
+        if ch.is_alphanumeric() {
+            cleaned.push(ch);
+            last_was_space = false;
+        } else if ch.is_whitespace() || matches!(ch, '_' | '-') {
+            if !cleaned.is_empty() && !last_was_space {
+                cleaned.push(' ');
+                last_was_space = true;
             }
-        } else {
-            std::fs::remove_dir_all(output)
-                .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
         }
     }
 
-    std::fs::create_dir_all(output)
-        .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        "Export".to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+fn prepare_decomposed_output_root(output_root: &PathBuf, package_name: &str) -> Result<()> {
+    if output_root.exists() {
+        if output_root.is_file() {
+            return Err(CliError::InvalidInput(format!(
+                "decomposed output root '{}' already exists as a file",
+                output_root.display(),
+            )));
+        }
+    }
+
+    let packages_root = output_root.join("Packages");
+    let package_root = packages_root.join(package_name);
+    if package_root.exists() {
+        std::fs::remove_dir_all(&package_root)
+            .map_err(|e| CliError::IoPath { source: e, path: package_root.display().to_string() })?;
+    }
+
+    std::fs::create_dir_all(&package_root)
+        .map_err(|e| CliError::IoPath { source: e, path: package_root.display().to_string() })?;
     Ok(())
 }
 
@@ -129,17 +150,17 @@ fn export(
 
     let record = candidates[0];
     let rname = db.resolve_string2(record.name_offset);
+    let export_name = sanitize_export_name(&export_entity_name(rname));
     if candidates.len() > 1 {
         eprintln!("Found {} candidates, using shortest match: {rname}", candidates.len());
     }
 
     let idx = EntityIndex::new(&db);
     let export_opts = starbreaker_3d::ExportOptions::from(&opts);
-    let explicit_output = output.is_some();
     let output = output.unwrap_or_else(|| {
         match export_opts.kind {
             starbreaker_3d::ExportKind::Bundled => {
-                PathBuf::from(format!("{name}.{}", bundled_extension(export_opts.format)))
+                PathBuf::from(format!("{export_name}.{}", bundled_extension(export_opts.format)))
             }
             starbreaker_3d::ExportKind::Decomposed => PathBuf::from(name.clone()),
         }
@@ -186,7 +207,7 @@ fn export(
                 CliError::InvalidInput("entity export returned no decomposed files".into())
             })?;
             eprintln!("Decomposed export file count: {}", decomposed.files.len());
-            prepare_decomposed_output_root(&output, explicit_output)?;
+            prepare_decomposed_output_root(&output, &export_name)?;
             for file in &decomposed.files {
                 let output_path = output.join(&file.relative_path);
                 if let Some(parent) = output_path.parent() {
