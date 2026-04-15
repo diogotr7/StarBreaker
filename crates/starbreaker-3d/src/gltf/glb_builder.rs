@@ -551,16 +551,20 @@ impl GlbBuilder {
         // Pack mesh data (skip for NMC-only entities with no geometry).
         let child_packed = if has_mesh {
             let resolved_palette = child.palette.as_ref().or(fallback_palette);
-            let textures = load_textures(child.materials.as_ref(), resolved_palette);
+            let loaded_textures = if child.textures.is_some() {
+                None
+            } else {
+                load_textures(child.materials.as_ref(), resolved_palette)
+            };
             let packed = self.pack_mesh(
                 &child.mesh,
                 child.materials.as_ref(),
-                textures.as_ref(),
+                child.textures.as_ref().or(loaded_textures.as_ref()),
                 resolved_palette,
                 Some(&child.entity_name),
                 material_mode,
             );
-            drop(textures);
+            child.textures = None;
             child.mesh.positions = Vec::new();
             child.mesh.uvs = None;
             child.mesh.secondary_uvs = None;
