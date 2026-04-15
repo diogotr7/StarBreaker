@@ -1,21 +1,21 @@
 # Decomposed Export Contract
 
-Phase 3 Mode 2 export writes a reusable package rooted at a caller-selected directory.
+Phase 3 Mode 2 export now writes a reusable shared-root package at a caller-selected export directory.
 
-Within that package root:
+Within that export root:
 
-- `scene.json` describes the root entity, child attachments, interior placements, light definitions, and relative asset references.
-- `meshes/` contains reusable mesh-only `.glb` assets. Source geometry paths are normalized under this directory, for example `meshes/Data/Objects/.../ship.glb`.
-- `textures/` contains canonical exported `.png` files on normalized game-relative paths. Derived textures use explicit suffixes such as `.normal.png` and `.roughness.png`.
-- `materials/` contains structured material sidecars on normalized game-relative paths, for example `materials/Data/Objects/.../ship.materials.json`.
-- `palettes/palettes.json` contains shared palette identities that scene instances reference by `palette_id`.
-- `liveries/liveries.json` groups scene and material usage by shared palette identity.
+- `Packages/<package name>/scene.json` describes the root entity, child attachments, interior placements, light definitions, and shared asset references.
+- `Packages/<package name>/palettes.json` contains shared palette identities that scene instances reference by `palette_id`.
+- `Packages/<package name>/liveries.json` groups scene and material usage by shared palette identity.
+- `Data/...` contains reusable mesh `.glb` assets, material sidecars, and exported textures using canonical P4k-style paths rooted at `Data/`.
+- exporting another ship to the same root reuses matching `Data/...` assets instead of duplicating category-specific copies.
 
 ## Scene Manifest
 
 `scene.json` includes:
 
-- the root package rule: all paths are relative to the selected package root
+- the root package rule: all asset paths are relative to the selected export root
+- the package directory path under `Packages/<package name>`
 - root entity metadata and asset references
 - child attachment relationships via `parent_entity_name`, `parent_node_name`, `offset_position`, `offset_rotation`, and `no_rotation`
 - interior container transforms, placement records, and exported light data
@@ -36,12 +36,13 @@ Each `*.materials.json` sidecar preserves:
 
 ## Palette And Livery Rules
 
-- Shared palettes are emitted once in `palettes/palettes.json` and referenced everywhere else by `palette_id`.
+- Shared palettes are emitted once in `Packages/<package name>/palettes.json` and referenced everywhere else by `palette_id`.
 - Material sidecars describe palette routing, but scene instances choose the concrete shared palette.
-- `liveries/liveries.json` groups entity and material usage by shared palette identity so Blender-side tooling can switch palettes centrally.
+- `Packages/<package name>/liveries.json` groups entity and material usage by shared palette identity so Blender-side tooling can switch palettes centrally.
 
 ## Path Rules
 
-- Source game paths are normalized to forward slashes and kept beneath their package category root.
+- Source game paths are normalized to forward slashes and kept beneath canonical `Data/...` paths rooted at the export directory.
+- Case is canonicalized from the actual P4k entry when possible so `Objects` and `objects` do not create duplicate export trees.
 - Canonical textures preserve the original game-relative location whenever a direct source texture exists.
 - Generated mesh and sidecar paths remain stable for the same source geometry or material path.
