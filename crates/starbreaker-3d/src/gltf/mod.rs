@@ -22,7 +22,10 @@ pub struct GlbInput {
 }
 
 pub struct GlbLoaders<'a> {
-    pub load_textures: &'a mut dyn FnMut(Option<&crate::mtl::MtlFile>) -> Option<MaterialTextures>,
+    pub load_textures: &'a mut dyn FnMut(
+        Option<&crate::mtl::MtlFile>,
+        Option<&crate::mtl::TintPalette>,
+    ) -> Option<MaterialTextures>,
     pub load_interior_mesh: &'a mut dyn FnMut(
         &crate::pipeline::InteriorCgfEntry,
     ) -> Option<(Mesh, Option<crate::mtl::MtlFile>, Option<NodeMeshCombo>)>,
@@ -403,6 +406,118 @@ mod tests {
         }
     }
 
+    fn alternate_palette() -> crate::mtl::TintPalette {
+        crate::mtl::TintPalette {
+            source_name: Some("vehicle.palette.variant_b".into()),
+            primary: [0.8, 0.3, 0.2],
+            secondary: [0.2, 0.7, 0.6],
+            tertiary: [0.4, 0.4, 0.9],
+            glass: [0.6, 0.7, 0.8],
+        }
+    }
+
+    fn phase_two_material_file() -> crate::mtl::MtlFile {
+        crate::mtl::MtlFile {
+            materials: vec![crate::mtl::SubMaterial {
+                name: "glass_console".into(),
+                shader: "GlassPBR".into(),
+                diffuse: [0.6, 0.7, 0.8],
+                opacity: 0.6,
+                alpha_test: 0.0,
+                string_gen_mask: "%STENCIL_MAP %PARALLAX_OCCLUSION_MAPPING".into(),
+                is_nodraw: false,
+                specular: [0.18, 0.22, 0.28],
+                shininess: 196.0,
+                emissive: [0.8, 0.4, 0.2],
+                glow: 3.0,
+                surface_type: "glass".into(),
+                diffuse_tex: Some("textures/glass_console_diff.dds".into()),
+                normal_tex: Some("textures/glass_console_ddna.dds".into()),
+                layers: Vec::new(),
+                palette_tint: 0,
+                texture_slots: vec![crate::mtl::TextureSlotBinding {
+                    slot: "TexSlot1".into(),
+                    path: "textures/glass_console_diff.dds".into(),
+                    is_virtual: false,
+                }],
+                public_params: vec![
+                    crate::mtl::PublicParam {
+                        name: "IOR".into(),
+                        value: "1.65".into(),
+                    },
+                    crate::mtl::PublicParam {
+                        name: "Thickness".into(),
+                        value: "0.12".into(),
+                    },
+                    crate::mtl::PublicParam {
+                        name: "AttenuationDistance".into(),
+                        value: "0.75".into(),
+                    },
+                ],
+            }],
+            source_path: Some("Data/Objects/phase_two_glass.mtl".into()),
+        }
+    }
+
+    fn transparent_material_file() -> crate::mtl::MtlFile {
+        crate::mtl::MtlFile {
+            materials: vec![crate::mtl::SubMaterial {
+                name: "hidden_panel".into(),
+                shader: "HardSurface".into(),
+                diffuse: [1.0, 1.0, 1.0],
+                opacity: 0.0,
+                alpha_test: 0.0,
+                string_gen_mask: String::new(),
+                is_nodraw: false,
+                specular: [0.04, 0.04, 0.04],
+                shininess: 128.0,
+                emissive: [0.0, 0.0, 0.0],
+                glow: 0.0,
+                surface_type: String::new(),
+                diffuse_tex: None,
+                normal_tex: None,
+                layers: Vec::new(),
+                palette_tint: 0,
+                texture_slots: Vec::new(),
+                public_params: Vec::new(),
+            }],
+            source_path: Some("Data/Objects/hidden_panel.mtl".into()),
+        }
+    }
+
+    fn screen_material_file() -> crate::mtl::MtlFile {
+        crate::mtl::MtlFile {
+            materials: vec![crate::mtl::SubMaterial {
+                name: "mfd_screen".into(),
+                shader: "DisplayScreen".into(),
+                diffuse: [0.1, 0.2, 0.3],
+                opacity: 1.0,
+                alpha_test: 0.0,
+                string_gen_mask: String::new(),
+                is_nodraw: false,
+                specular: [0.04, 0.04, 0.04],
+                shininess: 32.0,
+                emissive: [0.2, 0.6, 0.9],
+                glow: 1.5,
+                surface_type: String::new(),
+                diffuse_tex: None,
+                normal_tex: None,
+                layers: Vec::new(),
+                palette_tint: 0,
+                texture_slots: vec![crate::mtl::TextureSlotBinding {
+                    slot: "TexSlot3".into(),
+                    path: "$RenderToTexture".into(),
+                    is_virtual: true,
+                }],
+                public_params: vec![crate::mtl::PublicParam {
+                    name: "BackColour".into(),
+                    value: "0.1,0.2,0.3".into(),
+                }],
+            }],
+            source_path: Some("Data/Objects/mfd_screen.mtl".into()),
+        }
+    }
+
     fn semantic_variant_material_file(pattern_index: &str) -> crate::mtl::MtlFile {
         crate::mtl::MtlFile {
             materials: vec![crate::mtl::SubMaterial {
@@ -497,6 +612,74 @@ mod tests {
             diffuse: vec![Some(shared_png())],
             normal: vec![None],
             roughness: vec![None],
+            emissive: vec![None],
+            occlusion: vec![None],
+            diffuse_transform: vec![None],
+            normal_transform: vec![None],
+            roughness_transform: vec![None],
+            emissive_transform: vec![None],
+            occlusion_transform: vec![None],
+            bundled_fallbacks: vec![Vec::new()],
+        }
+    }
+
+    fn phase_two_textures() -> crate::types::MaterialTextures {
+        crate::types::MaterialTextures {
+            diffuse: vec![Some(shared_png())],
+            normal: vec![Some(shared_png())],
+            roughness: vec![Some(shared_png())],
+            emissive: vec![Some(shared_png())],
+            occlusion: vec![Some(shared_png())],
+            diffuse_transform: vec![Some(crate::types::TextureTransformInfo {
+                scale: [2.0, 1.5],
+                tex_coord: 1,
+            })],
+            normal_transform: vec![Some(crate::types::TextureTransformInfo {
+                scale: [1.0, 1.0],
+                tex_coord: 0,
+            })],
+            roughness_transform: vec![Some(crate::types::TextureTransformInfo {
+                scale: [2.0, 1.5],
+                tex_coord: 1,
+            })],
+            emissive_transform: vec![Some(crate::types::TextureTransformInfo {
+                scale: [1.25, 1.25],
+                tex_coord: 1,
+            })],
+            occlusion_transform: vec![Some(crate::types::TextureTransformInfo {
+                scale: [1.0, 1.0],
+                tex_coord: 1,
+            })],
+            bundled_fallbacks: vec![vec![
+                "stencil_fallback".into(),
+                "screen_emissive_placeholder".into(),
+                "occlusion_from_mask".into(),
+            ]],
+        }
+    }
+
+    fn screen_textures() -> crate::types::MaterialTextures {
+        crate::types::MaterialTextures {
+            diffuse: vec![Some(shared_png())],
+            normal: vec![None],
+            roughness: vec![None],
+            emissive: vec![Some(shared_png())],
+            occlusion: vec![None],
+            diffuse_transform: vec![Some(crate::types::TextureTransformInfo {
+                scale: [4.0, 3.0],
+                tex_coord: 1,
+            })],
+            normal_transform: vec![None],
+            roughness_transform: vec![None],
+            emissive_transform: vec![Some(crate::types::TextureTransformInfo {
+                scale: [4.0, 3.0],
+                tex_coord: 1,
+            })],
+            occlusion_transform: vec![None],
+            bundled_fallbacks: vec![vec![
+                "rtt_placeholder".into(),
+                "screen_emissive_placeholder".into(),
+            ]],
         }
     }
 
@@ -524,6 +707,31 @@ mod tests {
         serde_json::from_str(json_str).expect("GLB JSON should parse")
     }
 
+    fn glb_root(glb: &[u8]) -> json::Root {
+        let json_len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        let json_bytes = &glb[20..20 + json_len];
+        json::Root::from_slice(json_bytes).expect("GLB root JSON should parse")
+    }
+
+    fn material_snapshot(material: &serde_json::Value) -> serde_json::Value {
+        let semantic = &material["extras"]["semantic"];
+        serde_json::json!({
+            "alphaMode": material["alphaMode"],
+            "hasBaseTransform": material["pbrMetallicRoughness"]["baseColorTexture"]["extensions"]["KHR_texture_transform"].is_object(),
+            "hasEmissiveTexture": material["emissiveTexture"].is_object(),
+            "hasOcclusionTexture": material["occlusionTexture"].is_object(),
+            "semantic": {
+                "shader_family": semantic["shader_family"],
+                "is_decal": semantic["is_decal"],
+                "is_glass": semantic["is_glass"],
+                "activation_state": semantic["activation_state"],
+                "bundled_fallbacks": semantic["bundled_fallbacks"],
+                "palette_channel": semantic["palette"]["material_channel"]["name"],
+                "layer_manifest_len": semantic["layer_manifest"].as_array().map_or(0, |items| items.len()),
+            },
+        })
+    }
+
     fn call_write_glb(mesh: Mesh) -> Result<Vec<u8>, crate::error::Error> {
         write_glb(
             GlbInput {
@@ -537,7 +745,7 @@ mod tests {
                 interiors: crate::pipeline::LoadedInteriors::default(),
             },
             &mut GlbLoaders {
-                load_textures: &mut |_| None,
+                load_textures: &mut |_, _| None,
                 load_interior_mesh: &mut |_| None,
             },
             &default_opts(),
@@ -557,7 +765,7 @@ mod tests {
                 interiors: crate::pipeline::LoadedInteriors::default(),
             },
             &mut GlbLoaders {
-                load_textures: &mut |_| None,
+                load_textures: &mut |_, _| None,
                 load_interior_mesh: &mut |_| None,
             },
             &default_opts(),
@@ -633,7 +841,7 @@ mod tests {
                 interiors: crate::pipeline::LoadedInteriors::default(),
             },
             &mut GlbLoaders {
-                load_textures: &mut |_| Some(shared_textures()),
+                load_textures: &mut |_, _| Some(shared_textures()),
                 load_interior_mesh: &mut |_| None,
             },
             &textured_opts(),
@@ -669,7 +877,7 @@ mod tests {
                 interiors: crate::pipeline::LoadedInteriors::default(),
             },
             &mut GlbLoaders {
-                load_textures: &mut |_| None,
+                load_textures: &mut |_, _| None,
                 load_interior_mesh: &mut |_| None,
             },
             &default_opts(),
@@ -713,7 +921,7 @@ mod tests {
                 interiors: crate::pipeline::LoadedInteriors::default(),
             },
             &mut GlbLoaders {
-                load_textures: &mut |_| None,
+                load_textures: &mut |_, _| None,
                 load_interior_mesh: &mut |_| None,
             },
             &default_opts(),
@@ -754,6 +962,85 @@ mod tests {
     }
 
     #[test]
+    fn write_glb_emits_phase_two_material_extensions_and_texture_transforms() {
+        let mut opts = textured_opts();
+        opts.material_mode = crate::pipeline::MaterialMode::All;
+        opts.metadata.export_options.material_mode = "All".to_string();
+
+        let glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: Some(phase_two_material_file()),
+                root_textures: Some(phase_two_textures()),
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_, _| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &opts,
+        )
+        .expect("write_glb failed");
+
+        let json = glb_json(&glb);
+        let extensions_used = json["extensionsUsed"]
+            .as_array()
+            .expect("extensionsUsed should be present");
+        for extension in [
+            "KHR_materials_transmission",
+            "KHR_materials_ior",
+            "KHR_materials_volume",
+            "KHR_materials_emissive_strength",
+            "KHR_texture_transform",
+        ] {
+            assert!(
+                extensions_used.iter().any(|value| value.as_str() == Some(extension)),
+                "expected {extension} in extensionsUsed"
+            );
+        }
+
+        let material = &json["materials"][0];
+        let base_transform = &material["pbrMetallicRoughness"]["baseColorTexture"]["extensions"]["KHR_texture_transform"];
+        let base_scale = base_transform["scale"]
+            .as_array()
+            .expect("base color texture transform scale should be present");
+        assert_eq!(base_transform["texCoord"], serde_json::json!(1));
+        assert!((base_scale[0].as_f64().unwrap() - 2.0).abs() < 1e-6);
+        assert!((base_scale[1].as_f64().unwrap() - 1.5).abs() < 1e-6);
+
+        let emissive_transform = &material["emissiveTexture"]["extensions"]["KHR_texture_transform"];
+        let emissive_scale = emissive_transform["scale"]
+            .as_array()
+            .expect("emissive texture transform scale should be present");
+        assert_eq!(emissive_transform["texCoord"], serde_json::json!(1));
+        assert!((emissive_scale[0].as_f64().unwrap() - 1.25).abs() < 1e-6);
+        assert!((emissive_scale[1].as_f64().unwrap() - 1.25).abs() < 1e-6);
+
+        assert_eq!(material["normalTexture"]["texCoord"], serde_json::json!(0));
+        assert_eq!(material["occlusionTexture"]["texCoord"], serde_json::json!(1));
+
+        let emissive_strength = material["extensions"]["KHR_materials_emissive_strength"]["emissiveStrength"]
+            .as_f64()
+            .expect("emissive strength should be present");
+        assert!((emissive_strength - 2.4).abs() < 1e-6);
+        assert!((material["extensions"]["KHR_materials_ior"]["ior"].as_f64().unwrap() - 1.65).abs() < 1e-6);
+        assert!((material["extensions"]["KHR_materials_volume"]["thicknessFactor"].as_f64().unwrap() - 0.12).abs() < 1e-6);
+        assert!((material["extensions"]["KHR_materials_volume"]["attenuationDistance"].as_f64().unwrap() - 0.75).abs() < 1e-6);
+
+        let fallbacks = material["extras"]["semantic"]["bundled_fallbacks"]
+            .as_array()
+            .expect("bundled fallback tags should be present");
+        let fallback_names: Vec<&str> = fallbacks.iter().filter_map(|value| value.as_str()).collect();
+        assert!(fallback_names.contains(&"stencil_fallback"));
+        assert!(fallback_names.contains(&"screen_emissive_placeholder"));
+        assert!(fallback_names.contains(&"occlusion_from_mask"));
+    }
+
+    #[test]
     fn write_glb_preserves_inactive_submaterial_activation_state() {
         let glb = write_glb(
             GlbInput {
@@ -767,7 +1054,7 @@ mod tests {
                 interiors: crate::pipeline::LoadedInteriors::default(),
             },
             &mut GlbLoaders {
-                load_textures: &mut |_| None,
+                load_textures: &mut |_, _| None,
                 load_interior_mesh: &mut |_| None,
             },
             &default_opts(),
@@ -778,6 +1065,38 @@ mod tests {
         let semantic = &json["materials"][0]["extras"]["semantic"];
         assert_eq!(semantic["activation_state"]["state"], serde_json::json!("inactive"));
         assert_eq!(semantic["activation_state"]["reason"], serde_json::json!("nodraw"));
+    }
+
+    #[test]
+    fn write_glb_keeps_fully_transparent_materials_non_rendering() {
+        let glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: Some(transparent_material_file()),
+                root_textures: None,
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_, _| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &default_opts(),
+        )
+        .expect("write_glb failed");
+
+        let json = glb_json(&glb);
+        let semantic = &json["materials"][0]["extras"]["semantic"];
+        let primitives = json["meshes"][0]["primitives"]
+            .as_array()
+            .expect("mesh primitives should be present");
+
+        assert!(primitives.is_empty(), "fully transparent materials should not emit renderable primitives");
+        assert_eq!(semantic["activation_state"]["state"], serde_json::json!("inactive"));
+        assert_eq!(semantic["activation_state"]["reason"], serde_json::json!("semantic_hidden"));
     }
 
     #[test]
@@ -794,7 +1113,7 @@ mod tests {
                 interiors: crate::pipeline::LoadedInteriors::default(),
             },
             &mut GlbLoaders {
-                load_textures: &mut |_| None,
+                load_textures: &mut |_, _| None,
                 load_interior_mesh: &mut |_| None,
             },
             &default_opts(),
@@ -829,7 +1148,7 @@ mod tests {
                 interiors: crate::pipeline::LoadedInteriors::default(),
             },
             &mut GlbLoaders {
-                load_textures: &mut |_| Some(shared_textures()),
+                load_textures: &mut |_, _| Some(shared_textures()),
                 load_interior_mesh: &mut |_| None,
             },
             &textured_opts(),
@@ -858,6 +1177,322 @@ mod tests {
         assert_eq!(pattern_indices.len(), 2);
         assert!(pattern_indices.contains(&1));
         assert!(pattern_indices.contains(&2));
+    }
+
+    #[test]
+    fn write_glb_reuses_geometry_for_palette_variants() {
+        let mut child_a = child_entity("child_a", layered_material_file());
+        child_a.palette = Some(named_palette());
+        let mut child_b = child_entity("child_b", layered_material_file());
+        child_b.palette = Some(alternate_palette());
+
+        let mut opts = default_opts();
+        opts.material_mode = crate::pipeline::MaterialMode::Colors;
+        opts.metadata.export_options.material_mode = "Colors".to_string();
+
+        let glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: None,
+                root_textures: None,
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children: vec![child_a, child_b],
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_, _| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &opts,
+        )
+        .expect("write_glb failed");
+
+        let json = glb_json(&glb);
+        let accessor_count = json["accessors"].as_array().map_or(0, |items| items.len());
+        let buffer_view_count = json["bufferViews"].as_array().map_or(0, |items| items.len());
+        let mesh_count = json["meshes"].as_array().map_or(0, |items| items.len());
+
+        assert_eq!(mesh_count, 3, "root plus two palette-specific meshes should still be emitted");
+        assert_eq!(accessor_count, 3, "palette variants should reuse shared geometry accessors instead of duplicating them");
+        assert_eq!(buffer_view_count, 3, "palette variants should reuse shared geometry buffer views instead of duplicating them");
+    }
+
+    #[test]
+    fn write_glb_representative_material_snapshots_stay_stable() {
+        let mut all_opts = textured_opts();
+        all_opts.material_mode = crate::pipeline::MaterialMode::All;
+        all_opts.metadata.export_options.material_mode = "All".to_string();
+
+        let ship_glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: Some(phase_two_material_file()),
+                root_textures: Some(phase_two_textures()),
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_, _| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &all_opts,
+        )
+        .expect("ship write_glb failed");
+
+        let mut color_opts = default_opts();
+        color_opts.material_mode = crate::pipeline::MaterialMode::Colors;
+        color_opts.metadata.export_options.material_mode = "Colors".to_string();
+
+        let rover_glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: Some(layered_material_file()),
+                root_textures: None,
+                root_nmc: None,
+                root_palette: Some(named_palette()),
+                skeleton_bones: Vec::new(),
+                children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_, _| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &color_opts,
+        )
+        .expect("rover write_glb failed");
+
+        let wearable_glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: Some(decal_material_file()),
+                root_textures: Some(shared_textures()),
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_, _| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &textured_opts(),
+        )
+        .expect("wearable write_glb failed");
+
+        let environment_glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: Some(screen_material_file()),
+                root_textures: Some(screen_textures()),
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_, _| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &textured_opts(),
+        )
+        .expect("environment write_glb failed");
+
+        let ship_snapshot = material_snapshot(&glb_json(&ship_glb)["materials"][0]);
+        let rover_snapshot = material_snapshot(&glb_json(&rover_glb)["materials"][0]);
+        let wearable_snapshot = material_snapshot(&glb_json(&wearable_glb)["materials"][0]);
+        let environment_snapshot = material_snapshot(&glb_json(&environment_glb)["materials"][0]);
+
+        assert_eq!(
+            ship_snapshot,
+            serde_json::json!({
+                "alphaMode": "BLEND",
+                "hasBaseTransform": true,
+                "hasEmissiveTexture": true,
+                "hasOcclusionTexture": true,
+                "semantic": {
+                    "shader_family": "GlassPBR",
+                    "is_decal": false,
+                    "is_glass": true,
+                    "activation_state": {"state": "active", "reason": "visible"},
+                    "bundled_fallbacks": ["stencil_fallback", "screen_emissive_placeholder", "occlusion_from_mask"],
+                    "palette_channel": "glass",
+                    "layer_manifest_len": 0,
+                },
+            }),
+        );
+        assert_eq!(
+            rover_snapshot,
+            serde_json::json!({
+                "alphaMode": "OPAQUE",
+                "hasBaseTransform": false,
+                "hasEmissiveTexture": false,
+                "hasOcclusionTexture": false,
+                "semantic": {
+                    "shader_family": "LayerBlend_V2",
+                    "is_decal": false,
+                    "is_glass": false,
+                    "activation_state": {"state": "active", "reason": "visible"},
+                    "bundled_fallbacks": serde_json::Value::Null,
+                    "palette_channel": "primary",
+                    "layer_manifest_len": 2,
+                },
+            }),
+        );
+        assert_eq!(
+            wearable_snapshot,
+            serde_json::json!({
+                "alphaMode": "BLEND",
+                "hasBaseTransform": false,
+                "hasEmissiveTexture": false,
+                "hasOcclusionTexture": false,
+                "semantic": {
+                    "shader_family": "MeshDecal",
+                    "is_decal": true,
+                    "is_glass": false,
+                    "activation_state": {"state": "active", "reason": "visible"},
+                    "bundled_fallbacks": serde_json::Value::Null,
+                    "palette_channel": serde_json::Value::Null,
+                    "layer_manifest_len": 0,
+                },
+            }),
+        );
+        assert_eq!(
+            environment_snapshot,
+            serde_json::json!({
+                "alphaMode": "OPAQUE",
+                "hasBaseTransform": true,
+                "hasEmissiveTexture": true,
+                "hasOcclusionTexture": false,
+                "semantic": {
+                    "shader_family": "DisplayScreen",
+                    "is_decal": false,
+                    "is_glass": false,
+                    "activation_state": {"state": "active", "reason": "visible"},
+                    "bundled_fallbacks": ["rtt_placeholder", "screen_emissive_placeholder"],
+                    "palette_channel": serde_json::Value::Null,
+                    "layer_manifest_len": 0,
+                },
+            }),
+        );
+    }
+
+    #[test]
+    fn write_glb_validation_smoke_test_accepts_representative_outputs() {
+        use gltf_json::validation::Validate;
+
+        let outputs = [
+            (
+                "ship",
+                write_glb(
+                    GlbInput {
+                        root_mesh: Some(triangle_mesh()),
+                        root_materials: Some(phase_two_material_file()),
+                        root_textures: Some(phase_two_textures()),
+                        root_nmc: None,
+                        root_palette: None,
+                        skeleton_bones: Vec::new(),
+                        children: Vec::new(),
+                        interiors: crate::pipeline::LoadedInteriors::default(),
+                    },
+                    &mut GlbLoaders {
+                        load_textures: &mut |_, _| None,
+                        load_interior_mesh: &mut |_| None,
+                    },
+                    &{
+                        let mut opts = textured_opts();
+                        opts.material_mode = crate::pipeline::MaterialMode::All;
+                        opts.metadata.export_options.material_mode = "All".to_string();
+                        opts
+                    },
+                )
+                .expect("ship write_glb failed"),
+            ),
+            (
+                "rover",
+                write_glb(
+                    GlbInput {
+                        root_mesh: Some(triangle_mesh()),
+                        root_materials: Some(layered_material_file()),
+                        root_textures: None,
+                        root_nmc: None,
+                        root_palette: Some(named_palette()),
+                        skeleton_bones: Vec::new(),
+                        children: Vec::new(),
+                        interiors: crate::pipeline::LoadedInteriors::default(),
+                    },
+                    &mut GlbLoaders {
+                        load_textures: &mut |_, _| None,
+                        load_interior_mesh: &mut |_| None,
+                    },
+                    &{
+                        let mut opts = default_opts();
+                        opts.material_mode = crate::pipeline::MaterialMode::Colors;
+                        opts.metadata.export_options.material_mode = "Colors".to_string();
+                        opts
+                    },
+                )
+                .expect("rover write_glb failed"),
+            ),
+            (
+                "wearable",
+                write_glb(
+                    GlbInput {
+                        root_mesh: Some(triangle_mesh()),
+                        root_materials: Some(decal_material_file()),
+                        root_textures: Some(shared_textures()),
+                        root_nmc: None,
+                        root_palette: None,
+                        skeleton_bones: Vec::new(),
+                        children: Vec::new(),
+                        interiors: crate::pipeline::LoadedInteriors::default(),
+                    },
+                    &mut GlbLoaders {
+                        load_textures: &mut |_, _| None,
+                        load_interior_mesh: &mut |_| None,
+                    },
+                    &textured_opts(),
+                )
+                .expect("wearable write_glb failed"),
+            ),
+            (
+                "environment",
+                write_glb(
+                    GlbInput {
+                        root_mesh: Some(triangle_mesh()),
+                        root_materials: Some(screen_material_file()),
+                        root_textures: Some(screen_textures()),
+                        root_nmc: None,
+                        root_palette: None,
+                        skeleton_bones: Vec::new(),
+                        children: Vec::new(),
+                        interiors: crate::pipeline::LoadedInteriors::default(),
+                    },
+                    &mut GlbLoaders {
+                        load_textures: &mut |_, _| None,
+                        load_interior_mesh: &mut |_| None,
+                    },
+                    &textured_opts(),
+                )
+                .expect("environment write_glb failed"),
+            ),
+        ];
+
+        for (label, glb) in outputs {
+            let root = glb_root(&glb);
+            let mut issues = Vec::new();
+            root.validate(&root, json::Path::new, &mut |path, error| {
+                issues.push(format!("{}:{error:?}", path().as_str()));
+            });
+            assert!(issues.is_empty(), "{label} GLB should validate cleanly: {}", issues.join(", "));
+        }
     }
 
     #[test]
