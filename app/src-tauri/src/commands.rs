@@ -376,17 +376,23 @@ fn bundled_extension(format: starbreaker_3d::ExportFormat) -> &'static str {
     }
 }
 
-fn prepare_decomposed_output_root(output_path: &Path) -> Result<(), AppError> {
-    if output_path.exists() {
-        if output_path.is_file() {
+fn prepare_decomposed_output_root(output_root: &Path, package_name: &str) -> Result<(), AppError> {
+    if output_root.exists() {
+        if output_root.is_file() {
             return Err(AppError::Internal(format!(
                 "decomposed output root '{}' already exists as a file",
-                output_path.display(),
+                output_root.display(),
             )));
         }
-        std::fs::remove_dir_all(output_path)?;
     }
-    std::fs::create_dir_all(output_path)?;
+
+    let packages_root = output_root.join("Packages");
+    let package_root = packages_root.join(package_name);
+    if package_root.exists() {
+        std::fs::remove_dir_all(&package_root)?;
+    }
+
+    std::fs::create_dir_all(&package_root)?;
     Ok(())
 }
 
@@ -546,7 +552,7 @@ pub async fn start_export(
                         return;
                     }
 
-                    let export_name = export_entity_name(name);
+                    let export_name = sanitize_export_name(&export_entity_name(name));
 
                     let i = completed.fetch_add(1, Ordering::Relaxed);
                     let _ = app.emit(
@@ -569,13 +575,10 @@ pub async fn start_export(
                         starbreaker_3d::ExportKind::Bundled => {
                             std::path::PathBuf::from(&output_dir).join(&filename)
                         }
-                        starbreaker_3d::ExportKind::Decomposed => {
-                            std::path::PathBuf::from(&output_dir)
-                                .join(sanitize_filename(&export_name))
-                        }
+                        starbreaker_3d::ExportKind::Decomposed => std::path::PathBuf::from(&output_dir),
                     };
 
-                    match export_single(&db, &p4k, record_id, &output_path, &opts) {
+                    match export_single(&db, &p4k, record_id, &output_path, &opts, &export_name) {
                         Ok(()) => {
                             success.fetch_add(1, Ordering::Relaxed);
                             succeeded_ids.lock().unwrap().push(id_str.clone());
@@ -623,6 +626,7 @@ fn export_single(
     record_id: &CigGuid,
     output_path: &Path,
     opts: &starbreaker_3d::ExportOptions,
+    export_name: &str,
 ) -> Result<(), AppError> {
     let record = db
         .record_by_id(record_id)
@@ -644,9 +648,10 @@ fn export_single(
             let decomposed = result.decomposed.as_ref().ok_or_else(|| {
                 AppError::Internal("export returned no decomposed files".into())
             })?;
-            prepare_decomposed_output_root(output_path)?;
+            prepare_decomposed_output_root(output_path, export_name)?;
             for file in &decomposed.files {
-                let file_path = output_path.join(&file.relative_path);
+                let relative_path = rewrite_decomposed_relative_path(&file.relative_path, export_name);
+                let file_path = output_path.join(relative_path);
                 if let Some(parent) = file_path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
@@ -666,6 +671,40 @@ fn export_entity_name(name: &str) -> String {
         .to_string()
 }
 
+fn sanitize_export_name(name: &str) -> String {
+    let mut cleaned = String::new();
+    let mut last_was_space = false;
+
+    for ch in name.chars() {
+        if ch.is_alphanumeric() {
+            cleaned.push(ch);
+            last_was_space = false;
+        } else if ch.is_whitespace() || matches!(ch, '_' | '-') {
+            if !cleaned.is_empty() && !last_was_space {
+                cleaned.push(' ');
+                last_was_space = true;
+            }
+        }
+    }
+
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        "Export".to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+fn rewrite_decomposed_relative_path(relative_path: &str, package_name: &str) -> String {
+    let Some(rest) = relative_path.strip_prefix("Packages/") else {
+        return relative_path.to_string();
+    };
+    let Some((_, tail)) = rest.split_once('/') else {
+        return format!("Packages/{package_name}");
+    };
+    format!("Packages/{package_name}/{tail}")
+}
+
 /// Sanitize a filename by replacing invalid characters with underscores.
 fn sanitize_filename(name: &str) -> String {
     name.chars()
@@ -678,12 +717,30 @@ fn sanitize_filename(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::export_entity_name;
+    use super::{export_entity_name, rewrite_decomposed_relative_path, sanitize_export_name};
 
     #[test]
     fn export_entity_name_strips_record_prefix_and_quotes() {
         assert_eq!(export_entity_name("EntityClassDefinition.ARGO_MOLE\""), "ARGO_MOLE");
         assert_eq!(export_entity_name("ARGO_MOLE"), "ARGO_MOLE");
+    }
+
+    #[test]
+    fn sanitize_export_name_preserves_alphanumerics_and_spaces() {
+        assert_eq!(sanitize_export_name("Argo Mole Teach's Special"), "Argo Mole Teachs Special");
+        assert_eq!(sanitize_export_name("ARGO_MOLE"), "ARGO MOLE");
+    }
+
+    #[test]
+    fn rewrite_decomposed_relative_path_swaps_package_directory_name() {
+        assert_eq!(
+            rewrite_decomposed_relative_path("Packages/ARGO MOLE/scene.json", "Argo Mole"),
+            "Packages/Argo Mole/scene.json"
+        );
+        assert_eq!(
+            rewrite_decomposed_relative_path("Data/Objects/Ships/Test/root.glb", "Argo Mole"),
+            "Data/Objects/Ships/Test/root.glb"
+        );
     }
 }
 
