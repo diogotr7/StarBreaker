@@ -376,6 +376,20 @@ fn bundled_extension(format: starbreaker_3d::ExportFormat) -> &'static str {
     }
 }
 
+fn prepare_decomposed_output_root(output_path: &Path) -> Result<(), AppError> {
+    if output_path.exists() {
+        if output_path.is_file() {
+            return Err(AppError::Internal(format!(
+                "decomposed output root '{}' already exists as a file",
+                output_path.display(),
+            )));
+        }
+        std::fs::remove_dir_all(output_path)?;
+    }
+    std::fs::create_dir_all(output_path)?;
+    Ok(())
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct ExportRequest {
     pub record_ids: Vec<String>,
@@ -383,6 +397,7 @@ pub struct ExportRequest {
     pub output_dir: String,
     pub lod: u32,
     pub mip: u32,
+    pub export_kind: String,
     /// "none", "colors", "textures", "all"
     pub material_mode: String,
     /// "glb" or "stl"
@@ -433,12 +448,16 @@ pub async fn start_export(
         "all" => starbreaker_3d::MaterialMode::All,
         _ => starbreaker_3d::MaterialMode::Textures,
     };
+    let kind = match request.export_kind.to_lowercase().as_str() {
+        "decomposed" => starbreaker_3d::ExportKind::Decomposed,
+        _ => starbreaker_3d::ExportKind::Bundled,
+    };
     let format = match request.format.to_lowercase().as_str() {
         "stl" => starbreaker_3d::ExportFormat::Stl,
         _ => starbreaker_3d::ExportFormat::Glb,
     };
     let opts = starbreaker_3d::ExportOptions {
-        kind: starbreaker_3d::ExportKind::Bundled,
+        kind,
         format,
         material_mode,
         include_attachments: request.include_attachments,
@@ -544,7 +563,14 @@ pub async fn start_export(
                         sanitize_filename(name),
                         bundled_extension(opts.format),
                     );
-                    let output_path = std::path::PathBuf::from(&output_dir).join(&filename);
+                    let output_path = match opts.kind {
+                        starbreaker_3d::ExportKind::Bundled => {
+                            std::path::PathBuf::from(&output_dir).join(&filename)
+                        }
+                        starbreaker_3d::ExportKind::Decomposed => {
+                            std::path::PathBuf::from(&output_dir).join(sanitize_filename(name))
+                        }
+                    };
 
                     match export_single(&db, &p4k, record_id, &output_path, &opts) {
                         Ok(()) => {
@@ -601,13 +627,30 @@ fn export_single(
     let idx = starbreaker_datacore::loadout::EntityIndex::new(db);
     let tree = starbreaker_datacore::loadout::resolve_loadout_indexed(&idx, record);
     let result = starbreaker_3d::assemble_glb_with_loadout(db, p4k, record, &tree, opts)?;
-    let bundled_bytes = result.bundled_bytes().ok_or_else(|| {
-        AppError::Internal(format!(
-            "export returned non-bundled output for {:?}",
-            result.kind,
-        ))
-    })?;
-    std::fs::write(output_path, bundled_bytes)?;
+    match result.kind {
+        starbreaker_3d::ExportKind::Bundled => {
+            let bundled_bytes = result.bundled_bytes().ok_or_else(|| {
+                AppError::Internal(format!(
+                    "export returned non-bundled output for {:?}",
+                    result.kind,
+                ))
+            })?;
+            std::fs::write(output_path, bundled_bytes)?;
+        }
+        starbreaker_3d::ExportKind::Decomposed => {
+            let decomposed = result.decomposed.as_ref().ok_or_else(|| {
+                AppError::Internal("export returned no decomposed files".into())
+            })?;
+            prepare_decomposed_output_root(output_path)?;
+            for file in &decomposed.files {
+                let file_path = output_path.join(&file.relative_path);
+                if let Some(parent) = file_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&file_path, &file.bytes)?;
+            }
+        }
+    }
     Ok(())
 }
 
