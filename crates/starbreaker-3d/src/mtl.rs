@@ -215,6 +215,77 @@ pub enum AlphaConfig {
 }
 
 impl SubMaterial {
+    pub fn public_param(&self, name: &str) -> Option<&str> {
+        self.public_params
+            .iter()
+            .find(|param| param.name.eq_ignore_ascii_case(name))
+            .map(|param| param.value.as_str())
+    }
+
+    pub fn public_param_f32(&self, names: &[&str]) -> Option<f32> {
+        names.iter().find_map(|name| {
+            self.public_param(name)
+                .and_then(|value| value.parse::<f32>().ok())
+        })
+    }
+
+    pub fn public_param_rgb(&self, names: &[&str]) -> Option<[f32; 3]> {
+        names.iter().find_map(|name| self.public_param(name).map(parse_rgb))
+    }
+
+    pub fn first_texture_path_for_role(&self, role: TextureSemanticRole) -> Option<String> {
+        self.semantic_texture_slots()
+            .into_iter()
+            .find(|binding| binding.role == role && !binding.is_virtual)
+            .map(|binding| binding.path)
+    }
+
+    pub fn has_virtual_input(&self, input: &str) -> bool {
+        self.texture_slots.iter().any(|binding| {
+            binding.is_virtual && binding.path.eq_ignore_ascii_case(input)
+        })
+    }
+
+    pub fn primary_uv_tiling(&self) -> Option<f32> {
+        self.layers.first().and_then(|layer| {
+            if (layer.uv_tiling - 1.0).abs() > f32::EPSILON {
+                Some(layer.uv_tiling)
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn resolved_palette_color(
+        &self,
+        palette: Option<&TintPalette>,
+    ) -> Option<[f32; 3]> {
+        let palette = palette?;
+        match self.palette_tint {
+            1 => Some(palette.primary),
+            2 => Some(palette.secondary),
+            3 => Some(palette.tertiary),
+            _ if self.is_glass() => Some(palette.glass),
+            _ => None,
+        }
+    }
+
+    pub fn resolved_layer_color(
+        &self,
+        layer: &MatLayer,
+        palette: Option<&TintPalette>,
+    ) -> [f32; 3] {
+        if let Some(palette) = palette {
+            match layer.palette_tint {
+                1 => return palette.primary,
+                2 => return palette.secondary,
+                3 => return palette.tertiary,
+                _ => {}
+            }
+        }
+        layer.tint_color
+    }
+
     pub fn shader_family(&self) -> ShaderFamily {
         match self.shader.as_str() {
             "HardSurface" => ShaderFamily::HardSurface,
@@ -298,27 +369,7 @@ impl SubMaterial {
 
     /// Whether this material should be hidden.
     pub fn should_hide(&self) -> bool {
-        if self.is_nodraw {
-            return true;
-        }
-        let mask = &self.string_gen_mask;
-        // POM decals modify surface normals in CryEngine — in glTF they render as
-        // washed-out pink overlays. Hide any decal with POM.
-        if mask.contains("%PARALLAX_OCCLUSION_MAPPING")
-            && (self.is_decal() || mask.contains("%DECAL"))
-        {
-            return true;
-        }
-        // Decals without a diffuse texture need some alpha source to look correct.
-        // STENCIL_MAP decals get their pattern from $TintPaletteDecal (a virtual texture
-        // we can't resolve) — hide them even if they have vertex colors.
-        // Other decals without diffuse need vertex colors for alpha.
-        if self.is_decal() && self.diffuse_tex.is_none() {
-            if mask.contains("STENCIL_MAP") || !mask.contains("%VERTCOLORS") {
-                return true;
-            }
-        }
-        false
+        self.is_nodraw || self.opacity <= f32::EPSILON
     }
 
     /// Whether this material is a decal overlay (needs alpha texture to look correct).
