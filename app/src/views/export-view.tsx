@@ -134,7 +134,7 @@ export function ExportView() {
     const selectedEntities = allEntities.filter((e) => selected.has(e.id));
     const request: ExportRequest = {
       record_ids: selectedEntities.map((e) => e.id),
-      names: selectedEntities.map((e) => e.name),
+      names: selectedEntities.map((e) => e.display_name ?? e.name),
       output_dir: outputDir!,
       lod,
       mip,
