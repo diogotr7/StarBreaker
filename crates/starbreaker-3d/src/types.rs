@@ -347,6 +347,10 @@ pub struct EntityPayload {
     pub textures: Option<MaterialTextures>,
     pub nmc: Option<crate::nmc::NodeMeshCombo>,
     pub palette: Option<crate::mtl::TintPalette>,
+    /// Source geometry path used to derive stable decomposed asset paths.
+    pub geometry_path: String,
+    /// Source material path used to derive stable decomposed metadata paths.
+    pub material_path: String,
     /// Skeleton bones from this entity's .chr/.skin file.
     /// Used to create attachment points for children that reference bone names.
     pub bones: Vec<crate::skeleton::Bone>,
