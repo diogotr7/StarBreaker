@@ -159,10 +159,8 @@ impl ExportResult {
 }
 
 fn ensure_supported_export_kind(opts: &ExportOptions) -> Result<(), Error> {
-    if opts.kind == ExportKind::Bundled {
-        Ok(())
-    } else {
-        Err(Error::UnsupportedExportKind(format!("{:?}", opts.kind)))
+    match opts.kind {
+        ExportKind::Bundled | ExportKind::Decomposed => Ok(()),
     }
 }
 
@@ -360,13 +358,23 @@ pub fn assemble_glb_with_loadout(
 
     use crate::types::EntityPayload;
 
+    let payload_material_mode = if opts.kind == ExportKind::Decomposed {
+        MaterialMode::All
+    } else {
+        opts.material_mode
+    };
+    let payload_opts = ExportOptions {
+        material_mode: payload_material_mode,
+        ..opts.clone()
+    };
+
     log::info!("[mem-pipeline] resolving loadout meshes...");
-    let resolved = resolve_loadout_meshes(db, p4k, record, tree, opts)?;
+    let resolved = resolve_loadout_meshes(db, p4k, record, tree, &payload_opts)?;
     log::info!("[mem-pipeline] resolved: {} children", resolved.children.len());
 
     // Export root entity (mesh + textures).
     let (root_mesh, root_mtl, root_tex, _, root_palette, geometry_path, material_path, root_bones) =
-        export_entity_payload(db, p4k, record, opts)?;
+        export_entity_payload(db, p4k, record, &payload_opts)?;
     log::info!("[mem-pipeline] root exported: {} verts", root_mesh.positions.len());
 
     // Check for equipped paint item and resolve its SubGeometry palette/material override.
@@ -379,19 +387,20 @@ pub fn assemble_glb_with_loadout(
     // Adding them as EntityPayloads lets the existing scene graph handle positioning.
     // Children skip textures to save memory, but never exceed the user's material mode.
     let child_material_mode = match opts.material_mode {
+        _ if opts.kind == ExportKind::Decomposed => MaterialMode::Colors,
         MaterialMode::None => MaterialMode::None,
         _ => MaterialMode::Colors,
     };
     let child_opts = ExportOptions {
         material_mode: child_material_mode,
-        ..opts.clone()
+        ..payload_opts.clone()
     };
     let gear_parts = query_landing_gear(db, record);
     let mut child_payloads: Vec<EntityPayload> = Vec::new();
     if opts.include_attachments {
         for (gear_path, bone_name) in &gear_parts {
             match export_entity_from_paths(p4k, gear_path, "", &child_opts) {
-                Ok((gear_mesh, gear_mtl, _, gear_nmc, _, _, _, _)) => {
+                Ok((gear_mesh, gear_mtl, _, gear_nmc, _, gear_geometry_path, gear_material_path, _)) => {
                     let verts = gear_mesh.positions.len();
                     child_payloads.push(EntityPayload {
                         mesh: gear_mesh,
@@ -399,6 +408,8 @@ pub fn assemble_glb_with_loadout(
                         textures: None,
                         nmc: gear_nmc,
                         palette: root_palette.clone(),
+                        geometry_path: gear_geometry_path,
+                        material_path: gear_material_path,
                         bones: Vec::new(),
                         entity_name: gear_path.rsplit('/').next().unwrap_or(gear_path).to_string(),
                         parent_node_name: bone_name.clone(),
@@ -506,6 +517,35 @@ pub fn assemble_glb_with_loadout(
             }
         };
 
+    if opts.kind == ExportKind::Decomposed {
+        let decomposed = crate::decomposed::write_decomposed_export(
+            p4k,
+            crate::decomposed::DecomposedInput {
+                entity_name: resolved.entity_name.clone(),
+                geometry_path: geometry_path.clone(),
+                material_path: material_path.clone(),
+                root_mesh,
+                root_materials: root_mtl,
+                root_nmc: resolved.nmc,
+                root_palette: root_palette.clone(),
+                root_bones,
+                children: child_payloads,
+                interiors: loaded_interiors,
+            },
+            opts,
+            &mut interior_mesh_loader,
+        )?;
+
+        return Ok(ExportResult {
+            kind: opts.kind,
+            format: opts.format,
+            glb: Vec::new(),
+            decomposed: Some(decomposed),
+            geometry_path,
+            material_path,
+        });
+    }
+
     let glb = crate::gltf::write_glb(
         crate::gltf::GlbInput {
             root_mesh: Some(root_mesh),
@@ -558,7 +598,15 @@ fn load_child_mesh(
     db: &Database,
     p4k: &MappedP4k,
     opts: &ExportOptions,
-) -> Option<(crate::types::Mesh, Option<mtl::MtlFile>, Option<nmc::NodeMeshCombo>, Option<mtl::TintPalette>, Vec<crate::skeleton::Bone>)> {
+) -> Option<(
+    crate::types::Mesh,
+    Option<mtl::MtlFile>,
+    Option<nmc::NodeMeshCombo>,
+    Option<mtl::TintPalette>,
+    Vec<crate::skeleton::Bone>,
+    String,
+    String,
+)> {
     let result = if child.geometry_path.is_some() {
         let gp = child.geometry_path.as_deref().unwrap_or("");
         let mp = child.material_path.as_deref().unwrap_or("");
@@ -572,7 +620,9 @@ fn load_child_mesh(
         export_entity_payload(db, p4k, &child.record, opts)
     };
 
-    result.ok().map(|(mesh, mtl, _tex, nmc, palette, _, _, bones)| (mesh, mtl, nmc, palette, bones))
+    result.ok().map(|(mesh, mtl, _tex, nmc, palette, geometry_path, material_path, bones)| {
+        (mesh, mtl, nmc, palette, bones, geometry_path, material_path)
+    })
 }
 
 /// Flatten a resolved tree into EntityPayload list, loading meshes on demand.
@@ -595,13 +645,15 @@ fn flatten_resolved_tree(
         };
 
         let child_creates_nodes = if child.has_geometry {
-            if let Some((mesh, mtl, nmc, palette, bones)) = load_child_mesh(child, db, p4k, opts) {
+            if let Some((mesh, mtl, nmc, palette, bones, geometry_path, material_path)) = load_child_mesh(child, db, p4k, opts) {
                 out.push(crate::types::EntityPayload {
                     mesh,
                     materials: mtl,
                     textures: None,
                     nmc,
                     palette,
+                    geometry_path,
+                    material_path,
                     bones,
                     entity_name: child.entity_name.clone(),
                     parent_node_name: attach_name,
@@ -638,6 +690,8 @@ fn flatten_resolved_tree(
                 textures: None,
                 nmc: child.nmc.clone(),
                 palette: None,
+                geometry_path: child.geometry_path.clone().unwrap_or_default(),
+                material_path: child.material_path.clone().unwrap_or_default(),
                 bones: Vec::new(),
                 entity_name: child.entity_name.clone(),
                 parent_node_name: attach_name,
@@ -2255,7 +2309,7 @@ fn textures_share_uv_space(diffuse_path: &str, normal_path: &str) -> bool {
 }
 
 /// Load a texture with caching by path — prevents redundant DDS decode + PNG encode.
-fn cached_load(
+pub(crate) fn cached_load(
     p4k: &MappedP4k,
     path: &str,
     mip: u32,
@@ -2271,7 +2325,7 @@ fn cached_load(
     result
 }
 
-fn load_diffuse_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u32) -> Option<Vec<u8>> {
+pub(crate) fn load_diffuse_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u32) -> Option<Vec<u8>> {
     if tif_path.starts_with('$') {
         return None;
     }
@@ -2320,7 +2374,7 @@ fn load_diffuse_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u32) -> Opti
 /// The DDS decoder outputs RGBA for BC5 with Z reconstructed, but degenerate
 /// pixels (background/padding) can have Z≈0 which breaks Cycles. We re-read
 /// R+G, ensure Z>0, and output a clean normal map PNG.
-fn load_normal_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u32) -> Option<Vec<u8>> {
+pub(crate) fn load_normal_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u32) -> Option<Vec<u8>> {
     if tif_path.starts_with('$') {
         return None;
     }
@@ -2377,7 +2431,7 @@ fn load_normal_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u32) -> Optio
 /// CryEngine stores smoothness in separate sibling files (.7a, .6a, ...) as BC4 compressed.
 /// We convert smoothness → roughness (1-smoothness) and pack into a glTF metallicRoughness
 /// texture: R=0, G=roughness, B=metallic(0), A=255.
-fn load_roughness_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u32) -> Option<Vec<u8>> {
+pub(crate) fn load_roughness_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u32) -> Option<Vec<u8>> {
     let dds_path = tif_path
         .strip_suffix(".tif")
         .map(|base| format!("{base}.dds"))
@@ -2794,7 +2848,7 @@ fn query_tint_from_record(
     query_tint_from_path(db, record, "root", source_name)
 }
 
-fn try_load_mtl(p4k: &MappedP4k, p4k_path: &str) -> Option<mtl::MtlFile> {
+pub(crate) fn try_load_mtl(p4k: &MappedP4k, p4k_path: &str) -> Option<mtl::MtlFile> {
     let entry = p4k.entry_case_insensitive(p4k_path)?;
     let data = p4k.read(entry).ok()?;
     let mut mtl = mtl::parse_mtl(&data).ok()?;
@@ -2847,7 +2901,7 @@ fn transform_mesh_by_bone(mesh: &mut crate::Mesh, bone: &crate::skeleton::Bone) 
     mesh.model_max = new_max.into();
 }
 
-fn datacore_path_to_p4k(path: &str) -> String {
+pub(crate) fn datacore_path_to_p4k(path: &str) -> String {
     // Some DataCore paths already include a "Data/" prefix — strip it to avoid "Data\Data\".
     let clean = path
         .strip_prefix("Data/")
@@ -3685,15 +3739,14 @@ mod tests {
     }
 
     #[test]
-    fn export_kind_dispatch_rejects_decomposed_until_backend_exists() {
+    fn export_kind_dispatch_accepts_decomposed_backend() {
         let opts = ExportOptions {
             kind: ExportKind::Decomposed,
             ..ExportOptions::default()
         };
 
-        let err = ensure_supported_export_options(&opts)
-            .expect_err("decomposed export kind should be rejected");
-        assert!(matches!(err, Error::UnsupportedExportKind(kind) if kind == "Decomposed"));
+        ensure_supported_export_options(&opts)
+            .expect("decomposed export kind should be accepted");
     }
 
     #[test]
