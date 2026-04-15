@@ -53,6 +53,12 @@ pub enum Error {
     #[error("chunk parse error: {0}")]
     ChunkParse(String),
 
+    #[error("export kind '{0}' is not implemented yet")]
+    UnsupportedExportKind(String),
+
+    #[error("export format '{0}' is not implemented yet")]
+    UnsupportedExportFormat(String),
+
     #[error("{0}")]
     Other(String),
 }
