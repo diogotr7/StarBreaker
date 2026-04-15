@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use starbreaker_common::Progress;
@@ -369,6 +369,13 @@ pub struct ExportDone {
     pub succeeded_ids: Vec<String>,
 }
 
+fn bundled_extension(format: starbreaker_3d::ExportFormat) -> &'static str {
+    match format {
+        starbreaker_3d::ExportFormat::Glb => "glb",
+        starbreaker_3d::ExportFormat::Stl => "stl",
+    }
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct ExportRequest {
     pub record_ids: Vec<String>,
@@ -386,7 +393,7 @@ pub struct ExportRequest {
     pub threads: usize,
 }
 
-/// Start exporting selected entities to GLB files.
+/// Start exporting selected entities to bundled files.
 #[tauri::command]
 pub async fn start_export(
     app: AppHandle,
@@ -431,6 +438,7 @@ pub async fn start_export(
         _ => starbreaker_3d::ExportFormat::Glb,
     };
     let opts = starbreaker_3d::ExportOptions {
+        kind: starbreaker_3d::ExportKind::Bundled,
         format,
         material_mode,
         include_attachments: request.include_attachments,
@@ -531,7 +539,11 @@ pub async fn start_export(
                         },
                     );
 
-                    let filename = format!("{}.glb", sanitize_filename(name));
+                    let filename = format!(
+                        "{}.{}",
+                        sanitize_filename(name),
+                        bundled_extension(opts.format),
+                    );
                     let output_path = std::path::PathBuf::from(&output_dir).join(&filename);
 
                     match export_single(&db, &p4k, record_id, &output_path, &opts) {
@@ -575,7 +587,7 @@ pub fn cancel_export(state: State<'_, AppState>) {
     state.export_cancel.store(true, Ordering::SeqCst);
 }
 
-/// Export a single entity to a GLB file.
+/// Export a single entity to a bundled file.
 fn export_single(
     db: &starbreaker_datacore::database::Database,
     p4k: &MappedP4k,
@@ -589,7 +601,13 @@ fn export_single(
     let idx = starbreaker_datacore::loadout::EntityIndex::new(db);
     let tree = starbreaker_datacore::loadout::resolve_loadout_indexed(&idx, record);
     let result = starbreaker_3d::assemble_glb_with_loadout(db, p4k, record, &tree, opts)?;
-    std::fs::write(output_path, &result.glb)?;
+    let bundled_bytes = result.bundled_bytes().ok_or_else(|| {
+        AppError::Internal(format!(
+            "export returned non-bundled output for {:?}",
+            result.kind,
+        ))
+    })?;
+    std::fs::write(output_path, bundled_bytes)?;
     Ok(())
 }
 
