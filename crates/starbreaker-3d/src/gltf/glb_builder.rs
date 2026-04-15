@@ -12,7 +12,7 @@ use json::validation::Checked;
 
 use crate::error::Error;
 use crate::nmc::NodeMeshCombo;
-use crate::types::{MaterialTextures, Mesh, SubMesh};
+use crate::types::{MaterialTextures, Mesh, SubMesh, TextureTransformInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct PackedTextureKey {
@@ -32,28 +32,9 @@ struct PackedInteriorMeshKey {
     palette_hash: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum MaterialAlphaModeKey {
-    Opaque,
-    Mask,
-    Blend,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct MaterialIdentity {
-    name: Option<String>,
-    base_color_factor_bits: [u32; 4],
-    metallic_factor_bits: u32,
-    roughness_factor_bits: u32,
-    emissive_factor_bits: [u32; 3],
-    double_sided: bool,
-    alpha_mode: MaterialAlphaModeKey,
-    alpha_cutoff_bits: Option<u32>,
-    base_color_texture: Option<u32>,
-    normal_texture: Option<u32>,
-    metallic_roughness_texture: Option<u32>,
-    has_glass_extension: bool,
-    extras_json: Option<String>,
+    material_json: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -73,9 +54,26 @@ struct SceneMeshReuseKey {
     material_mode: SceneMaterialModeKey,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SceneGeometryReuseKey {
+    geometry_hash: u64,
+    include_tangents: bool,
+}
+
 struct BuiltMaterial {
     material: json::Material,
     identity: MaterialIdentity,
+}
+
+#[derive(Clone)]
+struct PackedGeometryInfo {
+    pos_accessor_idx: u32,
+    uv_accessor_idx: Option<u32>,
+    secondary_uv_accessor_idx: Option<u32>,
+    normal_accessor_idx: Option<u32>,
+    color_accessor_idx: Option<u32>,
+    tangent_accessor_idx: Option<u32>,
+    submesh_idx_accessors: Vec<u32>,
 }
 
 /// Holds all mutable state for building a GLB file.
@@ -93,6 +91,7 @@ pub(crate) struct GlbBuilder {
     tex_json_dedup: HashMap<TextureRegion, u32>,
     mat_dedup: HashMap<MaterialIdentity, u32>,
     scene_mesh_cache: HashMap<SceneMeshReuseKey, PackedMeshInfo>,
+    geometry_cache: HashMap<SceneGeometryReuseKey, PackedGeometryInfo>,
     /// Maps lowercased node/entity name → glTF node index.
     pub node_name_to_idx: HashMap<String, u32>,
 }
@@ -160,7 +159,251 @@ impl GlbBuilder {
             tex_json_dedup: HashMap::new(),
             mat_dedup: HashMap::new(),
             scene_mesh_cache: HashMap::new(),
+            geometry_cache: HashMap::new(),
             node_name_to_idx: HashMap::new(),
+        }
+    }
+
+    fn pack_geometry(&mut self, mesh: &Mesh, include_tangents: bool) -> PackedGeometryInfo {
+        // Ensure 4-byte alignment
+        while !self.bin.len().is_multiple_of(4) {
+            self.bin.push(0);
+        }
+
+        // Pack positions
+        let pos_offset = self.bin.len();
+        for p in &mesh.positions {
+            self.bin.extend_from_slice(&p[0].to_le_bytes());
+            self.bin.extend_from_slice(&p[1].to_le_bytes());
+            self.bin.extend_from_slice(&p[2].to_le_bytes());
+        }
+        let pos_len = self.bin.len() - pos_offset;
+
+        // Pack UVs
+        let uv_offset = self.bin.len();
+        let mut uv_len = 0;
+        if let Some(uvs) = &mesh.uvs {
+            for uv in uvs {
+                self.bin.extend_from_slice(&uv[0].to_le_bytes());
+                self.bin.extend_from_slice(&uv[1].to_le_bytes());
+            }
+            uv_len = self.bin.len() - uv_offset;
+        }
+
+        // Pack second UV set
+        let secondary_uv_offset = self.bin.len();
+        let mut secondary_uv_len = 0;
+        if let Some(uvs) = &mesh.secondary_uvs {
+            for uv in uvs {
+                self.bin.extend_from_slice(&uv[0].to_le_bytes());
+                self.bin.extend_from_slice(&uv[1].to_le_bytes());
+            }
+            secondary_uv_len = self.bin.len() - secondary_uv_offset;
+        }
+
+        // Pack normals
+        let normal_offset = self.bin.len();
+        let mut normal_len = 0;
+        if let Some(normals) = &mesh.normals {
+            for n in normals {
+                self.bin.extend_from_slice(&n[0].to_le_bytes());
+                self.bin.extend_from_slice(&n[1].to_le_bytes());
+                self.bin.extend_from_slice(&n[2].to_le_bytes());
+            }
+            normal_len = self.bin.len() - normal_offset;
+        }
+
+        // Pack tangents (optional)
+        let tangent_offset = self.bin.len();
+        let mut tangent_len = 0;
+        if include_tangents {
+            if let Some(tangents) = &mesh.tangents {
+                for t in tangents {
+                    self.bin.extend_from_slice(&t[0].to_le_bytes());
+                    self.bin.extend_from_slice(&t[1].to_le_bytes());
+                    self.bin.extend_from_slice(&t[2].to_le_bytes());
+                    self.bin.extend_from_slice(&t[3].to_le_bytes());
+                }
+                tangent_len = self.bin.len() - tangent_offset;
+            }
+        }
+
+        // Pack vertex colors (optional, normalized U8 RGBA)
+        let color_offset = self.bin.len();
+        let mut color_len = 0;
+        if let Some(colors) = &mesh.colors {
+            for color in colors {
+                self.bin.extend_from_slice(color);
+            }
+            color_len = self.bin.len() - color_offset;
+        }
+
+        // Pad to 4-byte boundary before indices
+        while !self.bin.len().is_multiple_of(4) {
+            self.bin.push(0);
+        }
+
+        // Pack indices
+        let idx_offset = self.bin.len();
+        let max_index = mesh.indices.iter().copied().max().unwrap_or(0);
+        let use_u16 = max_index <= u16::MAX as u32;
+        if use_u16 {
+            for &i in &mesh.indices {
+                self.bin.extend_from_slice(&(i as u16).to_le_bytes());
+            }
+            while !self.bin.len().is_multiple_of(4) {
+                self.bin.push(0);
+            }
+        } else {
+            for &i in &mesh.indices {
+                self.bin.extend_from_slice(&i.to_le_bytes());
+            }
+        }
+        let idx_len = if use_u16 { mesh.indices.len() * 2 } else { mesh.indices.len() * 4 };
+        let idx_component_type = if use_u16 {
+            json::accessor::ComponentType::U16
+        } else {
+            json::accessor::ComponentType::U32
+        };
+
+        // Position bounds
+        let mut pos_min = [f32::MAX; 3];
+        let mut pos_max = [f32::MIN; 3];
+        for p in &mesh.positions {
+            for i in 0..3 {
+                pos_min[i] = pos_min[i].min(p[i]);
+                pos_max[i] = pos_max[i].max(p[i]);
+            }
+        }
+
+        // Vertex accessors
+        let pos_accessor_idx = super::add_vertex_accessor(
+            &mut self.buffer_views,
+            &mut self.accessors,
+            pos_offset,
+            pos_len,
+            mesh.positions.len(),
+            json::accessor::Type::Vec3,
+            Some((&pos_min, &pos_max)),
+        )
+        .unwrap_or(0);
+
+        let uv_accessor_idx = super::add_vertex_accessor(
+            &mut self.buffer_views,
+            &mut self.accessors,
+            uv_offset,
+            uv_len,
+            mesh.uvs.as_ref().map_or(0, |v| v.len()),
+            json::accessor::Type::Vec2,
+            None,
+        );
+        let secondary_uv_accessor_idx = super::add_vertex_accessor(
+            &mut self.buffer_views,
+            &mut self.accessors,
+            secondary_uv_offset,
+            secondary_uv_len,
+            mesh.secondary_uvs.as_ref().map_or(0, |v| v.len()),
+            json::accessor::Type::Vec2,
+            None,
+        );
+        let normal_accessor_idx = super::add_vertex_accessor(
+            &mut self.buffer_views,
+            &mut self.accessors,
+            normal_offset,
+            normal_len,
+            mesh.normals.as_ref().map_or(0, |v| v.len()),
+            json::accessor::Type::Vec3,
+            None,
+        );
+        let color_accessor_idx = if color_len == 0 {
+            None
+        } else {
+            let color_bv_idx = self.buffer_views.len() as u32;
+            self.buffer_views.push(json::buffer::View {
+                buffer: json::Index::new(0),
+                byte_offset: Some(json::validation::USize64(color_offset as u64)),
+                byte_length: json::validation::USize64(color_len as u64),
+                byte_stride: None,
+                target: Some(Checked::Valid(json::buffer::Target::ArrayBuffer)),
+                name: None,
+                extensions: None,
+                extras: Default::default(),
+            });
+            let color_acc_idx = self.accessors.len() as u32;
+            self.accessors.push(json::Accessor {
+                buffer_view: Some(json::Index::new(color_bv_idx)),
+                byte_offset: Some(json::validation::USize64(0)),
+                count: json::validation::USize64(mesh.colors.as_ref().map_or(0, |v| v.len()) as u64),
+                component_type: Checked::Valid(json::accessor::GenericComponentType(
+                    json::accessor::ComponentType::U8,
+                )),
+                type_: Checked::Valid(json::accessor::Type::Vec4),
+                min: None,
+                max: None,
+                name: None,
+                normalized: true,
+                sparse: None,
+                extensions: None,
+                extras: Default::default(),
+            });
+            Some(color_acc_idx)
+        };
+        let tangent_accessor_idx = super::add_vertex_accessor(
+            &mut self.buffer_views,
+            &mut self.accessors,
+            tangent_offset,
+            tangent_len,
+            mesh.tangents.as_ref().map_or(0, |v| v.len()),
+            json::accessor::Type::Vec4,
+            None,
+        );
+
+        // Index buffer view
+        let idx_bv_idx = self.buffer_views.len() as u32;
+        self.buffer_views.push(json::buffer::View {
+            buffer: json::Index::new(0),
+            byte_offset: Some(json::validation::USize64(idx_offset as u64)),
+            byte_length: json::validation::USize64(idx_len as u64),
+            byte_stride: None,
+            target: Some(Checked::Valid(json::buffer::Target::ElementArrayBuffer)),
+            name: None,
+            extensions: None,
+            extras: Default::default(),
+        });
+
+        let mut submesh_idx_accessors = Vec::with_capacity(mesh.submeshes.len());
+        for sub in &mesh.submeshes {
+            let idx_byte_offset = if use_u16 {
+                sub.first_index as u64 * 2
+            } else {
+                sub.first_index as u64 * 4
+            };
+            let acc_idx = self.accessors.len() as u32;
+            self.accessors.push(json::Accessor {
+                buffer_view: Some(json::Index::new(idx_bv_idx)),
+                byte_offset: Some(json::validation::USize64(idx_byte_offset)),
+                count: json::validation::USize64(sub.num_indices as u64),
+                component_type: Checked::Valid(json::accessor::GenericComponentType(idx_component_type)),
+                type_: Checked::Valid(json::accessor::Type::Scalar),
+                min: None,
+                max: None,
+                name: None,
+                normalized: false,
+                sparse: None,
+                extensions: None,
+                extras: Default::default(),
+            });
+            submesh_idx_accessors.push(acc_idx);
+        }
+
+        PackedGeometryInfo {
+            pos_accessor_idx,
+            uv_accessor_idx,
+            secondary_uv_accessor_idx,
+            normal_accessor_idx,
+            color_accessor_idx,
+            tangent_accessor_idx,
+            submesh_idx_accessors,
         }
     }
 
@@ -289,7 +532,10 @@ impl GlbBuilder {
         scene_nodes: &[json::Index<json::Node>],
         material_mode: crate::pipeline::MaterialMode,
         fallback_palette: Option<&crate::mtl::TintPalette>,
-        load_textures: &mut dyn FnMut(Option<&crate::mtl::MtlFile>) -> Option<crate::types::MaterialTextures>,
+        load_textures: &mut dyn FnMut(
+            Option<&crate::mtl::MtlFile>,
+            Option<&crate::mtl::TintPalette>,
+        ) -> Option<crate::types::MaterialTextures>,
     ) {
         if child.offset_position != [0.0; 3] || child.offset_rotation != [0.0; 3] {
             log::info!(
@@ -304,12 +550,13 @@ impl GlbBuilder {
 
         // Pack mesh data (skip for NMC-only entities with no geometry).
         let child_packed = if has_mesh {
-            let textures = load_textures(child.materials.as_ref());
+            let resolved_palette = child.palette.as_ref().or(fallback_palette);
+            let textures = load_textures(child.materials.as_ref(), resolved_palette);
             let packed = self.pack_mesh(
                 &child.mesh,
                 child.materials.as_ref(),
                 textures.as_ref(),
-                child.palette.as_ref().or(fallback_palette),
+                resolved_palette,
                 Some(&child.entity_name),
                 material_mode,
             );
@@ -497,7 +744,10 @@ impl GlbBuilder {
         interiors: &crate::pipeline::LoadedInteriors,
         material_mode: crate::pipeline::MaterialMode,
         fallback_palette: Option<&crate::mtl::TintPalette>,
-        load_textures: &mut dyn FnMut(Option<&crate::mtl::MtlFile>) -> Option<crate::types::MaterialTextures>,
+        load_textures: &mut dyn FnMut(
+            Option<&crate::mtl::MtlFile>,
+            Option<&crate::mtl::TintPalette>,
+        ) -> Option<crate::types::MaterialTextures>,
         load_interior_mesh: &mut dyn FnMut(
             &crate::pipeline::InteriorCgfEntry,
         ) -> Option<(crate::types::Mesh, Option<crate::mtl::MtlFile>, Option<NodeMeshCombo>)>,
@@ -555,7 +805,7 @@ impl GlbBuilder {
                         packed_cache.insert(cache_key, u32::MAX);
                         continue;
                     };
-                    let textures = load_textures(mtl.as_ref());
+                    let textures = load_textures(mtl.as_ref(), palette);
                     let packed = self.pack_mesh(
                         mesh,
                         mtl.as_ref(),
@@ -632,111 +882,24 @@ impl GlbBuilder {
         if let Some(packed) = self.scene_mesh_cache.get(&reuse_key) {
             return packed.clone();
         }
-        // Ensure 4-byte alignment
-        while !self.bin.len().is_multiple_of(4) {
-            self.bin.push(0);
-        }
-
-        // Pack positions
-        let pos_offset = self.bin.len();
-        for p in &mesh.positions {
-            self.bin.extend_from_slice(&p[0].to_le_bytes());
-            self.bin.extend_from_slice(&p[1].to_le_bytes());
-            self.bin.extend_from_slice(&p[2].to_le_bytes());
-        }
-        let pos_len = self.bin.len() - pos_offset;
-
-        // Pack UVs
-        let uv_offset = self.bin.len();
-        let mut uv_len = 0;
-        if let Some(uvs) = &mesh.uvs {
-            for uv in uvs {
-                self.bin.extend_from_slice(&uv[0].to_le_bytes());
-                self.bin.extend_from_slice(&uv[1].to_le_bytes());
-            }
-            uv_len = self.bin.len() - uv_offset;
-        }
-
-        // Pack second UV set
-        let secondary_uv_offset = self.bin.len();
-        let mut secondary_uv_len = 0;
-        if let Some(uvs) = &mesh.secondary_uvs {
-            for uv in uvs {
-                self.bin.extend_from_slice(&uv[0].to_le_bytes());
-                self.bin.extend_from_slice(&uv[1].to_le_bytes());
-            }
-            secondary_uv_len = self.bin.len() - secondary_uv_offset;
-        }
-
-        // Pack normals
-        let normal_offset = self.bin.len();
-        let mut normal_len = 0;
-        if let Some(normals) = &mesh.normals {
-            for n in normals {
-                self.bin.extend_from_slice(&n[0].to_le_bytes());
-                self.bin.extend_from_slice(&n[1].to_le_bytes());
-                self.bin.extend_from_slice(&n[2].to_le_bytes());
-            }
-            normal_len = self.bin.len() - normal_offset;
-        }
-
-        // Pack tangents (optional)
-        let tangent_offset = self.bin.len();
-        let mut tangent_len = 0;
-        if include_tangents {
-            if let Some(tangents) = &mesh.tangents {
-                for t in tangents {
-                    self.bin.extend_from_slice(&t[0].to_le_bytes());
-                    self.bin.extend_from_slice(&t[1].to_le_bytes());
-                    self.bin.extend_from_slice(&t[2].to_le_bytes());
-                    self.bin.extend_from_slice(&t[3].to_le_bytes());
-                }
-                tangent_len = self.bin.len() - tangent_offset;
-            }
-        }
-
-        // Pack vertex colors (optional, normalized U8 RGBA)
-        let color_offset = self.bin.len();
-        let mut color_len = 0;
-        if let Some(colors) = &mesh.colors {
-            for color in colors {
-                self.bin.extend_from_slice(color);
-            }
-            color_len = self.bin.len() - color_offset;
-        }
-
-        // Pad to 4-byte boundary before indices
-        while !self.bin.len().is_multiple_of(4) {
-            self.bin.push(0);
-        }
-
-        // Pack indices
-        let idx_offset = self.bin.len();
-        let max_index = mesh.indices.iter().copied().max().unwrap_or(0);
-        let use_u16 = max_index <= u16::MAX as u32;
-        if use_u16 {
-            for &i in &mesh.indices {
-                self.bin.extend_from_slice(&(i as u16).to_le_bytes());
-            }
-            while !self.bin.len().is_multiple_of(4) {
-                self.bin.push(0);
-            }
+        let geometry_key = SceneGeometryReuseKey {
+            geometry_hash: hash_mesh_for_reuse(mesh, include_tangents),
+            include_tangents,
+        };
+        let geometry = if let Some(cached) = self.geometry_cache.get(&geometry_key) {
+            cached.clone()
         } else {
-            for &i in &mesh.indices {
-                self.bin.extend_from_slice(&i.to_le_bytes());
-            }
-        }
-        let idx_len = if use_u16 { mesh.indices.len() * 2 } else { mesh.indices.len() * 4 };
-        let idx_component_type = if use_u16 {
-            json::accessor::ComponentType::U16
-        } else {
-            json::accessor::ComponentType::U32
+            let packed = self.pack_geometry(mesh, include_tangents);
+            self.geometry_cache.insert(geometry_key, packed.clone());
+            packed
         };
 
         // Embed textures with content-based dedup.
         let mut texture_regions: Vec<Option<TextureRegion>> = Vec::new();
         let mut normal_regions: Vec<Option<TextureRegion>> = Vec::new();
         let mut roughness_regions: Vec<Option<TextureRegion>> = Vec::new();
+        let mut emissive_regions: Vec<Option<TextureRegion>> = Vec::new();
+        let mut occlusion_regions: Vec<Option<TextureRegion>> = Vec::new();
         if let Some(tex) = textures {
             for png_opt in &tex.diffuse {
                 texture_regions.push(pack_texture_deduped(png_opt.as_deref(), &mut self.bin, &mut self.tex_cache));
@@ -747,96 +910,20 @@ impl GlbBuilder {
             for png_opt in &tex.roughness {
                 roughness_regions.push(pack_texture_deduped(png_opt.as_deref(), &mut self.bin, &mut self.tex_cache));
             }
-        }
-
-        // Position bounds
-        let mut pos_min = [f32::MAX; 3];
-        let mut pos_max = [f32::MIN; 3];
-        for p in &mesh.positions {
-            for i in 0..3 {
-                pos_min[i] = pos_min[i].min(p[i]);
-                pos_max[i] = pos_max[i].max(p[i]);
+            for png_opt in &tex.emissive {
+                emissive_regions.push(pack_texture_deduped(png_opt.as_deref(), &mut self.bin, &mut self.tex_cache));
+            }
+            for png_opt in &tex.occlusion {
+                occlusion_regions.push(pack_texture_deduped(png_opt.as_deref(), &mut self.bin, &mut self.tex_cache));
             }
         }
-
-        // Vertex accessors
-        let pos_accessor_idx = super::add_vertex_accessor(
-            &mut self.buffer_views, &mut self.accessors, pos_offset, pos_len,
-            mesh.positions.len(), json::accessor::Type::Vec3, Some((&pos_min, &pos_max)),
-        ).unwrap_or(0);
-
-        let uv_accessor_idx = super::add_vertex_accessor(
-            &mut self.buffer_views, &mut self.accessors, uv_offset, uv_len,
-            mesh.uvs.as_ref().map_or(0, |v| v.len()), json::accessor::Type::Vec2, None,
-        );
-        let secondary_uv_accessor_idx = super::add_vertex_accessor(
-            &mut self.buffer_views,
-            &mut self.accessors,
-            secondary_uv_offset,
-            secondary_uv_len,
-            mesh.secondary_uvs.as_ref().map_or(0, |v| v.len()),
-            json::accessor::Type::Vec2,
-            None,
-        );
-        let normal_accessor_idx = super::add_vertex_accessor(
-            &mut self.buffer_views, &mut self.accessors, normal_offset, normal_len,
-            mesh.normals.as_ref().map_or(0, |v| v.len()), json::accessor::Type::Vec3, None,
-        );
-        let color_accessor_idx = if color_len == 0 {
-            None
-        } else {
-            let color_bv_idx = self.buffer_views.len() as u32;
-            self.buffer_views.push(json::buffer::View {
-                buffer: json::Index::new(0),
-                byte_offset: Some(json::validation::USize64(color_offset as u64)),
-                byte_length: json::validation::USize64(color_len as u64),
-                byte_stride: None,
-                target: Some(Checked::Valid(json::buffer::Target::ArrayBuffer)),
-                name: None,
-                extensions: None,
-                extras: Default::default(),
-            });
-            let color_acc_idx = self.accessors.len() as u32;
-            self.accessors.push(json::Accessor {
-                buffer_view: Some(json::Index::new(color_bv_idx)),
-                byte_offset: Some(json::validation::USize64(0)),
-                count: json::validation::USize64(mesh.colors.as_ref().map_or(0, |v| v.len()) as u64),
-                component_type: Checked::Valid(json::accessor::GenericComponentType(
-                    json::accessor::ComponentType::U8,
-                )),
-                type_: Checked::Valid(json::accessor::Type::Vec4),
-                min: None,
-                max: None,
-                name: None,
-                normalized: true,
-                sparse: None,
-                extensions: None,
-                extras: Default::default(),
-            });
-            Some(color_acc_idx)
-        };
-        let tangent_accessor_idx = super::add_vertex_accessor(
-            &mut self.buffer_views, &mut self.accessors, tangent_offset, tangent_len,
-            mesh.tangents.as_ref().map_or(0, |v| v.len()), json::accessor::Type::Vec4, None,
-        );
-
-        // Index buffer view
-        let idx_bv_idx = self.buffer_views.len() as u32;
-        self.buffer_views.push(json::buffer::View {
-            buffer: json::Index::new(0),
-            byte_offset: Some(json::validation::USize64(idx_offset as u64)),
-            byte_length: json::validation::USize64(idx_len as u64),
-            byte_stride: None,
-            target: Some(Checked::Valid(json::buffer::Target::ElementArrayBuffer)),
-            name: None,
-            extensions: None,
-            extras: Default::default(),
-        });
 
         // Texture → glTF mappings
         let has_any_texture = texture_regions.iter()
             .chain(normal_regions.iter())
             .chain(roughness_regions.iter())
+            .chain(emissive_regions.iter())
+            .chain(occlusion_regions.iter())
             .any(|r| r.is_some());
         if has_any_texture && self.samplers_json.is_empty() {
             self.samplers_json.push(json::texture::Sampler {
@@ -853,15 +940,20 @@ impl GlbBuilder {
         let submaterial_texture_idx = regions_to_gltf_textures_deduped(&texture_regions, &mut self.buffer_views, &mut self.images_json, &mut self.textures_json, &mut self.tex_json_dedup);
         let submaterial_normal_idx = regions_to_gltf_textures_deduped(&normal_regions, &mut self.buffer_views, &mut self.images_json, &mut self.textures_json, &mut self.tex_json_dedup);
         let submaterial_roughness_idx = regions_to_gltf_textures_deduped(&roughness_regions, &mut self.buffer_views, &mut self.images_json, &mut self.textures_json, &mut self.tex_json_dedup);
+        let submaterial_emissive_idx = regions_to_gltf_textures_deduped(&emissive_regions, &mut self.buffer_views, &mut self.images_json, &mut self.textures_json, &mut self.tex_json_dedup);
+        let submaterial_occlusion_idx = regions_to_gltf_textures_deduped(&occlusion_regions, &mut self.buffer_views, &mut self.images_json, &mut self.textures_json, &mut self.tex_json_dedup);
 
         // Build materials with dedup
         let submesh_mat_indices = build_materials(
             &mesh.submeshes,
             materials,
             palette,
+            textures,
             &submaterial_texture_idx,
             &submaterial_normal_idx,
             &submaterial_roughness_idx,
+            &submaterial_emissive_idx,
+            &submaterial_occlusion_idx,
             &mut self.materials_json,
             &mut self.mat_dedup,
             experimental_textures,
@@ -887,59 +979,39 @@ impl GlbBuilder {
                     continue;
                 }
             }
-            let idx_byte_offset = if use_u16 {
-                sub.first_index as u64 * 2
-            } else {
-                sub.first_index as u64 * 4
-            };
-
-            let acc_idx = self.accessors.len() as u32;
+            let acc_idx = geometry.submesh_idx_accessors[i];
             submesh_idx_accessors.push(Some(acc_idx));
-            self.accessors.push(json::Accessor {
-                buffer_view: Some(json::Index::new(idx_bv_idx)),
-                byte_offset: Some(json::validation::USize64(idx_byte_offset)),
-                count: json::validation::USize64(sub.num_indices as u64),
-                component_type: Checked::Valid(json::accessor::GenericComponentType(idx_component_type)),
-                type_: Checked::Valid(json::accessor::Type::Scalar),
-                min: None,
-                max: None,
-                name: None,
-                normalized: false,
-                sparse: None,
-                extensions: None,
-                extras: Default::default(),
-            });
 
             let mut attributes = BTreeMap::new();
             attributes.insert(
                 Checked::Valid(json::mesh::Semantic::Positions),
-                json::Index::new(pos_accessor_idx),
+                json::Index::new(geometry.pos_accessor_idx),
             );
-            if let Some(uv_idx) = uv_accessor_idx {
+            if let Some(uv_idx) = geometry.uv_accessor_idx {
                 attributes.insert(
                     Checked::Valid(json::mesh::Semantic::TexCoords(0)),
                     json::Index::new(uv_idx),
                 );
             }
-            if let Some(secondary_uv_idx) = secondary_uv_accessor_idx {
+            if let Some(secondary_uv_idx) = geometry.secondary_uv_accessor_idx {
                 attributes.insert(
                     Checked::Valid(json::mesh::Semantic::TexCoords(1)),
                     json::Index::new(secondary_uv_idx),
                 );
             }
-            if let Some(normal_idx) = normal_accessor_idx {
+            if let Some(normal_idx) = geometry.normal_accessor_idx {
                 attributes.insert(
                     Checked::Valid(json::mesh::Semantic::Normals),
                     json::Index::new(normal_idx),
                 );
             }
-            if let Some(color_idx) = color_accessor_idx {
+            if let Some(color_idx) = geometry.color_accessor_idx {
                 attributes.insert(
                     Checked::Valid(json::mesh::Semantic::Colors(0)),
                     json::Index::new(color_idx),
                 );
             }
-            if let Some(tangent_idx) = tangent_accessor_idx {
+            if let Some(tangent_idx) = geometry.tangent_accessor_idx {
                 attributes.insert(
                     Checked::Valid(json::mesh::Semantic::Tangents),
                     json::Index::new(tangent_idx),
@@ -968,12 +1040,12 @@ impl GlbBuilder {
 
         let packed = PackedMeshInfo {
             mesh_idx,
-            pos_accessor_idx,
-            uv_accessor_idx,
-            secondary_uv_accessor_idx,
-            normal_accessor_idx,
-            color_accessor_idx,
-            tangent_accessor_idx,
+            pos_accessor_idx: geometry.pos_accessor_idx,
+            uv_accessor_idx: geometry.uv_accessor_idx,
+            secondary_uv_accessor_idx: geometry.secondary_uv_accessor_idx,
+            normal_accessor_idx: geometry.normal_accessor_idx,
+            color_accessor_idx: geometry.color_accessor_idx,
+            tangent_accessor_idx: geometry.tangent_accessor_idx,
             submesh_mat_indices,
             submesh_idx_accessors,
         };
@@ -1143,9 +1215,36 @@ impl GlbBuilder {
         }];
 
         let mut extensions_used = Vec::new();
-        if self.materials_json.iter().any(|m| m.extensions.is_some()) {
+        if self
+            .materials_json
+            .iter()
+            .any(|material| material.extensions.as_ref().and_then(|extensions| extensions.transmission.as_ref()).is_some())
+        {
             extensions_used.push("KHR_materials_transmission".to_string());
+        }
+        if self
+            .materials_json
+            .iter()
+            .any(|material| material.extensions.as_ref().and_then(|extensions| extensions.ior.as_ref()).is_some())
+        {
             extensions_used.push("KHR_materials_ior".to_string());
+        }
+        if self
+            .materials_json
+            .iter()
+            .any(|material| material.extensions.as_ref().and_then(|extensions| extensions.volume.as_ref()).is_some())
+        {
+            extensions_used.push("KHR_materials_volume".to_string());
+        }
+        if self
+            .materials_json
+            .iter()
+            .any(|material| material.extensions.as_ref().and_then(|extensions| extensions.emissive_strength.as_ref()).is_some())
+        {
+            extensions_used.push("KHR_materials_emissive_strength".to_string());
+        }
+        if self.materials_json.iter().any(material_uses_texture_transform) {
+            extensions_used.push("KHR_texture_transform".to_string());
         }
 
         // KHR_lights_punctual
@@ -1291,6 +1390,22 @@ fn hash_optional_bytes(
             true.hash(hasher);
             bytes.len().hash(hasher);
             bytes.hash(hasher);
+        }
+        None => false.hash(hasher),
+    }
+}
+
+fn hash_optional_transform(
+    hasher: &mut std::hash::DefaultHasher,
+    transform: Option<&TextureTransformInfo>,
+) {
+    use std::hash::Hash;
+
+    match transform {
+        Some(transform) => {
+            true.hash(hasher);
+            transform.tex_coord.hash(hasher);
+            hash_vec2(hasher, &transform.scale);
         }
         None => false.hash(hasher),
     }
@@ -1467,6 +1582,46 @@ fn hash_textures_for_reuse(textures: Option<&MaterialTextures>) -> u64 {
             for roughness in &textures.roughness {
                 hash_optional_bytes(&mut hasher, roughness.as_deref());
             }
+
+            textures.emissive.len().hash(&mut hasher);
+            for emissive in &textures.emissive {
+                hash_optional_bytes(&mut hasher, emissive.as_deref());
+            }
+
+            textures.occlusion.len().hash(&mut hasher);
+            for occlusion in &textures.occlusion {
+                hash_optional_bytes(&mut hasher, occlusion.as_deref());
+            }
+
+            textures.diffuse_transform.len().hash(&mut hasher);
+            for transform in &textures.diffuse_transform {
+                hash_optional_transform(&mut hasher, transform.as_ref());
+            }
+
+            textures.normal_transform.len().hash(&mut hasher);
+            for transform in &textures.normal_transform {
+                hash_optional_transform(&mut hasher, transform.as_ref());
+            }
+
+            textures.roughness_transform.len().hash(&mut hasher);
+            for transform in &textures.roughness_transform {
+                hash_optional_transform(&mut hasher, transform.as_ref());
+            }
+
+            textures.emissive_transform.len().hash(&mut hasher);
+            for transform in &textures.emissive_transform {
+                hash_optional_transform(&mut hasher, transform.as_ref());
+            }
+
+            textures.occlusion_transform.len().hash(&mut hasher);
+            for transform in &textures.occlusion_transform {
+                hash_optional_transform(&mut hasher, transform.as_ref());
+            }
+
+            textures.bundled_fallbacks.len().hash(&mut hasher);
+            for fallbacks in &textures.bundled_fallbacks {
+                fallbacks.hash(&mut hasher);
+            }
         }
         None => false.hash(&mut hasher),
     }
@@ -1583,14 +1738,113 @@ fn regions_to_gltf_textures_deduped(
     }).collect()
 }
 
+fn texture_transform_parts(
+    transform: Option<&TextureTransformInfo>,
+) -> (u32, Option<json::extensions::texture::Info>) {
+    let Some(transform) = transform else {
+        return (0, None);
+    };
+
+    let needs_transform = (transform.scale[0] - 1.0).abs() > 1e-4
+        || (transform.scale[1] - 1.0).abs() > 1e-4;
+    let tex_coord = transform.tex_coord;
+    if !needs_transform {
+        return (tex_coord, None);
+    }
+
+    let mut extension = json::extensions::texture::Info::default();
+    extension.texture_transform = Some(json::extensions::texture::TextureTransform {
+        offset: json::extensions::texture::TextureTransformOffset([0.0, 0.0]),
+        rotation: json::extensions::texture::TextureTransformRotation(0.0),
+        scale: json::extensions::texture::TextureTransformScale(transform.scale),
+        tex_coord: (tex_coord != 0).then_some(tex_coord),
+        extras: Default::default(),
+    });
+    (tex_coord, Some(extension))
+}
+
+fn build_texture_info(
+    tex_idx: u32,
+    transform: Option<&TextureTransformInfo>,
+) -> json::texture::Info {
+    let (tex_coord, extensions) = texture_transform_parts(transform);
+    json::texture::Info {
+        index: json::Index::new(tex_idx),
+        tex_coord,
+        extensions,
+        extras: Default::default(),
+    }
+}
+
+fn build_normal_texture(
+    tex_idx: u32,
+    transform: Option<&TextureTransformInfo>,
+) -> json::material::NormalTexture {
+    let tex_coord = transform.map(|transform| transform.tex_coord).unwrap_or(0);
+    json::material::NormalTexture {
+        index: json::Index::new(tex_idx),
+        scale: 1.0,
+        tex_coord,
+        extensions: None,
+        extras: Default::default(),
+    }
+}
+
+fn build_occlusion_texture(
+    tex_idx: u32,
+    transform: Option<&TextureTransformInfo>,
+) -> json::material::OcclusionTexture {
+    let tex_coord = transform.map(|transform| transform.tex_coord).unwrap_or(0);
+    json::material::OcclusionTexture {
+        index: json::Index::new(tex_idx),
+        strength: json::material::StrengthFactor(1.0),
+        tex_coord,
+        extensions: None,
+        extras: Default::default(),
+    }
+}
+
+fn material_uses_texture_transform(material: &json::Material) -> bool {
+    material
+        .pbr_metallic_roughness
+        .base_color_texture
+        .as_ref()
+        .and_then(|texture| texture.extensions.as_ref())
+        .is_some()
+        || material
+            .pbr_metallic_roughness
+            .metallic_roughness_texture
+            .as_ref()
+            .and_then(|texture| texture.extensions.as_ref())
+            .is_some()
+        || material
+            .emissive_texture
+            .as_ref()
+            .and_then(|texture| texture.extensions.as_ref())
+            .is_some()
+        || material
+            .normal_texture
+            .as_ref()
+            .and_then(|texture| texture.extensions.as_ref())
+            .is_some()
+        || material
+            .occlusion_texture
+            .as_ref()
+            .and_then(|texture| texture.extensions.as_ref())
+            .is_some()
+}
+
 /// Build deduplicated glTF materials for a set of submeshes.
 fn build_materials(
     submeshes: &[SubMesh],
     materials: Option<&crate::mtl::MtlFile>,
     palette: Option<&crate::mtl::TintPalette>,
+    textures: Option<&MaterialTextures>,
     submaterial_texture_idx: &[Option<u32>],
     submaterial_normal_idx: &[Option<u32>],
     submaterial_roughness_idx: &[Option<u32>],
+    submaterial_emissive_idx: &[Option<u32>],
+    submaterial_occlusion_idx: &[Option<u32>],
     materials_json: &mut Vec<json::Material>,
     mat_dedup: &mut HashMap<MaterialIdentity, u32>,
     experimental_textures: bool,
@@ -1600,9 +1854,12 @@ fn build_materials(
             sub,
             materials,
             palette,
+            textures,
             submaterial_texture_idx,
             submaterial_normal_idx,
             submaterial_roughness_idx,
+            submaterial_emissive_idx,
+            submaterial_occlusion_idx,
             experimental_textures,
         );
         if let Some(&idx) = mat_dedup.get(&identity) {
@@ -1621,12 +1878,16 @@ fn build_material(
     sub: &SubMesh,
     materials: Option<&crate::mtl::MtlFile>,
     palette: Option<&crate::mtl::TintPalette>,
+    textures: Option<&MaterialTextures>,
     submaterial_texture_idx: &[Option<u32>],
     submaterial_normal_idx: &[Option<u32>],
     submaterial_roughness_idx: &[Option<u32>],
+    submaterial_emissive_idx: &[Option<u32>],
+    submaterial_occlusion_idx: &[Option<u32>],
     experimental_textures: bool,
 ) -> BuiltMaterial {
     let mtl_sub = materials.and_then(|m| m.materials.get(sub.material_id as usize));
+    let texture_set = textures;
     let palette_channel_name = |channel: u8| -> Option<&'static str> {
         match channel {
             1 => Some("primary"),
@@ -1636,23 +1897,20 @@ fn build_material(
         }
     };
 
-    let (base_color_factor, alpha_mode, alpha_mode_key, alpha_cutoff_value, double_sided, mat_name) = if let Some(m) = mtl_sub {
+    let (base_color_factor, alpha_mode, alpha_cutoff_value, double_sided, mat_name) = if let Some(m) = mtl_sub {
         let ac = m.alpha_config();
         let alpha = m.opacity;
-        let (gltf_alpha_mode, alpha_mode_key, cutoff) = match ac {
+        let (gltf_alpha_mode, cutoff) = match ac {
             crate::mtl::AlphaConfig::Opaque => (
                 json::material::AlphaMode::Opaque,
-                MaterialAlphaModeKey::Opaque,
                 None,
             ),
             crate::mtl::AlphaConfig::Blend => (
                 json::material::AlphaMode::Blend,
-                MaterialAlphaModeKey::Blend,
                 None,
             ),
             crate::mtl::AlphaConfig::Mask(v) => (
                 json::material::AlphaMode::Mask,
-                MaterialAlphaModeKey::Mask,
                 Some(v),
             ),
         };
@@ -1691,7 +1949,6 @@ fn build_material(
         (
             [color[0], color[1], color[2], alpha],
             gltf_alpha_mode,
-            alpha_mode_key,
             cutoff,
             m.is_double_sided(),
             name,
@@ -1700,7 +1957,6 @@ fn build_material(
         (
             [0.8, 0.8, 0.8, 1.0],
             json::material::AlphaMode::Opaque,
-            MaterialAlphaModeKey::Opaque,
             None,
             false,
             sub.material_name.clone(),
@@ -1709,13 +1965,30 @@ fn build_material(
 
     let alpha_cutoff = alpha_cutoff_value.map(json::material::AlphaCutoff);
 
+    let diffuse_transform = texture_set
+        .and_then(|textures| textures.diffuse_transform.get(sub.material_id as usize))
+        .and_then(|transform| transform.as_ref());
+    let normal_transform = texture_set
+        .and_then(|textures| textures.normal_transform.get(sub.material_id as usize))
+        .and_then(|transform| transform.as_ref());
+    let roughness_transform = texture_set
+        .and_then(|textures| textures.roughness_transform.get(sub.material_id as usize))
+        .and_then(|transform| transform.as_ref());
+    let emissive_transform = texture_set
+        .and_then(|textures| textures.emissive_transform.get(sub.material_id as usize))
+        .and_then(|transform| transform.as_ref());
+    let occlusion_transform = texture_set
+        .and_then(|textures| textures.occlusion_transform.get(sub.material_id as usize))
+        .and_then(|transform| transform.as_ref());
+    let bundled_fallbacks = texture_set
+        .and_then(|textures| textures.bundled_fallbacks.get(sub.material_id as usize))
+        .cloned()
+        .unwrap_or_default();
+
     let base_color_texture_idx = submaterial_texture_idx
         .get(sub.material_id as usize).copied().flatten();
     let base_color_texture = base_color_texture_idx
-        .map(|tex_idx| json::texture::Info {
-            index: json::Index::new(tex_idx), tex_coord: 0,
-            extensions: None, extras: Default::default(),
-        });
+        .map(|tex_idx| build_texture_info(tex_idx, diffuse_transform));
     // Only apply per-pixel normal/roughness when the material has a direct TexSlot1 diffuse.
     // When textures come from MatLayer .mtl files (HardSurface/LayerBlend shaders), they are
     // tileable detail patterns for one layer of CryEngine's multi-layer blending system.
@@ -1728,33 +2001,13 @@ fn build_material(
         None
     };
     let normal_texture = if allow_detail_textures {
-        normal_texture_idx.map(|tex_idx| json::material::NormalTexture {
-                index: json::Index::new(tex_idx), scale: 1.0, tex_coord: 0,
-                extensions: None, extras: Default::default(),
-            })
+        normal_texture_idx.map(|tex_idx| build_normal_texture(tex_idx, normal_transform))
     } else {
         None
     };
 
     let (roughness, metallic) = mtl_sub.map(|m| (m.roughness(), m.metallic())).unwrap_or((0.5, 0.0));
-    let emissive = mtl_sub.map(|m| m.emissive_factor()).unwrap_or([0.0, 0.0, 0.0]);
     let is_glass = mtl_sub.map(|m| m.is_glass()).unwrap_or(false);
-
-    let mat_extensions = if is_glass {
-        Some(json::extensions::material::Material {
-            transmission: Some(json::extensions::material::Transmission {
-                transmission_factor: json::extensions::material::TransmissionFactor(0.95),
-                transmission_texture: None,
-                extras: Default::default(),
-            }),
-            ior: Some(json::extensions::material::Ior {
-                ior: json::extensions::material::IndexOfRefraction(1.5),
-                extras: Default::default(),
-            }),
-        })
-    } else {
-        None
-    };
 
     // Per-pixel roughness creates visible specular noise in glTF PBR, especially on
     // dark surfaces viewed up close. Only enable with --experimental-textures.
@@ -1765,16 +2018,96 @@ fn build_material(
         None
     };
     let roughness_texture = if experimental_textures {
-        roughness_texture_idx.map(|tex_idx| json::texture::Info {
-                index: json::Index::new(tex_idx), tex_coord: 0,
-                extensions: None, extras: Default::default(),
-            })
+        roughness_texture_idx.map(|tex_idx| build_texture_info(tex_idx, roughness_transform))
     } else {
         None
     };
     let roughness_factor = if roughness_texture.is_some() { 1.0 } else { roughness };
 
-    let (mat_extras, extras_json) = {
+    let emissive_texture_idx = submaterial_emissive_idx
+        .get(sub.material_id as usize)
+        .copied()
+        .flatten();
+    let emissive_texture = emissive_texture_idx
+        .map(|tex_idx| build_texture_info(tex_idx, emissive_transform));
+
+    let occlusion_texture_idx = submaterial_occlusion_idx
+        .get(sub.material_id as usize)
+        .copied()
+        .flatten();
+    let occlusion_texture = occlusion_texture_idx
+        .map(|tex_idx| build_occlusion_texture(tex_idx, occlusion_transform));
+
+    let mut emissive = mtl_sub.map(|m| m.emissive_factor()).unwrap_or([0.0, 0.0, 0.0]);
+    if emissive_texture.is_some() && emissive == [0.0, 0.0, 0.0] {
+        emissive = [1.0, 1.0, 1.0];
+    }
+    let emissive_strength = emissive.iter().copied().fold(0.0f32, f32::max);
+    let emissive_strength_ext = (emissive_strength > 1.0).then(|| {
+        json::extensions::material::EmissiveStrength {
+            emissive_strength: json::extensions::material::EmissiveStrengthFactor(emissive_strength),
+        }
+    });
+    if emissive_strength > 1.0 {
+        emissive = [
+            emissive[0] / emissive_strength,
+            emissive[1] / emissive_strength,
+            emissive[2] / emissive_strength,
+        ];
+    }
+
+    let transmission_factor = mtl_sub
+        .and_then(|material| material.public_param_f32(&["Transmission", "GlassTransmission"]))
+        .unwrap_or(if is_glass { 0.96 } else { 0.0 })
+        .clamp(0.0, 1.0);
+    let ior = mtl_sub
+        .and_then(|material| material.public_param_f32(&["IOR", "GlassIOR", "RefractiveIndex"]))
+        .unwrap_or(1.5)
+        .clamp(1.0, 2.5);
+    let thickness_factor = mtl_sub
+        .and_then(|material| material.public_param_f32(&["Thickness", "GlassThickness", "RefractionDepth"]))
+        .unwrap_or(0.02)
+        .max(0.0);
+    let attenuation_distance = mtl_sub
+        .and_then(|material| material.public_param_f32(&["AttenuationDistance", "AbsorptionDistance"]))
+        .unwrap_or(0.25)
+        .max(0.001);
+    let attenuation_color = mtl_sub
+        .and_then(|material| material.public_param_rgb(&["AbsorptionColor", "AttenuationColor", "TintColor"]))
+        .or_else(|| palette.map(|palette| palette.glass))
+        .unwrap_or([1.0, 1.0, 1.0]);
+
+    let mut mat_extensions = json::extensions::material::Material::default();
+    if is_glass {
+        mat_extensions.transmission = Some(json::extensions::material::Transmission {
+            transmission_factor: json::extensions::material::TransmissionFactor(transmission_factor),
+            transmission_texture: None,
+            extras: Default::default(),
+        });
+        mat_extensions.ior = Some(json::extensions::material::Ior {
+            ior: json::extensions::material::IndexOfRefraction(ior),
+            extras: Default::default(),
+        });
+        mat_extensions.volume = Some(json::extensions::material::Volume {
+            thickness_factor: json::extensions::material::ThicknessFactor(thickness_factor),
+            thickness_texture: None,
+            attenuation_distance: json::extensions::material::AttenuationDistance(attenuation_distance),
+            attenuation_color: json::extensions::material::AttenuationColor(attenuation_color),
+            extras: Default::default(),
+        });
+    }
+    mat_extensions.emissive_strength = emissive_strength_ext;
+    let mat_extensions = if mat_extensions.transmission.is_some()
+        || mat_extensions.ior.is_some()
+        || mat_extensions.volume.is_some()
+        || mat_extensions.emissive_strength.is_some()
+    {
+        Some(mat_extensions)
+    } else {
+        None
+    };
+
+    let mat_extras = {
         let mut map = serde_json::Map::new();
         if let Some(m) = mtl_sub {
             if !m.name.is_empty() {
@@ -1852,6 +2185,18 @@ fn build_material(
             semantic.insert("is_hidden".into(), serde_json::json!(m.should_hide()));
             semantic.insert("is_decal".into(), serde_json::json!(m.is_decal()));
             semantic.insert("is_glass".into(), serde_json::json!(m.is_glass()));
+            if !bundled_fallbacks.is_empty() {
+                semantic.insert(
+                    "bundled_fallbacks".into(),
+                    serde_json::Value::Array(
+                        bundled_fallbacks
+                            .iter()
+                            .cloned()
+                            .map(serde_json::Value::String)
+                            .collect(),
+                    ),
+                );
+            }
             semantic.insert(
                 "activation_state".into(),
                 serde_json::json!({
@@ -2005,64 +2350,40 @@ fn build_material(
             map.insert("semantic".into(), serde_json::Value::Object(semantic));
         }
         if map.is_empty() {
-            (None, None)
+            None
         } else {
-            let extras_json = serde_json::to_string(&serde_json::Value::Object(map.clone()))
-                .map_err(|e| log::warn!("failed to serialize material extras key: {e}"))
-                .ok();
-            (map_to_raw_value(map).map(Into::into), extras_json)
+            map_to_raw_value(map).map(Into::into)
         }
     };
 
-    let identity = MaterialIdentity {
-        name: mat_name.clone(),
-        base_color_factor_bits: [
-            base_color_factor[0].to_bits(),
-            base_color_factor[1].to_bits(),
-            base_color_factor[2].to_bits(),
-            base_color_factor[3].to_bits(),
-        ],
-        metallic_factor_bits: metallic.to_bits(),
-        roughness_factor_bits: roughness_factor.to_bits(),
-        emissive_factor_bits: [
-            emissive[0].to_bits(),
-            emissive[1].to_bits(),
-            emissive[2].to_bits(),
-        ],
+    let material = json::Material {
+        pbr_metallic_roughness: json::material::PbrMetallicRoughness {
+            base_color_factor: json::material::PbrBaseColorFactor(base_color_factor),
+            metallic_factor: json::material::StrengthFactor(metallic),
+            roughness_factor: json::material::StrengthFactor(roughness_factor),
+            base_color_texture,
+            metallic_roughness_texture: roughness_texture,
+            extensions: None,
+            extras: Default::default(),
+        },
+        name: mat_name,
+        alpha_cutoff,
+        alpha_mode: Checked::Valid(alpha_mode),
         double_sided,
-        alpha_mode: alpha_mode_key,
-        alpha_cutoff_bits: alpha_cutoff_value.map(f32::to_bits),
-        base_color_texture: base_color_texture_idx,
-        normal_texture: normal_texture_idx,
-        metallic_roughness_texture: roughness_texture_idx,
-        has_glass_extension: is_glass,
-        extras_json,
+        normal_texture,
+        occlusion_texture,
+        emissive_texture,
+        emissive_factor: json::material::EmissiveFactor(emissive),
+        extensions: mat_extensions,
+        extras: mat_extras,
     };
 
-    BuiltMaterial {
-        material: json::Material {
-            pbr_metallic_roughness: json::material::PbrMetallicRoughness {
-                base_color_factor: json::material::PbrBaseColorFactor(base_color_factor),
-                metallic_factor: json::material::StrengthFactor(metallic),
-                roughness_factor: json::material::StrengthFactor(roughness_factor),
-                base_color_texture,
-                metallic_roughness_texture: roughness_texture,
-                extensions: None,
-                extras: Default::default(),
-            },
-            name: mat_name,
-            alpha_cutoff,
-            alpha_mode: Checked::Valid(alpha_mode),
-            double_sided,
-            normal_texture,
-            occlusion_texture: None,
-            emissive_texture: None,
-            emissive_factor: json::material::EmissiveFactor(emissive),
-            extensions: mat_extensions,
-            extras: mat_extras,
-        },
-        identity,
-    }
+    let identity = MaterialIdentity {
+        material_json: serde_json::to_string(&material)
+            .unwrap_or_else(|_| format!("{:?}", material)),
+    };
+
+    BuiltMaterial { material, identity }
 }
 
 // ── Assembled-path helpers ──────────────────────────────────────────────────
