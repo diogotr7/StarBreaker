@@ -96,6 +96,42 @@ fn export_entity_json(
 
 #[test]
 #[ignore = "requires Game2.dcb and Data.p4k; set STARBREAKER_TEST_DCB/STARBREAKER_TEST_P4K when needed"]
+fn representative_decomposed_export_emits_complete_package() {
+    with_integration_context(|db, p4k| {
+        let record = find_entity_by_substring(db, "gladius")
+            .or_else(|| find_entity_by_substring(db, "aurora"))
+            .expect("expected at least one representative ship entity in Datacore");
+        let tree = starbreaker_datacore::loadout::resolve_loadout(db, record);
+        let opts = starbreaker_3d::ExportOptions {
+            kind: starbreaker_3d::ExportKind::Decomposed,
+            material_mode: starbreaker_3d::MaterialMode::All,
+            include_interior: true,
+            include_attachments: true,
+            include_lights: true,
+            lod_level: 0,
+            texture_mip: 0,
+            ..Default::default()
+        };
+
+        let result = starbreaker_3d::assemble_glb_with_loadout(db, p4k, record, &tree, &opts)
+            .expect("representative decomposed export failed");
+        let decomposed = result
+            .decomposed
+            .as_ref()
+            .expect("decomposed export should return a file package");
+
+        let paths: Vec<&str> = decomposed.files.iter().map(|file| file.relative_path.as_str()).collect();
+        assert!(paths.contains(&"scene.json"), "scene manifest missing: {paths:#?}");
+        assert!(paths.contains(&"palettes/palettes.json"), "palette manifest missing: {paths:#?}");
+        assert!(paths.contains(&"liveries/liveries.json"), "livery manifest missing: {paths:#?}");
+        assert!(paths.iter().any(|path| path.starts_with("meshes/")), "mesh assets missing: {paths:#?}");
+        assert!(paths.iter().any(|path| path.starts_with("materials/")), "material sidecars missing: {paths:#?}");
+        assert!(paths.iter().any(|path| path.starts_with("textures/")), "canonical textures missing: {paths:#?}");
+    });
+}
+
+#[test]
+#[ignore = "requires Game2.dcb and Data.p4k; set STARBREAKER_TEST_DCB/STARBREAKER_TEST_P4K when needed"]
 fn assemble_glb_produces_valid_glb() {
     with_integration_context(|db, p4k| {
         // Find an EntityClassDefinition with geometry.
