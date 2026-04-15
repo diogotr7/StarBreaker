@@ -498,7 +498,7 @@ pub fn assemble_glb_with_loadout(
             preloaded_interior_meshes.len()
         );
     }
-    let mut preloaded_interior_textures = if opts.kind == ExportKind::Bundled {
+    let preloaded_interior_textures = if opts.kind == ExportKind::Bundled {
         preload_interior_textures(
             &loaded_interiors,
             &preloaded_interior_meshes,
@@ -544,7 +544,7 @@ pub fn assemble_glb_with_loadout(
                         material_source: material_source.to_ascii_lowercase(),
                         palette_hash: tint_palette_hash(palette),
                     };
-                    if let Some(textures) = preloaded_interior_textures.remove(&cache_key) {
+                    if let Some(textures) = preloaded_interior_textures.get(&cache_key).cloned() {
                         return Some(textures);
                     }
                 }
