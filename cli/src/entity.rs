@@ -8,13 +8,20 @@ use starbreaker_datacore::types::Record;
 use crate::common::{ExportOpts, load_dcb_bytes};
 use crate::error::{CliError, Result};
 
+fn bundled_extension(format: starbreaker_3d::ExportFormat) -> &'static str {
+    match format {
+        starbreaker_3d::ExportFormat::Glb => "glb",
+        starbreaker_3d::ExportFormat::Stl => "stl",
+    }
+}
+
 #[derive(Subcommand)]
 pub enum EntityCommand {
-    /// Export entity to GLB
+    /// Export entity to a bundled file
     Export {
         /// Entity name (substring, case-insensitive)
         name: String,
-        /// Output .glb path
+        /// Output bundled file path
         output: Option<PathBuf>,
         /// Path to Data.p4k
         #[arg(long, env = "SC_DATA_P4K")]
@@ -94,7 +101,9 @@ fn export(
 
     let idx = EntityIndex::new(&db);
     let export_opts = starbreaker_3d::ExportOptions::from(&opts);
-    let output = output.unwrap_or_else(|| PathBuf::from(format!("{name}.glb")));
+    let output = output.unwrap_or_else(|| {
+        PathBuf::from(format!("{name}.{}", bundled_extension(export_opts.format)))
+    });
 
     crate::log_mem_stats("before loadout resolve");
     let tree = resolve_loadout_indexed(&idx, record);
@@ -117,12 +126,18 @@ fn export(
 
     crate::log_mem_stats("before export");
     let result = starbreaker_3d::assemble_glb_with_loadout(&db, &p4k, record, &tree, &export_opts)?;
+    let bundled_bytes = result.bundled_bytes().ok_or_else(|| {
+        CliError::InvalidInput(format!(
+            "entity export returned non-bundled output for {:?}",
+            result.kind,
+        ))
+    })?;
 
     crate::log_mem_stats("after export");
     eprintln!("Geometry: {}", result.geometry_path);
     eprintln!("Material: {}", result.material_path);
-    eprintln!("GLB size: {} bytes", result.glb.len());
-    std::fs::write(&output, &result.glb)
+    eprintln!("Bundled export size: {} bytes", bundled_bytes.len());
+    std::fs::write(&output, bundled_bytes)
         .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
     crate::log_mem_stats("after write");
     eprintln!("Written to {}", output.display());
