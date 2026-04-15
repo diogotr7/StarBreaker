@@ -390,8 +390,8 @@ export function ExportView() {
             <span className="text-xs text-text-sub">Package</span>
             <div className="flex flex-col gap-1">
               {([
-                { value: "bundled", label: "Bundled", tip: "Single-file export for direct viewing in stock tools." },
-                { value: "decomposed", label: "Decomposed", tip: "Reusable mesh assets, canonical textures, and JSON sidecars for Blender reconstruction." },
+                { value: "bundled", label: "Bundled - single .glb", tip: "Single-file export for direct viewing in stock tools." },
+                { value: "decomposed", label: "Structured package", tip: "Reusable mesh assets, canonical textures, and JSON sidecars for Blender reconstruction." },
               ] as const).map((opt) => (
                 <label
                   key={opt.value}
