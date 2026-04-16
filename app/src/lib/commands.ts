@@ -123,6 +123,7 @@ export interface ExportRequest {
   include_lights: boolean;
   threads: number;
   overwrite_existing_assets: boolean;
+  include_nodraw: boolean;
 }
 
 export interface ExportProgress {
