@@ -39,6 +39,7 @@ export function ExportView() {
   const includeInterior = useExportStore((s) => s.includeInterior);
   const includeLights = useExportStore((s) => s.includeLights);
   const overwriteExistingAssets = useExportStore((s) => s.overwriteExistingAssets);
+  const includeNodraw = useExportStore((s) => s.includeNodraw);
   const threads = useExportStore((s) => s.threads);
   const outputDir = useExportStore((s) => s.outputDir);
   const setLod = useExportStore((s) => s.setLod);
@@ -49,6 +50,7 @@ export function ExportView() {
   const setIncludeInterior = useExportStore((s) => s.setIncludeInterior);
   const setIncludeLights = useExportStore((s) => s.setIncludeLights);
   const setOverwriteExistingAssets = useExportStore((s) => s.setOverwriteExistingAssets);
+  const setIncludeNodraw = useExportStore((s) => s.setIncludeNodraw);
   const setThreads = useExportStore((s) => s.setThreads);
   const setOutputDir = useExportStore((s) => s.setOutputDir);
 
@@ -150,6 +152,7 @@ export function ExportView() {
       include_lights: includeLights,
       threads,
       overwrite_existing_assets: overwriteExistingAssets,
+      include_nodraw: includeNodraw,
     };
     setExporting(true);
     setProgress(
@@ -441,7 +444,7 @@ export function ExportView() {
           </div>
 
           {exportKind === "decomposed" && (
-            <div className="flex flex-col gap-1.5">
+            <div className="flex flex-col gap-3">
               <label className="flex items-center gap-2.5 cursor-pointer group">
                 <input
                   type="checkbox"
@@ -455,6 +458,21 @@ export function ExportView() {
               </label>
               <p className="text-[10px] text-text-faint leading-relaxed pl-6">
                 When disabled, existing Data/... .glb and .png assets are left in place.
+              </p>
+
+              <label className="flex items-center gap-2.5 cursor-pointer group">
+                <input
+                  type="checkbox"
+                  checked={includeNodraw}
+                  onChange={(e) => setIncludeNodraw(e.target.checked)}
+                  className="accent-accent w-3.5 h-3.5 rounded"
+                />
+                <span className="text-xs text-text-sub group-hover:text-text transition-colors">
+                  Include NoDraw faces and sidecars
+                </span>
+              </label>
+              <p className="text-[10px] text-text-faint leading-relaxed pl-6">
+                Disabled by default so hidden proxy geometry is excluded from decomposed mesh assets and material sidecars.
               </p>
             </div>
           )}
