@@ -39,6 +39,15 @@ PROP_MISSING_ASSET = "starbreaker_missing_asset"
 
 PACKAGE_ROOT_PREFIX = "StarBreaker"
 TEMPLATE_COLLECTION_NAME = "StarBreaker Template Cache"
+SCENE_AXIS_CONVERSION = Matrix(
+    (
+        (1.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, -1.0, 0.0),
+        (0.0, 1.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 1.0),
+    )
+)
+SCENE_AXIS_CONVERSION_INV = SCENE_AXIS_CONVERSION.inverted()
 
 
 @dataclass(frozen=True)
@@ -156,18 +165,17 @@ class PackageImporter:
         root_anchor, root_nodes = self.instantiate_scene_instance(self.package.scene.root_entity, parent=package_root)
         self.node_index_by_entity_name[self.package.scene.root_entity.entity_name] = self._index_nodes(root_nodes)
         root_anchor.parent = package_root
+        scene_root_parent = self._scene_root_parent(root_nodes) or package_root
 
         for child in self.package.scene.children:
             parent_node = None
             if child.parent_entity_name:
                 parent_node = self.node_index_by_entity_name.get(child.parent_entity_name, {}).get(child.parent_node_name or "")
-            anchor, child_nodes = self.instantiate_scene_instance(child, parent=package_root, parent_node=parent_node)
+            anchor, child_nodes = self.instantiate_scene_instance(child, parent=scene_root_parent, parent_node=parent_node)
             self.node_index_by_entity_name.setdefault(child.entity_name, {}).update(self._index_nodes(child_nodes))
-            if parent_node is None:
-                anchor.parent = package_root
 
         for interior in self.package.scene.interiors:
-            self.import_interior_container(interior, package_root)
+            self.import_interior_container(interior, scene_root_parent)
 
         return package_root
 
@@ -240,13 +248,12 @@ class PackageImporter:
         target_parent = parent_node or parent
         anchor.parent = target_parent
         anchor.rotation_mode = "QUATERNION"
-        if parent_node is not None:
-            anchor.location = record.offset_position
-            desired_rotation = Euler(tuple(math.radians(value) for value in record.offset_rotation), "XYZ").to_quaternion()
-            if record.no_rotation:
-                anchor.rotation_quaternion = parent_node.matrix_world.to_quaternion().inverted() @ desired_rotation
-            else:
-                anchor.rotation_quaternion = desired_rotation
+        anchor.location = _scene_position_to_blender(record.offset_position)
+        desired_rotation = Euler(tuple(math.radians(value) for value in record.offset_rotation), "XYZ").to_quaternion()
+        if parent_node is not None and record.no_rotation:
+            anchor.rotation_quaternion = parent_node.matrix_world.to_quaternion().inverted() @ desired_rotation
+        else:
+            anchor.rotation_quaternion = desired_rotation
 
         try:
             template = self.ensure_template(record.mesh_asset)
@@ -265,10 +272,11 @@ class PackageImporter:
         return anchor, clones
 
     def import_interior_container(self, interior: Any, package_root: bpy.types.Object) -> bpy.types.Object:
-        anchor = bpy.data.objects.new(interior.name, None)
+        anchor_name = interior.name if interior.name.startswith("interior_") else f"interior_{interior.name}"
+        anchor = bpy.data.objects.new(anchor_name, None)
         anchor.empty_display_type = "CUBE"
         anchor.parent = package_root
-        anchor.matrix_local = Matrix(interior.container_transform)
+        anchor.matrix_local = _scene_matrix_to_blender(interior.container_transform)
         self.collection.objects.link(anchor)
 
         for placement in interior.placements:
@@ -283,7 +291,7 @@ class PackageImporter:
             )
             placement_anchor = bpy.data.objects.new(instance.entity_name, None)
             placement_anchor.parent = anchor
-            placement_anchor.matrix_local = Matrix(placement.transform)
+            placement_anchor.matrix_local = _scene_matrix_to_blender(placement.transform)
             self.collection.objects.link(placement_anchor)
 
             try:
@@ -355,7 +363,7 @@ class PackageImporter:
             obj.hide_set(True)
             obj.hide_render = True
             obj[PROP_TEMPLATE_PATH] = mesh_asset
-            obj[PROP_SOURCE_NODE_NAME] = obj.name
+            obj[PROP_SOURCE_NODE_NAME] = _canonical_source_name(obj.name)
 
         self._clear_template_material_bindings(imported)
         self._purge_unused_materials(imported_materials)
@@ -751,8 +759,14 @@ class PackageImporter:
         indexed: dict[str, bpy.types.Object] = {}
         for obj in objects:
             source_name = obj.get(PROP_SOURCE_NODE_NAME, obj.name)
-            indexed[str(source_name)] = obj
+            source_name_str = str(source_name)
+            indexed[source_name_str] = obj
+            indexed[_canonical_source_name(source_name_str)] = obj
         return indexed
+
+    def _scene_root_parent(self, objects: list[bpy.types.Object]) -> bpy.types.Object | None:
+        indexed = self._index_nodes(objects)
+        return indexed.get("CryEngine_Z_up")
 
     def _clear_template_material_bindings(self, objects: list[bpy.types.Object]) -> None:
         seen_meshes: set[int] = set()
@@ -864,9 +878,24 @@ def _submaterial_uses_palette(submaterial: SubmaterialRecord) -> bool:
     return bool(submaterial.palette_routing.layer_channels)
 
 
+def _canonical_source_name(name: str) -> str:
+    if len(name) > 4 and name[-4] == "." and name[-3:].isdigit():
+        return name[:-4]
+    return name
+
+
+def _scene_position_to_blender(position: tuple[float, float, float]) -> tuple[float, float, float]:
+    return (position[0], -position[2], position[1])
+
+
+def _scene_matrix_to_blender(matrix_rows: Any) -> Matrix:
+    matrix = Matrix(matrix_rows).transposed()
+    return SCENE_AXIS_CONVERSION @ matrix @ SCENE_AXIS_CONVERSION_INV
+
+
 def _is_axis_conversion_root(obj: bpy.types.Object) -> bool:
-    source_name = str(obj.get(PROP_SOURCE_NODE_NAME, obj.name) or "")
-    return obj.data is None and source_name.split(".", 1)[0] == "CryEngine_Z_up"
+    source_name = _canonical_source_name(str(obj.get(PROP_SOURCE_NODE_NAME, obj.name) or ""))
+    return obj.data is None and source_name == "CryEngine_Z_up"
 
 
 def _should_neutralize_axis_root(obj: bpy.types.Object, mesh_asset: str) -> bool:
