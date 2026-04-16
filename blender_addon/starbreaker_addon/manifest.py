@@ -203,6 +203,7 @@ class LayerManifestEntry:
 class SubmaterialRecord:
     index: int
     submaterial_name: str
+    blender_material_name: str | None
     shader: str
     shader_family: str
     activation_state: str
@@ -225,6 +226,7 @@ class SubmaterialRecord:
         return cls(
             index=int(data.get("index", 0)),
             submaterial_name=str(data.get("submaterial_name", "")),
+            blender_material_name=_as_str(data.get("blender_material_name")),
             shader=str(data.get("shader", "")),
             shader_family=str(data.get("shader_family", "")),
             activation_state=str(activation.get("state", "active")),
