@@ -31,6 +31,8 @@ PROP_PALETTE_ID = "starbreaker_palette_id"
 PROP_SHADER_FAMILY = "starbreaker_shader_family"
 PROP_TEMPLATE_KEY = "starbreaker_template_key"
 PROP_SUBMATERIAL_JSON = "starbreaker_submaterial_json"
+PROP_MATERIAL_IDENTITY = "starbreaker_material_identity"
+PROP_IMPORTED_SLOT_MAP = "starbreaker_imported_slot_map"
 PROP_TEMPLATE_PATH = "starbreaker_template_path"
 PROP_SOURCE_NODE_NAME = "starbreaker_source_node_name"
 PROP_MISSING_ASSET = "starbreaker_missing_asset"
@@ -181,7 +183,33 @@ class PackageImporter:
         palette = palette_for_id(self.package, palette_id)
         applied = 0
         mesh_materials = getattr(obj.data, "materials", None)
-        for submaterial in sidecar.submaterials:
+        slot_mapping = _slot_mapping_for_object(obj)
+        if slot_mapping is not None:
+            if mesh_materials is not None:
+                while len(mesh_materials) < len(slot_mapping):
+                    mesh_materials.append(None)
+            submaterials_by_index = {submaterial.index: submaterial for submaterial in sidecar.submaterials}
+            for slot_index, mapped_index in enumerate(slot_mapping):
+                submaterial = submaterials_by_index.get(mapped_index if mapped_index is not None else slot_index)
+                if submaterial is None:
+                    print(
+                        f"StarBreaker: missing sidecar submaterial index {mapped_index} for {obj.name}"
+                    )
+                    continue
+                if slot_index >= len(obj.material_slots):
+                    print(
+                        f"StarBreaker: slot index {slot_index} exceeds material slot count for {obj.name}"
+                    )
+                    continue
+                material = self.material_for_submaterial(sidecar_path, sidecar, submaterial, palette)
+                slot = obj.material_slots[slot_index]
+                slot.link = "OBJECT"
+                slot.material = material
+                applied += 1
+            if palette_id is not None:
+                obj[PROP_PALETTE_ID] = palette_id
+            return applied
+        for submaterial in sorted(sidecar.submaterials, key=lambda item: item.index):
             if mesh_materials is not None:
                 while len(mesh_materials) <= submaterial.index:
                     mesh_materials.append(None)
@@ -229,7 +257,7 @@ class PackageImporter:
             self._apply_instance_metadata([anchor], record)
             return anchor, [anchor]
 
-        clones = self.instantiate_template(template, anchor)
+        clones = self.instantiate_template(template, anchor, neutralize_axis_root=parent_node is not None)
         self._apply_instance_metadata([anchor, *clones], record)
 
         for clone in clones:
@@ -267,7 +295,7 @@ class PackageImporter:
                 self._apply_instance_metadata([placement_anchor], instance)
                 continue
 
-            clones = self.instantiate_template(template, placement_anchor)
+            clones = self.instantiate_template(template, placement_anchor, neutralize_axis_root=True)
             self._apply_instance_metadata([placement_anchor, *clones], instance)
             for clone in clones:
                 self.rebuild_object_materials(clone, instance.palette_id)
@@ -336,16 +364,28 @@ class PackageImporter:
         self.template_cache[mesh_asset] = template
         return template
 
-    def instantiate_template(self, template: ImportedTemplate, anchor: bpy.types.Object) -> list[bpy.types.Object]:
+    def instantiate_template(
+        self,
+        template: ImportedTemplate,
+        anchor: bpy.types.Object,
+        neutralize_axis_root: bool = False,
+    ) -> list[bpy.types.Object]:
         clones: list[bpy.types.Object] = []
         mapping: dict[str, bpy.types.Object] = {}
+        needs_view_layer_update = False
         for root_name in template.root_names:
             source = bpy.data.objects.get(root_name)
             if source is None:
                 continue
+            neutralize_root = neutralize_axis_root and _should_neutralize_axis_root(source, template.mesh_asset)
             clone = self._duplicate_object_tree(source, template.mesh_asset, mapping)
             clone.parent = anchor
+            if neutralize_root:
+                clone.matrix_local = Matrix.Identity(4)
+                needs_view_layer_update = True
             clones.append(clone)
+        if needs_view_layer_update:
+            self.context.view_layer.update()
         return list(mapping.values()) or clones
 
     def _duplicate_object_tree(
@@ -382,12 +422,12 @@ class PackageImporter:
         palette: PaletteRecord | None,
     ) -> bpy.types.Material:
         palette_key = palette.id if palette is not None else "none"
-        cache_key = _material_identity(sidecar, submaterial, palette_key)
+        cache_key = _material_identity(sidecar_path, sidecar, submaterial, palette_key)
         cached = self.material_cache.get(cache_key)
         if cached is not None:
             return cached
 
-        material_name = _material_name(cache_key, submaterial.submaterial_name, palette_key)
+        material_name = _material_name(sidecar_path, sidecar, submaterial, cache_key)
         material = bpy.data.materials.new(material_name)
         material.use_nodes = True
         plan = template_plan_for_submaterial(submaterial)
@@ -405,6 +445,7 @@ class PackageImporter:
         material[PROP_TEMPLATE_KEY] = plan.template_key
         material[PROP_PALETTE_ID] = palette_key
         material[PROP_MATERIAL_SIDECAR] = sidecar_path
+        material[PROP_MATERIAL_IDENTITY] = cache_key
         material[PROP_SUBMATERIAL_JSON] = json.dumps(submaterial.raw, sort_keys=True)
 
         self.material_cache[cache_key] = material
@@ -725,6 +766,9 @@ class PackageImporter:
             materials = getattr(obj.data, "materials", None)
             if materials is None:
                 continue
+            slot_mapping = _imported_slot_mapping_from_materials(materials)
+            if slot_mapping is not None:
+                obj.data[PROP_IMPORTED_SLOT_MAP] = json.dumps(slot_mapping)
             for index in range(len(materials)):
                 materials[index] = None
 
@@ -769,19 +813,143 @@ def _string_prop(obj: bpy.types.ID, name: str) -> str | None:
     return None
 
 
-def _material_identity(sidecar: MaterialSidecar, submaterial: SubmaterialRecord, palette_key: str) -> str:
+def _material_identity(
+    sidecar_path: str,
+    sidecar: MaterialSidecar,
+    submaterial: SubmaterialRecord,
+    palette_key: str,
+) -> str:
     payload = {
-        "palette": palette_key,
-        "source_material_path": sidecar.source_material_path,
+        "material_sidecar": sidecar.normalized_export_relative_path or sidecar_path,
         "submaterial": submaterial.raw,
     }
+    if _submaterial_uses_palette(submaterial):
+        payload["palette"] = palette_key
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.blake2s(encoded, digest_size=16).hexdigest()
 
 
-def _material_name(material_identity: str, submaterial_name: str, palette_key: str) -> str:
-    safe_palette = palette_key.replace("/", "_")
-    return f"SB::{submaterial_name}::{safe_palette}::{material_identity[:10]}"
+def _material_name(
+    sidecar_path: str,
+    sidecar: MaterialSidecar,
+    submaterial: SubmaterialRecord,
+    material_identity: str,
+) -> str:
+    preferred_name = submaterial.blender_material_name or _derived_material_name(sidecar_path, sidecar, submaterial)
+    existing = bpy.data.materials.get(preferred_name)
+    if existing is None:
+        return preferred_name
+
+    existing_identity = existing.get(PROP_MATERIAL_IDENTITY)
+    if isinstance(existing_identity, str) and existing_identity == material_identity:
+        return preferred_name
+    return f"{preferred_name}#{material_identity[:8]}"
+
+
+def _derived_material_name(sidecar_path: str, sidecar: MaterialSidecar, submaterial: SubmaterialRecord) -> str:
+    normalized_path = sidecar.normalized_export_relative_path or sidecar_path or sidecar.source_material_path or "material"
+    sidecar_name = Path(normalized_path).name
+    if sidecar_name.endswith(".materials.json"):
+        sidecar_name = sidecar_name[: -len(".materials.json")]
+    elif sidecar_name.endswith(".json"):
+        sidecar_name = sidecar_name[: -len(".json")]
+
+    submaterial_name = submaterial.submaterial_name or f"slot_{submaterial.index}"
+    return f"{sidecar_name}:{submaterial_name}"
+
+
+def _submaterial_uses_palette(submaterial: SubmaterialRecord) -> bool:
+    if submaterial.palette_routing.material_channel is not None:
+        return True
+    return bool(submaterial.palette_routing.layer_channels)
+
+
+def _is_axis_conversion_root(obj: bpy.types.Object) -> bool:
+    source_name = str(obj.get(PROP_SOURCE_NODE_NAME, obj.name) or "")
+    return obj.data is None and source_name.split(".", 1)[0] == "CryEngine_Z_up"
+
+
+def _should_neutralize_axis_root(obj: bpy.types.Object, mesh_asset: str) -> bool:
+    return _is_axis_conversion_root(obj) and _has_non_identity_descendants(obj, mesh_asset)
+
+
+def _has_non_identity_descendants(root: bpy.types.Object, mesh_asset: str) -> bool:
+    stack = list(root.children)
+    while stack:
+        current = stack.pop()
+        if current.get(PROP_TEMPLATE_PATH) != mesh_asset:
+            continue
+        if not _matrix_is_identityish(current.matrix_local):
+            return True
+        stack.extend(current.children)
+    return False
+
+
+def _matrix_is_identityish(matrix: Matrix, epsilon: float = 1e-4) -> bool:
+    identity = Matrix.Identity(4)
+    for row_index in range(4):
+        for column_index in range(4):
+            if abs(matrix[row_index][column_index] - identity[row_index][column_index]) > epsilon:
+                return False
+    return True
+
+
+def _slot_mapping_for_object(obj: bpy.types.Object) -> list[int | None] | None:
+    data = getattr(obj, "data", None)
+    if data is None:
+        return None
+    mapping_raw = data.get(PROP_IMPORTED_SLOT_MAP)
+    if not isinstance(mapping_raw, str) or not mapping_raw:
+        return None
+    try:
+        parsed = json.loads(mapping_raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    mapping: list[int | None] = []
+    for value in parsed:
+        if value is None:
+            mapping.append(None)
+            continue
+        try:
+            mapping.append(int(value))
+        except (TypeError, ValueError):
+            mapping.append(None)
+    return mapping
+
+
+def _imported_slot_mapping_from_materials(materials: Any) -> list[int | None] | None:
+    mapping: list[int | None] = []
+    has_explicit_mapping = False
+    for material in materials:
+        submaterial_index = _imported_submaterial_index(material)
+        if submaterial_index is not None:
+            has_explicit_mapping = True
+        mapping.append(submaterial_index)
+    if not has_explicit_mapping:
+        return None
+    return mapping
+
+
+def _imported_submaterial_index(material: bpy.types.Material | None) -> int | None:
+    if material is None:
+        return None
+    semantic = material.get("semantic")
+    if hasattr(semantic, "to_dict"):
+        semantic = semantic.to_dict()
+    if not isinstance(semantic, dict):
+        return None
+    material_set_identity = semantic.get("material_set_identity")
+    if hasattr(material_set_identity, "to_dict"):
+        material_set_identity = material_set_identity.to_dict()
+    if not isinstance(material_set_identity, dict):
+        return None
+    submaterial_index = material_set_identity.get("submaterial_index")
+    try:
+        return int(submaterial_index)
+    except (TypeError, ValueError):
+        return None
 
 
 def _input_socket(node: Any, *names: str) -> Any:
