@@ -38,6 +38,7 @@ export function ExportView() {
   const includeAttachments = useExportStore((s) => s.includeAttachments);
   const includeInterior = useExportStore((s) => s.includeInterior);
   const includeLights = useExportStore((s) => s.includeLights);
+  const overwriteExistingAssets = useExportStore((s) => s.overwriteExistingAssets);
   const threads = useExportStore((s) => s.threads);
   const outputDir = useExportStore((s) => s.outputDir);
   const setLod = useExportStore((s) => s.setLod);
@@ -47,13 +48,16 @@ export function ExportView() {
   const setIncludeAttachments = useExportStore((s) => s.setIncludeAttachments);
   const setIncludeInterior = useExportStore((s) => s.setIncludeInterior);
   const setIncludeLights = useExportStore((s) => s.setIncludeLights);
+  const setOverwriteExistingAssets = useExportStore((s) => s.setOverwriteExistingAssets);
   const setThreads = useExportStore((s) => s.setThreads);
   const setOutputDir = useExportStore((s) => s.setOutputDir);
 
   const exporting = useExportStore((s) => s.exporting);
+  const progressFraction = useExportStore((s) => s.progressFraction);
   const progress = useExportStore((s) => s.progress);
   const progressTotal = useExportStore((s) => s.progressTotal);
   const progressLabel = useExportStore((s) => s.progressLabel);
+  const progressStage = useExportStore((s) => s.progressStage);
   const exportErrors = useExportStore((s) => s.exportErrors);
   const result = useExportStore((s) => s.result);
   const setExporting = useExportStore((s) => s.setExporting);
@@ -80,7 +84,7 @@ export function ExportView() {
 
     onExportProgress((p) => {
       if (!cancelled) {
-        setProgress(p.current, p.total, p.entity_name);
+        setProgress(p.fraction, p.current, p.total, p.entity_name, p.stage);
         if (p.error) {
           addExportError(p.error);
         }
@@ -127,7 +131,7 @@ export function ExportView() {
 
   const canExport = totalSelected > 0 && outputDir !== null && !exporting;
 
-  const progressFraction = progressTotal > 0 ? progress / progressTotal : 0;
+  const progressPercent = Math.round(progressFraction * 100);
 
   const handleExport = () => {
     const allEntities = categories.flatMap((c) => c.entities);
@@ -145,8 +149,18 @@ export function ExportView() {
       include_interior: includeInterior,
       include_lights: includeLights,
       threads,
+      overwrite_existing_assets: overwriteExistingAssets,
     };
     setExporting(true);
+    setProgress(
+      0,
+      0,
+      selectedEntities.length,
+      selectedEntities.length === 1
+        ? (selectedEntities[0].display_name ?? selectedEntities[0].name)
+        : "Batch export",
+      "Preparing export",
+    );
     startExport(request).catch((err) => {
       console.error("Export failed:", err);
       addExportError(String(err));
@@ -181,13 +195,25 @@ export function ExportView() {
                   style={{ width: `${progressFraction * 100}%` }}
                 />
               </div>
-              <div className="flex items-center justify-between">
-                <p className="text-[11px] text-text-dim truncate flex-1">
-                  {progressLabel}
-                </p>
-                <span className="text-[11px] text-text-faint tabular-nums ml-2 shrink-0">
-                  {progress}/{progressTotal}
-                </span>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] text-text-dim truncate">
+                    {progressLabel || "Preparing export..."}
+                  </p>
+                  {progressStage && (
+                    <p className="text-[10px] text-text-faint truncate mt-0.5">
+                      {progressStage}
+                    </p>
+                  )}
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="text-[11px] text-text tabular-nums">
+                    {progressPercent}%
+                  </p>
+                  <p className="text-[10px] text-text-faint tabular-nums mt-0.5">
+                    {progress}/{progressTotal}
+                  </p>
+                </div>
               </div>
             </div>
 
@@ -413,6 +439,25 @@ export function ExportView() {
               ))}
             </div>
           </div>
+
+          {exportKind === "decomposed" && (
+            <div className="flex flex-col gap-1.5">
+              <label className="flex items-center gap-2.5 cursor-pointer group">
+                <input
+                  type="checkbox"
+                  checked={overwriteExistingAssets}
+                  onChange={(e) => setOverwriteExistingAssets(e.target.checked)}
+                  className="accent-accent w-3.5 h-3.5 rounded"
+                />
+                <span className="text-xs text-text-sub group-hover:text-text transition-colors">
+                  Overwrite existing meshes and textures
+                </span>
+              </label>
+              <p className="text-[10px] text-text-faint leading-relaxed pl-6">
+                When disabled, existing Data/... .glb and .png assets are left in place.
+              </p>
+            </div>
+          )}
 
           {/* Material Mode */}
           <div className="flex flex-col gap-1.5">
