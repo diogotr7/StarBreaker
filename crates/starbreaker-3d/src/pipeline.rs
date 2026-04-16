@@ -1,5 +1,7 @@
+use std::collections::HashSet;
 use std::str::FromStr;
 
+use starbreaker_common::progress::{report as report_progress, Progress};
 use starbreaker_datacore::database::Database;
 use starbreaker_datacore::error::QueryError;
 use starbreaker_datacore::types::Record;
@@ -136,10 +138,25 @@ pub struct DecomposedExport {
     pub files: Vec<ExportedFile>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportedFileKind {
+    PackageManifest,
+    MaterialSidecar,
+    MeshAsset,
+    TextureAsset,
+}
+
+impl ExportedFileKind {
+    pub fn is_mesh_or_texture_asset(self) -> bool {
+        matches!(self, Self::MeshAsset | Self::TextureAsset)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ExportedFile {
     pub relative_path: String,
     pub bytes: Vec<u8>,
+    pub kind: ExportedFileKind,
 }
 
 /// Result of exporting an entity record.
@@ -366,12 +383,25 @@ pub fn assemble_glb_with_loadout(
     tree: &starbreaker_datacore::loadout::LoadoutTree,
     opts: &ExportOptions,
 ) -> Result<ExportResult, Error> {
+    assemble_glb_with_loadout_with_progress(db, p4k, record, tree, opts, None, None)
+}
+
+pub fn assemble_glb_with_loadout_with_progress(
+    db: &Database,
+    p4k: &MappedP4k,
+    record: &Record,
+    tree: &starbreaker_datacore::loadout::LoadoutTree,
+    opts: &ExportOptions,
+    progress: Option<&Progress>,
+    existing_asset_paths: Option<&HashSet<String>>,
+) -> Result<ExportResult, Error> {
     ensure_supported_export_options(opts)?;
 
     use crate::types::EntityPayload;
 
+    report_progress(progress, 0.02, "Resolving loadout");
     let payload_material_mode = if opts.kind == ExportKind::Decomposed {
-        MaterialMode::All
+        MaterialMode::Colors
     } else {
         opts.material_mode
     };
@@ -383,6 +413,7 @@ pub fn assemble_glb_with_loadout(
     log::info!("[mem-pipeline] resolving loadout meshes...");
     let resolved = resolve_loadout_meshes(db, p4k, record, tree, &payload_opts)?;
     log::info!("[mem-pipeline] resolved: {} children", resolved.children.len());
+    report_progress(progress, 0.14, "Exporting root mesh");
 
     // Export root entity (mesh + textures).
     let (root_mesh, root_mtl, root_tex, _, root_palette, geometry_path, material_path, root_bones) =
@@ -398,6 +429,11 @@ pub fn assemble_glb_with_loadout(
     // Landing gear CDF geometry attaches to NMC helper bones (e.g. hardpoint_landing_gear_front).
     // Adding them as EntityPayloads lets the existing scene graph handle positioning.
     // Children skip textures to save memory, but never exceed the user's material mode.
+    let child_payload_material_mode = if opts.kind == ExportKind::Decomposed {
+        MaterialMode::Colors
+    } else {
+        opts.material_mode
+    };
     let child_material_mode = match opts.material_mode {
         _ if opts.kind == ExportKind::Decomposed => MaterialMode::Colors,
         MaterialMode::None => MaterialMode::None,
@@ -409,12 +445,13 @@ pub fn assemble_glb_with_loadout(
     };
     let gear_parts = query_landing_gear(db, record);
     let mut child_payloads: Vec<EntityPayload> = Vec::new();
+    report_progress(progress, 0.28, "Flattening attachments");
     if opts.include_attachments {
         for (gear_path, bone_name) in &gear_parts {
             match export_entity_from_paths(p4k, gear_path, "", &child_opts) {
                 Ok((gear_mesh, gear_mtl, _, gear_nmc, _, gear_geometry_path, gear_material_path, _)) => {
                     let verts = gear_mesh.positions.len();
-                    let textures = if opts.material_mode.include_textures() {
+                    let textures = if child_payload_material_mode.include_textures() {
                         gear_mtl.as_ref().map(|materials| {
                             let mut png_cache = PngCache::new();
                             load_material_textures(
@@ -423,8 +460,8 @@ pub fn assemble_glb_with_loadout(
                                 root_palette.as_ref(),
                                 opts.texture_mip,
                                 &mut png_cache,
-                                opts.material_mode.include_normals(),
-                                opts.material_mode.experimental(),
+                                child_payload_material_mode.include_normals(),
+                                child_payload_material_mode.experimental(),
                             )
                         })
                     } else {
@@ -458,12 +495,14 @@ pub fn assemble_glb_with_loadout(
             db,
             p4k,
             &child_opts,
-            opts.material_mode,
+            child_payload_material_mode,
+            existing_asset_paths,
             &mut child_payloads,
         );
     }
     let total_child_verts: usize = child_payloads.iter().map(|c| c.mesh.positions.len()).sum();
     log::info!("[mem-pipeline] flattened: {} payloads, {} total verts", child_payloads.len(), total_child_verts);
+    report_progress(progress, 0.42, "Discovering interiors");
 
     // Interior discovery (no mesh loading — JIT during GLB packing).
     let loaded_interiors = if opts.include_interior && !opts.format.is_stl() {
@@ -515,6 +554,11 @@ pub fn assemble_glb_with_loadout(
             preloaded_interior_textures.len()
         );
     }
+    report_progress(progress, 0.60, if opts.kind == ExportKind::Decomposed {
+        "Building structured package"
+    } else {
+        "Packing GLB"
+    });
     let preloaded_interior_mesh_indices: std::collections::HashMap<String, usize> =
         loaded_interiors
             .unique_cgfs
@@ -581,6 +625,7 @@ pub fn assemble_glb_with_loadout(
         };
 
     if opts.kind == ExportKind::Decomposed {
+        let decomposed_progress = progress.map(|progress| progress.sub(0.60, 0.90));
         let decomposed = crate::decomposed::write_decomposed_export(
             p4k,
             crate::decomposed::DecomposedInput {
@@ -596,8 +641,12 @@ pub fn assemble_glb_with_loadout(
                 interiors: loaded_interiors,
             },
             opts,
+            decomposed_progress.as_ref(),
+            existing_asset_paths,
             &mut interior_mesh_loader,
         )?;
+
+        report_progress(progress, 0.90, "Writing structured package");
 
         return Ok(ExportResult {
             kind: opts.kind,
@@ -609,7 +658,8 @@ pub fn assemble_glb_with_loadout(
         });
     }
 
-    let glb = crate::gltf::write_glb(
+    let glb_progress = progress.map(|progress| progress.sub(0.60, 0.90));
+    let glb = crate::gltf::write_glb_with_progress(
         crate::gltf::GlbInput {
             root_mesh: Some(root_mesh),
             root_materials: root_mtl,
@@ -642,7 +692,10 @@ pub fn assemble_glb_with_loadout(
             },
             fallback_palette: root_palette,
         },
+        glb_progress.as_ref(),
     )?;
+
+    report_progress(progress, 0.90, "Writing bundled file");
 
     Ok(ExportResult {
         kind: opts.kind,
@@ -763,6 +816,28 @@ fn empty_child_mesh() -> crate::types::Mesh {
     }
 }
 
+fn normalize_decomposed_source_path(p4k: &MappedP4k, path: &str) -> String {
+    let p4k_path = datacore_path_to_p4k(path);
+    p4k.entry_case_insensitive(&p4k_path)
+        .map(|entry| entry.name.replace('\\', "/"))
+        .unwrap_or_else(|| p4k_path.replace('\\', "/"))
+}
+
+fn replace_extension(path: &str, new_extension: &str) -> String {
+    let Some((stem, _)) = path.rsplit_once('.') else {
+        return format!("{path}{new_extension}");
+    };
+    stem.to_string() + new_extension
+}
+
+fn decomposed_mesh_asset_path(p4k: &MappedP4k, geometry_path: &str) -> Option<String> {
+    if geometry_path.is_empty() {
+        None
+    } else {
+        Some(replace_extension(&normalize_decomposed_source_path(p4k, geometry_path), ".glb"))
+    }
+}
+
 fn build_child_payload_cache_key(child: &crate::types::ResolvedNode) -> ChildPayloadCacheKey {
     ChildPayloadCacheKey {
         record_id: child.record.id,
@@ -777,7 +852,31 @@ fn load_child_payload_asset(
     p4k: &MappedP4k,
     mesh_opts: &ExportOptions,
     final_material_mode: MaterialMode,
+    existing_asset_paths: Option<&HashSet<String>>,
 ) -> Option<LoadedChildPayload> {
+    if mesh_opts.kind == ExportKind::Decomposed {
+        if let Some(geometry_path) = child.geometry_path.as_deref() {
+            if let Some(mesh_asset_path) = decomposed_mesh_asset_path(p4k, geometry_path) {
+                if existing_asset_paths
+                    .is_some_and(|paths| paths.contains(&mesh_asset_path.to_ascii_lowercase()))
+                {
+                    let material_path = child.material_path.as_deref().unwrap_or("");
+                    let (_, materials) = load_nmc_and_material(p4k, geometry_path, material_path);
+                    return Some(LoadedChildPayload {
+                        mesh: empty_child_mesh(),
+                        materials,
+                        textures: None,
+                        nmc: None,
+                        palette: None,
+                        bones: Vec::new(),
+                        geometry_path: geometry_path.to_string(),
+                        material_path: material_path.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
     let (mesh, mtl, nmc, palette, bones, geometry_path, material_path) =
         load_child_mesh(child, db, p4k, mesh_opts)?;
     let textures = if final_material_mode.include_textures() {
@@ -815,6 +914,7 @@ fn load_child_payloads(
     p4k: &MappedP4k,
     mesh_opts: &ExportOptions,
     final_material_mode: MaterialMode,
+    existing_asset_paths: Option<&HashSet<String>>,
 ) -> Vec<crate::types::EntityPayload> {
     use rayon::prelude::*;
 
@@ -843,7 +943,16 @@ fn load_child_payloads(
 
     let loaded_assets: Vec<Option<LoadedChildPayload>> = unique_children
         .into_par_iter()
-        .map(|child| load_child_payload_asset(&child, db, p4k, mesh_opts, final_material_mode))
+        .map(|child| {
+            load_child_payload_asset(
+                &child,
+                db,
+                p4k,
+                mesh_opts,
+                final_material_mode,
+                existing_asset_paths,
+            )
+        })
         .collect();
 
     specs
@@ -906,11 +1015,19 @@ fn flatten_resolved_tree(
     p4k: &MappedP4k,
     mesh_opts: &ExportOptions,
     final_material_mode: MaterialMode,
+    existing_asset_paths: Option<&HashSet<String>>,
     out: &mut Vec<crate::types::EntityPayload>,
 ) {
     let mut specs = Vec::new();
     collect_child_payload_specs(children, parent_entity_name, override_attachment, &mut specs);
-    out.extend(load_child_payloads(specs, db, p4k, mesh_opts, final_material_mode));
+    out.extend(load_child_payloads(
+        specs,
+        db,
+        p4k,
+        mesh_opts,
+        final_material_mode,
+        existing_asset_paths,
+    ));
 }
 
 // ── Shared loadout resolution ────────────────────────────────────────────────
