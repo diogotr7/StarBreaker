@@ -1,6 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
+use starbreaker_common::progress::{report as report_progress, Progress};
 use starbreaker_p4k::MappedP4k;
 
 use crate::error::Error;
@@ -8,7 +9,8 @@ use crate::gltf::{GlbInput, GlbLoaders, GlbMetadata, GlbOptions};
 use crate::mtl::{MtlFile, SemanticTextureBinding, SubMaterial, TextureSemanticRole, TintPalette};
 use crate::nmc::NodeMeshCombo;
 use crate::pipeline::{
-    DecomposedExport, ExportOptions, ExportedFile, InteriorCgfEntry, LoadedInteriors, MaterialMode,
+    DecomposedExport, ExportOptions, ExportedFile, ExportedFileKind, InteriorCgfEntry,
+    LoadedInteriors, MaterialMode,
     PngCache,
 };
 use crate::skeleton::Bone;
@@ -147,6 +149,8 @@ pub(crate) fn write_decomposed_export(
     p4k: &MappedP4k,
     input: DecomposedInput,
     opts: &ExportOptions,
+    progress: Option<&Progress>,
+    existing_asset_paths: Option<&HashSet<String>>,
     load_interior_mesh: &mut dyn FnMut(
         &InteriorCgfEntry,
     ) -> Option<(Mesh, Option<MtlFile>, Option<NodeMeshCombo>)>,
@@ -160,6 +164,7 @@ pub(crate) fn write_decomposed_export(
     let scene_manifest_path = package_relative_path(&package_name, "scene.json");
     let palettes_manifest_path = package_relative_path(&package_name, "palettes.json");
     let liveries_manifest_path = package_relative_path(&package_name, "liveries.json");
+    report_progress(progress, 0.05, "Writing root assets");
 
     let root_mesh_asset = write_mesh_asset(
         &mut files,
@@ -169,6 +174,7 @@ pub(crate) fn write_decomposed_export(
         &input.root_mesh,
         input.root_nmc.as_ref(),
         &input.root_bones,
+        existing_asset_paths,
     )?;
     let root_material_sidecar = input.root_materials.as_ref().map(|materials| {
         write_material_sidecar(
@@ -182,6 +188,7 @@ pub(crate) fn write_decomposed_export(
             &input.material_path,
             materials,
             opts.texture_mip,
+            existing_asset_paths,
         )
     });
     let root_palette_id = input
@@ -195,9 +202,11 @@ pub(crate) fn write_decomposed_export(
         &input.entity_name,
         root_material_sidecar.as_deref(),
     );
+    report_progress(progress, 0.15, "Writing child assets");
 
     let mut child_instances = Vec::with_capacity(input.children.len());
-    for child in &input.children {
+    let child_count = input.children.len();
+    for (index, child) in input.children.iter().enumerate() {
         let mesh_asset = write_mesh_asset(
             &mut files,
             p4k,
@@ -206,6 +215,7 @@ pub(crate) fn write_decomposed_export(
             &child.mesh,
             child.nmc.as_ref(),
             &child.bones,
+            existing_asset_paths,
         )?;
         let material_sidecar = child.materials.as_ref().map(|materials| {
             write_material_sidecar(
@@ -219,6 +229,7 @@ pub(crate) fn write_decomposed_export(
                 &child.material_path,
                 materials,
                 opts.texture_mip,
+                existing_asset_paths,
             )
         });
         let palette_id = child
@@ -246,11 +257,20 @@ pub(crate) fn write_decomposed_export(
             offset_position: child.offset_position,
             offset_rotation: child.offset_rotation,
         });
+
+        if child_count > 0 {
+            let fraction = (index + 1) as f32 / child_count as f32;
+            report_progress(progress, 0.15 + 0.40 * fraction, "Writing child assets");
+        }
+    }
+    if child_count == 0 {
+        report_progress(progress, 0.55, "Writing interior assets");
     }
 
     let mut interior_asset_cache: HashMap<String, (String, Option<String>)> = HashMap::new();
     let mut interior_records = Vec::with_capacity(input.interiors.containers.len());
-    for container in &input.interiors.containers {
+    let container_count = input.interiors.containers.len();
+    for (index, container) in input.interiors.containers.iter().enumerate() {
         let palette_id = container
             .palette
             .as_ref()
@@ -278,6 +298,7 @@ pub(crate) fn write_decomposed_export(
                     &mesh,
                     nmc.as_ref(),
                     &[],
+                    existing_asset_paths,
                 )?;
                 let material_sidecar = materials.as_ref().map(|materials| {
                     write_material_sidecar(
@@ -291,6 +312,7 @@ pub(crate) fn write_decomposed_export(
                         entry.material_path.as_deref().unwrap_or(""),
                         materials,
                         opts.texture_mip,
+                        existing_asset_paths,
                     )
                 });
                 interior_asset_cache.insert(cache_key, (mesh_asset.clone(), material_sidecar.clone()));
@@ -340,6 +362,14 @@ pub(crate) fn write_decomposed_export(
                 })
                 .collect(),
         });
+
+        if container_count > 0 {
+            let fraction = (index + 1) as f32 / container_count as f32;
+            report_progress(progress, 0.55 + 0.30 * fraction, "Writing interior assets");
+        }
+    }
+    if container_count == 0 {
+        report_progress(progress, 0.85, "Writing manifests");
     }
 
     let scene_manifest = build_scene_manifest_value(
@@ -354,6 +384,7 @@ pub(crate) fn write_decomposed_export(
         &interior_records,
         opts,
     );
+    report_progress(progress, 0.95, "Writing manifests");
     insert_json_file(&mut files, scene_manifest_path, scene_manifest);
     insert_json_file(
         &mut files,
@@ -369,9 +400,25 @@ pub(crate) fn write_decomposed_export(
     Ok(DecomposedExport {
         files: files
             .into_iter()
-            .map(|(relative_path, bytes)| ExportedFile { relative_path, bytes })
+            .map(|(relative_path, bytes)| ExportedFile {
+                kind: classify_exported_file_kind(&relative_path),
+                relative_path,
+                bytes,
+            })
             .collect(),
     })
+}
+
+fn classify_exported_file_kind(relative_path: &str) -> ExportedFileKind {
+    if relative_path.ends_with(".materials.json") {
+        ExportedFileKind::MaterialSidecar
+    } else if relative_path.ends_with(".glb") {
+        ExportedFileKind::MeshAsset
+    } else if relative_path.ends_with(".png") {
+        ExportedFileKind::TextureAsset
+    } else {
+        ExportedFileKind::PackageManifest
+    }
 }
 
 fn build_scene_manifest_value(
@@ -493,6 +540,7 @@ fn write_mesh_asset(
     mesh: &Mesh,
     nmc: Option<&NodeMeshCombo>,
     bones: &[Bone],
+    existing_asset_paths: Option<&HashSet<String>>,
 ) -> Result<String, Error> {
     fn no_textures(
         _: Option<&crate::mtl::MtlFile>,
@@ -510,6 +558,11 @@ fn write_mesh_asset(
     let mut no_textures_fn = no_textures;
     let mut no_interiors_fn = no_interiors;
     let requested_path = mesh_asset_relative_path(p4k, geometry_path, fallback_name);
+    if existing_asset_paths
+        .is_some_and(|paths| paths.contains(&requested_path.to_ascii_lowercase()))
+    {
+        return Ok(requested_path);
+    }
     let glb = crate::gltf::write_glb(
         GlbInput {
             root_mesh: Some(mesh.clone()),
@@ -558,6 +611,7 @@ fn write_material_sidecar(
     material_path: &str,
     materials: &MtlFile,
     texture_mip: u32,
+    existing_asset_paths: Option<&HashSet<String>>,
 ) -> String {
     let normalized_geometry_path = normalize_source_path(p4k, geometry_path);
     let source_material_path = material_source_path(p4k, materials, material_path, geometry_path);
@@ -573,6 +627,7 @@ fn write_material_sidecar(
                 texture_cache,
                 material,
                 texture_mip,
+                existing_asset_paths,
             )
         })
         .collect::<Vec<_>>();
@@ -594,11 +649,22 @@ fn extract_material_entry(
     texture_cache: &mut HashMap<(String, TextureFlavor), String>,
     material: &SubMaterial,
     texture_mip: u32,
+    existing_asset_paths: Option<&HashSet<String>>,
 ) -> ExtractedMaterialEntry {
     let semantic_slots = material.semantic_texture_slots();
     let slot_exports = semantic_slots
         .iter()
-        .map(|binding| build_slot_export_value(files, p4k, png_cache, texture_cache, binding, texture_mip))
+        .map(|binding| {
+            build_slot_export_value(
+                files,
+                p4k,
+                png_cache,
+                texture_cache,
+                binding,
+                texture_mip,
+                existing_asset_paths,
+            )
+        })
         .collect::<Vec<_>>();
 
     let mut direct_texture_exports = Vec::new();
@@ -611,6 +677,7 @@ fn extract_material_entry(
             path,
             TextureFlavor::Generic,
             texture_mip,
+            existing_asset_paths,
         ) {
             direct_texture_exports.push(TextureExportRef {
                 role: "diffuse".to_string(),
@@ -629,6 +696,7 @@ fn extract_material_entry(
             path,
             TextureFlavor::Normal,
             texture_mip,
+            existing_asset_paths,
         ) {
             direct_texture_exports.push(TextureExportRef {
                 role: "normal_gloss".to_string(),
@@ -650,6 +718,7 @@ fn extract_material_entry(
                 path,
                 TextureFlavor::Roughness,
                 texture_mip,
+                existing_asset_paths,
             ) {
                 derived_texture_exports.push(TextureExportRef {
                     role: "roughness".to_string(),
@@ -679,6 +748,7 @@ fn extract_material_entry(
                         path,
                         TextureFlavor::Generic,
                         texture_mip,
+                        existing_asset_paths,
                     )
                 });
             let normal_path = layer_sub.and_then(|sub| sub.normal_tex.as_deref());
@@ -691,6 +761,7 @@ fn extract_material_entry(
                     path,
                     TextureFlavor::Normal,
                     texture_mip,
+                    existing_asset_paths,
                 )
             });
             let roughness_export_path = normal_path
@@ -704,6 +775,7 @@ fn extract_material_entry(
                         path,
                         TextureFlavor::Roughness,
                         texture_mip,
+                        existing_asset_paths,
                     )
                 });
 
@@ -842,6 +914,7 @@ fn build_slot_export_value(
     texture_cache: &mut HashMap<(String, TextureFlavor), String>,
     binding: &SemanticTextureBinding,
     texture_mip: u32,
+    existing_asset_paths: Option<&HashSet<String>>,
 ) -> serde_json::Value {
     let source_path = slot_source_path(Some(p4k), binding);
     let export_flavor = slot_texture_flavor(binding.role);
@@ -856,6 +929,7 @@ fn build_slot_export_value(
             &binding.path,
             export_flavor,
             texture_mip,
+            existing_asset_paths,
         )
     };
 
@@ -886,11 +960,20 @@ fn export_texture_asset(
     source_path: &str,
     flavor: TextureFlavor,
     texture_mip: u32,
+    existing_asset_paths: Option<&HashSet<String>>,
 ) -> Option<String> {
     let normalized_source = normalize_source_path(p4k, source_path);
     let cache_key = (normalized_source.to_lowercase(), flavor);
     if let Some(existing) = texture_cache.get(&cache_key) {
         return Some(existing.clone());
+    }
+
+    let requested_path = texture_relative_path(p4k, source_path, flavor);
+    if existing_asset_paths
+        .is_some_and(|paths| paths.contains(&requested_path.to_ascii_lowercase()))
+    {
+        texture_cache.insert(cache_key, requested_path.clone());
+        return Some(requested_path);
     }
 
     let bytes = match flavor {
@@ -920,7 +1003,6 @@ fn export_texture_asset(
         }
     }?;
 
-    let requested_path = texture_relative_path(p4k, source_path, flavor);
     let stored_path = insert_binary_file(files, requested_path, bytes);
     texture_cache.insert(cache_key, stored_path.clone());
     Some(stored_path)
