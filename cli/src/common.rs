@@ -58,6 +58,9 @@ pub struct ExportOpts {
     /// Skip lights from interior containers
     #[arg(long)]
     pub no_lights: bool,
+    /// Skip writing existing decomposed mesh and texture assets under Data/
+    #[arg(long)]
+    pub skip_existing_assets: bool,
 }
 
 impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
