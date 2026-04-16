@@ -87,6 +87,8 @@ pub struct ExportOptions {
     pub include_interior: bool,
     /// Include lights from interior object containers (KHR_lights_punctual).
     pub include_lights: bool,
+    /// Include NoDraw submeshes and sidecar entries in decomposed exports.
+    pub include_nodraw: bool,
     /// LOD level (0 = highest detail, 1+ = lower).
     pub lod_level: u32,
     /// Texture mip level (0 = full resolution, 2 = 1/4 res, 4 = 1/16 res).
@@ -102,6 +104,7 @@ impl Default for ExportOptions {
             include_attachments: true,
             include_interior: true,
             include_lights: true,
+            include_nodraw: false,
             lod_level: 1,
             texture_mip: 2,
         }
