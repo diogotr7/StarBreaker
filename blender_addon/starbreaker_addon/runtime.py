@@ -303,7 +303,12 @@ class PackageImporter:
                 self._apply_instance_metadata([placement_anchor], instance)
                 continue
 
-            clones = self.instantiate_template(template, placement_anchor, neutralize_axis_root=True)
+            clones = self.instantiate_template(
+                template,
+                placement_anchor,
+                neutralize_axis_root=True,
+                force_neutralize_axis_root=True,
+            )
             self._apply_instance_metadata([placement_anchor, *clones], instance)
             for clone in clones:
                 self.rebuild_object_materials(clone, instance.palette_id)
@@ -377,6 +382,7 @@ class PackageImporter:
         template: ImportedTemplate,
         anchor: bpy.types.Object,
         neutralize_axis_root: bool = False,
+        force_neutralize_axis_root: bool = False,
     ) -> list[bpy.types.Object]:
         clones: list[bpy.types.Object] = []
         mapping: dict[str, bpy.types.Object] = {}
@@ -385,7 +391,9 @@ class PackageImporter:
             source = bpy.data.objects.get(root_name)
             if source is None:
                 continue
-            neutralize_root = neutralize_axis_root and _should_neutralize_axis_root(source, template.mesh_asset)
+            neutralize_root = neutralize_axis_root and (
+                force_neutralize_axis_root or _should_neutralize_axis_root(source, template.mesh_asset)
+            )
             clone = self._duplicate_object_tree(source, template.mesh_asset, mapping)
             clone.parent = anchor
             if neutralize_root:
