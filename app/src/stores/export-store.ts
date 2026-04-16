@@ -34,6 +34,7 @@ interface ExportState {
   includeInterior: boolean;
   includeLights: boolean;
   overwriteExistingAssets: boolean;
+  includeNodraw: boolean;
   threads: number;
   outputDir: string | null;
   setLod: (v: number) => void;
@@ -45,6 +46,7 @@ interface ExportState {
   setIncludeInterior: (v: boolean) => void;
   setIncludeLights: (v: boolean) => void;
   setOverwriteExistingAssets: (v: boolean) => void;
+  setIncludeNodraw: (v: boolean) => void;
   setThreads: (v: number) => void;
   setOutputDir: (dir: string | null) => void;
 
@@ -74,6 +76,7 @@ type PersistedExportState = Pick<
   | "includeInterior"
   | "includeLights"
   | "overwriteExistingAssets"
+  | "includeNodraw"
   | "threads"
   | "outputDir"
   | "hideNpcVariants"
@@ -124,6 +127,7 @@ export const useExportStore = create<ExportState>()(
   includeInterior: true,
   includeLights: true,
   overwriteExistingAssets: true,
+  includeNodraw: false,
   threads: 0,
   outputDir: null,
   setLod: (v) => set({ lod: v }),
@@ -135,6 +139,7 @@ export const useExportStore = create<ExportState>()(
   setIncludeInterior: (v) => set({ includeInterior: v }),
   setIncludeLights: (v) => set({ includeLights: v }),
   setOverwriteExistingAssets: (v) => set({ overwriteExistingAssets: v }),
+  setIncludeNodraw: (v) => set({ includeNodraw: v }),
   setThreads: (v) => set({ threads: v }),
   setOutputDir: (dir) => set({ outputDir: dir }),
 
@@ -191,6 +196,7 @@ export const useExportStore = create<ExportState>()(
         includeInterior: s.includeInterior,
         includeLights: s.includeLights,
         overwriteExistingAssets: s.overwriteExistingAssets,
+        includeNodraw: s.includeNodraw,
         threads: s.threads,
         outputDir: s.outputDir,
         hideNpcVariants: s.hideNpcVariants,
