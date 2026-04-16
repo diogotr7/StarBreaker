@@ -61,6 +61,13 @@ struct ExtractedMaterialEntry {
 }
 
 #[derive(Debug, Clone)]
+struct DecomposedMaterialView {
+    mesh: Mesh,
+    sidecar_materials: Option<MtlFile>,
+    glb_materials: Option<MtlFile>,
+}
+
+#[derive(Debug, Clone)]
 struct SceneInstanceRecord {
     entity_name: String,
     geometry_path: String,
@@ -145,6 +152,96 @@ fn package_relative_path(package_name: &str, file_name: &str) -> String {
     format!("Packages/{package_name}/{file_name}")
 }
 
+fn build_decomposed_material_view(
+    mesh: &Mesh,
+    materials: Option<&MtlFile>,
+    include_nodraw: bool,
+) -> DecomposedMaterialView {
+    let Some(materials) = materials else {
+        return DecomposedMaterialView {
+            mesh: mesh.clone(),
+            sidecar_materials: None,
+            glb_materials: None,
+        };
+    };
+
+    if include_nodraw {
+        return DecomposedMaterialView {
+            mesh: mesh.clone(),
+            sidecar_materials: Some(materials.clone()),
+            glb_materials: None,
+        };
+    }
+
+    if mesh
+        .submeshes
+        .iter()
+        .any(|submesh| submesh.material_id as usize >= materials.materials.len())
+    {
+        log::warn!(
+            "decomposed mesh references out-of-range material ids; keeping original NoDraw layout for {}",
+            materials
+                .source_path
+                .as_deref()
+                .unwrap_or("<unknown material source>")
+        );
+        return DecomposedMaterialView {
+            mesh: mesh.clone(),
+            sidecar_materials: Some(materials.clone()),
+            glb_materials: None,
+        };
+    }
+
+    let mut material_id_map = Vec::with_capacity(materials.materials.len());
+    let mut filtered_materials = Vec::with_capacity(materials.materials.len());
+    for material in &materials.materials {
+        if material.is_nodraw {
+            material_id_map.push(None);
+        } else {
+            material_id_map.push(Some(filtered_materials.len() as u32));
+            filtered_materials.push(material.clone());
+        }
+    }
+
+    if filtered_materials.len() == materials.materials.len() {
+        return DecomposedMaterialView {
+            mesh: mesh.clone(),
+            sidecar_materials: Some(materials.clone()),
+            glb_materials: None,
+        };
+    }
+
+    let mut filtered_mesh = mesh.clone();
+    filtered_mesh.submeshes = mesh
+        .submeshes
+        .iter()
+        .filter_map(|submesh| {
+            let Some(new_material_id) = material_id_map
+                .get(submesh.material_id as usize)
+                .copied()
+                .flatten()
+            else {
+                return None;
+            };
+
+            let mut filtered = submesh.clone();
+            filtered.material_id = new_material_id;
+            Some(filtered)
+        })
+        .collect();
+
+    let filtered_materials = MtlFile {
+        materials: filtered_materials,
+        source_path: materials.source_path.clone(),
+    };
+
+    DecomposedMaterialView {
+        mesh: filtered_mesh,
+        sidecar_materials: Some(filtered_materials.clone()),
+        glb_materials: Some(filtered_materials),
+    }
+}
+
 pub(crate) fn write_decomposed_export(
     p4k: &MappedP4k,
     input: DecomposedInput,
@@ -166,17 +263,24 @@ pub(crate) fn write_decomposed_export(
     let liveries_manifest_path = package_relative_path(&package_name, "liveries.json");
     report_progress(progress, 0.05, "Writing root assets");
 
+    let root_material_view = build_decomposed_material_view(
+        &input.root_mesh,
+        input.root_materials.as_ref(),
+        opts.include_nodraw,
+    );
+
     let root_mesh_asset = write_mesh_asset(
         &mut files,
         p4k,
         &input.entity_name,
         &input.geometry_path,
-        &input.root_mesh,
+        &root_material_view.mesh,
+        root_material_view.glb_materials.as_ref(),
         input.root_nmc.as_ref(),
         &input.root_bones,
         existing_asset_paths,
     )?;
-    let root_material_sidecar = input.root_materials.as_ref().map(|materials| {
+    let root_material_sidecar = root_material_view.sidecar_materials.as_ref().map(|materials| {
         write_material_sidecar(
             &mut files,
             p4k,
@@ -207,17 +311,23 @@ pub(crate) fn write_decomposed_export(
     let mut child_instances = Vec::with_capacity(input.children.len());
     let child_count = input.children.len();
     for (index, child) in input.children.iter().enumerate() {
+        let child_material_view = build_decomposed_material_view(
+            &child.mesh,
+            child.materials.as_ref(),
+            opts.include_nodraw,
+        );
         let mesh_asset = write_mesh_asset(
             &mut files,
             p4k,
             &child.entity_name,
             &child.geometry_path,
-            &child.mesh,
+            &child_material_view.mesh,
+            child_material_view.glb_materials.as_ref(),
             child.nmc.as_ref(),
             &child.bones,
             existing_asset_paths,
         )?;
-        let material_sidecar = child.materials.as_ref().map(|materials| {
+        let material_sidecar = child_material_view.sidecar_materials.as_ref().map(|materials| {
             write_material_sidecar(
                 &mut files,
                 p4k,
@@ -290,17 +400,23 @@ pub(crate) fn write_decomposed_export(
                     log::warn!("failed to build decomposed interior asset for {}", entry.cgf_path);
                     continue;
                 };
+                let interior_material_view = build_decomposed_material_view(
+                    &mesh,
+                    materials.as_ref(),
+                    opts.include_nodraw,
+                );
                 let mesh_asset = write_mesh_asset(
                     &mut files,
                     p4k,
                     &entry.name,
                     &entry.cgf_path,
-                    &mesh,
+                    &interior_material_view.mesh,
+                    interior_material_view.glb_materials.as_ref(),
                     nmc.as_ref(),
                     &[],
                     existing_asset_paths,
                 )?;
-                let material_sidecar = materials.as_ref().map(|materials| {
+                let material_sidecar = interior_material_view.sidecar_materials.as_ref().map(|materials| {
                     write_material_sidecar(
                         &mut files,
                         p4k,
@@ -538,6 +654,7 @@ fn write_mesh_asset(
     fallback_name: &str,
     geometry_path: &str,
     mesh: &Mesh,
+    materials: Option<&MtlFile>,
     nmc: Option<&NodeMeshCombo>,
     bones: &[Bone],
     existing_asset_paths: Option<&HashSet<String>>,
@@ -566,7 +683,7 @@ fn write_mesh_asset(
     let glb = crate::gltf::write_glb(
         GlbInput {
             root_mesh: Some(mesh.clone()),
-            root_materials: None,
+            root_materials: materials.cloned(),
             root_textures: None,
             root_nmc: nmc.cloned(),
             root_palette: None,
@@ -613,7 +730,6 @@ fn write_material_sidecar(
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
 ) -> String {
-    let normalized_geometry_path = normalize_source_path(p4k, geometry_path);
     let source_material_path = material_source_path(p4k, materials, material_path, geometry_path);
     let relative_path = material_sidecar_relative_path(&source_material_path, fallback_name);
     let extracted = materials
@@ -633,7 +749,6 @@ fn write_material_sidecar(
         .collect::<Vec<_>>();
     let value = build_material_sidecar_value(
         materials,
-        &normalized_geometry_path,
         &source_material_path,
         &relative_path,
         palettes_manifest_path,
@@ -798,7 +913,6 @@ fn extract_material_entry(
 
 fn build_material_sidecar_value(
     materials: &MtlFile,
-    geometry_path: &str,
     source_material_path: &str,
     relative_path: &str,
     palettes_manifest_path: &str,
@@ -810,26 +924,53 @@ fn build_material_sidecar_value(
         .unwrap_or(source_material_path)
         .strip_suffix(".mtl")
         .unwrap_or(source_material_path);
+    let blender_material_names = preferred_blender_material_names(&materials.materials, source_stem);
 
     serde_json::json!({
         "version": 1,
         "source_material_path": source_material_path,
-        "geometry_path": geometry_path,
         "normalized_export_relative_path": relative_path,
         "palette_contract": {
             "shared_manifest": palettes_manifest_path,
             "scene_instance_field": "palette_id",
         },
         "submaterials": materials.materials.iter().enumerate().map(|(index, material)| {
-            build_submaterial_json(material, source_material_path, source_stem, index, &extracted[index])
+            build_submaterial_json(
+                material,
+                source_material_path,
+                source_stem,
+                &blender_material_names[index],
+                index,
+                &extracted[index],
+            )
         }).collect::<Vec<_>>(),
     })
+}
+
+fn preferred_blender_material_names(materials: &[SubMaterial], source_stem: &str) -> Vec<String> {
+    let mut name_counts: HashMap<&str, usize> = HashMap::new();
+    for material in materials {
+        *name_counts.entry(material.name.as_str()).or_default() += 1;
+    }
+
+    materials
+        .iter()
+        .enumerate()
+        .map(|(index, material)| {
+            if name_counts.get(material.name.as_str()).copied().unwrap_or_default() > 1 {
+                format!("{source_stem}:{}_{}", material.name, index)
+            } else {
+                format!("{source_stem}:{}", material.name)
+            }
+        })
+        .collect()
 }
 
 fn build_submaterial_json(
     material: &SubMaterial,
     source_material_path: &str,
     source_stem: &str,
+    blender_material_name: &str,
     index: usize,
     extracted: &ExtractedMaterialEntry,
 ) -> serde_json::Value {
@@ -850,6 +991,7 @@ fn build_submaterial_json(
     serde_json::json!({
         "index": index,
         "submaterial_name": material.name,
+        "blender_material_name": blender_material_name,
         "shader": material.shader,
         "shader_family": material.shader_family().as_str(),
         "activation_state": {
@@ -1045,14 +1187,25 @@ fn material_source_path(
     material_path: &str,
     geometry_path: &str,
 ) -> String {
-    if !material_path.is_empty() {
-        normalize_source_path(p4k, material_path)
-    } else if let Some(source_path) = materials.source_path.as_ref() {
-        normalize_source_path(p4k, source_path)
+    normalize_source_path(
+        p4k,
+        &material_source_request(materials, material_path, geometry_path),
+    )
+}
+
+fn material_source_request(materials: &MtlFile, material_path: &str, geometry_path: &str) -> String {
+    if let Some(source_path) = materials.source_path.as_ref() {
+        source_path.clone()
+    } else if !material_path.is_empty() {
+        if material_path.rsplit('/').next().is_some_and(|name| name.contains('.')) {
+            material_path.to_string()
+        } else {
+            format!("{material_path}.mtl")
+        }
     } else if geometry_path.is_empty() {
         "Data/generated/generated.mtl".to_string()
     } else {
-        replace_extension(&normalize_source_path(p4k, geometry_path), ".mtl")
+        replace_extension(geometry_path, ".mtl")
     }
 }
 
@@ -1352,6 +1505,23 @@ mod tests {
         }
     }
 
+    fn sample_mesh(submeshes: Vec<crate::types::SubMesh>) -> Mesh {
+        Mesh {
+            positions: Vec::new(),
+            indices: Vec::new(),
+            uvs: None,
+            secondary_uvs: None,
+            normals: None,
+            tangents: None,
+            colors: None,
+            submeshes,
+            model_min: [0.0, 0.0, 0.0],
+            model_max: [0.0, 0.0, 0.0],
+            scaling_min: [0.0, 0.0, 0.0],
+            scaling_max: [0.0, 0.0, 0.0],
+        }
+    }
+
     #[test]
     fn normalize_source_paths_keep_data_prefix_and_slashes() {
         assert_eq!(
@@ -1425,7 +1595,6 @@ mod tests {
 
         let value = build_material_sidecar_value(
             &materials,
-            "Data/Objects/Ships/Test/hull.skin",
             "Data/Objects/Ships/Test/hull.mtl",
             "Data/Objects/Ships/Test/hull.materials.json",
             "Packages/ARGO MOLE/palettes.json",
@@ -1433,12 +1602,43 @@ mod tests {
         );
 
         assert_eq!(value["source_material_path"], serde_json::json!("Data/Objects/Ships/Test/hull.mtl"));
+        assert!(value.get("geometry_path").is_none());
+        assert_eq!(
+            value["submaterials"][0]["blender_material_name"],
+            serde_json::json!("hull:hull_panel")
+        );
         assert_eq!(value["submaterials"][0]["shader_family"], serde_json::json!("LayerBlend_V2"));
         assert_eq!(value["submaterials"][0]["palette_routing"]["material_channel"]["name"], serde_json::json!("secondary"));
         assert_eq!(value["submaterials"][0]["layer_manifest"][0]["palette_channel"]["name"], serde_json::json!("primary"));
         assert_eq!(value["submaterials"][0]["public_params"]["WearBlendBase"], serde_json::json!(0.5));
         assert_eq!(value["submaterials"][0]["derived_textures"][0]["export_kind"], serde_json::json!("roughness_from_normal_gloss"));
         assert_eq!(value["submaterials"][0]["virtual_inputs"][0], serde_json::json!("$TintPaletteDecal"));
+    }
+
+    #[test]
+    fn duplicate_submaterial_names_get_stable_blender_suffixes() {
+        let first = sample_submaterial();
+        let mut second = sample_submaterial();
+        second.shader = "Illum".into();
+        second.palette_tint = 0;
+        second.layers.clear();
+
+        let materials = MtlFile {
+            materials: vec![first, second],
+            source_path: Some("Data/Objects/Ships/Test/hull.mtl".into()),
+        };
+        let extracted = vec![ExtractedMaterialEntry::default(), ExtractedMaterialEntry::default()];
+
+        let value = build_material_sidecar_value(
+            &materials,
+            "Data/Objects/Ships/Test/hull.mtl",
+            "Data/Objects/Ships/Test/hull.materials.json",
+            "Packages/ARGO MOLE/palettes.json",
+            &extracted,
+        );
+
+        assert_eq!(value["submaterials"][0]["blender_material_name"], serde_json::json!("hull:hull_panel_0"));
+        assert_eq!(value["submaterials"][1]["blender_material_name"], serde_json::json!("hull:hull_panel_1"));
     }
 
     #[test]
@@ -1494,6 +1694,103 @@ mod tests {
         assert_eq!(value["palettes"][0]["id"], serde_json::json!("palette/vehicle_palette_test"));
         assert_eq!(value["palettes"][0]["source_name"], serde_json::json!("vehicle.palette.test"));
         assert_eq!(value["palettes"][0]["glass"].as_array().map(|items| items.len()), Some(3));
+    }
+
+    #[test]
+    fn material_source_request_prefers_loaded_source_path() {
+        let materials = MtlFile {
+            materials: Vec::new(),
+            source_path: Some("Data\\Objects\\Ships\\Test\\canonical.mtl".into()),
+        };
+
+        let path = material_source_request(&materials, "Data/objects/ships/test/canonical", "Data/Objects/Ships/Test/hull.skin");
+
+        assert_eq!(path, "Data\\Objects\\Ships\\Test\\canonical.mtl");
+    }
+
+    #[test]
+    fn material_source_request_adds_missing_mtl_extension() {
+        let materials = MtlFile {
+            materials: Vec::new(),
+            source_path: None,
+        };
+
+        let path = material_source_request(&materials, "Data/objects/ships/test/canonical", "Data/Objects/Ships/Test/hull.skin");
+
+        assert_eq!(path, "Data/objects/ships/test/canonical.mtl");
+    }
+
+    #[test]
+    fn decomposed_material_view_excludes_nodraw_and_renumbers_submeshes() {
+        let mut nodraw = sample_submaterial();
+        nodraw.name = "proxy".into();
+        nodraw.shader = "NoDraw".into();
+        nodraw.is_nodraw = true;
+
+        let mut hull = sample_submaterial();
+        hull.name = "hull".into();
+
+        let mut glass = sample_submaterial();
+        glass.name = "glass".into();
+        glass.shader = "GlassPBR".into();
+
+        let materials = MtlFile {
+            materials: vec![nodraw, hull, glass],
+            source_path: Some("Data/Objects/Ships/Test/hull.mtl".into()),
+        };
+        let mesh = sample_mesh(vec![
+            crate::types::SubMesh {
+                material_name: Some("proxy".into()),
+                material_id: 0,
+                first_index: 0,
+                num_indices: 3,
+                first_vertex: 0,
+                num_vertices: 3,
+                node_parent_index: 0,
+            },
+            crate::types::SubMesh {
+                material_name: Some("glass".into()),
+                material_id: 2,
+                first_index: 3,
+                num_indices: 3,
+                first_vertex: 0,
+                num_vertices: 3,
+                node_parent_index: 0,
+            },
+            crate::types::SubMesh {
+                material_name: Some("hull".into()),
+                material_id: 1,
+                first_index: 6,
+                num_indices: 3,
+                first_vertex: 0,
+                num_vertices: 3,
+                node_parent_index: 0,
+            },
+        ]);
+
+        let view = build_decomposed_material_view(&mesh, Some(&materials), false);
+        let filtered_materials = view.sidecar_materials.expect("filtered sidecar materials");
+        let glb_materials = view.glb_materials.expect("filtered glb materials");
+
+        assert_eq!(filtered_materials.materials.len(), 2);
+        assert_eq!(
+            filtered_materials
+                .materials
+                .iter()
+                .map(|material| material.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["hull", "glass"]
+        );
+        assert_eq!(glb_materials.materials.len(), 2);
+        assert_eq!(view.mesh.submeshes.len(), 2);
+        assert_eq!(
+            view.mesh
+                .submeshes
+                .iter()
+                .map(|submesh| submesh.material_id)
+                .collect::<Vec<_>>(),
+            vec![1, 0]
+        );
     }
 
     #[test]
