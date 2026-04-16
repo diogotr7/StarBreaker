@@ -2,6 +2,7 @@ mod glb_builder;
 
 use gltf_json as json;
 use json::validation::Checked;
+use starbreaker_common::progress::{report as report_progress, Progress};
 
 use crate::error::Error;
 use crate::nmc::NodeMeshCombo;
@@ -135,9 +136,19 @@ pub fn write_glb(
     loaders: &mut GlbLoaders<'_>,
     opts: &GlbOptions,
 ) -> Result<Vec<u8>, Error> {
+    write_glb_with_progress(input, loaders, opts, None)
+}
+
+pub fn write_glb_with_progress(
+    input: GlbInput,
+    loaders: &mut GlbLoaders<'_>,
+    opts: &GlbOptions,
+    progress: Option<&Progress>,
+) -> Result<Vec<u8>, Error> {
     let mut builder = GlbBuilder::new();
 
     log::info!("[mem-phase] start write_glb");
+    report_progress(progress, 0.05, "Packing root mesh");
     // ---- Pack root entity (drop textures after packing) ----
     let mut scene_nodes = if let Some(root_mesh) = input.root_mesh {
         let root_packed = builder.pack_mesh(
@@ -170,6 +181,7 @@ pub fn write_glb(
     };
 
     log::info!("[mem-phase] root packed, bin={}MB", builder.bin.len() / 1_048_576);
+    report_progress(progress, 0.20, "Packing child meshes");
     // ---- Skeleton bone nodes ----
     builder.attach_skeleton_bones(&input.skeleton_bones, &scene_nodes);
 
@@ -177,18 +189,26 @@ pub fn write_glb(
     let num_children = input.children.len();
     for (i, child) in input.children.into_iter().enumerate() {
         builder.attach_child_entity(child, &scene_nodes, opts.material_mode, opts.fallback_palette.as_ref(), loaders.load_textures);
+        if num_children > 0 {
+            let fraction = (i + 1) as f32 / num_children as f32;
+            report_progress(progress, 0.20 + 0.40 * fraction, "Packing child meshes");
+        }
         if (i + 1) % 20 == 0 || i + 1 == num_children {
             log::info!("[mem-phase] children {}/{}, bin={}MB", i + 1, num_children, builder.bin.len() / 1_048_576);
         }
     }
 
     log::info!("[mem-phase] children done, bin={}MB", builder.bin.len() / 1_048_576);
+    if num_children == 0 {
+        report_progress(progress, 0.60, "Packing interiors");
+    }
     // ---- Interior mesh instancing ----
     let (interior_scene_nodes, all_lights) = builder.attach_interiors(
         &input.interiors, opts.material_mode, opts.fallback_palette.as_ref(), loaders.load_textures, loaders.load_interior_mesh,
     );
     scene_nodes.extend(interior_scene_nodes);
     log::info!("[mem-phase] interiors done, bin={}MB", builder.bin.len() / 1_048_576);
+    report_progress(progress, 0.80, "Finalizing GLB");
 
     // ---- Entity + palette extras on root node ----
     {
@@ -224,6 +244,7 @@ pub fn write_glb(
         }
     }
 
+    report_progress(progress, 0.95, "Finalizing GLB");
     builder.finalize(scene_nodes, all_lights, &opts.metadata)
 }
 
