@@ -34,6 +34,7 @@ pub struct GlbLoaders<'a> {
 
 pub struct GlbOptions {
     pub material_mode: crate::pipeline::MaterialMode,
+    pub preserve_textureless_decal_primitives: bool,
     pub metadata: GlbMetadata,
     pub fallback_palette: Option<crate::mtl::TintPalette>,
 }
@@ -158,6 +159,7 @@ pub fn write_glb_with_progress(
             input.root_palette.as_ref(),
             None,
             opts.material_mode,
+            opts.preserve_textureless_decal_primitives,
         );
         drop(input.root_textures);
 
@@ -307,6 +309,7 @@ mod tests {
     fn default_opts() -> GlbOptions {
         GlbOptions {
             material_mode: crate::pipeline::MaterialMode::None,
+            preserve_textureless_decal_primitives: false,
             metadata: GlbMetadata {
                 entity_name: None,
                 geometry_path: None,
@@ -1203,6 +1206,42 @@ mod tests {
             semantic["activation_state"]["reason"],
             serde_json::json!("missing_base_color_texture"),
         );
+    }
+
+    #[test]
+    fn write_glb_preserves_textureless_decals_when_requested() {
+        let mut opts = default_opts();
+        opts.preserve_textureless_decal_primitives = true;
+        opts.metadata.export_options.kind = "Decomposed".to_string();
+
+        let glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: Some(decal_material_file()),
+                root_textures: None,
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_, _| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &opts,
+        )
+        .expect("write_glb failed");
+
+        let json = glb_json(&glb);
+        let semantic = &json["materials"][0]["extras"]["semantic"];
+        let primitives = json["meshes"][0]["primitives"]
+            .as_array()
+            .expect("mesh primitives should be present");
+
+        assert_eq!(primitives.len(), 1, "decomposed GLBs should retain decal primitives for sidecar reconstruction");
+        assert_eq!(semantic["activation_state"]["state"], serde_json::json!("active"));
+        assert_eq!(semantic["activation_state"]["reason"], serde_json::json!("visible"));
     }
 
     #[test]

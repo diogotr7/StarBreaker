@@ -324,6 +324,7 @@ class LiveryRecord:
 class LightRecord:
     name: str
     color: Color3
+    light_type: str | None
     intensity: float
     radius: float
     position: Vec3
@@ -338,6 +339,7 @@ class LightRecord:
         return cls(
             name=str(data.get("name", "")),
             color=_float_tuple(data.get("color"), 3),  # type: ignore[arg-type]
+            light_type=_as_str(data.get("light_type")),
             intensity=_as_float(data.get("intensity")),
             radius=_as_float(data.get("radius")),
             position=_float_tuple(data.get("position"), 3),  # type: ignore[arg-type]

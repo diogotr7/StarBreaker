@@ -679,6 +679,7 @@ pub fn assemble_glb_with_loadout_with_progress(
         },
         &crate::gltf::GlbOptions {
             material_mode: opts.material_mode,
+            preserve_textureless_decal_primitives: false,
             metadata: crate::gltf::GlbMetadata {
                 entity_name: Some(resolved.entity_name.clone()),
                 geometry_path: Some(geometry_path.clone()),
@@ -3966,6 +3967,7 @@ pub fn socpaks_to_glb(
         },
         &crate::gltf::GlbOptions {
             material_mode: opts.material_mode,
+            preserve_textureless_decal_primitives: false,
             metadata: crate::gltf::GlbMetadata {
                 entity_name: None,
                 geometry_path: None,
@@ -4171,7 +4173,11 @@ pub fn dump_hierarchy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
+
+    use starbreaker_datacore::database::Database;
     use starbreaker_datacore::types::{CigGuid, StringId, StringId2};
+    use starbreaker_p4k::MappedP4k;
 
     fn sample_export_result(kind: ExportKind, glb: Vec<u8>) -> ExportResult {
         ExportResult {
@@ -4194,6 +4200,56 @@ mod tests {
             instance_index: 0,
             struct_size: 0,
         }
+    }
+
+    fn workspace_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates dir")
+            .parent()
+            .expect("StarBreaker dir")
+            .parent()
+            .expect("workspace root")
+            .to_path_buf()
+    }
+
+    fn integration_p4k_path() -> Option<PathBuf> {
+        if let Ok(path) = std::env::var("STARBREAKER_TEST_P4K") {
+            let path = PathBuf::from(path);
+            if path.exists() {
+                return Some(path);
+            }
+            eprintln!("STARBREAKER_TEST_P4K not found at {}, skipping", path.display());
+            return None;
+        }
+
+        let home = std::env::var_os("HOME").map(PathBuf::from)?;
+        let candidates = [
+            home.join("Games/star-citizen/drive_c/Program Files/Roberts Space Industries/StarCitizen/LIVE/Data.p4k"),
+            home.join("Games/star-citizen/drive_c/Program Files/Roberts Space Industries/StarCitizen/PTU/Data.p4k"),
+        ];
+        for candidate in candidates {
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+
+        eprintln!("Data.p4k not found. Set STARBREAKER_TEST_P4K to run this manual export harness.");
+        None
+    }
+
+    fn integration_dcb_bytes(p4k: &MappedP4k) -> Option<Vec<u8>> {
+        if let Ok(path) = std::env::var("STARBREAKER_TEST_DCB") {
+            let path = PathBuf::from(path);
+            if path.exists() {
+                return Some(std::fs::read(&path).expect("failed to read STARBREAKER_TEST_DCB"));
+            }
+            eprintln!("STARBREAKER_TEST_DCB not found at {}, falling back to Data.p4k", path.display());
+        }
+
+        p4k.read_file("Data\\Game2.dcb")
+            .or_else(|_| p4k.read_file("Data\\Game.dcb"))
+            .ok()
     }
 
     fn resolved_node(
@@ -4294,6 +4350,63 @@ mod tests {
         let err = ensure_supported_export_options(&opts)
             .expect_err("stl export format should be rejected");
         assert!(matches!(err, Error::UnsupportedExportFormat(format) if format == "Stl"));
+    }
+
+    #[test]
+    #[ignore = "manual export harness for refreshing the workspace MOLE package"]
+    fn regenerate_mole_decomposed_export_to_workspace() {
+        let Some(p4k_path) = integration_p4k_path() else {
+            return;
+        };
+
+        let p4k = MappedP4k::open(&p4k_path).expect("failed to open Data.p4k");
+        let dcb_bytes = integration_dcb_bytes(&p4k).expect("failed to load Game2.dcb/Game.dcb");
+        let db = Database::from_bytes(&dcb_bytes).expect("failed to parse DataCore database");
+        let index = starbreaker_datacore::loadout::EntityIndex::new(&db);
+        let record = index.find_record("ARGO_MOLE").expect("ARGO_MOLE not found");
+        let tree = starbreaker_datacore::loadout::resolve_loadout_indexed(&index, record);
+
+        let opts = ExportOptions {
+            kind: ExportKind::Decomposed,
+            material_mode: MaterialMode::All,
+            include_attachments: true,
+            include_interior: true,
+            include_lights: true,
+            include_nodraw: false,
+            lod_level: 0,
+            texture_mip: 0,
+            ..ExportOptions::default()
+        };
+
+        let result = assemble_glb_with_loadout(&db, &p4k, record, &tree, &opts)
+            .expect("ARGO_MOLE decomposed export failed");
+        let decomposed = result
+            .decomposed
+            .as_ref()
+            .expect("expected decomposed files in export result");
+
+        let output_root = std::env::var("STARBREAKER_TEST_EXPORT_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| workspace_root().join("ships"));
+        let package_root = output_root.join("Packages/Argo MOLE");
+        if package_root.exists() {
+            std::fs::remove_dir_all(&package_root).expect("failed to clear existing Argo MOLE package");
+        }
+
+        for file in &decomposed.files {
+            let output_path = output_root.join(&file.relative_path);
+            if let Some(parent) = output_path.parent() {
+                std::fs::create_dir_all(parent).expect("failed to create output directory");
+            }
+            std::fs::write(&output_path, &file.bytes).expect("failed to write decomposed export file");
+        }
+
+        eprintln!(
+            "Wrote {} decomposed files for ARGO_MOLE to {} using {}",
+            decomposed.files.len(),
+            output_root.display(),
+            p4k_path.display(),
+        );
     }
 
     #[test]

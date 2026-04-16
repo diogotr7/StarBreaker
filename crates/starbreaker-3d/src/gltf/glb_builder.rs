@@ -52,6 +52,7 @@ struct SceneMeshReuseKey {
     textures_hash: u64,
     palette_hash: u64,
     material_mode: SceneMaterialModeKey,
+    preserve_textureless_decal_primitives: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -563,6 +564,7 @@ impl GlbBuilder {
                 resolved_palette,
                 Some(&child.entity_name),
                 material_mode,
+                false,
             );
             child.textures = None;
             child.mesh.positions = Vec::new();
@@ -817,6 +819,7 @@ impl GlbBuilder {
                         palette,
                         Some(&interiors.unique_cgfs[mesh_array_idx].name),
                         material_mode,
+                        false,
                     );
                     packed_cache.insert(cache_key, packed.mesh_idx);
                     Some(packed.mesh_idx)
@@ -879,10 +882,18 @@ impl GlbBuilder {
         palette: Option<&crate::mtl::TintPalette>,
         mesh_name: Option<&str>,
         material_mode: crate::pipeline::MaterialMode,
+        preserve_textureless_decal_primitives: bool,
     ) -> PackedMeshInfo {
         let include_tangents = material_mode.include_tangents();
         let experimental_textures = material_mode.experimental();
-        let reuse_key = build_scene_mesh_reuse_key(mesh, materials, textures, palette, material_mode);
+        let reuse_key = build_scene_mesh_reuse_key(
+            mesh,
+            materials,
+            textures,
+            palette,
+            material_mode,
+            preserve_textureless_decal_primitives,
+        );
         if let Some(packed) = self.scene_mesh_cache.get(&reuse_key) {
             return packed.clone();
         }
@@ -961,9 +972,10 @@ impl GlbBuilder {
             &mut self.materials_json,
             &mut self.mat_dedup,
             experimental_textures,
+            preserve_textureless_decal_primitives,
         );
 
-        // Build mesh primitives (skip NoDraw and textureless decal submeshes)
+        // Build mesh primitives (skip NoDraw and textureless decal submeshes unless preserved)
         let mut primitives = Vec::new();
         let mut submesh_idx_accessors: Vec<Option<u32>> = Vec::with_capacity(mesh.submeshes.len());
         for (i, sub) in mesh.submeshes.iter().enumerate() {
@@ -974,7 +986,7 @@ impl GlbBuilder {
             }
             // Decals without a base color texture are just solid rectangles covering the hull.
             // Their alpha cutout comes entirely from the texture — skip when textures are off.
-            if mtl_sub.is_some_and(|m| m.is_decal()) {
+            if !preserve_textureless_decal_primitives && mtl_sub.is_some_and(|m| m.is_decal()) {
                 let has_tex = submaterial_texture_idx
                     .get(sub.material_id as usize)
                     .is_some_and(|t| t.is_some());
@@ -1656,6 +1668,7 @@ fn build_scene_mesh_reuse_key(
     textures: Option<&MaterialTextures>,
     palette: Option<&crate::mtl::TintPalette>,
     material_mode: crate::pipeline::MaterialMode,
+    preserve_textureless_decal_primitives: bool,
 ) -> SceneMeshReuseKey {
     SceneMeshReuseKey {
         geometry_hash: hash_mesh_for_reuse(mesh, material_mode.include_tangents()),
@@ -1663,6 +1676,7 @@ fn build_scene_mesh_reuse_key(
         textures_hash: hash_textures_for_reuse(textures),
         palette_hash: hash_palette_for_reuse(palette),
         material_mode: scene_material_mode_key(material_mode),
+        preserve_textureless_decal_primitives,
     }
 }
 
@@ -1877,6 +1891,7 @@ fn build_materials(
     materials_json: &mut Vec<json::Material>,
     mat_dedup: &mut HashMap<MaterialIdentity, u32>,
     experimental_textures: bool,
+    preserve_textureless_decal_primitives: bool,
 ) -> Vec<u32> {
     submeshes.iter().map(|sub| {
         let BuiltMaterial { material, identity } = build_material(
@@ -1890,6 +1905,7 @@ fn build_materials(
             submaterial_emissive_idx,
             submaterial_occlusion_idx,
             experimental_textures,
+            preserve_textureless_decal_primitives,
         );
         if let Some(&idx) = mat_dedup.get(&identity) {
             idx
@@ -1914,6 +1930,7 @@ fn build_material(
     submaterial_emissive_idx: &[Option<u32>],
     submaterial_occlusion_idx: &[Option<u32>],
     experimental_textures: bool,
+    preserve_textureless_decal_primitives: bool,
 ) -> BuiltMaterial {
     let mtl_sub = materials.and_then(|m| m.materials.get(sub.material_id as usize));
     let texture_set = textures;
@@ -2205,7 +2222,10 @@ fn build_material(
                 ("inactive", "nodraw")
             } else if m.should_hide() {
                 ("inactive", "semantic_hidden")
-            } else if m.is_decal() && base_color_texture_idx.is_none() {
+            } else if m.is_decal()
+                && base_color_texture_idx.is_none()
+                && !preserve_textureless_decal_primitives
+            {
                 ("inactive", "missing_base_color_texture")
             } else {
                 ("active", "visible")

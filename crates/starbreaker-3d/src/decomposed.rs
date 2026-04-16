@@ -396,7 +396,7 @@ pub(crate) fn write_decomposed_export(
             let (mesh_asset, material_sidecar) = if let Some(cached) = interior_asset_cache.get(&cache_key) {
                 cached.clone()
             } else {
-                let Some((mesh, materials, nmc)) = load_interior_mesh(entry) else {
+                let Some((mesh, materials, _nmc)) = load_interior_mesh(entry) else {
                     log::warn!("failed to build decomposed interior asset for {}", entry.cgf_path);
                     continue;
                 };
@@ -412,7 +412,10 @@ pub(crate) fn write_decomposed_export(
                     &entry.cgf_path,
                     &interior_material_view.mesh,
                     interior_material_view.glb_materials.as_ref(),
-                    nmc.as_ref(),
+                    // Interior meshes already follow the bundled flat-mesh path.
+                    // Preserving the raw NMC hierarchy here makes decomposed interiors
+                    // diverge from the reference import and can double-apply placement transforms.
+                    None,
                     &[],
                     existing_asset_paths,
                 )?;
@@ -470,6 +473,7 @@ pub(crate) fn write_decomposed_export(
                         "position": light.position,
                         "rotation": light.rotation,
                         "color": light.color,
+                        "light_type": light.light_type,
                         "intensity": light.intensity,
                         "radius": light.radius,
                         "inner_angle": light.inner_angle,
@@ -697,6 +701,7 @@ fn write_mesh_asset(
         },
         &GlbOptions {
             material_mode: MaterialMode::None,
+            preserve_textureless_decal_primitives: true,
             metadata: GlbMetadata {
                 entity_name: Some(fallback_name.to_string()),
                 geometry_path: (!geometry_path.is_empty()).then_some(geometry_path.to_string()),

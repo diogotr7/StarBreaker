@@ -396,6 +396,8 @@ pub struct LightInfo {
     pub rotation: [f64; 4],
     /// Color [r, g, b] normalized 0..1.
     pub color: [f32; 3],
+    /// Source light type (for example: Omni, Projector).
+    pub light_type: String,
     pub intensity: f32,
     /// Attenuation radius in meters.
     pub radius: f32,

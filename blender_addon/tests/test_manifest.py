@@ -11,10 +11,10 @@ REPO_ROOT = STARBREAKER_ROOT.parent
 
 sys.path.insert(0, str(ADDON_ROOT))
 
-from starbreaker_addon.manifest import MaterialSidecar, PackageBundle, infer_export_root
+from starbreaker_addon.manifest import LightRecord, MaterialSidecar, PackageBundle, infer_export_root
 
 
-ARGO_SCENE = REPO_ROOT / "ships/Packages/Argo MOLE/scene.json"
+ARGO_SCENE = REPO_ROOT / "ships/Packages/ARGO MOLE/scene.json"
 ARGO_INTERIOR = REPO_ROOT / "ships/Data/Objects/Spaceships/Ships/ARGO/MOLE/argo_mole_interior.materials.json"
 COMPONENT_MASTER = REPO_ROOT / "ships/Data/Materials/vehicles/components/component_master_01.materials.json"
 
@@ -46,7 +46,7 @@ class ManifestTests(unittest.TestCase):
     def test_material_sidecar_preserves_layer_and_virtual_input_contract(self) -> None:
         interior = MaterialSidecar.from_file(ARGO_INTERIOR)
         self.assertIsNone(interior.geometry_path)
-        self.assertEqual(interior.submaterials[1].shader_family, "DisplayScreen")
+        self.assertEqual(interior.submaterials[1].shader_family, "UIPlane")
         self.assertEqual(
             interior.submaterials[1].blender_material_name,
             f"argo_mole_interior:{interior.submaterials[1].submaterial_name}",
@@ -63,6 +63,23 @@ class ManifestTests(unittest.TestCase):
         self.assertTrue(layered.layer_manifest)
         palette_layer = next(layer for layer in layered.layer_manifest if layer.palette_channel is not None)
         self.assertEqual(palette_layer.palette_channel.name, "primary")
+
+    def test_light_record_preserves_type_for_decomposed_runtime(self) -> None:
+        light = LightRecord.from_value(
+            {
+                "name": "Light-1",
+                "color": [1.0, 0.5, 0.25],
+                "light_type": "Projector",
+                "intensity": 123.0,
+                "radius": 7.5,
+                "position": [1.0, 2.0, 3.0],
+                "rotation": [1.0, 0.0, 0.0, 0.0],
+                "inner_angle": 18.0,
+                "outer_angle": 24.0,
+            }
+        )
+        self.assertEqual(light.light_type, "Projector")
+        self.assertEqual(light.outer_angle, 24.0)
 
 
 if __name__ == "__main__":

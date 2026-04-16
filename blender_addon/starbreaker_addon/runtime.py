@@ -8,10 +8,16 @@ from pathlib import Path
 from typing import Any
 
 import bpy
-from mathutils import Euler, Matrix
+from mathutils import Euler, Matrix, Quaternion
 
 from .manifest import MaterialSidecar, PackageBundle, PaletteRecord, SceneInstanceRecord, SubmaterialRecord
-from .palette import palette_color, palette_for_id, palette_id_for_livery_instance
+from .palette import (
+    palette_color,
+    palette_for_id,
+    palette_id_for_livery_instance,
+    palette_signature_for_submaterial,
+    resolved_palette_id,
+)
 from .templates import (
     has_virtual_input,
     material_palette_channels,
@@ -39,6 +45,7 @@ PROP_MISSING_ASSET = "starbreaker_missing_asset"
 
 PACKAGE_ROOT_PREFIX = "StarBreaker"
 TEMPLATE_COLLECTION_NAME = "StarBreaker Template Cache"
+GLTF_PBR_WATTS_TO_LUMENS = 683.0
 SCENE_AXIS_CONVERSION = Matrix(
     (
         (1.0, 0.0, 0.0, 0.0),
@@ -48,6 +55,7 @@ SCENE_AXIS_CONVERSION = Matrix(
     )
 )
 SCENE_AXIS_CONVERSION_INV = SCENE_AXIS_CONVERSION.inverted()
+GLTF_LIGHT_BASIS_CORRECTION = Quaternion((math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0))
 
 
 @dataclass(frozen=True)
@@ -126,16 +134,26 @@ def apply_livery_to_package_root(context: bpy.types.Context, package_root: bpy.t
         instance = _scene_instance_from_object(obj)
         if instance is None:
             continue
-        resolved_palette_id = palette_id_for_livery_instance(
+        effective_palette_id = palette_id_for_livery_instance(
             package,
             livery_id,
             instance,
             _string_prop(obj, PROP_MATERIAL_SIDECAR),
         )
-        applied += importer.rebuild_object_materials(obj, resolved_palette_id)
-        if resolved_palette_id is not None:
-            obj[PROP_PALETTE_ID] = resolved_palette_id
-    package_root[PROP_PALETTE_ID] = livery_id
+        applied += importer.rebuild_object_materials(obj, effective_palette_id)
+        if effective_palette_id is not None:
+            obj[PROP_PALETTE_ID] = effective_palette_id
+    root_palette_id = palette_id_for_livery_instance(
+        package,
+        livery_id,
+        package.scene.root_entity,
+        package.scene.root_entity.material_sidecar,
+    )
+    package_root[PROP_PALETTE_ID] = resolved_palette_id(
+        package,
+        root_palette_id,
+        package.scene.root_entity.palette_id,
+    ) or ""
     return applied
 
 
@@ -154,6 +172,16 @@ class PackageImporter:
         self.template_cache: dict[str, ImportedTemplate] = {}
         self.material_cache: dict[str, bpy.types.Material] = {}
         self.node_index_by_entity_name: dict[str, dict[str, bpy.types.Object]] = {}
+
+    def _effective_palette_id(self, palette_id: str | None) -> str | None:
+        inherited_palette_id = None
+        if self.package_root is not None:
+            inherited_palette_id = _string_prop(self.package_root, PROP_PALETTE_ID)
+        return resolved_palette_id(
+            self.package,
+            palette_id,
+            inherited_palette_id or self.package.scene.root_entity.palette_id,
+        )
 
     def import_scene(self, prefer_cycles: bool = True) -> bpy.types.Object:
         if prefer_cycles and hasattr(self.context.scene.render, "engine"):
@@ -188,7 +216,8 @@ class PackageImporter:
         sidecar = self.package.load_material_sidecar(sidecar_path)
         if sidecar is None:
             return 0
-        palette = palette_for_id(self.package, palette_id)
+        effective_palette_id = self._effective_palette_id(palette_id)
+        palette = palette_for_id(self.package, effective_palette_id)
         applied = 0
         mesh_materials = getattr(obj.data, "materials", None)
         slot_mapping = _slot_mapping_for_object(obj)
@@ -214,8 +243,8 @@ class PackageImporter:
                 slot.link = "OBJECT"
                 slot.material = material
                 applied += 1
-            if palette_id is not None:
-                obj[PROP_PALETTE_ID] = palette_id
+            if effective_palette_id is not None:
+                obj[PROP_PALETTE_ID] = effective_palette_id
             return applied
         for submaterial in sorted(sidecar.submaterials, key=lambda item: item.index):
             if mesh_materials is not None:
@@ -231,8 +260,8 @@ class PackageImporter:
             slot.link = "OBJECT"
             slot.material = material
             applied += 1
-        if palette_id is not None:
-            obj[PROP_PALETTE_ID] = palette_id
+        if effective_palette_id is not None:
+            obj[PROP_PALETTE_ID] = effective_palette_id
         return applied
 
     def instantiate_scene_instance(
@@ -241,6 +270,7 @@ class PackageImporter:
         parent: bpy.types.Object,
         parent_node: bpy.types.Object | None = None,
     ) -> tuple[bpy.types.Object, list[bpy.types.Object]]:
+        effective_palette_id = self._effective_palette_id(record.palette_id)
         anchor = bpy.data.objects.new(record.entity_name, None)
         anchor.empty_display_type = "PLAIN_AXES"
         self.collection.objects.link(anchor)
@@ -261,14 +291,14 @@ class PackageImporter:
             anchor.empty_display_type = "SPHERE"
             if record.mesh_asset is not None:
                 anchor[PROP_MISSING_ASSET] = record.mesh_asset
-            self._apply_instance_metadata([anchor], record)
+            self._apply_instance_metadata([anchor], record, effective_palette_id)
             return anchor, [anchor]
 
         clones = self.instantiate_template(template, anchor, neutralize_axis_root=parent_node is not None)
-        self._apply_instance_metadata([anchor, *clones], record)
+        self._apply_instance_metadata([anchor, *clones], record, effective_palette_id)
 
         for clone in clones:
-            self.rebuild_object_materials(clone, record.palette_id)
+            self.rebuild_object_materials(clone, effective_palette_id)
         return anchor, clones
 
     def import_interior_container(self, interior: Any, package_root: bpy.types.Object) -> bpy.types.Object:
@@ -289,6 +319,7 @@ class PackageImporter:
                 palette_id=interior.palette_id,
                 raw=placement.raw,
             )
+            effective_palette_id = self._effective_palette_id(instance.palette_id)
             placement_anchor = bpy.data.objects.new(instance.entity_name, None)
             placement_anchor.parent = anchor
             placement_anchor.matrix_local = _scene_matrix_to_blender(placement.transform)
@@ -300,7 +331,7 @@ class PackageImporter:
                 placement_anchor.empty_display_type = "SPHERE"
                 if instance.mesh_asset is not None:
                     placement_anchor[PROP_MISSING_ASSET] = instance.mesh_asset
-                self._apply_instance_metadata([placement_anchor], instance)
+                self._apply_instance_metadata([placement_anchor], instance, effective_palette_id)
                 continue
 
             clones = self.instantiate_template(
@@ -309,9 +340,9 @@ class PackageImporter:
                 neutralize_axis_root=True,
                 force_neutralize_axis_root=True,
             )
-            self._apply_instance_metadata([placement_anchor, *clones], instance)
+            self._apply_instance_metadata([placement_anchor, *clones], instance, effective_palette_id)
             for clone in clones:
-                self.rebuild_object_materials(clone, instance.palette_id)
+                self.rebuild_object_materials(clone, effective_palette_id)
 
         for light in interior.lights:
             self.create_light(light, anchor)
@@ -319,15 +350,16 @@ class PackageImporter:
         return anchor
 
     def create_light(self, light: Any, parent: bpy.types.Object) -> bpy.types.Object:
-        light_data = bpy.data.lights.new(name=light.name or "StarBreaker Light", type="SPOT")
-        light_data.energy = light.intensity
+        blender_light_type = _blender_light_type(light)
+        light_data = bpy.data.lights.new(name=light.name or "StarBreaker Light", type=blender_light_type)
+        light_data.energy = _light_energy_to_blender(light.intensity, blender_light_type)
         light_data.color = light.color
-        if hasattr(light_data, "cutoff_distance"):
+        if blender_light_type != "SUN" and hasattr(light_data, "cutoff_distance"):
             light_data.cutoff_distance = light.radius
-        if hasattr(light_data, "spot_size"):
+        if blender_light_type == "SPOT" and hasattr(light_data, "spot_size"):
             outer_angle = max(light.outer_angle or 45.0, 0.01)
-            light_data.spot_size = math.radians(outer_angle)
-        if hasattr(light_data, "spot_blend"):
+            light_data.spot_size = math.radians(outer_angle) * 2.0
+        if blender_light_type == "SPOT" and hasattr(light_data, "spot_blend"):
             outer_angle = max(light.outer_angle or 45.0, 0.01)
             inner_angle = min(light.inner_angle or 0.0, outer_angle)
             inner_ratio = min(max(inner_angle / outer_angle, 0.0), 1.0)
@@ -335,9 +367,9 @@ class PackageImporter:
 
         light_object = bpy.data.objects.new(light.name or "StarBreaker Light", light_data)
         light_object.parent = parent
-        light_object.location = light.position
+        light_object.location = _scene_position_to_blender(light.position)
         light_object.rotation_mode = "QUATERNION"
-        light_object.rotation_quaternion = light.rotation
+        light_object.rotation_quaternion = _scene_light_quaternion_to_blender(light.rotation)
         self.collection.objects.link(light_object)
         return light_object
 
@@ -437,14 +469,59 @@ class PackageImporter:
         submaterial: SubmaterialRecord,
         palette: PaletteRecord | None,
     ) -> bpy.types.Material:
-        palette_key = palette.id if palette is not None else "none"
-        cache_key = _material_identity(sidecar_path, sidecar, submaterial, palette_key)
+        cache_key = _material_identity(sidecar_path, sidecar, submaterial, palette)
         cached = self.material_cache.get(cache_key)
         if cached is not None:
             return cached
 
+        reusable = self._reusable_material(sidecar_path, sidecar, submaterial, palette, cache_key)
+        if reusable is not None:
+            self._build_managed_material(reusable, sidecar_path, sidecar, submaterial, palette, cache_key)
+            self.material_cache[cache_key] = reusable
+            return reusable
+
         material_name = _material_name(sidecar_path, sidecar, submaterial, cache_key)
         material = bpy.data.materials.new(material_name)
+        self._build_managed_material(material, sidecar_path, sidecar, submaterial, palette, cache_key)
+        self.material_cache[cache_key] = material
+        return material
+
+    def _reusable_material(
+        self,
+        sidecar_path: str,
+        sidecar: MaterialSidecar,
+        submaterial: SubmaterialRecord,
+        palette: PaletteRecord | None,
+        material_identity: str,
+    ) -> bpy.types.Material | None:
+        preferred_name = submaterial.blender_material_name or _derived_material_name(sidecar_path, sidecar, submaterial)
+        preferred = bpy.data.materials.get(preferred_name)
+        if preferred is not None and _material_is_compatible(
+            preferred,
+            self.package,
+            sidecar_path,
+            sidecar,
+            submaterial,
+            palette,
+        ):
+            return preferred
+
+        for material in bpy.data.materials:
+            existing_identity = material.get(PROP_MATERIAL_IDENTITY)
+            if isinstance(existing_identity, str) and existing_identity == material_identity:
+                return material
+        return None
+
+    def _build_managed_material(
+        self,
+        material: bpy.types.Material,
+        sidecar_path: str,
+        sidecar: MaterialSidecar,
+        submaterial: SubmaterialRecord,
+        palette: PaletteRecord | None,
+        material_identity: str,
+    ) -> None:
+        palette_key = palette.id if palette is not None else "none"
         material.use_nodes = True
         plan = template_plan_for_submaterial(submaterial)
 
@@ -460,12 +537,9 @@ class PackageImporter:
         material[PROP_SHADER_FAMILY] = submaterial.shader_family
         material[PROP_TEMPLATE_KEY] = plan.template_key
         material[PROP_PALETTE_ID] = palette_key
-        material[PROP_MATERIAL_SIDECAR] = sidecar_path
-        material[PROP_MATERIAL_IDENTITY] = cache_key
+        material[PROP_MATERIAL_SIDECAR] = _canonical_material_sidecar_path(sidecar_path, sidecar)
+        material[PROP_MATERIAL_IDENTITY] = material_identity
         material[PROP_SUBMATERIAL_JSON] = json.dumps(submaterial.raw, sort_keys=True)
-
-        self.material_cache[cache_key] = material
-        return material
 
     def _build_nodraw_material(self, material: bpy.types.Material) -> None:
         nodes = material.node_tree.nodes
@@ -570,8 +644,8 @@ class PackageImporter:
         if base_socket is not None:
             links.new(base_socket, _input_socket(principled, "Base Color"))
         elif palette is not None and plan.uses_palette:
-            primary = self._palette_rgb_node(nodes, palette, "primary", x=100, y=120)
-            links.new(primary.outputs[0], _input_socket(principled, "Base Color"))
+            primary = self._palette_color_socket(nodes, palette, "primary", x=80, y=120)
+            links.new(primary, _input_socket(principled, "Base Color"))
 
         roughness_socket = _input_socket(principled, "Roughness")
         roughness_node = self._image_node(nodes, textures["roughness"], x=80, y=-120, is_color=False)
@@ -620,8 +694,8 @@ class PackageImporter:
                 if base_socket is not None:
                     links.new(base_socket, emission_color)
                 elif palette is not None and plan.uses_palette:
-                    emissive = self._palette_rgb_node(nodes, palette, "primary", x=100, y=300)
-                    links.new(emissive.outputs[0], emission_color)
+                    emissive = self._palette_color_socket(nodes, palette, "primary", x=80, y=300)
+                    links.new(emissive, emission_color)
             emission_strength = _input_socket(principled, "Emission Strength")
             if emission_strength is not None:
                 emission_strength.default_value = 2.0
@@ -660,9 +734,9 @@ class PackageImporter:
         if active_channel is None or palette is None:
             return image_node.outputs[0] if image_node is not None else None
 
-        palette_node = self._palette_rgb_node(nodes, palette, active_channel.name, x=x, y=y - 140)
+        palette_socket = self._palette_color_socket(nodes, palette, active_channel.name, x=x, y=y - 180)
         if image_node is None:
-            return palette_node.outputs[0]
+            return palette_socket
 
         mix = nodes.new("ShaderNodeMixRGB")
         mix.location = (x + 180, y)
@@ -670,24 +744,8 @@ class PackageImporter:
         mix.inputs[0].default_value = 1.0
         mix.inputs[1].default_value = (1.0, 1.0, 1.0, 1.0)
         self._link_color_output(image_node.outputs[0], mix.inputs[1])
-        self._link_color_output(palette_node.outputs[0], mix.inputs[2])
+        self._link_color_output(palette_socket, mix.inputs[2])
         return mix.outputs[0]
-
-    def _palette_rgb_node(
-        self,
-        nodes: bpy.types.Nodes,
-        palette: PaletteRecord,
-        channel_name: str,
-        *,
-        x: int,
-        y: int,
-    ) -> bpy.types.ShaderNodeRGB:
-        node = nodes.new("ShaderNodeRGB")
-        node.location = (x, y)
-        node.label = f"StarBreaker Palette {channel_name}"
-        node.name = f"STARBREAKER_PALETTE_{channel_name.upper()}"
-        node.outputs[0].default_value = (*palette_color(palette, channel_name), 1.0)
-        return node
 
     def _image_node(
         self,
@@ -715,7 +773,12 @@ class PackageImporter:
             material.shadow_method = shadow_method
         material.use_backface_culling = False
 
-    def _apply_instance_metadata(self, objects: list[bpy.types.Object], record: SceneInstanceRecord) -> None:
+    def _apply_instance_metadata(
+        self,
+        objects: list[bpy.types.Object],
+        record: SceneInstanceRecord,
+        effective_palette_id: str | None,
+    ) -> None:
         serialized = json.dumps(record.raw or {
             "entity_name": record.entity_name,
             "mesh_asset": record.mesh_asset,
@@ -731,8 +794,8 @@ class PackageImporter:
                 obj[PROP_MESH_ASSET] = record.mesh_asset
             if record.material_sidecar is not None:
                 obj[PROP_MATERIAL_SIDECAR] = record.material_sidecar
-            if record.palette_id is not None:
-                obj[PROP_PALETTE_ID] = record.palette_id
+            if effective_palette_id is not None:
+                obj[PROP_PALETTE_ID] = effective_palette_id
             obj[PROP_INSTANCE_JSON] = serialized
 
     def _create_package_root(self) -> bpy.types.Object:
@@ -806,6 +869,63 @@ class PackageImporter:
     def _link_color_output(self, output: Any, input_socket: Any) -> None:
         output.node.id_data.links.new(output, input_socket)
 
+    def _ensure_palette_group(self, palette: PaletteRecord) -> bpy.types.ShaderNodeTree:
+        group_name = _palette_group_name(self.package.package_name, palette.id)
+        group = bpy.data.node_groups.get(group_name)
+        if group is None:
+            group = bpy.data.node_groups.new(group_name, "ShaderNodeTree")
+
+        existing_outputs = {
+            item.name
+            for item in group.interface.items_tree
+            if getattr(item, "item_type", None) == "SOCKET" and getattr(item, "in_out", None) == "OUTPUT"
+        }
+
+        channel_specs = (
+            ("Primary", "primary", 120),
+            ("Secondary", "secondary", -20),
+            ("Tertiary", "tertiary", -160),
+            ("Glass", "glass", -300),
+        )
+        for socket_name, _channel_name, _y in channel_specs:
+            if socket_name not in existing_outputs:
+                group.interface.new_socket(name=socket_name, in_out="OUTPUT", socket_type="NodeSocketColor")
+
+        group.nodes.clear()
+
+        output = group.nodes.new("NodeGroupOutput")
+        output.location = (260, 0)
+
+        for socket_name, channel_name, y in channel_specs:
+            rgb = group.nodes.new("ShaderNodeRGB")
+            rgb.location = (0, y)
+            rgb.label = socket_name
+            rgb.outputs[0].default_value = (*palette_color(palette, channel_name), 1.0)
+            group.links.new(rgb.outputs[0], output.inputs[socket_name])
+        return group
+
+    def _palette_color_socket(
+        self,
+        nodes: bpy.types.Nodes,
+        palette: PaletteRecord,
+        channel_name: str,
+        *,
+        x: int,
+        y: int,
+    ) -> Any:
+        group_node = nodes.new("ShaderNodeGroup")
+        group_node.node_tree = self._ensure_palette_group(palette)
+        group_node.location = (x, y)
+        group_node.label = f"StarBreaker Palette {palette.id}"
+        group_node.name = f"STARBREAKER_PALETTE_{_safe_identifier(palette.id).upper()}"
+        socket_name = {
+            "primary": "Primary",
+            "secondary": "Secondary",
+            "tertiary": "Tertiary",
+            "glass": "Glass",
+        }.get(channel_name, "Primary")
+        return _output_socket(group_node, socket_name)
+
 
 def _load_package_from_root(package_root: bpy.types.Object) -> PackageBundle:
     scene_path = _string_prop(package_root, PROP_SCENE_PATH)
@@ -839,14 +959,15 @@ def _material_identity(
     sidecar_path: str,
     sidecar: MaterialSidecar,
     submaterial: SubmaterialRecord,
-    palette_key: str,
+    palette: PaletteRecord | None,
 ) -> str:
     payload = {
-        "material_sidecar": sidecar.normalized_export_relative_path or sidecar_path,
+        "material_sidecar": _canonical_material_sidecar_path(sidecar_path, sidecar),
         "submaterial": submaterial.raw,
     }
-    if _submaterial_uses_palette(submaterial):
-        payload["palette"] = palette_key
+    palette_signature = palette_signature_for_submaterial(submaterial, palette)
+    if palette_signature is not None:
+        payload["palette_channels"] = palette_signature
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.blake2s(encoded, digest_size=16).hexdigest()
 
@@ -868,6 +989,40 @@ def _material_name(
     return f"{preferred_name}#{material_identity[:8]}"
 
 
+def _canonical_material_sidecar_path(sidecar_path: str, sidecar: MaterialSidecar) -> str:
+    return sidecar.normalized_export_relative_path or sidecar_path or sidecar.source_material_path or "material"
+
+
+def _material_is_compatible(
+    material: bpy.types.Material,
+    package: PackageBundle,
+    sidecar_path: str,
+    sidecar: MaterialSidecar,
+    submaterial: SubmaterialRecord,
+    palette: PaletteRecord | None,
+) -> bool:
+    existing_sidecar_path = _string_prop(material, PROP_MATERIAL_SIDECAR)
+    canonical_sidecar_path = _canonical_material_sidecar_path(sidecar_path, sidecar)
+    if existing_sidecar_path is None or existing_sidecar_path not in {sidecar_path, canonical_sidecar_path}:
+        return False
+
+    payload = material.get(PROP_SUBMATERIAL_JSON)
+    if not isinstance(payload, str):
+        return False
+    try:
+        existing_submaterial = json.loads(payload)
+    except json.JSONDecodeError:
+        return False
+    if existing_submaterial != submaterial.raw:
+        return False
+
+    existing_palette = palette_for_id(package, _string_prop(material, PROP_PALETTE_ID))
+    return palette_signature_for_submaterial(submaterial, existing_palette) == palette_signature_for_submaterial(
+        submaterial,
+        palette,
+    )
+
+
 def _derived_material_name(sidecar_path: str, sidecar: MaterialSidecar, submaterial: SubmaterialRecord) -> str:
     normalized_path = sidecar.normalized_export_relative_path or sidecar_path or sidecar.source_material_path or "material"
     sidecar_name = Path(normalized_path).name
@@ -880,10 +1035,13 @@ def _derived_material_name(sidecar_path: str, sidecar: MaterialSidecar, submater
     return f"{sidecar_name}:{submaterial_name}"
 
 
-def _submaterial_uses_palette(submaterial: SubmaterialRecord) -> bool:
-    if submaterial.palette_routing.material_channel is not None:
-        return True
-    return bool(submaterial.palette_routing.layer_channels)
+def _safe_identifier(value: str) -> str:
+    safe = "".join(character if character.isalnum() else "_" for character in value)
+    return safe.strip("_") or "value"
+
+
+def _palette_group_name(package_name: str, palette_id: str) -> str:
+    return f"StarBreaker Palette {package_name} {_safe_identifier(palette_id)}"
 
 
 def _canonical_source_name(name: str) -> str:
@@ -899,6 +1057,37 @@ def _scene_position_to_blender(position: tuple[float, float, float]) -> tuple[fl
 def _scene_matrix_to_blender(matrix_rows: Any) -> Matrix:
     matrix = Matrix(matrix_rows).transposed()
     return SCENE_AXIS_CONVERSION @ matrix @ SCENE_AXIS_CONVERSION_INV
+
+
+def _scene_quaternion_to_blender(rotation: tuple[float, float, float, float]) -> Quaternion:
+    if all(abs(component) <= 1e-8 for component in rotation):
+        return Quaternion((1.0, 0.0, 0.0, 0.0))
+    matrix = Quaternion(rotation).to_matrix().to_4x4()
+    return (SCENE_AXIS_CONVERSION @ matrix @ SCENE_AXIS_CONVERSION_INV).to_quaternion().normalized()
+
+
+def _scene_light_quaternion_to_blender(rotation: tuple[float, float, float, float]) -> Quaternion:
+    return (_scene_quaternion_to_blender(rotation) @ GLTF_LIGHT_BASIS_CORRECTION).normalized()
+
+
+def _blender_light_type(light: Any) -> str:
+    light_type = str(getattr(light, "light_type", "") or "").strip().lower()
+    if light_type in {"directional", "sun"}:
+        return "SUN"
+    if light_type in {"projector", "spot"}:
+        return "SPOT"
+    if light_type in {"omni", "point"}:
+        return "POINT"
+    if (light.inner_angle or 0.0) > 0.0 or (light.outer_angle or 0.0) > 0.0:
+        return "SPOT"
+    return "POINT"
+
+
+def _light_energy_to_blender(intensity: float, blender_light_type: str) -> float:
+    intensity = max(float(intensity), 0.0)
+    if blender_light_type == "SUN":
+        return intensity / GLTF_PBR_WATTS_TO_LUMENS
+    return intensity * 4.0 * math.pi / GLTF_PBR_WATTS_TO_LUMENS
 
 
 def _is_axis_conversion_root(obj: bpy.types.Object) -> bool:

@@ -20,10 +20,12 @@ from starbreaker_addon.palette import (
     palette_color,
     palette_for_id,
     palette_id_for_livery_instance,
+    palette_signature_for_submaterial,
+    resolved_palette_id,
 )
 
 
-ARGO_SCENE = REPO_ROOT / "ships/Packages/Argo MOLE/scene.json"
+ARGO_SCENE = REPO_ROOT / "ships/Packages/ARGO MOLE/scene.json"
 
 
 class PaletteTests(unittest.TestCase):
@@ -56,6 +58,52 @@ class PaletteTests(unittest.TestCase):
         palette = palette_for_id(package, "palette/argo_mole")
         self.assertIsNotNone(palette)
         self.assertEqual(palette_color(palette, "glass"), palette.glass)
+
+    def test_null_child_palette_inherits_package_root_palette(self) -> None:
+        package = PackageBundle.load(ARGO_SCENE)
+        child = next(scene_child for scene_child in package.scene.children if scene_child.palette_id is None)
+        self.assertIsNone(child.palette_id)
+        self.assertEqual(
+            resolved_palette_id(package, child.palette_id, package.scene.root_entity.palette_id),
+            "palette/argo_mole",
+        )
+
+        inherited_palette = palette_for_id(package, child.palette_id, package.scene.root_entity.palette_id)
+        self.assertIsNotNone(inherited_palette)
+        self.assertEqual(inherited_palette.id, "palette/argo_mole")
+
+    def test_palette_signature_reuses_same_glass_color_across_palettes(self) -> None:
+        package = PackageBundle.load(ARGO_SCENE)
+        sidecar = package.load_material_sidecar("Data/Objects/Spaceships/Ships/ARGO/MOLE/argo_mole_interior.materials.json")
+        self.assertIsNotNone(sidecar)
+
+        glass = next(submaterial for submaterial in sidecar.submaterials if submaterial.submaterial_name == "glass_interior_canopy")
+        default_palette = palette_for_id(package, "palette/default")
+        argo_palette = palette_for_id(package, "palette/argo_mole")
+
+        self.assertEqual(
+            palette_signature_for_submaterial(glass, default_palette),
+            palette_signature_for_submaterial(glass, argo_palette),
+        )
+
+    def test_palette_signature_keeps_distinct_primary_colors_split(self) -> None:
+        package = PackageBundle.load(ARGO_SCENE)
+        sidecar = package.load_material_sidecar("Data/Objects/Spaceships/Ships/ARGO/MOLE/argo_mole_exterior.materials.json")
+        self.assertIsNotNone(sidecar)
+
+        paint = next(
+            submaterial
+            for submaterial in sidecar.submaterials
+            if submaterial.palette_routing.material_channel is not None
+            and submaterial.palette_routing.material_channel.name == "primary"
+        )
+        default_palette = palette_for_id(package, "palette/default")
+        argo_palette = palette_for_id(package, "palette/argo_mole")
+
+        self.assertNotEqual(
+            palette_signature_for_submaterial(paint, default_palette),
+            palette_signature_for_submaterial(paint, argo_palette),
+        )
 
 
 if __name__ == "__main__":

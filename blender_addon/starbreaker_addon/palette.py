@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from .manifest import LiveryRecord, PackageBundle, PaletteRecord, SceneInstanceRecord
+from .manifest import LiveryRecord, PackageBundle, PaletteRecord, SceneInstanceRecord, SubmaterialRecord
+from .templates import material_palette_channels
 
 
 def available_palette_ids(package: PackageBundle) -> list[str]:
@@ -19,13 +20,27 @@ def default_palette_id(package: PackageBundle) -> str | None:
     return next(iter(sorted(package.palettes.keys())), None)
 
 
-def palette_for_id(package: PackageBundle, palette_id: str | None) -> PaletteRecord | None:
+def resolved_palette_id(
+    package: PackageBundle,
+    palette_id: str | None,
+    inherited_palette_id: str | None = None,
+) -> str | None:
     if palette_id and palette_id in package.palettes:
-        return package.palettes[palette_id]
-    fallback = default_palette_id(package)
-    if fallback is None:
+        return palette_id
+    if inherited_palette_id and inherited_palette_id in package.palettes:
+        return inherited_palette_id
+    return default_palette_id(package)
+
+
+def palette_for_id(
+    package: PackageBundle,
+    palette_id: str | None,
+    inherited_palette_id: str | None = None,
+) -> PaletteRecord | None:
+    resolved = resolved_palette_id(package, palette_id, inherited_palette_id)
+    if resolved is None:
         return None
-    return package.palettes.get(fallback)
+    return package.palettes.get(resolved)
 
 
 def palette_color(palette: PaletteRecord | None, channel_name: str | None) -> tuple[float, float, float]:
@@ -40,6 +55,16 @@ def palette_color(palette: PaletteRecord | None, channel_name: str | None) -> tu
     if channel_name == "glass":
         return palette.glass
     return palette.primary
+
+
+def palette_signature_for_submaterial(
+    submaterial: SubmaterialRecord,
+    palette: PaletteRecord | None,
+) -> dict[str, tuple[float, float, float] | None] | None:
+    signature: dict[str, tuple[float, float, float] | None] = {}
+    for channel in material_palette_channels(submaterial):
+        signature.setdefault(channel.name, palette_color(palette, channel.name) if palette is not None else None)
+    return signature or None
 
 
 def livery_for_id(package: PackageBundle, livery_id: str | None) -> LiveryRecord | None:

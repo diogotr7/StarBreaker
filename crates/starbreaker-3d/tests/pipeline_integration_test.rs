@@ -52,16 +52,19 @@ fn with_integration_context<F>(test_body: F)
 where
     F: FnOnce(&Database<'_>, &MappedP4k),
 {
-    let Some(dcb_path) = integration_dcb_path() else {
-        return;
-    };
     let Some(p4k_path) = integration_p4k_path() else {
         return;
     };
 
-    let dcb_data = std::fs::read(&dcb_path).expect("failed to read Game2.dcb");
-    let db = Database::from_bytes(&dcb_data).expect("failed to parse Game2.dcb");
     let p4k = MappedP4k::open(&p4k_path).expect("failed to open Data.p4k");
+    let dcb_data = if let Some(dcb_path) = integration_dcb_path() {
+        std::fs::read(&dcb_path).expect("failed to read Game2.dcb")
+    } else {
+        p4k.read_file("Data\\Game2.dcb")
+            .or_else(|_| p4k.read_file("Data\\Game.dcb"))
+            .expect("failed to read Game2.dcb from Data.p4k")
+    };
+    let db = Database::from_bytes(&dcb_data).expect("failed to parse Game2.dcb");
 
     test_body(&db, &p4k);
 }
@@ -92,6 +95,30 @@ fn export_entity_json(
     let result = starbreaker_3d::assemble_glb_with_loadout(db, p4k, record, &tree, opts)
         .expect("representative bundled export failed");
     glb_json(&result.glb)
+}
+
+fn node_material_names(glb: &serde_json::Value, node_name: &str) -> Vec<String> {
+    let materials = glb["materials"].as_array().expect("glTF materials should be an array");
+    let meshes = glb["meshes"].as_array().expect("glTF meshes should be an array");
+    let nodes = glb["nodes"].as_array().expect("glTF nodes should be an array");
+
+    let Some(node) = nodes.iter().find(|node| node["name"].as_str() == Some(node_name)) else {
+        return Vec::new();
+    };
+    let Some(mesh_index) = node["mesh"].as_u64() else {
+        return Vec::new();
+    };
+    let primitives = meshes[mesh_index as usize]["primitives"]
+        .as_array()
+        .expect("glTF mesh primitives should be an array");
+
+    primitives
+        .iter()
+        .filter_map(|primitive| primitive["material"].as_u64())
+        .filter_map(|material_index| materials.get(material_index as usize))
+        .filter_map(|material| material["name"].as_str())
+        .map(str::to_string)
+        .collect()
 }
 
 #[test]
@@ -127,6 +154,51 @@ fn representative_decomposed_export_emits_complete_package() {
         assert!(paths.iter().any(|path| path.starts_with("meshes/")), "mesh assets missing: {paths:#?}");
         assert!(paths.iter().any(|path| path.starts_with("materials/")), "material sidecars missing: {paths:#?}");
         assert!(paths.iter().any(|path| path.starts_with("textures/")), "canonical textures missing: {paths:#?}");
+    });
+}
+
+#[test]
+#[ignore = "requires Data.p4k; set STARBREAKER_TEST_P4K when needed"]
+fn mole_front_mining_cab_decomposed_export_keeps_exterior_decals() {
+    with_integration_context(|db, p4k| {
+        let idx = starbreaker_datacore::loadout::EntityIndex::new(db);
+        let record = idx
+            .find_record("ARGO_MOLE")
+            .expect("ARGO_MOLE not found");
+        let tree = starbreaker_datacore::loadout::resolve_loadout_indexed(&idx, record);
+        let opts = starbreaker_3d::ExportOptions {
+            kind: starbreaker_3d::ExportKind::Decomposed,
+            material_mode: starbreaker_3d::MaterialMode::All,
+            include_interior: true,
+            include_attachments: true,
+            include_lights: true,
+            lod_level: 0,
+            texture_mip: 0,
+            ..Default::default()
+        };
+
+        let result = starbreaker_3d::assemble_glb_with_loadout(db, p4k, record, &tree, &opts)
+            .expect("ARGO_MOLE decomposed export failed");
+        let decomposed = result
+            .decomposed
+            .as_ref()
+            .expect("decomposed export should return a file package");
+        let front_cab = decomposed
+            .files
+            .iter()
+            .find(|file| {
+                file.relative_path
+                    .ends_with("Data/Objects/Spaceships/Turrets/ARGO/Mole/ARGO_Mole_Front_MiningCab/ARGO_Mole_Front_MiningCab.glb")
+            })
+            .expect("front mining cab mesh asset missing from decomposed export");
+
+        let glb = glb_json(&front_cab.bytes);
+        let fmc_exterior_materials = node_material_names(&glb, "fmc_exterior");
+
+        assert!(
+            fmc_exterior_materials.iter().any(|name| name.contains("decals")),
+            "expected fmc_exterior to keep a decal primitive, got {fmc_exterior_materials:#?}"
+        );
     });
 }
 
