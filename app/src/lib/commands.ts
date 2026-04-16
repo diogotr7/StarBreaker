@@ -122,13 +122,16 @@ export interface ExportRequest {
   include_interior: boolean;
   include_lights: boolean;
   threads: number;
+  overwrite_existing_assets: boolean;
 }
 
 export interface ExportProgress {
   current: number;
   total: number;
+  fraction: number;
   entity_name: string;
   entity_id: string;
+  stage: string;
   error: string | null;
 }
 
