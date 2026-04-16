@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 use starbreaker_datacore::database::Database;
@@ -68,6 +69,86 @@ fn prepare_decomposed_output_root(output_root: &PathBuf, package_name: &str) -> 
     std::fs::create_dir_all(&package_root)
         .map_err(|e| CliError::IoPath { source: e, path: package_root.display().to_string() })?;
     Ok(())
+}
+
+fn should_skip_existing_decomposed_asset(
+    file: &starbreaker_3d::ExportedFile,
+    skip_existing_assets: bool,
+) -> bool {
+    skip_existing_assets && file.kind.is_mesh_or_texture_asset()
+}
+
+fn write_decomposed_file(
+    file: &starbreaker_3d::ExportedFile,
+    output_path: &PathBuf,
+    skip_existing_assets: bool,
+) -> Result<()> {
+    if output_path.exists() {
+        if !output_path.is_file() {
+            return Err(CliError::InvalidInput(format!(
+                "decomposed output path '{}' already exists as a directory",
+                output_path.display(),
+            )));
+        }
+        if should_skip_existing_decomposed_asset(file, skip_existing_assets) {
+            return Ok(());
+        }
+    }
+
+    std::fs::write(output_path, &file.bytes)
+        .map_err(|e| CliError::IoPath { source: e, path: output_path.display().to_string() })?;
+    Ok(())
+}
+
+fn collect_existing_decomposed_assets(output_root: &Path) -> Result<HashSet<String>> {
+    let data_root = output_root.join("Data");
+    let mut existing = HashSet::new();
+    if !data_root.exists() {
+        return Ok(existing);
+    }
+
+    let mut pending = vec![data_root];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .map_err(|e| CliError::IoPath { source: e, path: dir.display().to_string() })?
+        {
+            let entry = entry
+                .map_err(|e| CliError::IoPath { source: e, path: dir.display().to_string() })?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|e| CliError::IoPath { source: e, path: path.display().to_string() })?;
+            if file_type.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+
+            let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
+                continue;
+            };
+            if !matches!(extension, "glb" | "png") {
+                continue;
+            }
+
+            let relative = path
+                .strip_prefix(output_root)
+                .map_err(|_| {
+                    CliError::InvalidInput(format!(
+                        "failed to compute relative decomposed asset path for '{}'",
+                        path.display(),
+                    ))
+                })?
+                .to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase();
+            existing.insert(relative);
+        }
+    }
+
+    Ok(existing)
 }
 
 #[derive(Subcommand)]
@@ -165,6 +246,13 @@ fn export(
             starbreaker_3d::ExportKind::Decomposed => PathBuf::from(name.clone()),
         }
     });
+    let existing_asset_paths = if export_opts.kind == starbreaker_3d::ExportKind::Decomposed
+        && opts.skip_existing_assets
+    {
+        Some(collect_existing_decomposed_assets(&output)?)
+    } else {
+        None
+    };
 
     crate::log_mem_stats("before loadout resolve");
     let tree = resolve_loadout_indexed(&idx, record);
@@ -186,7 +274,15 @@ fn export(
     }
 
     crate::log_mem_stats("before export");
-    let result = starbreaker_3d::assemble_glb_with_loadout(&db, &p4k, record, &tree, &export_opts)?;
+    let result = starbreaker_3d::assemble_glb_with_loadout_with_progress(
+        &db,
+        &p4k,
+        record,
+        &tree,
+        &export_opts,
+        None,
+        existing_asset_paths.as_ref(),
+    )?;
     crate::log_mem_stats("after export");
     eprintln!("Geometry: {}", result.geometry_path);
     eprintln!("Material: {}", result.material_path);
@@ -214,8 +310,7 @@ fn export(
                     std::fs::create_dir_all(parent)
                         .map_err(|e| CliError::IoPath { source: e, path: parent.display().to_string() })?;
                 }
-                std::fs::write(&output_path, &file.bytes)
-                    .map_err(|e| CliError::IoPath { source: e, path: output_path.display().to_string() })?;
+                write_decomposed_file(file, &output_path, opts.skip_existing_assets)?;
             }
         }
     }
