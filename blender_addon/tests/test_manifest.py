@@ -45,7 +45,12 @@ class ManifestTests(unittest.TestCase):
 
     def test_material_sidecar_preserves_layer_and_virtual_input_contract(self) -> None:
         interior = MaterialSidecar.from_file(ARGO_INTERIOR)
+        self.assertIsNone(interior.geometry_path)
         self.assertEqual(interior.submaterials[1].shader_family, "DisplayScreen")
+        self.assertEqual(
+            interior.submaterials[1].blender_material_name,
+            f"argo_mole_interior:{interior.submaterials[1].submaterial_name}",
+        )
         self.assertIn("$RenderToTexture", interior.submaterials[1].virtual_inputs)
 
         component = MaterialSidecar.from_file(COMPONENT_MASTER)
