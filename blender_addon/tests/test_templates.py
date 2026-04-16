@@ -30,6 +30,7 @@ def synthetic_submaterial(shader_family: str, *, tokens: list[str] | None = None
     return SubmaterialRecord(
         index=0,
         submaterial_name=f"synthetic_{shader_family.lower()}",
+        blender_material_name=None,
         shader=shader_family,
         shader_family=shader_family,
         activation_state="active" if active else "inactive",
