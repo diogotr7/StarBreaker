@@ -61,6 +61,9 @@ pub struct ExportOpts {
     /// Skip writing existing decomposed mesh and texture assets under Data/
     #[arg(long)]
     pub skip_existing_assets: bool,
+    /// Include NoDraw faces and sidecar entries in decomposed exports
+    #[arg(long)]
+    pub include_nodraw: bool,
 }
 
 impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
@@ -90,6 +93,7 @@ impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
             include_attachments: !opts.no_attachments,
             include_interior: !opts.no_interior,
             include_lights: !opts.no_lights,
+            include_nodraw: opts.include_nodraw,
             texture_mip: opts.mip,
             lod_level: opts.lod,
         }
