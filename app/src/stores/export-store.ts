@@ -33,6 +33,7 @@ interface ExportState {
   includeAttachments: boolean;
   includeInterior: boolean;
   includeLights: boolean;
+  overwriteExistingAssets: boolean;
   threads: number;
   outputDir: string | null;
   setLod: (v: number) => void;
@@ -43,18 +44,21 @@ interface ExportState {
   setIncludeAttachments: (v: boolean) => void;
   setIncludeInterior: (v: boolean) => void;
   setIncludeLights: (v: boolean) => void;
+  setOverwriteExistingAssets: (v: boolean) => void;
   setThreads: (v: number) => void;
   setOutputDir: (dir: string | null) => void;
 
   // Export progress
   exporting: boolean;
+  progressFraction: number;
   progress: number;
   progressTotal: number;
   progressLabel: string;
+  progressStage: string;
   exportErrors: string[];
   result: ExportDone | null;
   setExporting: (v: boolean) => void;
-  setProgress: (current: number, total: number, label: string) => void;
+  setProgress: (fraction: number, current: number, total: number, label: string, stage: string) => void;
   addExportError: (msg: string) => void;
   setResult: (result: ExportDone | null) => void;
   deselectIds: (ids: string[]) => void;
@@ -69,6 +73,7 @@ type PersistedExportState = Pick<
   | "includeAttachments"
   | "includeInterior"
   | "includeLights"
+  | "overwriteExistingAssets"
   | "threads"
   | "outputDir"
   | "hideNpcVariants"
@@ -118,6 +123,7 @@ export const useExportStore = create<ExportState>()(
   includeAttachments: true,
   includeInterior: true,
   includeLights: true,
+  overwriteExistingAssets: true,
   threads: 0,
   outputDir: null,
   setLod: (v) => set({ lod: v }),
@@ -128,19 +134,41 @@ export const useExportStore = create<ExportState>()(
   setIncludeAttachments: (v) => set({ includeAttachments: v }),
   setIncludeInterior: (v) => set({ includeInterior: v }),
   setIncludeLights: (v) => set({ includeLights: v }),
+  setOverwriteExistingAssets: (v) => set({ overwriteExistingAssets: v }),
   setThreads: (v) => set({ threads: v }),
   setOutputDir: (dir) => set({ outputDir: dir }),
 
   exporting: false,
+  progressFraction: 0,
   progress: 0,
   progressTotal: 0,
   progressLabel: "",
+  progressStage: "",
   exportErrors: [],
   result: null,
   setExporting: (v) =>
-    set({ exporting: v, ...(v ? { result: null, exportErrors: [] } : {}) }),
-  setProgress: (current, total, label) =>
-    set({ progress: current, progressTotal: total, progressLabel: label }),
+    set({
+      exporting: v,
+      ...(v
+        ? {
+            result: null,
+            exportErrors: [],
+            progressFraction: 0,
+            progress: 0,
+            progressTotal: 0,
+            progressLabel: "",
+            progressStage: "",
+          }
+        : {}),
+    }),
+  setProgress: (fraction, current, total, label, stage) =>
+    set({
+      progressFraction: fraction,
+      progress: current,
+      progressTotal: total,
+      progressLabel: label,
+      progressStage: stage,
+    }),
   addExportError: (msg) =>
     set((s) => ({ exportErrors: [...s.exportErrors, msg] })),
   setResult: (result) => set({ result, exporting: false }),
@@ -162,6 +190,7 @@ export const useExportStore = create<ExportState>()(
         includeAttachments: s.includeAttachments,
         includeInterior: s.includeInterior,
         includeLights: s.includeLights,
+        overwriteExistingAssets: s.overwriteExistingAssets,
         threads: s.threads,
         outputDir: s.outputDir,
         hideNpcVariants: s.hideNpcVariants,
