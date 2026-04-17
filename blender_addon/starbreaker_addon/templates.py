@@ -42,7 +42,7 @@ def template_plan_for_submaterial(submaterial: SubmaterialRecord) -> MaterialTem
         return MaterialTemplatePlan("decal_stencil", "Decal Or Stencil", "BLEND", "HASHED", True, True, False, False, False, True)
     if flags.has_parallax_occlusion_mapping:
         return MaterialTemplatePlan("parallax_pom", "Parallax Or POM", "OPAQUE", "OPAQUE", True, True, False, False, True, False)
-    if family in {"DisplayScreen", "UIPlane"}:
+    if family in {"DisplayScreen", "Monitor", "UIPlane"}:
         return MaterialTemplatePlan("screen_hud", "Screen Or HUD", "BLEND", "HASHED", True, False, False, False, True, True)
     if family in {"HumanSkin_V2", "Eye", "Organic"}:
         return MaterialTemplatePlan("biological", "Biological", "OPAQUE", "OPAQUE", True, True, False, False, False, False)

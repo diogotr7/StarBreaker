@@ -369,8 +369,13 @@ mod tests {
                     is_virtual: false,
                 }],
                 public_params: Vec::new(),
+                authored_attributes: Vec::new(),
+                authored_textures: Vec::new(),
+                authored_child_blocks: Vec::new(),
             }],
             source_path: Some("Data/Objects/shared.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
         }
     }
 
@@ -393,16 +398,68 @@ mod tests {
                 normal_tex: None,
                 layers: vec![
                     crate::mtl::MatLayer {
+                        name: "Primary".into(),
                         path: "libs/materials/base_steel.mtl".into(),
+                        sub_material: String::new(),
+                        authored_attributes: vec![crate::mtl::AuthoredAttribute {
+                            name: "CustomBlendMode".into(),
+                            value: "Additive".into(),
+                        }],
+                        authored_child_blocks: vec![crate::mtl::AuthoredBlock {
+                            tag: "CustomAnimation".into(),
+                            attributes: vec![crate::mtl::AuthoredAttribute {
+                                name: "Duration".into(),
+                                value: "2.0".into(),
+                            }],
+                            children: Vec::new(),
+                        }],
                         tint_color: [1.0, 1.0, 1.0],
+                        wear_tint: [1.0, 1.0, 1.0],
                         palette_tint: 1,
+                        gloss_mult: 1.0,
+                        wear_gloss: 1.0,
                         uv_tiling: 1.0,
+                        height_bias: 0.0,
+                        height_scale: 1.0,
+                        snapshot: None,
+                        resolved_material: Some(crate::mtl::ResolvedLayerMaterial {
+                            name: "base_steel".into(),
+                            shader: "Layer".into(),
+                            shader_family: "Layer".into(),
+                            authored_attributes: vec![crate::mtl::AuthoredAttribute {
+                                name: "MatTemplate".into(),
+                                value: "steel_template".into(),
+                            }],
+                            public_params: vec![crate::mtl::PublicParam {
+                                name: "WearGlossiness".into(),
+                                value: "0.75".into(),
+                            }],
+                            authored_child_blocks: vec![crate::mtl::AuthoredBlock {
+                                tag: "VertexDeform".into(),
+                                attributes: vec![crate::mtl::AuthoredAttribute {
+                                    name: "DividerY".into(),
+                                    value: "0.25".into(),
+                                }],
+                                children: Vec::new(),
+                            }],
+                        }),
                     },
                     crate::mtl::MatLayer {
+                        name: "Wear".into(),
                         path: "libs/materials/wear_scratches.mtl".into(),
+                        sub_material: String::new(),
+                        authored_attributes: Vec::new(),
+                        authored_child_blocks: Vec::new(),
                         tint_color: [0.8, 0.7, 0.6],
+                        wear_tint: [1.0, 1.0, 1.0],
                         palette_tint: 2,
+                        gloss_mult: 1.0,
+                        wear_gloss: 1.0,
                         uv_tiling: 2.5,
+                        height_bias: 0.0,
+                        height_scale: 1.0,
+                        snapshot: None,
+                        resolved_material: None,
                     },
                 ],
                 palette_tint: 1,
@@ -415,8 +472,61 @@ mod tests {
                     name: "WearAmount".into(),
                     value: "0.35".into(),
                 }],
+                authored_attributes: vec![crate::mtl::AuthoredAttribute {
+                    name: "MtlFlags".into(),
+                    value: "1024".into(),
+                }],
+                authored_textures: vec![crate::mtl::AuthoredTexture {
+                    slot: "TexSlot7".into(),
+                    path: "textures/stencil_mask.dds".into(),
+                    is_virtual: false,
+                    attributes: vec![crate::mtl::AuthoredAttribute {
+                        name: "Map".into(),
+                        value: "TexSlot7".into(),
+                    }],
+                    child_blocks: vec![crate::mtl::AuthoredBlock {
+                        tag: "TexMod".into(),
+                        attributes: vec![crate::mtl::AuthoredAttribute {
+                            name: "TileU".into(),
+                            value: "4".into(),
+                        }],
+                        children: Vec::new(),
+                    }],
+                }],
+                authored_child_blocks: vec![crate::mtl::AuthoredBlock {
+                    tag: "VertexDeform".into(),
+                    attributes: vec![crate::mtl::AuthoredAttribute {
+                        name: "DividerX".into(),
+                        value: "0.5".into(),
+                    }],
+                    children: Vec::new(),
+                }],
             }],
             source_path: Some("Data/Objects/layered.mtl".into()),
+            paint_override: Some(crate::mtl::PaintOverrideInfo {
+                paint_item_name: "paint_variant_gold".into(),
+                subgeometry_tag: "VariantGold".into(),
+                subgeometry_index: 1,
+                material_path: Some("Data/Objects/layered_variant.mtl".into()),
+            }),
+            material_set: crate::mtl::MaterialSetAuthoredData {
+                attributes: vec![crate::mtl::AuthoredAttribute {
+                    name: "DefaultPalette".into(),
+                    value: "vehicle.palette.rsi_zeus_cl".into(),
+                }],
+                public_params: vec![crate::mtl::PublicParam {
+                    name: "RootGlowScale".into(),
+                    value: "2.0".into(),
+                }],
+                child_blocks: vec![crate::mtl::AuthoredBlock {
+                    tag: "VertexDeform".into(),
+                    attributes: vec![crate::mtl::AuthoredAttribute {
+                        name: "DividerY".into(),
+                        value: "0.25".into(),
+                    }],
+                    children: Vec::new(),
+                }],
+            },
         }
     }
 
@@ -427,6 +537,17 @@ mod tests {
             secondary: [0.4, 0.5, 0.6],
             tertiary: [0.7, 0.8, 0.9],
             glass: [0.2, 0.3, 0.4],
+            finish: crate::mtl::TintPaletteFinish {
+                primary: crate::mtl::TintPaletteFinishEntry {
+                    specular: Some([0.6, 0.5, 0.4]),
+                    glossiness: Some(0.8),
+                },
+                glass: crate::mtl::TintPaletteFinishEntry {
+                    specular: Some([0.12, 0.22, 0.32]),
+                    glossiness: Some(0.45),
+                },
+                ..Default::default()
+            },
         }
     }
 
@@ -437,6 +558,7 @@ mod tests {
             secondary: [0.2, 0.7, 0.6],
             tertiary: [0.4, 0.4, 0.9],
             glass: [0.6, 0.7, 0.8],
+            finish: Default::default(),
         }
     }
 
@@ -478,8 +600,13 @@ mod tests {
                         value: "0.75".into(),
                     },
                 ],
+                authored_attributes: Vec::new(),
+                authored_textures: Vec::new(),
+                authored_child_blocks: Vec::new(),
             }],
             source_path: Some("Data/Objects/phase_two_glass.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
         }
     }
 
@@ -504,8 +631,13 @@ mod tests {
                 palette_tint: 0,
                 texture_slots: Vec::new(),
                 public_params: Vec::new(),
+                authored_attributes: Vec::new(),
+                authored_textures: Vec::new(),
+                authored_child_blocks: Vec::new(),
             }],
             source_path: Some("Data/Objects/hidden_panel.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
         }
     }
 
@@ -537,8 +669,13 @@ mod tests {
                     name: "BackColour".into(),
                     value: "0.1,0.2,0.3".into(),
                 }],
+                authored_attributes: Vec::new(),
+                authored_textures: Vec::new(),
+                authored_child_blocks: Vec::new(),
             }],
             source_path: Some("Data/Objects/mfd_screen.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
         }
     }
 
@@ -570,8 +707,13 @@ mod tests {
                     name: "PatternIndex".into(),
                     value: pattern_index.into(),
                 }],
+                authored_attributes: Vec::new(),
+                authored_textures: Vec::new(),
+                authored_child_blocks: Vec::new(),
             }],
             source_path: Some("Data/Objects/shared.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
         }
     }
 
@@ -596,8 +738,13 @@ mod tests {
                 palette_tint: 0,
                 texture_slots: Vec::new(),
                 public_params: Vec::new(),
+                authored_attributes: Vec::new(),
+                authored_textures: Vec::new(),
+                authored_child_blocks: Vec::new(),
             }],
             source_path: Some("Data/Objects/nodraw.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
         }
     }
 
@@ -626,8 +773,13 @@ mod tests {
                     is_virtual: false,
                 }],
                 public_params: Vec::new(),
+                authored_attributes: Vec::new(),
+                authored_textures: Vec::new(),
+                authored_child_blocks: Vec::new(),
             }],
             source_path: Some("Data/Objects/decal.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
         }
     }
 
@@ -938,6 +1090,10 @@ mod tests {
         assert_eq!(layers.len(), 2);
         assert_eq!(layers[0]["index"], serde_json::json!(0));
         assert_eq!(layers[0]["path"], serde_json::json!("libs/materials/base_steel.mtl"));
+        assert_eq!(layers[0]["resolved_material"]["shader_family"], serde_json::json!("Layer"));
+        assert_eq!(layers[0]["resolved_material"]["authored_attributes"][0]["name"], serde_json::json!("MatTemplate"));
+        assert_eq!(layers[0]["authored_attributes"][0]["name"], serde_json::json!("CustomBlendMode"));
+        assert_eq!(layers[0]["authored_child_blocks"][0]["tag"], serde_json::json!("CustomAnimation"));
         assert_eq!(layers[0]["palette_tint"], serde_json::json!(1));
         assert_eq!(layers[1]["index"], serde_json::json!(1));
         assert_eq!(layers[1]["path"], serde_json::json!("libs/materials/wear_scratches.mtl"));
@@ -982,7 +1138,11 @@ mod tests {
         let resolved_color = palette["resolved_color"]
             .as_array()
             .expect("resolved palette color should be present");
+        let resolved_finish = palette["resolved_finish"]
+            .as_object()
+            .expect("resolved palette finish should be present");
         let material_set_identity = &semantic["material_set_identity"];
+        let paint_override = &semantic["paint_override"];
 
         assert_eq!(palette["source_name"], serde_json::json!("vehicle.palette.rsi_zeus_cl"));
         assert_eq!(palette["material_channel"]["index"], serde_json::json!(1));
@@ -991,17 +1151,43 @@ mod tests {
         assert!((resolved_color[0].as_f64().unwrap() - 0.1).abs() < 1e-5);
         assert!((resolved_color[1].as_f64().unwrap() - 0.2).abs() < 1e-5);
         assert!((resolved_color[2].as_f64().unwrap() - 0.3).abs() < 1e-5);
+        let resolved_finish_specular = resolved_finish["specular"]
+            .as_array()
+            .expect("resolved palette finish specular should be present");
+        assert_eq!(resolved_finish_specular.len(), 3);
+        assert!((resolved_finish_specular[0].as_f64().unwrap() - 0.6).abs() < 1e-5);
+        assert!((resolved_finish_specular[1].as_f64().unwrap() - 0.5).abs() < 1e-5);
+        assert!((resolved_finish_specular[2].as_f64().unwrap() - 0.4).abs() < 1e-5);
+        assert!((resolved_finish["glossiness"].as_f64().unwrap() - 0.8).abs() < 1e-5);
         assert_eq!(palette_layers.len(), 2);
         assert_eq!(palette_layers[0]["index"], serde_json::json!(0));
         assert_eq!(palette_layers[0]["channel"]["name"], serde_json::json!("primary"));
+        let layer_finish_specular = palette_layers[0]["resolved_finish"]["specular"]
+            .as_array()
+            .expect("layer finish specular should be present");
+        assert_eq!(layer_finish_specular.len(), 3);
+        assert!((layer_finish_specular[0].as_f64().unwrap() - 0.6).abs() < 1e-5);
+        assert!((layer_finish_specular[1].as_f64().unwrap() - 0.5).abs() < 1e-5);
+        assert!((layer_finish_specular[2].as_f64().unwrap() - 0.4).abs() < 1e-5);
+        assert!((palette_layers[0]["resolved_finish"]["glossiness"].as_f64().unwrap() - 0.8).abs() < 1e-5);
         assert_eq!(palette_layers[1]["index"], serde_json::json!(1));
         assert_eq!(palette_layers[1]["channel"]["name"], serde_json::json!("secondary"));
+        assert!(palette_layers[1]["resolved_finish"].is_null());
 
         assert_eq!(material_set_identity["source_path"], serde_json::json!("Data/Objects/layered.mtl"));
         assert_eq!(material_set_identity["source_stem"], serde_json::json!("layered"));
         assert_eq!(material_set_identity["submaterial_index"], serde_json::json!(0));
         assert_eq!(material_set_identity["submaterial_name"], serde_json::json!("layered"));
         assert_eq!(material_set_identity["slot_name"], serde_json::json!("test"));
+        assert_eq!(paint_override["subgeometry_tag"], serde_json::json!("VariantGold"));
+        assert_eq!(paint_override["paint_item_name"], serde_json::json!("paint_variant_gold"));
+        assert_eq!(semantic["authored_material_set"]["attributes"][0]["name"], serde_json::json!("DefaultPalette"));
+        assert_eq!(semantic["authored_material_set"]["public_params"][0]["name"], serde_json::json!("RootGlowScale"));
+        assert_eq!(semantic["authored_material_set"]["child_blocks"][0]["tag"], serde_json::json!("VertexDeform"));
+        assert_eq!(semantic["authored_attributes"][0]["name"], serde_json::json!("MtlFlags"));
+        assert_eq!(semantic["authored_public_params"][0]["name"], serde_json::json!("WearAmount"));
+        assert_eq!(semantic["authored_child_blocks"][0]["tag"], serde_json::json!("VertexDeform"));
+        assert_eq!(semantic["texture_slots"][0]["authored_child_blocks"][0]["tag"], serde_json::json!("TexMod"));
         assert_eq!(semantic["activation_state"]["state"], serde_json::json!("active"));
         assert_eq!(semantic["activation_state"]["reason"], serde_json::json!("visible"));
     }
@@ -1018,7 +1204,7 @@ mod tests {
                 root_materials: Some(phase_two_material_file()),
                 root_textures: Some(phase_two_textures()),
                 root_nmc: None,
-                root_palette: None,
+                root_palette: Some(named_palette()),
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
@@ -1067,6 +1253,29 @@ mod tests {
 
         assert_eq!(material["normalTexture"]["texCoord"], serde_json::json!(0));
         assert_eq!(material["occlusionTexture"]["texCoord"], serde_json::json!(1));
+
+        let palette = &material["extras"]["semantic"]["palette"];
+        let palette_color = palette["resolved_color"]
+            .as_array()
+            .expect("glass palette color should be present");
+        let palette_finish = palette["resolved_finish"]
+            .as_object()
+            .expect("glass palette finish should be present");
+        let palette_finish_specular = palette_finish["specular"]
+            .as_array()
+            .expect("glass palette finish specular should be present");
+
+        assert_eq!(palette["material_channel"]["index"], serde_json::json!(0));
+        assert_eq!(palette["material_channel"]["name"], serde_json::json!("glass"));
+        assert_eq!(palette_color.len(), 3);
+        assert!((palette_color[0].as_f64().unwrap() - 0.2).abs() < 1e-5);
+        assert!((palette_color[1].as_f64().unwrap() - 0.3).abs() < 1e-5);
+        assert!((palette_color[2].as_f64().unwrap() - 0.4).abs() < 1e-5);
+        assert_eq!(palette_finish_specular.len(), 3);
+        assert!((palette_finish_specular[0].as_f64().unwrap() - 0.12).abs() < 1e-5);
+        assert!((palette_finish_specular[1].as_f64().unwrap() - 0.22).abs() < 1e-5);
+        assert!((palette_finish_specular[2].as_f64().unwrap() - 0.32).abs() < 1e-5);
+        assert!((palette_finish["glossiness"].as_f64().unwrap() - 0.45).abs() < 1e-5);
 
         let emissive_strength = material["extensions"]["KHR_materials_emissive_strength"]["emissiveStrength"]
             .as_f64()

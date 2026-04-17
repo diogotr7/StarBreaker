@@ -26,13 +26,33 @@ Within that export root:
 Each `*.materials.json` sidecar preserves:
 
 - source material path and geometry path
-- per-submaterial name, shader, shader family, and activation state
+- per-submaterial name, raw shader string, shader family classification if known, and activation state
 - decoded feature flags from `StringGenMask`
 - direct texture-slot inventory with semantic roles, virtual-input flags, source paths, and exported texture paths
+- DDNA identity markers on normal-gloss sources plus smoothness-origin markers on roughness exports derived from `_ddna` alpha
+- structured `texture_transform` objects derived from authored `TexMod` blocks when texture UV animation or tiling metadata is present
 - public params as structured JSON values where simple coercion is safe
-- layer manifests including source material paths, tint data, palette routing, UV tiling, and exported layer texture references
+- layer manifests including source material paths, authored layer attrs, `Submtl`-selected resolved layer-material metadata, palette routing, UV tiling, resolved layer snapshots, per-layer semantic `texture_slots`, and exported layer texture references
+- authored material-set metadata such as root attributes and root-level `PublicParams`
+- authored submaterial attributes exactly as read from the `.mtl`
+- authored per-texture metadata, including nested child blocks such as `TexMod`
+- authored non-texture child blocks such as `VertexDeform`
 - material-set identity and palette-routing metadata
+- resolved paint-override selectors when equipped paints choose a palette or material through `SubGeometry` tag matching
 - variant-membership hints for palette-routed and layered materials
+
+The current sidecar contract is now substantially closer to the raw `.mtl` XML surface, but it is still intentionally split into two layers:
+
+- curated semantic fields meant for Blender reconstruction and stable downstream use
+- authored XML-derived fields kept for inspection, debugging, and future reconstruction upgrades
+
+### Remaining XML-first Expansion Priorities
+
+The exporter-side contract gaps are now mostly closed. The remaining work is primarily broader sampling and evidence collection:
+
+- any additional raw submaterial attrs not yet surfaced in the curated semantic contract, especially rare family-specific fields that matter to reconstruction
+- broader sampling of non-texture child blocks beyond the currently preserved payload shapes, including any deeper waveform trees that appear in future fixtures
+- broader sampling of referenced layer materials to confirm rarer `Submtl` selector patterns and any layer-only child blocks that do not appear in the current fixtures
 
 ## Palette And Livery Rules
 

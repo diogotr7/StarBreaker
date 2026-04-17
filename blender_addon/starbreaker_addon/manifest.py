@@ -154,6 +154,11 @@ class TextureReference:
     export_kind: str
     slot: str | None = None
     is_virtual: bool = False
+    texture_identity: str | None = None
+    alpha_semantic: str | None = None
+    derived_from_texture_identity: str | None = None
+    derived_from_semantic: str | None = None
+    texture_transform: JsonDict | None = None
 
     @classmethod
     def from_value(cls, value: Any) -> TextureReference:
@@ -165,6 +170,11 @@ class TextureReference:
             export_kind=str(data.get("export_kind", "source")),
             slot=_as_str(data.get("slot")),
             is_virtual=_as_bool(data.get("is_virtual")),
+            texture_identity=_as_str(data.get("texture_identity")),
+            alpha_semantic=_as_str(data.get("alpha_semantic")),
+            derived_from_texture_identity=_as_str(data.get("derived_from_texture_identity")),
+            derived_from_semantic=_as_str(data.get("derived_from_semantic")),
+            texture_transform=_as_dict(data.get("texture_transform")) or None,
         )
 
 

@@ -11,7 +11,7 @@ REPO_ROOT = STARBREAKER_ROOT.parent
 
 sys.path.insert(0, str(ADDON_ROOT))
 
-from starbreaker_addon.manifest import LightRecord, MaterialSidecar, PackageBundle, infer_export_root
+from starbreaker_addon.manifest import LightRecord, MaterialSidecar, PackageBundle, TextureReference, infer_export_root
 
 
 ARGO_SCENE = REPO_ROOT / "ships/Packages/ARGO MOLE/scene.json"
@@ -80,6 +80,41 @@ class ManifestTests(unittest.TestCase):
         )
         self.assertEqual(light.light_type, "Projector")
         self.assertEqual(light.outer_angle, 24.0)
+
+    def test_texture_reference_preserves_ddna_smoothness_markers(self) -> None:
+        texture = TextureReference.from_value(
+            {
+                "role": "roughness",
+                "source_path": "Data/Objects/Ships/Test/hull_ddna.dds",
+                "export_path": "Data/Objects/Ships/Test/hull_ddna.roughness.png",
+                "export_kind": "roughness_from_normal_gloss",
+                "derived_from_texture_identity": "ddna_normal",
+                "derived_from_semantic": "smoothness",
+            }
+        )
+
+        self.assertEqual(texture.derived_from_texture_identity, "ddna_normal")
+        self.assertEqual(texture.derived_from_semantic, "smoothness")
+
+    def test_texture_reference_preserves_structured_texture_transform(self) -> None:
+        texture = TextureReference.from_value(
+            {
+                "role": "normal_gloss",
+                "source_path": "Data/libs/materials/metal/test_layer_ddna.dds",
+                "export_path": "Data/libs/materials/metal/test_layer.normal.png",
+                "export_kind": "normal_from_ddna",
+                "texture_transform": {
+                    "attributes": {
+                        "TileU": 2,
+                        "TileV": 3,
+                    },
+                    "scale": [2.0, 3.0],
+                },
+            }
+        )
+
+        self.assertEqual(texture.texture_transform["scale"], [2.0, 3.0])
+        self.assertEqual(texture.texture_transform["attributes"]["TileU"], 2)
 
 
 if __name__ == "__main__":

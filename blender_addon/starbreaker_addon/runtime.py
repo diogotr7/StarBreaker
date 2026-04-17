@@ -11,6 +11,7 @@ import bpy
 from mathutils import Euler, Matrix, Quaternion
 
 from .manifest import MaterialSidecar, PackageBundle, PaletteRecord, SceneInstanceRecord, SubmaterialRecord
+from .material_contract import ContractInput, ShaderGroupContract, TemplateContract, bundled_template_library_path, load_bundled_template_contract
 from .palette import (
     palette_color,
     palette_for_id,
@@ -56,6 +57,8 @@ SCENE_AXIS_CONVERSION = Matrix(
 )
 SCENE_AXIS_CONVERSION_INV = SCENE_AXIS_CONVERSION.inverted()
 GLTF_LIGHT_BASIS_CORRECTION = Quaternion((math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0))
+NODE_GROUP_RUNTIME_FAMILIES = frozenset({"GlassPBR", "HardSurface", "Illum", "Monitor", "NoDraw", "Unknown"})
+NON_COLOR_INPUT_KEYWORDS = ("normal", "roughness", "gloss", "mask", "height", "specular", "opacity", "id_map")
 
 
 @dataclass(frozen=True)
@@ -172,6 +175,7 @@ class PackageImporter:
         self.template_cache: dict[str, ImportedTemplate] = {}
         self.material_cache: dict[str, bpy.types.Material] = {}
         self.node_index_by_entity_name: dict[str, dict[str, bpy.types.Object]] = {}
+        self.bundled_template_contract: TemplateContract | None = None
 
     def _effective_palette_id(self, palette_id: str | None) -> str | None:
         inherited_palette_id = None
@@ -525,7 +529,10 @@ class PackageImporter:
         material.use_nodes = True
         plan = template_plan_for_submaterial(submaterial)
 
-        if plan.template_key == "nodraw":
+        group_contract = self._group_contract_for_submaterial(submaterial)
+        if group_contract is not None and self._build_contract_group_material(material, submaterial, palette, plan, group_contract):
+            pass
+        elif plan.template_key == "nodraw":
             self._build_nodraw_material(material)
         elif plan.template_key == "screen_hud":
             self._build_screen_material(material, submaterial, palette, plan)
@@ -540,6 +547,148 @@ class PackageImporter:
         material[PROP_MATERIAL_SIDECAR] = _canonical_material_sidecar_path(sidecar_path, sidecar)
         material[PROP_MATERIAL_IDENTITY] = material_identity
         material[PROP_SUBMATERIAL_JSON] = json.dumps(submaterial.raw, sort_keys=True)
+
+    def _template_contract(self) -> TemplateContract:
+        if self.bundled_template_contract is None:
+            self.bundled_template_contract = load_bundled_template_contract()
+        return self.bundled_template_contract
+
+    def _group_contract_for_submaterial(self, submaterial: SubmaterialRecord) -> ShaderGroupContract | None:
+        if submaterial.shader_family not in NODE_GROUP_RUNTIME_FAMILIES:
+            return None
+        return self._template_contract().group_for_shader_family(submaterial.shader_family)
+
+    def _ensure_contract_group(self, group_contract: ShaderGroupContract) -> bpy.types.ShaderNodeTree | None:
+        group = bpy.data.node_groups.get(group_contract.name)
+        if group is not None:
+            return group
+        library_path = bundled_template_library_path()
+        if not library_path.is_file():
+            return None
+        with bpy.data.libraries.load(str(library_path), link=False) as (data_from, data_to):
+            if group_contract.name not in data_from.node_groups:
+                return None
+            data_to.node_groups = [group_contract.name]
+        return bpy.data.node_groups.get(group_contract.name)
+
+    def _build_contract_group_material(
+        self,
+        material: bpy.types.Material,
+        submaterial: SubmaterialRecord,
+        palette: PaletteRecord | None,
+        plan: Any,
+        group_contract: ShaderGroupContract,
+    ) -> bool:
+        group_tree = self._ensure_contract_group(group_contract)
+        if group_tree is None:
+            return False
+
+        nodes = material.node_tree.nodes
+        links = material.node_tree.links
+        nodes.clear()
+
+        output = nodes.new("ShaderNodeOutputMaterial")
+        output.location = (520, 0)
+        group_node = nodes.new("ShaderNodeGroup")
+        group_node.node_tree = group_tree
+        group_node.location = (220, 0)
+
+        shader_output = _output_socket(group_node, group_contract.shader_output)
+        if shader_output is None:
+            return False
+        links.new(shader_output, output.inputs[0])
+
+        y = 280
+        for contract_input in group_contract.inputs:
+            target_socket = _input_socket(group_node, contract_input.name)
+            if target_socket is None:
+                continue
+            source_socket = self._contract_input_source_socket(
+                nodes,
+                submaterial,
+                palette,
+                group_contract,
+                contract_input,
+                x=-220,
+                y=y,
+            )
+            if source_socket is not None:
+                links.new(source_socket, target_socket)
+            y -= 180
+
+        self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
+        return True
+
+    def _contract_input_source_socket(
+        self,
+        nodes: bpy.types.Nodes,
+        submaterial: SubmaterialRecord,
+        palette: PaletteRecord | None,
+        group_contract: ShaderGroupContract,
+        contract_input: ContractInput,
+        *,
+        x: int,
+        y: int,
+    ) -> Any:
+        if contract_input.name.startswith("Palette_"):
+            if palette is None:
+                return None
+            channel_name = contract_input.name.removeprefix("Palette_").lower()
+            used_channels = {channel.name.lower() for channel in material_palette_channels(submaterial)}
+            if channel_name not in used_channels:
+                return None
+            return self._palette_color_socket(nodes, palette, channel_name, x=x, y=y)
+
+        semantic = (contract_input.semantic or contract_input.name).lower()
+        if contract_input.source_slot is None and "roughness" in semantic:
+            return self._roughness_group_source_socket(
+                nodes,
+                representative_textures(submaterial)["roughness"],
+                x=x,
+                y=y,
+            )
+
+        image_path = self._texture_path_for_contract_input(submaterial, contract_input)
+        if _contract_input_uses_color(contract_input):
+            if any(item.name.startswith("Palette_") for item in group_contract.inputs):
+                image_node = self._image_node(nodes, image_path, x=x, y=y, is_color=True)
+                if image_node is None:
+                    return None
+                return image_node.outputs[0]
+            return self._color_source_socket(nodes, submaterial, palette, image_path, x=x, y=y)
+        image_node = self._image_node(nodes, image_path, x=x, y=y, is_color=False)
+        if image_node is None:
+            return None
+        return image_node.outputs[0]
+
+    def _roughness_group_source_socket(
+        self,
+        nodes: bpy.types.Nodes,
+        image_path: str | None,
+        *,
+        x: int,
+        y: int,
+    ) -> Any:
+        image_node = self._image_node(nodes, image_path, x=x, y=y, is_color=False)
+        if image_node is None:
+            return None
+        image_node.label = "METALLIC ROUGHNESS"
+
+        separate = nodes.new("ShaderNodeSeparateColor")
+        separate.location = (x + 180, y)
+        if hasattr(separate, "mode"):
+            separate.mode = "RGB"
+        image_node.id_data.links.new(image_node.outputs[0], separate.inputs[0])
+        return _output_socket(separate, "Green")
+
+    def _texture_path_for_contract_input(self, submaterial: SubmaterialRecord, contract_input: ContractInput) -> str | None:
+        source_slot = contract_input.source_slot
+        if source_slot is None:
+            return None
+        for texture in [*submaterial.texture_slots, *submaterial.direct_textures, *submaterial.derived_textures]:
+            if texture.slot == source_slot and texture.export_path:
+                return texture.export_path
+        return None
 
     def _build_nodraw_material(self, material: bpy.types.Material) -> None:
         nodes = material.node_tree.nodes
@@ -1192,3 +1341,8 @@ def _output_socket(node: Any, *names: str) -> Any:
         if socket is not None:
             return socket
     return None
+
+
+def _contract_input_uses_color(contract_input: ContractInput) -> bool:
+    semantic = (contract_input.semantic or contract_input.name).lower()
+    return not any(keyword in semantic for keyword in NON_COLOR_INPUT_KEYWORDS)

@@ -42,6 +42,10 @@ struct TextureExportRef {
     source_path: String,
     export_path: String,
     export_kind: String,
+    texture_identity: Option<String>,
+    alpha_semantic: Option<String>,
+    derived_from_texture_identity: Option<String>,
+    derived_from_semantic: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +54,7 @@ struct LayerTextureExport {
     diffuse_export_path: Option<String>,
     normal_export_path: Option<String>,
     roughness_export_path: Option<String>,
+    slot_exports: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -233,6 +238,8 @@ fn build_decomposed_material_view(
     let filtered_materials = MtlFile {
         materials: filtered_materials,
         source_path: materials.source_path.clone(),
+        paint_override: materials.paint_override.clone(),
+        material_set: materials.material_set.clone(),
     };
 
     DecomposedMaterialView {
@@ -597,9 +604,75 @@ fn build_palette_manifest_value(records: &BTreeMap<String, PaletteRecord>) -> se
                 "secondary": record.palette.secondary,
                 "tertiary": record.palette.tertiary,
                 "glass": record.palette.glass,
+                "finish": palette_finish_json(&record.palette.finish),
             })
         }).collect::<Vec<_>>(),
     })
+}
+
+fn palette_finish_json(finish: &crate::mtl::TintPaletteFinish) -> serde_json::Value {
+    serde_json::json!({
+        "primary": palette_finish_entry_json(&finish.primary),
+        "secondary": palette_finish_entry_json(&finish.secondary),
+        "tertiary": palette_finish_entry_json(&finish.tertiary),
+        "glass": palette_finish_entry_json(&finish.glass),
+    })
+}
+
+fn palette_finish_entry_json(entry: &crate::mtl::TintPaletteFinishEntry) -> serde_json::Value {
+    serde_json::json!({
+        "specular": entry.specular,
+        "glossiness": entry.glossiness,
+    })
+}
+
+fn paint_override_json(info: &crate::mtl::PaintOverrideInfo) -> serde_json::Value {
+    serde_json::json!({
+        "paint_item_name": info.paint_item_name,
+        "subgeometry_tag": info.subgeometry_tag,
+        "subgeometry_index": info.subgeometry_index,
+        "material_path": info.material_path,
+    })
+}
+
+fn authored_attributes_json(attributes: &[crate::mtl::AuthoredAttribute]) -> serde_json::Value {
+    serde_json::Value::Array(
+        attributes
+            .iter()
+            .map(|attribute| {
+                serde_json::json!({
+                    "name": attribute.name,
+                    "value": attribute.value,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn authored_blocks_json(blocks: &[crate::mtl::AuthoredBlock]) -> serde_json::Value {
+    serde_json::Value::Array(blocks.iter().map(authored_block_json).collect())
+}
+
+fn authored_block_json(block: &crate::mtl::AuthoredBlock) -> serde_json::Value {
+    serde_json::json!({
+        "tag": block.tag,
+        "attributes": authored_attributes_json(&block.attributes),
+        "children": authored_blocks_json(&block.children),
+    })
+}
+
+fn raw_public_params_json(params: &[crate::mtl::PublicParam]) -> serde_json::Value {
+    serde_json::Value::Array(
+        params
+            .iter()
+            .map(|param| {
+                serde_json::json!({
+                    "name": param.name,
+                    "value": param.value,
+                })
+            })
+            .collect(),
+    )
 }
 
 fn build_livery_manifest_value(records: &BTreeMap<String, LiveryUsage>) -> serde_json::Value {
@@ -804,6 +877,10 @@ fn extract_material_entry(
                 source_path: normalize_source_path(p4k, path),
                 export_path,
                 export_kind: "source".to_string(),
+                texture_identity: ddna_texture_identity(path).map(str::to_string),
+                alpha_semantic: None,
+                derived_from_texture_identity: None,
+                derived_from_semantic: None,
             });
         }
     }
@@ -823,6 +900,10 @@ fn extract_material_entry(
                 source_path: normalize_source_path(p4k, path),
                 export_path,
                 export_kind: "source".to_string(),
+                texture_identity: ddna_texture_identity(path).map(str::to_string),
+                alpha_semantic: ddna_alpha_semantic(path, TextureSemanticRole::NormalGloss).map(str::to_string),
+                derived_from_texture_identity: None,
+                derived_from_semantic: None,
             });
         }
     }
@@ -845,6 +926,10 @@ fn extract_material_entry(
                     source_path: normalize_source_path(p4k, path),
                     export_path,
                     export_kind: "roughness_from_normal_gloss".to_string(),
+                    texture_identity: None,
+                    alpha_semantic: None,
+                    derived_from_texture_identity: ddna_texture_identity(path).map(str::to_string),
+                    derived_from_semantic: Some("smoothness".to_string()),
                 });
             }
         }
@@ -856,7 +941,27 @@ fn extract_material_entry(
         .map(|layer| {
             let layer_material_path = normalize_source_path(p4k, &layer.path);
             let layer_mtl = crate::pipeline::try_load_mtl(p4k, &crate::pipeline::datacore_path_to_p4k(&layer.path));
-            let layer_sub = layer_mtl.as_ref().and_then(|mtl| mtl.materials.first());
+            let layer_sub = layer_mtl
+                .as_ref()
+                .and_then(|mtl| crate::mtl::resolve_layer_submaterial(mtl, &layer.sub_material));
+            let slot_exports = layer_sub
+                .map(|sub| {
+                    sub.semantic_texture_slots()
+                        .iter()
+                        .map(|binding| {
+                            build_slot_export_value(
+                                files,
+                                p4k,
+                                png_cache,
+                                texture_cache,
+                                binding,
+                                texture_mip,
+                                existing_asset_paths,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             let diffuse_export_path = layer_sub
                 .and_then(|sub| sub.diffuse_tex.as_deref())
                 .and_then(|path| {
@@ -904,6 +1009,7 @@ fn extract_material_entry(
                 diffuse_export_path,
                 normal_export_path,
                 roughness_export_path,
+                slot_exports,
             }
         })
         .collect::<Vec<_>>();
@@ -935,10 +1041,16 @@ fn build_material_sidecar_value(
         "version": 1,
         "source_material_path": source_material_path,
         "normalized_export_relative_path": relative_path,
+        "authored_material_set": {
+            "attributes": authored_attributes_json(&materials.material_set.attributes),
+            "public_params": raw_public_params_json(&materials.material_set.public_params),
+            "child_blocks": authored_blocks_json(&materials.material_set.child_blocks),
+        },
         "palette_contract": {
             "shared_manifest": palettes_manifest_path,
             "scene_instance_field": "palette_id",
         },
+        "paint_override": materials.paint_override.as_ref().map(paint_override_json),
         "submaterials": materials.materials.iter().enumerate().map(|(index, material)| {
             build_submaterial_json(
                 material,
@@ -999,6 +1111,9 @@ fn build_submaterial_json(
         "blender_material_name": blender_material_name,
         "shader": material.shader,
         "shader_family": material.shader_family().as_str(),
+        "authored_attributes": authored_attributes_json(&material.authored_attributes),
+        "authored_public_params": raw_public_params_json(&material.public_params),
+        "authored_child_blocks": authored_blocks_json(&material.authored_child_blocks),
         "activation_state": {
             "state": activation_state,
             "reason": activation_reason,
@@ -1019,12 +1134,41 @@ fn build_submaterial_json(
         "layer_manifest": material.layers.iter().enumerate().map(|(layer_index, layer)| {
             let extracted_layer = extracted.layer_exports.get(layer_index);
             let palette_channel = palette_channel_json(layer.palette_tint, false);
+            let layer_snapshot = layer.snapshot.as_ref().map(|snapshot| serde_json::json!({
+                "shader": snapshot.shader,
+                "diffuse": snapshot.diffuse,
+                "specular": snapshot.specular,
+                "shininess": snapshot.shininess,
+                "wear_specular_color": snapshot.wear_specular_color,
+                "wear_glossiness": snapshot.wear_glossiness,
+                "surface_type": snapshot.surface_type,
+            }));
+            let resolved_material = layer.resolved_material.as_ref().map(|resolved| serde_json::json!({
+                "name": resolved.name,
+                "shader": resolved.shader,
+                "shader_family": resolved.shader_family,
+                "authored_attributes": authored_attributes_json(&resolved.authored_attributes),
+                "authored_public_params": raw_public_params_json(&resolved.public_params),
+                "authored_child_blocks": authored_blocks_json(&resolved.authored_child_blocks),
+            }));
             serde_json::json!({
                 "index": layer_index,
+                "name": layer.name,
                 "source_material_path": extracted_layer.map(|layer| layer.source_material_path.clone()).unwrap_or_else(|| layer.path.clone()),
+                "submaterial_name": layer.sub_material,
+                "resolved_material": resolved_material,
+                "authored_attributes": authored_attributes_json(&layer.authored_attributes),
+                "authored_child_blocks": authored_blocks_json(&layer.authored_child_blocks),
                 "tint_color": layer.tint_color,
+                "wear_tint": layer.wear_tint,
                 "palette_channel": palette_channel,
+                "gloss_mult": layer.gloss_mult,
+                "wear_gloss": layer.wear_gloss,
                 "uv_tiling": layer.uv_tiling,
+                "height_bias": layer.height_bias,
+                "height_scale": layer.height_scale,
+                "layer_snapshot": layer_snapshot,
+                "texture_slots": extracted_layer.map(|layer| layer.slot_exports.clone()).unwrap_or_default(),
                 "diffuse_export_path": extracted_layer.and_then(|layer| layer.diffuse_export_path.clone()),
                 "normal_export_path": extracted_layer.and_then(|layer| layer.normal_export_path.clone()),
                 "roughness_export_path": extracted_layer.and_then(|layer| layer.roughness_export_path.clone()),
@@ -1080,14 +1224,32 @@ fn build_slot_export_value(
         )
     };
 
-    serde_json::json!({
-        "slot": binding.slot,
-        "role": binding.role.as_str(),
-        "is_virtual": binding.is_virtual,
-        "source_path": source_path,
-        "export_path": export_path,
-        "export_kind": texture_export_kind(export_flavor),
-    })
+    let mut value = serde_json::Map::from_iter([
+        ("slot".to_string(), serde_json::json!(binding.slot)),
+        ("role".to_string(), serde_json::json!(binding.role.as_str())),
+        ("is_virtual".to_string(), serde_json::json!(binding.is_virtual)),
+        ("source_path".to_string(), serde_json::json!(source_path)),
+        ("export_path".to_string(), serde_json::json!(export_path)),
+        ("export_kind".to_string(), serde_json::json!(texture_export_kind(export_flavor))),
+        (
+            "authored_attributes".to_string(),
+            authored_attributes_json(&binding.authored_attributes),
+        ),
+        (
+            "authored_child_blocks".to_string(),
+            authored_blocks_json(&binding.authored_child_blocks),
+        ),
+    ]);
+    if let Some(texture_identity) = ddna_texture_identity(&binding.path) {
+        value.insert("texture_identity".to_string(), serde_json::json!(texture_identity));
+    }
+    if let Some(alpha_semantic) = ddna_alpha_semantic(&binding.path, binding.role) {
+        value.insert("alpha_semantic".to_string(), serde_json::json!(alpha_semantic));
+    }
+    if let Some(texture_transform) = texture_transform_json(&binding.authored_child_blocks) {
+        value.insert("texture_transform".to_string(), texture_transform);
+    }
+    serde_json::Value::Object(value)
 }
 
 fn slot_source_path(p4k: Option<&MappedP4k>, binding: &SemanticTextureBinding) -> String {
@@ -1274,6 +1436,10 @@ fn palette_id(palette: &TintPalette) -> String {
         hash_vec3(&mut hasher, &palette.secondary);
         hash_vec3(&mut hasher, &palette.tertiary);
         hash_vec3(&mut hasher, &palette.glass);
+        hash_finish_entry(&mut hasher, &palette.finish.primary);
+        hash_finish_entry(&mut hasher, &palette.finish.secondary);
+        hash_finish_entry(&mut hasher, &palette.finish.tertiary);
+        hash_finish_entry(&mut hasher, &palette.finish.glass);
         format!("palette/generated-{:016x}", hasher.finish())
     }
 }
@@ -1413,12 +1579,93 @@ fn palette_channel_json(channel: u8, is_glass: bool) -> Option<serde_json::Value
 }
 
 fn texture_ref_json(texture_ref: &TextureExportRef) -> serde_json::Value {
-    serde_json::json!({
-        "role": texture_ref.role,
-        "source_path": texture_ref.source_path,
-        "export_path": texture_ref.export_path,
-        "export_kind": texture_ref.export_kind,
-    })
+    let mut value = serde_json::Map::from_iter([
+        ("role".to_string(), serde_json::json!(texture_ref.role)),
+        ("source_path".to_string(), serde_json::json!(texture_ref.source_path)),
+        ("export_path".to_string(), serde_json::json!(texture_ref.export_path)),
+        ("export_kind".to_string(), serde_json::json!(texture_ref.export_kind)),
+    ]);
+    if let Some(texture_identity) = &texture_ref.texture_identity {
+        value.insert("texture_identity".to_string(), serde_json::json!(texture_identity));
+    }
+    if let Some(alpha_semantic) = &texture_ref.alpha_semantic {
+        value.insert("alpha_semantic".to_string(), serde_json::json!(alpha_semantic));
+    }
+    if let Some(texture_identity) = &texture_ref.derived_from_texture_identity {
+        value.insert(
+            "derived_from_texture_identity".to_string(),
+            serde_json::json!(texture_identity),
+        );
+    }
+    if let Some(derived_from_semantic) = &texture_ref.derived_from_semantic {
+        value.insert(
+            "derived_from_semantic".to_string(),
+            serde_json::json!(derived_from_semantic),
+        );
+    }
+    serde_json::Value::Object(value)
+}
+
+fn ddna_texture_identity(path: &str) -> Option<&'static str> {
+    if path.to_ascii_lowercase().contains("_ddna") {
+        Some("ddna_normal")
+    } else {
+        None
+    }
+}
+
+fn ddna_alpha_semantic(path: &str, role: TextureSemanticRole) -> Option<&'static str> {
+    if ddna_texture_identity(path).is_some() && matches!(role, TextureSemanticRole::NormalGloss) {
+        Some("smoothness")
+    } else {
+        None
+    }
+}
+
+fn texture_transform_json(blocks: &[crate::mtl::AuthoredBlock]) -> Option<serde_json::Value> {
+    let texmod = blocks.iter().find(|block| block.tag == "TexMod")?;
+    let attributes = texmod
+        .attributes
+        .iter()
+        .map(|attribute| {
+            (
+                attribute.name.clone(),
+                string_value_to_json(&attribute.value),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+
+    let mut value = serde_json::Map::from_iter([(
+        "attributes".to_string(),
+        serde_json::Value::Object(attributes),
+    )]);
+    if let Some(scale) = texmod_pair(&texmod.attributes, "TileU", "TileV") {
+        value.insert("scale".to_string(), serde_json::json!(scale));
+    }
+    if let Some(offset) = texmod_pair(&texmod.attributes, "OffsetU", "OffsetV") {
+        value.insert("offset".to_string(), serde_json::json!(offset));
+    }
+    if !texmod.children.is_empty() {
+        value.insert("children".to_string(), authored_blocks_json(&texmod.children));
+    }
+    Some(serde_json::Value::Object(value))
+}
+
+fn texmod_pair(
+    attributes: &[crate::mtl::AuthoredAttribute],
+    first: &str,
+    second: &str,
+) -> Option<[f32; 2]> {
+    let first_value = texmod_float(attributes, first)?;
+    let second_value = texmod_float(attributes, second)?;
+    Some([first_value, second_value])
+}
+
+fn texmod_float(attributes: &[crate::mtl::AuthoredAttribute], name: &str) -> Option<f32> {
+    attributes
+        .iter()
+        .find(|attribute| attribute.name == name)
+        .and_then(|attribute| attribute.value.parse::<f32>().ok())
 }
 
 fn slot_texture_flavor(role: TextureSemanticRole) -> TextureFlavor {
@@ -1458,6 +1705,20 @@ fn hash_vec3(hasher: &mut std::collections::hash_map::DefaultHasher, values: &[f
     values[2].to_bits().hash(hasher);
 }
 
+fn hash_finish_entry(
+    hasher: &mut std::collections::hash_map::DefaultHasher,
+    entry: &crate::mtl::TintPaletteFinishEntry,
+) {
+    entry.specular.is_some().hash(hasher);
+    if let Some(specular) = entry.specular.as_ref() {
+        hash_vec3(hasher, specular);
+    }
+    entry.glossiness.is_some().hash(hasher);
+    if let Some(glossiness) = entry.glossiness {
+        glossiness.to_bits().hash(hasher);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1480,10 +1741,59 @@ mod tests {
             diffuse_tex: Some("Objects/Ships/Test/hull_diff.dds".into()),
             normal_tex: Some("Objects/Ships/Test/hull_ddna.dds".into()),
             layers: vec![mtl::MatLayer {
+                name: "Primary".into(),
                 path: "libs/materials/metal/test_layer.mtl".into(),
+                sub_material: "paint".into(),
+                authored_attributes: vec![mtl::AuthoredAttribute {
+                    name: "CustomBlendMode".into(),
+                    value: "Additive".into(),
+                }],
+                authored_child_blocks: vec![mtl::AuthoredBlock {
+                    tag: "CustomAnimation".into(),
+                    attributes: vec![mtl::AuthoredAttribute {
+                        name: "Duration".into(),
+                        value: "2.0".into(),
+                    }],
+                    children: Vec::new(),
+                }],
                 tint_color: [1.0, 0.5, 0.25],
+                wear_tint: [0.2, 0.3, 0.4],
                 palette_tint: 1,
+                gloss_mult: 0.7,
+                wear_gloss: 0.8,
                 uv_tiling: 2.0,
+                height_bias: 0.05,
+                height_scale: 1.1,
+                snapshot: Some(mtl::MatLayerSnapshot {
+                    shader: "Layer".into(),
+                    diffuse: [0.6, 0.6, 0.6],
+                    specular: [0.1, 0.2, 0.3],
+                    shininess: 233.0,
+                    wear_specular_color: Some([0.7, 0.7, 0.7]),
+                    wear_glossiness: Some(0.91),
+                    surface_type: Some("metal_shell".into()),
+                }),
+                resolved_material: Some(mtl::ResolvedLayerMaterial {
+                    name: "paint".into(),
+                    shader: "Layer".into(),
+                    shader_family: "Layer".into(),
+                    authored_attributes: vec![mtl::AuthoredAttribute {
+                        name: "MatTemplate".into(),
+                        value: "layer_shell".into(),
+                    }],
+                    public_params: vec![mtl::PublicParam {
+                        name: "WearGlossiness".into(),
+                        value: "0.91".into(),
+                    }],
+                    authored_child_blocks: vec![mtl::AuthoredBlock {
+                        tag: "VertexDeform".into(),
+                        attributes: vec![mtl::AuthoredAttribute {
+                            name: "DividerX".into(),
+                            value: "0.5".into(),
+                        }],
+                        children: Vec::new(),
+                    }],
+                }),
             }],
             palette_tint: 2,
             texture_slots: vec![
@@ -1506,6 +1816,48 @@ mod tests {
             public_params: vec![mtl::PublicParam {
                 name: "WearBlendBase".into(),
                 value: "0.5".into(),
+            }],
+            authored_attributes: vec![mtl::AuthoredAttribute {
+                name: "MtlFlags".into(),
+                value: "524544".into(),
+            }],
+            authored_textures: vec![mtl::AuthoredTexture {
+                slot: "TexSlot1".into(),
+                path: "Objects/Ships/Test/hull_diff.dds".into(),
+                is_virtual: false,
+                attributes: vec![
+                    mtl::AuthoredAttribute {
+                        name: "Map".into(),
+                        value: "TexSlot1".into(),
+                    },
+                    mtl::AuthoredAttribute {
+                        name: "Used".into(),
+                        value: "1".into(),
+                    },
+                ],
+                child_blocks: vec![mtl::AuthoredBlock {
+                    tag: "TexMod".into(),
+                    attributes: vec![mtl::AuthoredAttribute {
+                        name: "TileU".into(),
+                        value: "2".into(),
+                    }],
+                    children: Vec::new(),
+                }],
+            }],
+            authored_child_blocks: vec![mtl::AuthoredBlock {
+                tag: "VertexDeform".into(),
+                attributes: vec![mtl::AuthoredAttribute {
+                    name: "DividerX".into(),
+                    value: "0.5".into(),
+                }],
+                children: vec![mtl::AuthoredBlock {
+                    tag: "WaveX".into(),
+                    attributes: vec![mtl::AuthoredAttribute {
+                        name: "Amp".into(),
+                        value: "0.25".into(),
+                    }],
+                    children: Vec::new(),
+                }],
             }],
         }
     }
@@ -1568,6 +1920,30 @@ mod tests {
         let materials = MtlFile {
             materials: vec![sample_submaterial()],
             source_path: Some("Data/Objects/Ships/Test/hull.mtl".into()),
+            paint_override: Some(crate::mtl::PaintOverrideInfo {
+                paint_item_name: "paint_black_gold".into(),
+                subgeometry_tag: "BlackGold".into(),
+                subgeometry_index: 2,
+                material_path: Some("Data/Objects/Ships/Test/hull_variant.mtl".into()),
+            }),
+            material_set: crate::mtl::MaterialSetAuthoredData {
+                attributes: vec![crate::mtl::AuthoredAttribute {
+                    name: "DefaultPalette".into(),
+                    value: "vehicle_palette_test".into(),
+                }],
+                public_params: vec![crate::mtl::PublicParam {
+                    name: "RootGlowScale".into(),
+                    value: "2.0".into(),
+                }],
+                child_blocks: vec![crate::mtl::AuthoredBlock {
+                    tag: "VertexDeform".into(),
+                    attributes: vec![crate::mtl::AuthoredAttribute {
+                        name: "DividerY".into(),
+                        value: "0.25".into(),
+                    }],
+                    children: Vec::new(),
+                }],
+            },
         };
         let extracted = vec![ExtractedMaterialEntry {
             slot_exports: vec![serde_json::json!({
@@ -1577,24 +1953,74 @@ mod tests {
                 "source_path": "Data/Objects/Ships/Test/hull_diff.dds",
                 "export_path": "Data/Objects/Ships/Test/hull_diff.png",
                 "export_kind": "source",
+                "authored_attributes": [
+                    {
+                        "name": "Map",
+                        "value": "TexSlot1",
+                    },
+                    {
+                        "name": "Used",
+                        "value": "1",
+                    }
+                ],
+                "authored_child_blocks": [
+                    {
+                        "tag": "TexMod",
+                        "attributes": [
+                            {
+                                "name": "TileU",
+                                "value": "2",
+                            }
+                        ],
+                        "children": [],
+                    }
+                ],
             })],
             direct_texture_exports: vec![TextureExportRef {
                 role: "diffuse".into(),
                 source_path: "Data/Objects/Ships/Test/hull_diff.dds".into(),
                 export_path: "Data/Objects/Ships/Test/hull_diff.png".into(),
                 export_kind: "source".into(),
+                texture_identity: None,
+                alpha_semantic: None,
+                derived_from_texture_identity: None,
+                derived_from_semantic: None,
             }],
             layer_exports: vec![LayerTextureExport {
                 source_material_path: "Data/libs/materials/metal/test_layer.mtl".into(),
                 diffuse_export_path: Some("Data/libs/materials/metal/test_layer.png".into()),
                 normal_export_path: Some("Data/libs/materials/metal/test_layer.normal.png".into()),
                 roughness_export_path: Some("Data/libs/materials/metal/test_layer.roughness.png".into()),
+                slot_exports: vec![serde_json::json!({
+                    "slot": "TexSlot3",
+                    "role": "normal_gloss",
+                    "is_virtual": false,
+                    "source_path": "Data/libs/materials/metal/test_layer_ddna.dds",
+                    "export_path": "Data/libs/materials/metal/test_layer.normal.png",
+                    "export_kind": "normal",
+                    "texture_identity": "ddna_normal",
+                    "alpha_semantic": "smoothness",
+                    "texture_transform": {
+                        "attributes": {
+                            "OffsetU": 0.25,
+                            "OffsetV": 0.5,
+                            "TileU": 2,
+                            "TileV": 3
+                        },
+                        "offset": [0.25, 0.5],
+                        "scale": [2.0, 3.0]
+                    },
+                })],
             }],
             derived_texture_exports: vec![TextureExportRef {
                 role: "roughness".into(),
                 source_path: "Data/Objects/Ships/Test/hull_ddna.dds".into(),
                 export_path: "Data/Objects/Ships/Test/hull_ddna.roughness.png".into(),
                 export_kind: "roughness_from_normal_gloss".into(),
+                texture_identity: None,
+                alpha_semantic: None,
+                derived_from_texture_identity: Some("ddna_normal".into()),
+                derived_from_semantic: Some("smoothness".into()),
             }],
         }];
 
@@ -1608,16 +2034,124 @@ mod tests {
 
         assert_eq!(value["source_material_path"], serde_json::json!("Data/Objects/Ships/Test/hull.mtl"));
         assert!(value.get("geometry_path").is_none());
+        assert_eq!(value["authored_material_set"]["attributes"][0]["name"], serde_json::json!("DefaultPalette"));
+        assert_eq!(value["authored_material_set"]["public_params"][0]["name"], serde_json::json!("RootGlowScale"));
+        assert_eq!(value["authored_material_set"]["child_blocks"][0]["tag"], serde_json::json!("VertexDeform"));
+        assert_eq!(value["paint_override"]["subgeometry_tag"], serde_json::json!("BlackGold"));
         assert_eq!(
             value["submaterials"][0]["blender_material_name"],
             serde_json::json!("hull:hull_panel")
         );
         assert_eq!(value["submaterials"][0]["shader_family"], serde_json::json!("LayerBlend_V2"));
+        assert_eq!(value["submaterials"][0]["authored_attributes"][0]["name"], serde_json::json!("MtlFlags"));
+        assert_eq!(value["submaterials"][0]["authored_public_params"][0]["name"], serde_json::json!("WearBlendBase"));
+        assert_eq!(value["submaterials"][0]["authored_child_blocks"][0]["tag"], serde_json::json!("VertexDeform"));
+        assert_eq!(value["submaterials"][0]["texture_slots"][0]["authored_child_blocks"][0]["tag"], serde_json::json!("TexMod"));
         assert_eq!(value["submaterials"][0]["palette_routing"]["material_channel"]["name"], serde_json::json!("secondary"));
         assert_eq!(value["submaterials"][0]["layer_manifest"][0]["palette_channel"]["name"], serde_json::json!("primary"));
+        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["name"], serde_json::json!("Primary"));
+        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["submaterial_name"], serde_json::json!("paint"));
+        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["resolved_material"]["shader_family"], serde_json::json!("Layer"));
+        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["resolved_material"]["authored_attributes"][0]["name"], serde_json::json!("MatTemplate"));
+        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["resolved_material"]["authored_public_params"][0]["name"], serde_json::json!("WearGlossiness"));
+        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["resolved_material"]["authored_child_blocks"][0]["tag"], serde_json::json!("VertexDeform"));
+        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["authored_attributes"][0]["name"], serde_json::json!("CustomBlendMode"));
+        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["authored_child_blocks"][0]["tag"], serde_json::json!("CustomAnimation"));
+        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["texture_slots"][0]["role"], serde_json::json!("normal_gloss"));
+        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["texture_slots"][0]["texture_identity"], serde_json::json!("ddna_normal"));
+        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["texture_slots"][0]["alpha_semantic"], serde_json::json!("smoothness"));
+        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["texture_slots"][0]["texture_transform"]["scale"], serde_json::json!([2.0, 3.0]));
+        let gloss_mult = value["submaterials"][0]["layer_manifest"][0]["gloss_mult"]
+            .as_f64()
+            .expect("gloss_mult should be numeric");
+        assert!((gloss_mult - 0.7).abs() < 1e-6);
+        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["layer_snapshot"]["shader"], serde_json::json!("Layer"));
+        let wear_glossiness = value["submaterials"][0]["layer_manifest"][0]["layer_snapshot"]["wear_glossiness"]
+            .as_f64()
+            .expect("wear_glossiness should be numeric");
+        assert!((wear_glossiness - 0.91).abs() < 1e-6);
         assert_eq!(value["submaterials"][0]["public_params"]["WearBlendBase"], serde_json::json!(0.5));
         assert_eq!(value["submaterials"][0]["derived_textures"][0]["export_kind"], serde_json::json!("roughness_from_normal_gloss"));
+        assert_eq!(value["submaterials"][0]["derived_textures"][0]["derived_from_texture_identity"], serde_json::json!("ddna_normal"));
+        assert_eq!(value["submaterials"][0]["derived_textures"][0]["derived_from_semantic"], serde_json::json!("smoothness"));
         assert_eq!(value["submaterials"][0]["virtual_inputs"][0], serde_json::json!("$TintPaletteDecal"));
+    }
+
+    #[test]
+    fn material_sidecar_json_preserves_iridescence_support_fields() {
+        let mut material = sample_submaterial();
+        material.shader = "HardSurface".into();
+        material.string_gen_mask = "%IRIDESCENCE".into();
+        material.public_params = vec![crate::mtl::PublicParam {
+            name: "IridescenceIntensity".into(),
+            value: "0.75".into(),
+        }];
+
+        let materials = MtlFile {
+            materials: vec![material],
+            source_path: Some("Data/Objects/Ships/Test/hull.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
+        };
+        let extracted = vec![ExtractedMaterialEntry {
+            slot_exports: vec![serde_json::json!({
+                "slot": "TexSlot10",
+                "role": "iridescence",
+                "is_virtual": false,
+                "source_path": "Data/Objects/Ships/Test/hull_iridescence.dds",
+                "export_path": "Data/Objects/Ships/Test/hull_iridescence.png",
+                "export_kind": "source",
+                "authored_attributes": [],
+                "authored_child_blocks": [],
+            })],
+            direct_texture_exports: Vec::new(),
+            layer_exports: Vec::new(),
+            derived_texture_exports: Vec::new(),
+        }];
+
+        let value = build_material_sidecar_value(
+            &materials,
+            "Data/Objects/Ships/Test/hull.mtl",
+            "Data/Objects/Ships/Test/hull.materials.json",
+            "Packages/ARGO MOLE/palettes.json",
+            &extracted,
+        );
+
+        assert_eq!(value["submaterials"][0]["decoded_feature_flags"]["has_iridescence"], serde_json::json!(true));
+        assert_eq!(value["submaterials"][0]["texture_slots"][0]["role"], serde_json::json!("iridescence"));
+        assert_eq!(value["submaterials"][0]["public_params"]["IridescenceIntensity"], serde_json::json!(0.75));
+        assert_eq!(value["submaterials"][0]["authored_public_params"][0]["name"], serde_json::json!("IridescenceIntensity"));
+    }
+
+    #[test]
+    fn texture_transform_json_extracts_texmod_scale_and_offset() {
+        let value = texture_transform_json(&[crate::mtl::AuthoredBlock {
+            tag: "TexMod".into(),
+            attributes: vec![
+                crate::mtl::AuthoredAttribute {
+                    name: "TileU".into(),
+                    value: "2".into(),
+                },
+                crate::mtl::AuthoredAttribute {
+                    name: "TileV".into(),
+                    value: "3".into(),
+                },
+                crate::mtl::AuthoredAttribute {
+                    name: "OffsetU".into(),
+                    value: "0.25".into(),
+                },
+                crate::mtl::AuthoredAttribute {
+                    name: "OffsetV".into(),
+                    value: "0.5".into(),
+                },
+            ],
+            children: Vec::new(),
+        }])
+        .expect("structured texture transform");
+
+        assert_eq!(value["scale"], serde_json::json!([2.0, 3.0]));
+        assert_eq!(value["offset"], serde_json::json!([0.25, 0.5]));
+        assert_eq!(value["attributes"]["TileU"], serde_json::json!(2));
     }
 
     #[test]
@@ -1631,6 +2165,8 @@ mod tests {
         let materials = MtlFile {
             materials: vec![first, second],
             source_path: Some("Data/Objects/Ships/Test/hull.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
         };
         let extracted = vec![ExtractedMaterialEntry::default(), ExtractedMaterialEntry::default()];
 
@@ -1653,6 +2189,8 @@ mod tests {
             role: TextureSemanticRole::TintPaletteDecal,
             path: "$TintPaletteDecal".into(),
             is_virtual: true,
+            authored_attributes: Vec::new(),
+            authored_child_blocks: Vec::new(),
         };
 
         assert_eq!(slot_source_path(None, &binding), "$TintPaletteDecal");
@@ -1691,6 +2229,13 @@ mod tests {
             secondary: [0.3, 0.2, 0.1],
             tertiary: [0.4, 0.5, 0.6],
             glass: [0.6, 0.7, 0.8],
+            finish: crate::mtl::TintPaletteFinish {
+                primary: crate::mtl::TintPaletteFinishEntry {
+                    specular: Some([0.9, 0.8, 0.7]),
+                    glossiness: Some(0.42),
+                },
+                ..Default::default()
+            },
         };
         let palette_id = register_palette(&mut records, &palette);
 
@@ -1699,6 +2244,17 @@ mod tests {
         assert_eq!(value["palettes"][0]["id"], serde_json::json!("palette/vehicle_palette_test"));
         assert_eq!(value["palettes"][0]["source_name"], serde_json::json!("vehicle.palette.test"));
         assert_eq!(value["palettes"][0]["glass"].as_array().map(|items| items.len()), Some(3));
+        let specular = value["palettes"][0]["finish"]["primary"]["specular"]
+            .as_array()
+            .expect("primary finish specular should be an array");
+        assert_eq!(specular.len(), 3);
+        assert!((specular[0].as_f64().unwrap() - 0.9).abs() < 1e-6);
+        assert!((specular[1].as_f64().unwrap() - 0.8).abs() < 1e-6);
+        assert!((specular[2].as_f64().unwrap() - 0.7).abs() < 1e-6);
+        let glossiness = value["palettes"][0]["finish"]["primary"]["glossiness"]
+            .as_f64()
+            .expect("primary finish glossiness should be numeric");
+        assert!((glossiness - 0.42).abs() < 1e-6);
     }
 
     #[test]
@@ -1706,6 +2262,8 @@ mod tests {
         let materials = MtlFile {
             materials: Vec::new(),
             source_path: Some("Data\\Objects\\Ships\\Test\\canonical.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
         };
 
         let path = material_source_request(&materials, "Data/objects/ships/test/canonical", "Data/Objects/Ships/Test/hull.skin");
@@ -1718,6 +2276,8 @@ mod tests {
         let materials = MtlFile {
             materials: Vec::new(),
             source_path: None,
+            paint_override: None,
+            material_set: Default::default(),
         };
 
         let path = material_source_request(&materials, "Data/objects/ships/test/canonical", "Data/Objects/Ships/Test/hull.skin");
@@ -1742,6 +2302,8 @@ mod tests {
         let materials = MtlFile {
             materials: vec![nodraw, hull, glass],
             source_path: Some("Data/Objects/Ships/Test/hull.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
         };
         let mesh = sample_mesh(vec![
             crate::types::SubMesh {

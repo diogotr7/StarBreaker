@@ -2065,7 +2065,7 @@ fn load_layer_diffuse_png(
 
     let p4k_path = datacore_path_to_p4k(&layer.path);
     let layer_mtl = try_load_mtl(p4k, &p4k_path)?;
-    let layer_material = layer_mtl.materials.first()?;
+    let layer_material = mtl::resolve_layer_submaterial(&layer_mtl, &layer.sub_material)?;
     let texture_path = layer_material.diffuse_tex.as_ref()?;
     load_texture_png(p4k, texture_path, mip, png_cache)
 }
@@ -3132,12 +3132,25 @@ fn resolve_paint_override(
                         srgb_to_linear(b as f32 / 255.0),
                     ]
                 };
+                let read_finish = |entry_name: &str| -> mtl::TintPaletteFinishEntry {
+                    let entry = get_value_field(root, entry_name);
+                    mtl::TintPaletteFinishEntry {
+                        specular: entry.and_then(|value| read_rgb_value_field(value, "specColor")),
+                        glossiness: entry.and_then(|value| get_value_f32(value, "glossiness")),
+                    }
+                };
                 Some(mtl::TintPalette {
-                    source_name: None,
+                    source_name: Some(paint_node.entity_name.clone()),
                     primary: read_entry("entryA"),
                     secondary: read_entry("entryB"),
                     tertiary: read_entry("entryC"),
                     glass: read_entry("glassColor"),
+                    finish: mtl::TintPaletteFinish {
+                        primary: read_finish("entryA"),
+                        secondary: read_finish("entryB"),
+                        tertiary: read_finish("entryC"),
+                        glass: read_finish("glassColor"),
+                    },
                 })
             })();
 
@@ -3155,13 +3168,24 @@ fn resolve_paint_override(
                 .and_then(|m| get_value_string(m, "path"))
                 .filter(|p| !p.is_empty());
 
-            let mtl = if let Some(mtl_path) = mtl_path {
+            let override_info = mtl::PaintOverrideInfo {
+                paint_item_name: paint_node.entity_name.clone(),
+                subgeometry_tag: tag.to_string(),
+                subgeometry_index: idx,
+                material_path: mtl_path.map(|path| datacore_path_to_p4k(path).replace('\\', "/")),
+            };
+
+            let mut mtl = if let Some(mtl_path) = mtl_path {
                 log::info!("  paint material override: {mtl_path}");
                 let p4k_path = datacore_path_to_p4k(mtl_path);
-                try_load_mtl(p4k, &p4k_path).or(default_mtl)
+                try_load_mtl(p4k, &p4k_path).or_else(|| default_mtl.clone())
             } else {
-                default_mtl
+                default_mtl.clone()
             };
+
+            if let Some(materials) = mtl.as_mut() {
+                materials.paint_override = Some(override_info);
+            }
 
             return (palette.or(default_palette), mtl);
         }
@@ -3220,6 +3244,40 @@ fn get_value_u8(val: &starbreaker_datacore::query::value::Value, name: &str) -> 
         }
     }
     None
+}
+
+/// Helper: get an f32-like field from a DataCore Value.
+fn get_value_f32(val: &starbreaker_datacore::query::value::Value, name: &str) -> Option<f32> {
+    if let starbreaker_datacore::query::value::Value::Object { fields, .. } = val {
+        for (k, v) in fields {
+            if *k == name {
+                return match v {
+                    starbreaker_datacore::query::value::Value::Float(n) => Some(*n),
+                    starbreaker_datacore::query::value::Value::Double(n) => Some(*n as f32),
+                    starbreaker_datacore::query::value::Value::UInt8(n) => Some(*n as f32),
+                    starbreaker_datacore::query::value::Value::UInt16(n) => Some(*n as f32),
+                    starbreaker_datacore::query::value::Value::UInt32(n) => Some(*n as f32),
+                    _ => None,
+                };
+            }
+        }
+    }
+    None
+}
+
+fn read_rgb_value_field(
+    value: &starbreaker_datacore::query::value::Value,
+    field_name: &str,
+) -> Option<[f32; 3]> {
+    let rgb = get_value_field(value, field_name)?;
+    let r = get_value_u8(rgb, "r")?;
+    let g = get_value_u8(rgb, "g")?;
+    let b = get_value_u8(rgb, "b")?;
+    Some([
+        srgb_to_linear(r as f32 / 255.0),
+        srgb_to_linear(g as f32 / 255.0),
+        srgb_to_linear(b as f32 / 255.0),
+    ])
 }
 
 /// Query the default tint palette colors from a DataCore entity.
@@ -3287,6 +3345,25 @@ fn query_tint_from_path(
         }
         rgb
     };
+    let query_finish_rgb = |entry: &str| -> Option<[f32; 3]> {
+        let mut rgb = [0.0f32; 3];
+        let mut found = false;
+        for (i, ch) in ["r", "g", "b"].iter().enumerate() {
+            let path = format!("{base}.{entry}.specColor.{ch}");
+            if let Ok(compiled) = db.compile_path::<u8>(record.struct_id(), &path)
+                && let Ok(Some(v)) = db.query_single::<u8>(&compiled, record)
+            {
+                found = true;
+                rgb[i] = srgb_to_linear(v as f32 / 255.0);
+            }
+        }
+        found.then_some(rgb)
+    };
+    let query_glossiness = |entry: &str| -> Option<f32> {
+        let path = format!("{base}.{entry}.glossiness");
+        let compiled = db.compile_path::<f32>(record.struct_id(), &path).ok()?;
+        db.query_single::<f32>(&compiled, record).ok().flatten()
+    };
 
     // Quick check: can we even query this path?
     let test_path = format!("{base}.entryA.tintColor.r");
@@ -3299,6 +3376,24 @@ fn query_tint_from_path(
         secondary: query_rgb("entryB"),
         tertiary: query_rgb("entryC"),
         glass: query_rgb("glassColor"),
+        finish: mtl::TintPaletteFinish {
+            primary: mtl::TintPaletteFinishEntry {
+                specular: query_finish_rgb("entryA"),
+                glossiness: query_glossiness("entryA"),
+            },
+            secondary: mtl::TintPaletteFinishEntry {
+                specular: query_finish_rgb("entryB"),
+                glossiness: query_glossiness("entryB"),
+            },
+            tertiary: mtl::TintPaletteFinishEntry {
+                specular: query_finish_rgb("entryC"),
+                glossiness: query_glossiness("entryC"),
+            },
+            glass: mtl::TintPaletteFinishEntry {
+                specular: query_finish_rgb("glassColor"),
+                glossiness: query_glossiness("glassColor"),
+            },
+        },
     })
 }
 
@@ -3316,7 +3411,53 @@ pub(crate) fn try_load_mtl(p4k: &MappedP4k, p4k_path: &str) -> Option<mtl::MtlFi
     let data = p4k.read(entry).ok()?;
     let mut mtl = mtl::parse_mtl(&data).ok()?;
     mtl.source_path = Some(p4k_path.to_string());
+    populate_layer_snapshots(p4k, &mut mtl);
     Some(mtl)
+}
+
+fn populate_layer_snapshots(p4k: &MappedP4k, mtl: &mut mtl::MtlFile) {
+    for material in &mut mtl.materials {
+        for layer in &mut material.layers {
+            if layer.snapshot.is_none() || layer.resolved_material.is_none() {
+                if let Some((snapshot, resolved_material)) = load_layer_details(p4k, layer) {
+                    if layer.snapshot.is_none() {
+                        layer.snapshot = Some(snapshot);
+                    }
+                    if layer.resolved_material.is_none() {
+                        layer.resolved_material = Some(resolved_material);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn load_layer_details(
+    p4k: &MappedP4k,
+    layer: &mtl::MatLayer,
+) -> Option<(mtl::MatLayerSnapshot, mtl::ResolvedLayerMaterial)> {
+    let p4k_path = datacore_path_to_p4k(&layer.path);
+    let entry = p4k.entry_case_insensitive(&p4k_path)?;
+    let data = p4k.read(entry).ok()?;
+    let layer_mtl = mtl::parse_mtl(&data).ok()?;
+    let material = mtl::resolve_layer_submaterial(&layer_mtl, &layer.sub_material)?;
+
+    Some((
+        mtl::MatLayerSnapshot {
+            shader: material.shader.clone(),
+            diffuse: material.diffuse,
+            specular: material.specular,
+            shininess: material.shininess,
+            wear_specular_color: material.public_param_rgb(&["WearSpecularColor"]),
+            wear_glossiness: material.public_param_f32(&["WearGlossiness"]),
+            surface_type: if material.surface_type.is_empty() {
+                None
+            } else {
+                Some(material.surface_type.clone())
+            },
+        },
+        material.resolved_layer_material(),
+    ))
 }
 
 /// Convert a DataCore file path to P4k format.
@@ -4173,11 +4314,8 @@ pub fn dump_hierarchy(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::{Path, PathBuf};
 
-    use starbreaker_datacore::database::Database;
     use starbreaker_datacore::types::{CigGuid, StringId, StringId2};
-    use starbreaker_p4k::MappedP4k;
 
     fn sample_export_result(kind: ExportKind, glb: Vec<u8>) -> ExportResult {
         ExportResult {
@@ -4200,56 +4338,6 @@ mod tests {
             instance_index: 0,
             struct_size: 0,
         }
-    }
-
-    fn workspace_root() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("crates dir")
-            .parent()
-            .expect("StarBreaker dir")
-            .parent()
-            .expect("workspace root")
-            .to_path_buf()
-    }
-
-    fn integration_p4k_path() -> Option<PathBuf> {
-        if let Ok(path) = std::env::var("STARBREAKER_TEST_P4K") {
-            let path = PathBuf::from(path);
-            if path.exists() {
-                return Some(path);
-            }
-            eprintln!("STARBREAKER_TEST_P4K not found at {}, skipping", path.display());
-            return None;
-        }
-
-        let home = std::env::var_os("HOME").map(PathBuf::from)?;
-        let candidates = [
-            home.join("Games/star-citizen/drive_c/Program Files/Roberts Space Industries/StarCitizen/LIVE/Data.p4k"),
-            home.join("Games/star-citizen/drive_c/Program Files/Roberts Space Industries/StarCitizen/PTU/Data.p4k"),
-        ];
-        for candidate in candidates {
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-
-        eprintln!("Data.p4k not found. Set STARBREAKER_TEST_P4K to run this manual export harness.");
-        None
-    }
-
-    fn integration_dcb_bytes(p4k: &MappedP4k) -> Option<Vec<u8>> {
-        if let Ok(path) = std::env::var("STARBREAKER_TEST_DCB") {
-            let path = PathBuf::from(path);
-            if path.exists() {
-                return Some(std::fs::read(&path).expect("failed to read STARBREAKER_TEST_DCB"));
-            }
-            eprintln!("STARBREAKER_TEST_DCB not found at {}, falling back to Data.p4k", path.display());
-        }
-
-        p4k.read_file("Data\\Game2.dcb")
-            .or_else(|_| p4k.read_file("Data\\Game.dcb"))
-            .ok()
     }
 
     fn resolved_node(
@@ -4350,63 +4438,6 @@ mod tests {
         let err = ensure_supported_export_options(&opts)
             .expect_err("stl export format should be rejected");
         assert!(matches!(err, Error::UnsupportedExportFormat(format) if format == "Stl"));
-    }
-
-    #[test]
-    #[ignore = "manual export harness for refreshing the workspace MOLE package"]
-    fn regenerate_mole_decomposed_export_to_workspace() {
-        let Some(p4k_path) = integration_p4k_path() else {
-            return;
-        };
-
-        let p4k = MappedP4k::open(&p4k_path).expect("failed to open Data.p4k");
-        let dcb_bytes = integration_dcb_bytes(&p4k).expect("failed to load Game2.dcb/Game.dcb");
-        let db = Database::from_bytes(&dcb_bytes).expect("failed to parse DataCore database");
-        let index = starbreaker_datacore::loadout::EntityIndex::new(&db);
-        let record = index.find_record("ARGO_MOLE").expect("ARGO_MOLE not found");
-        let tree = starbreaker_datacore::loadout::resolve_loadout_indexed(&index, record);
-
-        let opts = ExportOptions {
-            kind: ExportKind::Decomposed,
-            material_mode: MaterialMode::All,
-            include_attachments: true,
-            include_interior: true,
-            include_lights: true,
-            include_nodraw: false,
-            lod_level: 0,
-            texture_mip: 0,
-            ..ExportOptions::default()
-        };
-
-        let result = assemble_glb_with_loadout(&db, &p4k, record, &tree, &opts)
-            .expect("ARGO_MOLE decomposed export failed");
-        let decomposed = result
-            .decomposed
-            .as_ref()
-            .expect("expected decomposed files in export result");
-
-        let output_root = std::env::var("STARBREAKER_TEST_EXPORT_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| workspace_root().join("ships"));
-        let package_root = output_root.join("Packages/Argo MOLE");
-        if package_root.exists() {
-            std::fs::remove_dir_all(&package_root).expect("failed to clear existing Argo MOLE package");
-        }
-
-        for file in &decomposed.files {
-            let output_path = output_root.join(&file.relative_path);
-            if let Some(parent) = output_path.parent() {
-                std::fs::create_dir_all(parent).expect("failed to create output directory");
-            }
-            std::fs::write(&output_path, &file.bytes).expect("failed to write decomposed export file");
-        }
-
-        eprintln!(
-            "Wrote {} decomposed files for ARGO_MOLE to {} using {}",
-            decomposed.files.len(),
-            output_root.display(),
-            p4k_path.display(),
-        );
     }
 
     #[test]

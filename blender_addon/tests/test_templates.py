@@ -73,7 +73,9 @@ class TemplateTests(unittest.TestCase):
             if submaterial.shader_family == "LayerBlend_V2"
             and any(layer.palette_channel is not None for layer in submaterial.layer_manifest)
         )
+        monitor = next(submaterial for submaterial in component.submaterials if submaterial.shader_family == "Monitor")
         self.assertEqual(template_plan_for_submaterial(layered).template_key, "layered_wear")
+        self.assertEqual(template_plan_for_submaterial(monitor).template_key, "screen_hud")
         self.assertTrue(material_palette_channels(layered))
 
     def test_synthetic_support_covers_biology_hair_and_effect_templates(self) -> None:

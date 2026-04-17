@@ -5,12 +5,64 @@ use starbreaker_chunks::ChunkFile;
 /// Default paint palette colors for a ship entity.
 /// Queried from DataCore TintPaletteTree via the entity's TintPaletteRef.
 #[derive(Debug, Clone, Default)]
+pub struct TintPaletteFinishEntry {
+    pub specular: Option<[f32; 3]>,
+    pub glossiness: Option<f32>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TintPaletteFinish {
+    pub primary: TintPaletteFinishEntry,
+    pub secondary: TintPaletteFinishEntry,
+    pub tertiary: TintPaletteFinishEntry,
+    pub glass: TintPaletteFinishEntry,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct TintPalette {
     pub source_name: Option<String>,
     pub primary: [f32; 3],   // entryA — main hull
     pub secondary: [f32; 3], // entryB — secondary panels
     pub tertiary: [f32; 3],  // entryC — accent
     pub glass: [f32; 3],     // glass tint
+    pub finish: TintPaletteFinish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaintOverrideInfo {
+    pub paint_item_name: String,
+    pub subgeometry_tag: String,
+    pub subgeometry_index: usize,
+    pub material_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthoredAttribute {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthoredBlock {
+    pub tag: String,
+    pub attributes: Vec<AuthoredAttribute>,
+    pub children: Vec<AuthoredBlock>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthoredTexture {
+    pub slot: String,
+    pub path: String,
+    pub is_virtual: bool,
+    pub attributes: Vec<AuthoredAttribute>,
+    pub child_blocks: Vec<AuthoredBlock>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MaterialSetAuthoredData {
+    pub attributes: Vec<AuthoredAttribute>,
+    pub public_params: Vec<PublicParam>,
+    pub child_blocks: Vec<AuthoredBlock>,
 }
 
 #[derive(Debug, Clone)]
@@ -19,6 +71,10 @@ pub struct MtlFile {
     /// P4k source path of this .mtl file (e.g. `Data\Objects\Ships\RSI\aurora_mk2\rsi_aurora_mk2_int.mtl`).
     /// Used for CGF-Converter compatible material naming.
     pub source_path: Option<String>,
+    /// Resolved paint override selector metadata when this material set came from a SubGeometry match.
+    pub paint_override: Option<PaintOverrideInfo>,
+    /// Raw authored material-set metadata from the root `<Material>` node when this file contains submaterials.
+    pub material_set: MaterialSetAuthoredData,
 }
 
 #[derive(Debug, Clone)]
@@ -58,19 +114,68 @@ pub struct SubMaterial {
     pub texture_slots: Vec<TextureSlotBinding>,
     /// PublicParams preserved as authored name/value pairs.
     pub public_params: Vec<PublicParam>,
+    /// Raw authored submaterial attributes preserved as exact name/value pairs.
+    pub authored_attributes: Vec<AuthoredAttribute>,
+    /// Raw authored texture nodes, including nested `TexMod` blocks.
+    pub authored_textures: Vec<AuthoredTexture>,
+    /// Raw authored non-texture child blocks such as `VertexDeform`.
+    pub authored_child_blocks: Vec<AuthoredBlock>,
 }
 
 /// A single layer from a LayerBlend/HardSurface material's MatLayers section.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatLayerSnapshot {
+    pub shader: String,
+    pub diffuse: [f32; 3],
+    pub specular: [f32; 3],
+    pub shininess: f32,
+    pub wear_specular_color: Option<[f32; 3]>,
+    pub wear_glossiness: Option<f32>,
+    pub surface_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedLayerMaterial {
+    pub name: String,
+    pub shader: String,
+    pub shader_family: String,
+    pub authored_attributes: Vec<AuthoredAttribute>,
+    pub public_params: Vec<PublicParam>,
+    pub authored_child_blocks: Vec<AuthoredBlock>,
+}
+
 #[derive(Debug, Clone)]
 pub struct MatLayer {
+    /// Authored layer name such as `Primary` or `Wear`.
+    pub name: String,
     /// Path to the layer's .mtl file (e.g., `libs/materials/metal/steel_bare_01.mtl`).
     pub path: String,
+    /// Authored submaterial selector inside the layer file, when present.
+    pub sub_material: String,
     /// TintColor applied to this layer's diffuse texture. Default [1,1,1].
     pub tint_color: [f32; 3],
+    /// WearTint authored on the layer entry. Default [1,1,1].
+    pub wear_tint: [f32; 3],
     /// Palette channel: 0=none, 1=primary, 2=secondary, 3=tertiary.
     pub palette_tint: u8,
+    /// Gloss multiplier authored on the layer entry. Default 1.0.
+    pub gloss_mult: f32,
+    /// Wear gloss multiplier authored on the layer entry. Default 1.0.
+    pub wear_gloss: f32,
     /// UV tiling factor for the layer's textures. Default 1.0.
     pub uv_tiling: f32,
+    /// Authored height bias for layer blending. Default 0.0.
+    pub height_bias: f32,
+    /// Authored height scale for layer blending. Default 1.0.
+    pub height_scale: f32,
+    /// Raw authored layer attributes preserved exactly as they appear in the XML.
+    pub authored_attributes: Vec<AuthoredAttribute>,
+    /// Raw authored non-scalar child blocks preserved for future reconstruction.
+    pub authored_child_blocks: Vec<AuthoredBlock>,
+    /// Snapshot of the referenced layer material's scalar response data.
+    pub snapshot: Option<MatLayerSnapshot>,
+    /// Resolved authored metadata from the selected layer-file submaterial.
+    pub resolved_material: Option<ResolvedLayerMaterial>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +200,7 @@ pub enum ShaderFamily {
     MeshDecal,
     GlassPbr,
     DisplayScreen,
+    Monitor,
     UiPlane,
     HumanSkinV2,
     Eye,
@@ -118,6 +224,7 @@ impl ShaderFamily {
             ShaderFamily::MeshDecal => "MeshDecal",
             ShaderFamily::GlassPbr => "GlassPBR",
             ShaderFamily::DisplayScreen => "DisplayScreen",
+            ShaderFamily::Monitor => "Monitor",
             ShaderFamily::UiPlane => "UIPlane",
             ShaderFamily::HumanSkinV2 => "HumanSkin_V2",
             ShaderFamily::Eye => "Eye",
@@ -204,6 +311,8 @@ pub struct SemanticTextureBinding {
     pub path: String,
     pub is_virtual: bool,
     pub role: TextureSemanticRole,
+    pub authored_attributes: Vec<AuthoredAttribute>,
+    pub authored_child_blocks: Vec<AuthoredBlock>,
 }
 
 /// How a material's alpha should be handled in glTF.
@@ -215,6 +324,17 @@ pub enum AlphaConfig {
 }
 
 impl SubMaterial {
+    pub fn resolved_layer_material(&self) -> ResolvedLayerMaterial {
+        ResolvedLayerMaterial {
+            name: self.name.clone(),
+            shader: self.shader.clone(),
+            shader_family: self.shader_family().as_str().to_string(),
+            authored_attributes: self.authored_attributes.clone(),
+            public_params: self.public_params.clone(),
+            authored_child_blocks: self.authored_child_blocks.clone(),
+        }
+    }
+
     pub fn public_param(&self, name: &str) -> Option<&str> {
         self.public_params
             .iter()
@@ -295,6 +415,7 @@ impl SubMaterial {
             "MeshDecal" => ShaderFamily::MeshDecal,
             "GlassPBR" => ShaderFamily::GlassPbr,
             "DisplayScreen" => ShaderFamily::DisplayScreen,
+            "Monitor" => ShaderFamily::Monitor,
             "UIPlane" => ShaderFamily::UiPlane,
             "HumanSkin_V2" => ShaderFamily::HumanSkinV2,
             "Eye" => ShaderFamily::Eye,
@@ -335,13 +456,30 @@ impl SubMaterial {
 
         self.texture_slots
             .iter()
-            .map(|binding| SemanticTextureBinding {
-                slot: binding.slot.clone(),
-                path: binding.path.clone(),
-                is_virtual: binding.is_virtual,
-                role: classify_texture_role(self, &flags, binding),
+            .map(|binding| {
+                let authored = self.authored_texture(binding);
+                SemanticTextureBinding {
+                    slot: binding.slot.clone(),
+                    path: binding.path.clone(),
+                    is_virtual: binding.is_virtual,
+                    role: classify_texture_role(self, &flags, binding),
+                    authored_attributes: authored
+                        .map(|texture| texture.attributes.clone())
+                        .unwrap_or_default(),
+                    authored_child_blocks: authored
+                        .map(|texture| texture.child_blocks.clone())
+                        .unwrap_or_default(),
+                }
             })
             .collect()
+    }
+
+    fn authored_texture(&self, binding: &TextureSlotBinding) -> Option<&AuthoredTexture> {
+        self.authored_textures.iter().find(|texture| {
+            texture.slot == binding.slot
+                && texture.path == binding.path
+                && texture.is_virtual == binding.is_virtual
+        })
     }
 
     /// Determine alpha config from parsed .mtl attributes.
@@ -366,7 +504,6 @@ impl SubMaterial {
         }
         AlphaConfig::Opaque
     }
-
     /// Whether this material should be hidden.
     pub fn should_hide(&self) -> bool {
         self.is_nodraw || self.opacity <= f32::EPSILON
@@ -471,6 +608,32 @@ impl SubMaterial {
     }
 }
 
+pub fn resolve_layer_submaterial<'a>(
+    materials: &'a MtlFile,
+    selector: &str,
+) -> Option<&'a SubMaterial> {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        return materials.materials.first();
+    }
+
+    if let Some(material) = materials
+        .materials
+        .iter()
+        .find(|material| material.name.eq_ignore_ascii_case(selector))
+    {
+        return Some(material);
+    }
+
+    if let Ok(index) = selector.parse::<usize>() {
+        if let Some(material) = materials.materials.get(index) {
+            return Some(material);
+        }
+    }
+
+    materials.materials.first()
+}
+
 pub fn parse_mtl(data: &[u8]) -> Result<MtlFile, Error> {
     let xml = starbreaker_cryxml::from_bytes(data)?;
     let root = xml.root();
@@ -478,6 +641,29 @@ pub fn parse_mtl(data: &[u8]) -> Result<MtlFile, Error> {
     let sub_materials_node = xml
         .node_children(root)
         .find(|child| xml.node_tag(child) == "SubMaterials");
+
+    let material_set = if sub_materials_node.is_some() {
+        let public_params = xml
+            .node_children(root)
+            .filter(|child| xml.node_tag(child) == "PublicParams")
+            .flat_map(|node| parse_public_params(&xml, node))
+            .collect::<Vec<_>>();
+        let child_blocks = xml
+            .node_children(root)
+            .filter(|child| {
+                let tag = xml.node_tag(child);
+                tag != "SubMaterials" && tag != "PublicParams"
+            })
+            .map(|child| parse_authored_block(&xml, child))
+            .collect::<Vec<_>>();
+        MaterialSetAuthoredData {
+            attributes: collect_authored_attributes(&xml, root),
+            public_params,
+            child_blocks,
+        }
+    } else {
+        MaterialSetAuthoredData::default()
+    };
 
     let materials = if let Some(sub_node) = sub_materials_node {
         xml.node_children(sub_node)
@@ -488,13 +674,57 @@ pub fn parse_mtl(data: &[u8]) -> Result<MtlFile, Error> {
         vec![parse_sub_material(&xml, root)]
     };
 
-    Ok(MtlFile { materials, source_path: None })
+    Ok(MtlFile {
+        materials,
+        source_path: None,
+        paint_override: None,
+        material_set,
+    })
+}
+
+fn collect_authored_attributes(
+    xml: &starbreaker_cryxml::CryXml,
+    node: &starbreaker_cryxml::CryXmlNode,
+) -> Vec<AuthoredAttribute> {
+    xml.node_attributes(node)
+        .map(|(name, value)| AuthoredAttribute {
+            name: name.to_string(),
+            value: value.to_string(),
+        })
+        .collect()
+}
+
+fn parse_public_params(
+    xml: &starbreaker_cryxml::CryXml,
+    node: &starbreaker_cryxml::CryXmlNode,
+) -> Vec<PublicParam> {
+    xml.node_attributes(node)
+        .map(|(name, value)| PublicParam {
+            name: name.to_string(),
+            value: value.to_string(),
+        })
+        .collect()
+}
+
+fn parse_authored_block(
+    xml: &starbreaker_cryxml::CryXml,
+    node: &starbreaker_cryxml::CryXmlNode,
+) -> AuthoredBlock {
+    AuthoredBlock {
+        tag: xml.node_tag(node).to_string(),
+        attributes: collect_authored_attributes(xml, node),
+        children: xml
+            .node_children(node)
+            .map(|child| parse_authored_block(xml, child))
+            .collect(),
+    }
 }
 
 fn parse_sub_material(
     xml: &starbreaker_cryxml::CryXml,
     node: &starbreaker_cryxml::CryXmlNode,
 ) -> SubMaterial {
+    let authored_attributes = collect_authored_attributes(xml, node);
     let mut name = String::new();
     let mut shader = String::new();
     let mut diffuse = [1.0f32; 3];
@@ -521,7 +751,7 @@ fn parse_sub_material(
             "Specular" => specular = parse_rgb(val),
             "Shininess" => shininess = val.parse().unwrap_or(128.0),
             "Emissive" => emissive = parse_rgb(val),
-            "GlowAmount" => glow = val.parse().unwrap_or(0.0),
+            "Glow" | "GlowAmount" => glow = val.parse().unwrap_or(0.0),
             "SurfaceType" => surface_type = val.to_string(),
             "Opacity" => opacity = val.parse().unwrap_or(1.0),
             "AlphaTest" => alpha_test = val.parse().unwrap_or(0.0),
@@ -536,6 +766,8 @@ fn parse_sub_material(
     let mut palette_tint: u8 = 0;
     let mut texture_slots = Vec::new();
     let mut public_params = Vec::new();
+    let mut authored_textures = Vec::new();
+    let mut authored_child_blocks = Vec::new();
 
     for child in xml.node_children(node) {
         match xml.node_tag(child) {
@@ -544,28 +776,42 @@ fn parse_sub_material(
                     if xml.node_tag(tex) != "Texture" {
                         continue;
                     }
-                    let mut slot = "";
-                    let mut file_path = None;
-                    for (key, val) in xml.node_attributes(tex) {
-                        match key {
-                            "Map" => slot = val,
-                            "File" => file_path = Some(val.to_string()),
+                    let attributes = collect_authored_attributes(xml, tex);
+                    let child_blocks = xml
+                        .node_children(tex)
+                        .map(|child| parse_authored_block(xml, child))
+                        .collect::<Vec<_>>();
+                    let mut slot = String::new();
+                    let mut file_path = String::new();
+                    for attr in &attributes {
+                        match attr.name.as_str() {
+                            "Map" => slot = attr.value.clone(),
+                            "File" => file_path = attr.value.clone(),
                             _ => {}
                         }
                     }
-                    if let Some(path) = file_path {
-                        let is_virtual = path.starts_with('$');
+                    let is_virtual = file_path.starts_with('$');
+                    if !slot.is_empty() || !file_path.is_empty() {
+                        authored_textures.push(AuthoredTexture {
+                            slot: slot.clone(),
+                            path: file_path.clone(),
+                            is_virtual,
+                            attributes,
+                            child_blocks,
+                        });
+                    }
+                    if !file_path.is_empty() {
                         texture_slots.push(TextureSlotBinding {
-                            slot: slot.to_string(),
-                            path: path.clone(),
+                            slot: slot.clone(),
+                            path: file_path.clone(),
                             is_virtual,
                         });
                         if is_virtual {
                             continue;
                         }
-                        match slot {
-                            "TexSlot1" => diffuse_tex = Some(path),
-                            "TexSlot2" => normal_tex = Some(path),
+                        match slot.as_str() {
+                            "TexSlot1" => diffuse_tex = Some(file_path),
+                            "TexSlot2" => normal_tex = Some(file_path),
                             _ => {}
                         }
                     }
@@ -573,25 +819,55 @@ fn parse_sub_material(
             }
             "MatLayers" => {
                 for layer in xml.node_children(child) {
+                    let authored_attributes = collect_authored_attributes(xml, layer);
+                    let authored_child_blocks = xml
+                        .node_children(layer)
+                        .map(|child| parse_authored_block(xml, child))
+                        .collect::<Vec<_>>();
+                    let mut lname = String::new();
                     let mut lpath = String::new();
+                    let mut lsub_material = String::new();
                     let mut ltint = [1.0f32; 3];
+                    let mut lwear_tint = [1.0f32; 3];
                     let mut lpalette: u8 = 0;
+                    let mut lgloss_mult: f32 = 1.0;
+                    let mut lwear_gloss: f32 = 1.0;
                     let mut luv_tiling: f32 = 1.0;
+                    let mut lheight_bias: f32 = 0.0;
+                    let mut lheight_scale: f32 = 1.0;
                     for (key, val) in xml.node_attributes(layer) {
                         match key {
+                            "Name" => lname = val.to_string(),
                             "Path" if !val.is_empty() => lpath = val.to_string(),
+                            "Submtl" => lsub_material = val.to_string(),
                             "TintColor" => ltint = parse_rgb(val),
+                            "WearTint" => lwear_tint = parse_rgb(val),
                             "PaletteTint" => lpalette = val.parse().unwrap_or(0),
+                            "GlossMult" => lgloss_mult = val.parse().unwrap_or(1.0),
+                            "WearGloss" => lwear_gloss = val.parse().unwrap_or(1.0),
                             "UVTiling" => luv_tiling = val.parse().unwrap_or(1.0),
+                            "HeightBias" => lheight_bias = val.parse().unwrap_or(0.0),
+                            "HeightScale" => lheight_scale = val.parse().unwrap_or(1.0),
                             _ => {}
                         }
                     }
                     if !lpath.is_empty() {
                         layers.push(MatLayer {
+                            name: lname,
                             path: lpath,
+                            sub_material: lsub_material,
                             tint_color: ltint,
+                            wear_tint: lwear_tint,
                             palette_tint: lpalette,
+                            gloss_mult: lgloss_mult,
+                            wear_gloss: lwear_gloss,
                             uv_tiling: luv_tiling,
+                            height_bias: lheight_bias,
+                            height_scale: lheight_scale,
+                            authored_attributes,
+                            authored_child_blocks,
+                            snapshot: None,
+                            resolved_material: None,
                         });
                     }
                     // First layer with PaletteTint > 0 determines the palette channel
@@ -601,14 +877,9 @@ fn parse_sub_material(
                 }
             }
             "PublicParams" => {
-                for (key, val) in xml.node_attributes(child) {
-                    public_params.push(PublicParam {
-                        name: key.to_string(),
-                        value: val.to_string(),
-                    });
-                }
+                public_params.extend(parse_public_params(xml, child));
             }
-            _ => {}
+            _ => authored_child_blocks.push(parse_authored_block(xml, child)),
         }
     }
 
@@ -631,6 +902,9 @@ fn parse_sub_material(
         palette_tint,
         texture_slots,
         public_params,
+        authored_attributes,
+        authored_textures,
+        authored_child_blocks,
     }
 }
 
@@ -713,6 +987,10 @@ fn classify_texture_role(
             }
             "TexSlot11" if is_breakup_like => TextureSemanticRole::Dirt,
             "TexSlot17" if is_pixel_layout_like => TextureSemanticRole::ScreenPixelLayout,
+            _ => TextureSemanticRole::Unknown,
+        },
+        ShaderFamily::Monitor => match binding.slot.as_str() {
+            "TexSlot1" => TextureSemanticRole::BaseColor,
             _ => TextureSemanticRole::Unknown,
         },
         ShaderFamily::Organic => match binding.slot.as_str() {
@@ -818,6 +1096,9 @@ mod tests {
             palette_tint: 0,
             texture_slots: Vec::new(),
             public_params: Vec::new(),
+            authored_attributes: Vec::new(),
+            authored_textures: Vec::new(),
+            authored_child_blocks: Vec::new(),
         }
     }
 
@@ -861,8 +1142,73 @@ mod tests {
     fn shader_family_classifies_known_families() {
         assert_eq!(dummy_submaterial("HardSurface", "").shader_family(), ShaderFamily::HardSurface);
         assert_eq!(dummy_submaterial("HologramCIG", "").shader_family(), ShaderFamily::HologramCig);
+        assert_eq!(dummy_submaterial("Monitor", "").shader_family(), ShaderFamily::Monitor);
         assert_eq!(dummy_submaterial("NoDraw", "").shader_family(), ShaderFamily::NoDraw);
         assert_eq!(dummy_submaterial("SomethingElse", "").shader_family(), ShaderFamily::Unknown);
+    }
+
+    #[test]
+    fn resolve_layer_submaterial_prefers_named_selector() {
+        let first = dummy_submaterial("Layer", "");
+        let mut second = dummy_submaterial("Layer", "");
+        second.name = "paint".into();
+
+        let materials = MtlFile {
+            materials: vec![first, second],
+            source_path: None,
+            paint_override: None,
+            material_set: Default::default(),
+        };
+
+        let resolved = resolve_layer_submaterial(&materials, "paint").expect("layer material");
+        assert_eq!(resolved.name, "paint");
+    }
+
+    #[test]
+    fn resolve_layer_submaterial_falls_back_to_first_material() {
+        let mut first = dummy_submaterial("Layer", "");
+        first.name = "primary".into();
+        let mut second = dummy_submaterial("Layer", "");
+        second.name = "wear".into();
+
+        let materials = MtlFile {
+            materials: vec![first, second],
+            source_path: None,
+            paint_override: None,
+            material_set: Default::default(),
+        };
+
+        let resolved = resolve_layer_submaterial(&materials, "missing").expect("fallback material");
+        assert_eq!(resolved.name, "primary");
+    }
+
+    #[test]
+    fn resolved_layer_material_summary_preserves_authored_fields() {
+        let mut material = dummy_submaterial("Layer", "");
+        material.name = "paint".into();
+        material.authored_attributes = vec![AuthoredAttribute {
+            name: "MatTemplate".into(),
+            value: "layer_shell".into(),
+        }];
+        material.public_params = vec![PublicParam {
+            name: "WearGlossiness".into(),
+            value: "0.91".into(),
+        }];
+        material.authored_child_blocks = vec![AuthoredBlock {
+            tag: "VertexDeform".into(),
+            attributes: vec![AuthoredAttribute {
+                name: "DividerX".into(),
+                value: "0.5".into(),
+            }],
+            children: Vec::new(),
+        }];
+
+        let resolved = material.resolved_layer_material();
+        assert_eq!(resolved.name, "paint");
+        assert_eq!(resolved.shader_family, "Layer");
+        assert_eq!(resolved.authored_attributes[0].name, "MatTemplate");
+        assert_eq!(resolved.public_params[0].name, "WearGlossiness");
+        assert_eq!(resolved.authored_child_blocks[0].tag, "VertexDeform");
     }
 
     #[test]
@@ -1059,6 +1405,24 @@ mod tests {
     }
 
     #[test]
+    fn monitor_semantic_slots_preserve_base_color_contract() {
+        let mut material = dummy_submaterial("Monitor", "");
+        material.texture_slots = vec![TextureSlotBinding {
+            slot: "TexSlot1".into(),
+            path: "textures/temp_displays_diff.tif".into(),
+            is_virtual: false,
+        }];
+
+        let roles: Vec<TextureSemanticRole> = material
+            .semantic_texture_slots()
+            .into_iter()
+            .map(|binding| binding.role)
+            .collect();
+
+        assert_eq!(roles, vec![TextureSemanticRole::BaseColor]);
+    }
+
+    #[test]
     fn organic_semantic_slots_do_not_assume_texslot1_is_base_color() {
         let mut material = dummy_submaterial("Organic", "%HEIGHT_BLEND");
         material.texture_slots = vec![
@@ -1135,5 +1499,47 @@ mod tests {
             .texture_slots
             .iter()
             .any(|slot| slot.is_virtual && slot.path == "$RenderToTexture"));
+    }
+
+    #[test]
+    fn semantic_texture_slots_preserve_authored_texture_metadata() {
+        let mut material = dummy_submaterial("Illum", "");
+        material.texture_slots = vec![TextureSlotBinding {
+            slot: "TexSlot1".into(),
+            path: "textures/base.tif".into(),
+            is_virtual: false,
+        }];
+        material.authored_textures = vec![AuthoredTexture {
+            slot: "TexSlot1".into(),
+            path: "textures/base.tif".into(),
+            is_virtual: false,
+            attributes: vec![
+                AuthoredAttribute {
+                    name: "Map".into(),
+                    value: "TexSlot1".into(),
+                },
+                AuthoredAttribute {
+                    name: "Used".into(),
+                    value: "1".into(),
+                },
+            ],
+            child_blocks: vec![AuthoredBlock {
+                tag: "TexMod".into(),
+                attributes: vec![AuthoredAttribute {
+                    name: "TileU".into(),
+                    value: "2".into(),
+                }],
+                children: Vec::new(),
+            }],
+        }];
+
+        let slots = material.semantic_texture_slots();
+
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].authored_attributes[1].name, "Used");
+        assert_eq!(slots[0].authored_attributes[1].value, "1");
+        assert_eq!(slots[0].authored_child_blocks[0].tag, "TexMod");
+        assert_eq!(slots[0].authored_child_blocks[0].attributes[0].name, "TileU");
+        assert_eq!(slots[0].authored_child_blocks[0].attributes[0].value, "2");
     }
 }

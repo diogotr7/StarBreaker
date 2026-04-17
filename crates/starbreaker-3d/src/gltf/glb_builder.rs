@@ -1379,6 +1379,88 @@ fn string_value_to_json(value: &str) -> serde_json::Value {
     serde_json::json!(value)
 }
 
+fn authored_attributes_json(attributes: &[crate::mtl::AuthoredAttribute]) -> serde_json::Value {
+    serde_json::Value::Array(
+        attributes
+            .iter()
+            .map(|attribute| {
+                serde_json::json!({
+                    "name": attribute.name,
+                    "value": attribute.value,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn authored_blocks_json(blocks: &[crate::mtl::AuthoredBlock]) -> serde_json::Value {
+    serde_json::Value::Array(blocks.iter().map(authored_block_json).collect())
+}
+
+fn authored_block_json(block: &crate::mtl::AuthoredBlock) -> serde_json::Value {
+    serde_json::json!({
+        "tag": block.tag,
+        "attributes": authored_attributes_json(&block.attributes),
+        "children": authored_blocks_json(&block.children),
+    })
+}
+
+fn raw_public_params_json(params: &[crate::mtl::PublicParam]) -> serde_json::Value {
+    serde_json::Value::Array(
+        params
+            .iter()
+            .map(|param| {
+                serde_json::json!({
+                    "name": param.name,
+                    "value": param.value,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn palette_finish_entry_json(
+    entry: &crate::mtl::TintPaletteFinishEntry,
+) -> serde_json::Value {
+    serde_json::json!({
+        "specular": entry.specular,
+        "glossiness": entry.glossiness,
+    })
+}
+
+fn resolved_palette_finish_json(
+    palette: &crate::mtl::TintPalette,
+    channel: u8,
+    is_glass: bool,
+) -> Option<serde_json::Value> {
+    let entry = match channel {
+        1 => Some(&palette.finish.primary),
+        2 => Some(&palette.finish.secondary),
+        3 => Some(&palette.finish.tertiary),
+        _ if is_glass => Some(&palette.finish.glass),
+        _ => None,
+    }?;
+
+    if entry.specular.is_some() || entry.glossiness.is_some() {
+        Some(palette_finish_entry_json(entry))
+    } else {
+        None
+    }
+}
+
+fn resolved_layer_material_json(
+    material: &crate::mtl::ResolvedLayerMaterial,
+) -> serde_json::Value {
+    serde_json::json!({
+        "name": material.name,
+        "shader": material.shader,
+        "shader_family": material.shader_family,
+        "authored_attributes": authored_attributes_json(&material.authored_attributes),
+        "authored_public_params": raw_public_params_json(&material.public_params),
+        "authored_child_blocks": authored_blocks_json(&material.authored_child_blocks),
+    })
+}
+
 fn hash_vec2(hasher: &mut std::hash::DefaultHasher, values: &[f32; 2]) {
     values[0].to_bits().hash(hasher);
     values[1].to_bits().hash(hasher);
@@ -1388,6 +1470,58 @@ fn hash_vec3(hasher: &mut std::hash::DefaultHasher, values: &[f32; 3]) {
     values[0].to_bits().hash(hasher);
     values[1].to_bits().hash(hasher);
     values[2].to_bits().hash(hasher);
+}
+
+fn hash_optional_vec3(
+    hasher: &mut std::hash::DefaultHasher,
+    values: Option<&[f32; 3]>,
+) {
+    values.is_some().hash(hasher);
+    if let Some(values) = values {
+        hash_vec3(hasher, values);
+    }
+}
+
+fn hash_optional_f32(hasher: &mut std::hash::DefaultHasher, value: Option<f32>) {
+    value.is_some().hash(hasher);
+    if let Some(value) = value {
+        value.to_bits().hash(hasher);
+    }
+}
+
+fn hash_palette_finish_entry(
+    hasher: &mut std::hash::DefaultHasher,
+    entry: &crate::mtl::TintPaletteFinishEntry,
+) {
+    hash_optional_vec3(hasher, entry.specular.as_ref());
+    hash_optional_f32(hasher, entry.glossiness);
+}
+
+fn hash_authored_attributes(
+    hasher: &mut std::hash::DefaultHasher,
+    attributes: &[crate::mtl::AuthoredAttribute],
+) {
+    use std::hash::Hash;
+
+    attributes.len().hash(hasher);
+    for attribute in attributes {
+        attribute.name.hash(hasher);
+        attribute.value.hash(hasher);
+    }
+}
+
+fn hash_authored_blocks(
+    hasher: &mut std::hash::DefaultHasher,
+    blocks: &[crate::mtl::AuthoredBlock],
+) {
+    use std::hash::Hash;
+
+    blocks.len().hash(hasher);
+    for block in blocks {
+        block.tag.hash(hasher);
+        hash_authored_attributes(hasher, &block.attributes);
+        hash_authored_blocks(hasher, &block.children);
+    }
 }
 
 fn hash_vec4(hasher: &mut std::hash::DefaultHasher, values: &[f32; 4]) {
@@ -1531,6 +1665,20 @@ fn hash_materials_for_reuse(materials: Option<&crate::mtl::MtlFile>) -> u64 {
         Some(materials) => {
             true.hash(&mut hasher);
             materials.source_path.hash(&mut hasher);
+            hash_authored_attributes(&mut hasher, &materials.material_set.attributes);
+            materials.material_set.public_params.len().hash(&mut hasher);
+            for param in &materials.material_set.public_params {
+                param.name.hash(&mut hasher);
+                param.value.hash(&mut hasher);
+            }
+            hash_authored_blocks(&mut hasher, &materials.material_set.child_blocks);
+            materials.paint_override.is_some().hash(&mut hasher);
+            if let Some(paint_override) = materials.paint_override.as_ref() {
+                paint_override.paint_item_name.hash(&mut hasher);
+                paint_override.subgeometry_tag.hash(&mut hasher);
+                paint_override.subgeometry_index.hash(&mut hasher);
+                paint_override.material_path.hash(&mut hasher);
+            }
             materials.materials.len().hash(&mut hasher);
             for material in &materials.materials {
                 material.name.hash(&mut hasher);
@@ -1548,13 +1696,47 @@ fn hash_materials_for_reuse(materials: Option<&crate::mtl::MtlFile>) -> u64 {
                 material.diffuse_tex.hash(&mut hasher);
                 material.normal_tex.hash(&mut hasher);
                 material.palette_tint.hash(&mut hasher);
+                hash_authored_attributes(&mut hasher, &material.authored_attributes);
+                hash_authored_blocks(&mut hasher, &material.authored_child_blocks);
 
                 material.layers.len().hash(&mut hasher);
                 for layer in &material.layers {
+                    layer.name.hash(&mut hasher);
                     layer.path.hash(&mut hasher);
+                    layer.sub_material.hash(&mut hasher);
+                    hash_authored_attributes(&mut hasher, &layer.authored_attributes);
+                    hash_authored_blocks(&mut hasher, &layer.authored_child_blocks);
                     hash_vec3(&mut hasher, &layer.tint_color);
+                    hash_vec3(&mut hasher, &layer.wear_tint);
                     layer.palette_tint.hash(&mut hasher);
+                    layer.gloss_mult.to_bits().hash(&mut hasher);
+                    layer.wear_gloss.to_bits().hash(&mut hasher);
                     layer.uv_tiling.to_bits().hash(&mut hasher);
+                    layer.height_bias.to_bits().hash(&mut hasher);
+                    layer.height_scale.to_bits().hash(&mut hasher);
+                    layer.snapshot.is_some().hash(&mut hasher);
+                    if let Some(snapshot) = layer.snapshot.as_ref() {
+                        snapshot.shader.hash(&mut hasher);
+                        hash_vec3(&mut hasher, &snapshot.diffuse);
+                        hash_vec3(&mut hasher, &snapshot.specular);
+                        snapshot.shininess.to_bits().hash(&mut hasher);
+                        hash_optional_vec3(&mut hasher, snapshot.wear_specular_color.as_ref());
+                        hash_optional_f32(&mut hasher, snapshot.wear_glossiness);
+                        snapshot.surface_type.hash(&mut hasher);
+                    }
+                    layer.resolved_material.is_some().hash(&mut hasher);
+                    if let Some(resolved) = layer.resolved_material.as_ref() {
+                        resolved.name.hash(&mut hasher);
+                        resolved.shader.hash(&mut hasher);
+                        resolved.shader_family.hash(&mut hasher);
+                        hash_authored_attributes(&mut hasher, &resolved.authored_attributes);
+                        resolved.public_params.len().hash(&mut hasher);
+                        for param in &resolved.public_params {
+                            param.name.hash(&mut hasher);
+                            param.value.hash(&mut hasher);
+                        }
+                        hash_authored_blocks(&mut hasher, &resolved.authored_child_blocks);
+                    }
                 }
 
                 material.texture_slots.len().hash(&mut hasher);
@@ -1562,6 +1744,15 @@ fn hash_materials_for_reuse(materials: Option<&crate::mtl::MtlFile>) -> u64 {
                     slot.slot.hash(&mut hasher);
                     slot.path.hash(&mut hasher);
                     slot.is_virtual.hash(&mut hasher);
+                }
+
+                material.authored_textures.len().hash(&mut hasher);
+                for texture in &material.authored_textures {
+                    texture.slot.hash(&mut hasher);
+                    texture.path.hash(&mut hasher);
+                    texture.is_virtual.hash(&mut hasher);
+                    hash_authored_attributes(&mut hasher, &texture.attributes);
+                    hash_authored_blocks(&mut hasher, &texture.child_blocks);
                 }
 
                 material.public_params.len().hash(&mut hasher);
@@ -1656,6 +1847,10 @@ fn hash_palette_for_reuse(palette: Option<&crate::mtl::TintPalette>) -> u64 {
             hash_vec3(&mut hasher, &palette.secondary);
             hash_vec3(&mut hasher, &palette.tertiary);
             hash_vec3(&mut hasher, &palette.glass);
+            hash_palette_finish_entry(&mut hasher, &palette.finish.primary);
+            hash_palette_finish_entry(&mut hasher, &palette.finish.secondary);
+            hash_palette_finish_entry(&mut hasher, &palette.finish.tertiary);
+            hash_palette_finish_entry(&mut hasher, &palette.finish.glass);
         }
         None => false.hash(&mut hasher),
     }
@@ -2264,16 +2459,61 @@ fn build_material(
                     "has_vertex_colors": decoded_flags.has_vertex_colors,
                 }),
             );
+            if let Some(material_file) = materials {
+                if !material_file.material_set.attributes.is_empty()
+                    || !material_file.material_set.public_params.is_empty()
+                    || !material_file.material_set.child_blocks.is_empty()
+                {
+                    semantic.insert(
+                        "authored_material_set".into(),
+                        serde_json::json!({
+                            "attributes": authored_attributes_json(&material_file.material_set.attributes),
+                            "public_params": raw_public_params_json(&material_file.material_set.public_params),
+                            "child_blocks": authored_blocks_json(&material_file.material_set.child_blocks),
+                        }),
+                    );
+                }
+            }
+            if !m.authored_attributes.is_empty() {
+                semantic.insert(
+                    "authored_attributes".into(),
+                    authored_attributes_json(&m.authored_attributes),
+                );
+            }
+            if !m.public_params.is_empty() {
+                semantic.insert(
+                    "authored_public_params".into(),
+                    raw_public_params_json(&m.public_params),
+                );
+            }
+            if !m.authored_child_blocks.is_empty() {
+                semantic.insert(
+                    "authored_child_blocks".into(),
+                    authored_blocks_json(&m.authored_child_blocks),
+                );
+            }
             if !semantic_slots.is_empty() {
                 let slots_json: Vec<serde_json::Value> = semantic_slots
                     .iter()
                     .map(|binding| {
-                        serde_json::json!({
-                            "slot": binding.slot,
-                            "path": binding.path,
-                            "is_virtual": binding.is_virtual,
-                            "role": binding.role.as_str(),
-                        })
+                        let mut slot_json = serde_json::Map::new();
+                        slot_json.insert("slot".into(), serde_json::json!(binding.slot));
+                        slot_json.insert("path".into(), serde_json::json!(binding.path));
+                        slot_json.insert("is_virtual".into(), serde_json::json!(binding.is_virtual));
+                        slot_json.insert("role".into(), serde_json::json!(binding.role.as_str()));
+                        if !binding.authored_attributes.is_empty() {
+                            slot_json.insert(
+                                "authored_attributes".into(),
+                                authored_attributes_json(&binding.authored_attributes),
+                            );
+                        }
+                        if !binding.authored_child_blocks.is_empty() {
+                            slot_json.insert(
+                                "authored_child_blocks".into(),
+                                authored_blocks_json(&binding.authored_child_blocks),
+                            );
+                        }
+                        serde_json::Value::Object(slot_json)
                     })
                     .collect();
                 semantic.insert("texture_slots".into(), serde_json::Value::Array(slots_json));
@@ -2322,6 +2562,11 @@ fn build_material(
             if let Some(color) = resolved_palette_color {
                 palette_semantic.insert("resolved_color".into(), serde_json::json!(color));
             }
+            if let Some(finish) = palette.and_then(|palette| {
+                resolved_palette_finish_json(palette, m.palette_tint, m.is_glass())
+            }) {
+                palette_semantic.insert("resolved_finish".into(), finish);
+            }
             let palette_layers: Vec<serde_json::Value> = m
                 .layers
                 .iter()
@@ -2345,6 +2590,11 @@ fn build_material(
                     );
                     if let Some(color) = resolved_color {
                         layer_json.insert("resolved_color".into(), serde_json::json!(color));
+                    }
+                    if let Some(finish) = palette.and_then(|palette| {
+                        resolved_palette_finish_json(palette, layer.palette_tint, false)
+                    }) {
+                        layer_json.insert("resolved_finish".into(), finish);
                     }
                     Some(serde_json::Value::Object(layer_json))
                 })
@@ -2379,18 +2629,53 @@ fn build_material(
                     serde_json::Value::Object(material_set_identity),
                 );
             }
+            if let Some(paint_override) = materials.and_then(|mtl| mtl.paint_override.as_ref()) {
+                semantic.insert(
+                    "paint_override".into(),
+                    serde_json::json!({
+                        "paint_item_name": paint_override.paint_item_name,
+                        "subgeometry_tag": paint_override.subgeometry_tag,
+                        "subgeometry_index": paint_override.subgeometry_index,
+                        "material_path": paint_override.material_path,
+                    }),
+                );
+            }
             if !m.layers.is_empty() {
                 let manifest: Vec<serde_json::Value> = m
                     .layers
                     .iter()
                     .enumerate()
                     .map(|(index, layer)| {
+                        let snapshot = layer.snapshot.as_ref().map(|snapshot| serde_json::json!({
+                            "shader": snapshot.shader,
+                            "diffuse": snapshot.diffuse,
+                            "specular": snapshot.specular,
+                            "shininess": snapshot.shininess,
+                            "wear_specular_color": snapshot.wear_specular_color,
+                            "wear_glossiness": snapshot.wear_glossiness,
+                            "surface_type": snapshot.surface_type,
+                        }));
+                        let resolved_material = layer
+                            .resolved_material
+                            .as_ref()
+                            .map(resolved_layer_material_json);
                         serde_json::json!({
                             "index": index,
+                            "name": layer.name,
                             "path": layer.path,
+                            "submaterial_name": layer.sub_material,
+                            "resolved_material": resolved_material,
+                            "authored_attributes": authored_attributes_json(&layer.authored_attributes),
+                            "authored_child_blocks": authored_blocks_json(&layer.authored_child_blocks),
                             "tint_color": layer.tint_color,
+                            "wear_tint": layer.wear_tint,
                             "palette_tint": layer.palette_tint,
+                            "gloss_mult": layer.gloss_mult,
+                            "wear_gloss": layer.wear_gloss,
                             "uv_tiling": layer.uv_tiling,
+                            "height_bias": layer.height_bias,
+                            "height_scale": layer.height_scale,
+                            "layer_snapshot": snapshot,
                         })
                     })
                     .collect();
