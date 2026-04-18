@@ -344,6 +344,33 @@ Observed slot map:
 - `TexSlot11`: `wrinkle_mask`
 - `TexSlot12`: `transmission`
 
+## Organic
+
+Verified examples:
+
+- `Data/Objects/Architecture/planetary/asteroids/common/ast_01.mtl`
+- `Data/Objects/mining/crystals/large_crystal_01.mtl`
+- `Data/Objects/mining/crystals/small_crystal_cluster.mtl`
+
+Observed slot map:
+
+- `TexSlot1`: `blend_mask`
+  Verified by the asteroid and crystal height-blend cases where the visible surface response is assembled from referenced layers rather than a direct diffuse sheet.
+- `TexSlot2`: `normal_gloss`
+  Verified by recurring `*_ddna` inputs on both asteroid and crystal variants.
+- `TexSlot3`: `base_color`
+  Present on the asteroid branch, where the visible diffuse input is separate from the blend mask in `TexSlot1`.
+- `TexSlot8`: `height`
+  Present on displacement or tessellation-heavy variants when an explicit height-style source is authored.
+- `TexSlot17`: `subsurface` or opacity-like support
+  Rare slot that remains family-specific and should stay explicit rather than being forced into a generic slot-number rule.
+
+Contract note:
+
+- `Organic` is another direct counterexample to any global `TexSlot1 = base color` assumption.
+- The current exporter-side semantic mapping already preserves the important split between `TexSlot1` blend-mask behavior, `TexSlot2` ddna data, and `TexSlot3` visible diffuse data when present.
+- Reconstruction risk for this family is now mostly about broader sampling of its layer-driven and tessellation-heavy variants, not a missing first-pass slot audit.
+
 ## Monitor
 
 Verified examples:
