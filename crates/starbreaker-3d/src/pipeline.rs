@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use starbreaker_datacore::database::Database;
@@ -404,8 +404,26 @@ pub fn assemble_glb_with_loadout(
         loaded_interiors.unique_cgfs.len()
     );
 
-    // Texture loading callback: called JIT per entity during GLB packing.
+    // Pre-load all known textures in parallel, then use JIT loader for cache lookups.
     let mut png_cache = PngCache::new();
+    if opts.material_mode.include_textures() {
+        let all_mtls: Vec<&mtl::MtlFile> = root_mtl
+            .as_ref()
+            .into_iter()
+            .chain(child_payloads.iter().filter_map(|c| c.materials.as_ref()))
+            .collect();
+        preload_textures_parallel(
+            p4k,
+            &all_mtls,
+            opts.texture_mip,
+            opts.material_mode.include_normals(),
+            opts.material_mode.experimental(),
+            &mut png_cache,
+        );
+    }
+
+    // Texture loading callback: called JIT per entity during GLB packing.
+    // After preloading, most calls will be cache hits.
     let mut tex_loader: Box<dyn FnMut(Option<&crate::mtl::MtlFile>) -> Option<MaterialTextures>> =
         if !opts.material_mode.include_textures() {
             Box::new(|_| None)
@@ -1438,6 +1456,116 @@ fn cached_load(
     let result = loader(p4k, path, mip);
     cache.insert(key, result.clone());
     result
+}
+
+/// Texture load job for parallel pre-loading.
+enum TexJob {
+    Diffuse(String),
+    Normal(String),
+    Roughness(String),
+}
+
+/// Pre-load all textures for a set of materials in parallel using rayon.
+/// Populates the PngCache so subsequent JIT loads are all cache hits.
+fn preload_textures_parallel(
+    p4k: &MappedP4k,
+    materials: &[&mtl::MtlFile],
+    mip: u32,
+    include_normals: bool,
+    experimental_textures: bool,
+    cache: &mut PngCache,
+) {
+    use rayon::prelude::*;
+
+    // Phase 1: Collect all unique texture paths and their load types.
+    let mut jobs: Vec<TexJob> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for mtl_file in materials {
+        for m in &mtl_file.materials {
+            // Diffuse: direct or layer fallback
+            let diffuse_path = m.diffuse_tex.clone().or_else(|| {
+                m.layers.first().and_then(|layer| {
+                    let p4k_path = datacore_path_to_p4k(&layer.path);
+                    try_load_mtl(p4k, &p4k_path)
+                        .and_then(|lm| lm.materials.first().and_then(|lmat| lmat.diffuse_tex.clone()))
+                })
+            });
+            if let Some(ref path) = diffuse_path {
+                let key = format!("{path}@mip{mip}");
+                if !cache.contains_key(&key) && seen.insert(key) {
+                    jobs.push(TexJob::Diffuse(path.clone()));
+                }
+            }
+
+            if !include_normals {
+                continue;
+            }
+
+            // Normal: direct or layer fallback, with UV compat check
+            let normal_path = m.normal_tex.clone().or_else(|| {
+                m.layers.first().and_then(|layer| {
+                    let p4k_path = datacore_path_to_p4k(&layer.path);
+                    try_load_mtl(p4k, &p4k_path)
+                        .and_then(|lm| lm.materials.first().and_then(|lmat| lmat.normal_tex.clone()))
+                })
+            });
+            if let Some(ref path) = normal_path {
+                if !experimental_textures {
+                    if let Some(ref dtex) = diffuse_path {
+                        if !textures_share_uv_space(dtex, path) {
+                            continue;
+                        }
+                    }
+                }
+                let key = format!("{path}@mip{mip}");
+                if !cache.contains_key(&key) && seen.insert(key) {
+                    jobs.push(TexJob::Normal(path.clone()));
+                }
+
+                // Roughness: from _ddna alpha mips
+                if path.to_lowercase().contains("_ddna") {
+                    let rkey = format!("{path}@roughness_mip{mip}");
+                    if !cache.contains_key(&rkey) && seen.insert(rkey) {
+                        jobs.push(TexJob::Roughness(path.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    if jobs.is_empty() {
+        return;
+    }
+    log::info!("[tex-preload] decoding {} unique textures in parallel", jobs.len());
+
+    // Phase 2: Decode all textures in parallel.
+    let results: Vec<(String, Option<Vec<u8>>)> = jobs
+        .par_iter()
+        .map(|job| match job {
+            TexJob::Diffuse(path) => {
+                let key = format!("{path}@mip{mip}");
+                let result = load_diffuse_texture(p4k, path, mip);
+                (key, result)
+            }
+            TexJob::Normal(path) => {
+                let key = format!("{path}@mip{mip}");
+                let result = load_normal_texture(p4k, path, mip);
+                (key, result)
+            }
+            TexJob::Roughness(path) => {
+                let key = format!("{path}@roughness_mip{mip}");
+                let result = load_roughness_texture(p4k, path, mip);
+                (key, result)
+            }
+        })
+        .collect();
+
+    // Phase 3: Populate cache.
+    for (key, result) in results {
+        cache.insert(key, result);
+    }
+    log::info!("[tex-preload] done, cache has {} entries", cache.len());
 }
 
 fn load_diffuse_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u32) -> Option<Vec<u8>> {
