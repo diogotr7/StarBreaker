@@ -70,6 +70,7 @@ struct DecomposedMaterialView {
     mesh: Mesh,
     sidecar_materials: Option<MtlFile>,
     glb_materials: Option<MtlFile>,
+    glb_nmc: Option<NodeMeshCombo>,
 }
 
 #[derive(Debug, Clone)]
@@ -160,47 +161,36 @@ fn package_relative_path(package_name: &str, file_name: &str) -> String {
 fn build_decomposed_material_view(
     mesh: &Mesh,
     materials: Option<&MtlFile>,
+    nmc: Option<&NodeMeshCombo>,
     include_nodraw: bool,
+    include_shields: bool,
 ) -> DecomposedMaterialView {
     let Some(materials) = materials else {
+        let filtered_mesh = filter_mesh_geometry(mesh, None, nmc, include_nodraw, include_shields);
+        let (filtered_mesh, filtered_nmc) = filter_nmc_hierarchy(filtered_mesh, nmc, include_nodraw, include_shields);
         return DecomposedMaterialView {
-            mesh: mesh.clone(),
+            mesh: filtered_mesh,
             sidecar_materials: None,
             glb_materials: None,
+            glb_nmc: filtered_nmc,
         };
     };
 
     if include_nodraw {
+        let filtered_mesh = filter_mesh_geometry(mesh, Some(materials), nmc, include_nodraw, include_shields);
+        let (filtered_mesh, filtered_nmc) = filter_nmc_hierarchy(filtered_mesh, nmc, include_nodraw, include_shields);
         return DecomposedMaterialView {
-            mesh: mesh.clone(),
+            mesh: filtered_mesh,
             sidecar_materials: Some(materials.clone()),
             glb_materials: None,
-        };
-    }
-
-    if mesh
-        .submeshes
-        .iter()
-        .any(|submesh| submesh.material_id as usize >= materials.materials.len())
-    {
-        log::warn!(
-            "decomposed mesh references out-of-range material ids; keeping original NoDraw layout for {}",
-            materials
-                .source_path
-                .as_deref()
-                .unwrap_or("<unknown material source>")
-        );
-        return DecomposedMaterialView {
-            mesh: mesh.clone(),
-            sidecar_materials: Some(materials.clone()),
-            glb_materials: None,
+            glb_nmc: filtered_nmc,
         };
     }
 
     let mut material_id_map = Vec::with_capacity(materials.materials.len());
     let mut filtered_materials = Vec::with_capacity(materials.materials.len());
     for material in &materials.materials {
-        if material.is_nodraw {
+        if material.should_hide() {
             material_id_map.push(None);
         } else {
             material_id_map.push(Some(filtered_materials.len() as u32));
@@ -208,32 +198,55 @@ fn build_decomposed_material_view(
         }
     }
 
-    if filtered_materials.len() == materials.materials.len() {
-        return DecomposedMaterialView {
-            mesh: mesh.clone(),
-            sidecar_materials: Some(materials.clone()),
-            glb_materials: None,
-        };
-    }
-
+    let mut dropped_out_of_range = false;
     let mut filtered_mesh = mesh.clone();
     filtered_mesh.submeshes = mesh
         .submeshes
         .iter()
         .filter_map(|submesh| {
-            let Some(new_material_id) = material_id_map
-                .get(submesh.material_id as usize)
-                .copied()
-                .flatten()
-            else {
+            if submesh_is_excluded_helper(submesh, nmc, include_nodraw, include_shields) {
+                return None;
+            }
+
+            let Some(mapped) = material_id_map.get(submesh.material_id as usize) else {
+                dropped_out_of_range = true;
+                return None;
+            };
+            let Some(new_material_id) = *mapped else {
                 return None;
             };
 
             let mut filtered = submesh.clone();
             filtered.material_id = new_material_id;
+            if let Some(material) = filtered_materials.get(new_material_id as usize) {
+                filtered.material_name = Some(material.name.clone());
+            }
             Some(filtered)
         })
         .collect();
+
+    if dropped_out_of_range {
+        log::warn!(
+            "decomposed mesh references out-of-range material ids; dropping invalid submeshes for {}",
+            materials
+                .source_path
+                .as_deref()
+                .unwrap_or("<unknown material source>")
+        );
+    }
+
+    if filtered_materials.len() == materials.materials.len()
+        && filtered_mesh.submeshes.len() == mesh.submeshes.len()
+        && !dropped_out_of_range
+    {
+        let (filtered_mesh, filtered_nmc) = filter_nmc_hierarchy(filtered_mesh, nmc, include_nodraw, include_shields);
+        return DecomposedMaterialView {
+            mesh: filtered_mesh,
+            sidecar_materials: Some(materials.clone()),
+            glb_materials: None,
+            glb_nmc: filtered_nmc,
+        };
+    }
 
     let filtered_materials = MtlFile {
         materials: filtered_materials,
@@ -242,11 +255,146 @@ fn build_decomposed_material_view(
         material_set: materials.material_set.clone(),
     };
 
+    let (filtered_mesh, filtered_nmc) = filter_nmc_hierarchy(filtered_mesh, nmc, include_nodraw, include_shields);
+
     DecomposedMaterialView {
         mesh: filtered_mesh,
         sidecar_materials: Some(filtered_materials.clone()),
         glb_materials: Some(filtered_materials),
+        glb_nmc: filtered_nmc,
     }
+}
+
+fn filter_mesh_geometry(
+    mesh: &Mesh,
+    materials: Option<&MtlFile>,
+    nmc: Option<&NodeMeshCombo>,
+    include_nodraw: bool,
+    include_shields: bool,
+) -> Mesh {
+    if include_shields && include_nodraw {
+        return mesh.clone();
+    }
+
+    let mut filtered_mesh = mesh.clone();
+    filtered_mesh.submeshes = mesh
+        .submeshes
+        .iter()
+        .filter(|submesh| {
+            if let Some(materials) = materials {
+                if materials
+                    .materials
+                    .get(submesh.material_id as usize)
+                    .is_some_and(crate::mtl::SubMaterial::should_hide)
+                    && !include_nodraw
+                {
+                    return false;
+                }
+            }
+            !submesh_is_excluded_helper(submesh, nmc, include_nodraw, include_shields)
+        })
+        .cloned()
+        .collect();
+    filtered_mesh
+}
+
+fn filter_nmc_hierarchy(
+    mut mesh: Mesh,
+    nmc: Option<&NodeMeshCombo>,
+    include_nodraw: bool,
+    include_shields: bool,
+) -> (Mesh, Option<NodeMeshCombo>) {
+    let Some(nmc) = nmc else {
+        return (mesh, None);
+    };
+
+    let excluded_nodes = nmc
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| {
+            helper_name_is_excluded(&node.name, include_nodraw, include_shields).then_some(index)
+        })
+        .collect::<std::collections::HashSet<_>>();
+
+    mesh.submeshes.retain(|submesh| {
+        let index = submesh.node_parent_index as usize;
+        index < nmc.nodes.len() && !excluded_nodes.contains(&index)
+    });
+
+    let kept_nodes = (0..nmc.nodes.len())
+        .filter(|index| !excluded_nodes.contains(index))
+        .collect::<std::collections::BTreeSet<_>>();
+
+    if kept_nodes.is_empty() {
+        return (
+            mesh,
+            Some(NodeMeshCombo {
+                nodes: Vec::new(),
+                material_indices: Vec::new(),
+            }),
+        );
+    }
+
+    let remap = kept_nodes
+        .iter()
+        .enumerate()
+        .map(|(new_index, old_index)| (*old_index, new_index as u16))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    for submesh in &mut mesh.submeshes {
+        if let Some(node_parent_index) = remap.get(&(submesh.node_parent_index as usize)) {
+            submesh.node_parent_index = *node_parent_index;
+        }
+    }
+
+    let filtered_nmc = NodeMeshCombo {
+        nodes: kept_nodes
+            .iter()
+            .map(|old_index| {
+                let mut node = nmc.nodes[*old_index].clone();
+                node.parent_index = node
+                    .parent_index
+                    .and_then(|parent_index| remap.get(&(parent_index as usize)).copied());
+                node
+            })
+            .collect(),
+        material_indices: kept_nodes
+            .iter()
+            .map(|old_index| *nmc.material_indices.get(*old_index).unwrap_or(&0))
+            .collect(),
+    };
+
+    (mesh, Some(filtered_nmc))
+}
+
+fn submesh_is_excluded_helper(
+    submesh: &crate::types::SubMesh,
+    nmc: Option<&NodeMeshCombo>,
+    include_nodraw: bool,
+    include_shields: bool,
+) -> bool {
+    submesh
+        .material_name
+        .as_deref()
+        .is_some_and(|value| helper_name_is_excluded(value, include_nodraw, include_shields))
+        || nmc
+            .and_then(|combo| combo.nodes.get(submesh.node_parent_index as usize))
+            .is_some_and(|node| helper_name_is_excluded(&node.name, include_nodraw, include_shields))
+}
+
+fn helper_name_is_excluded(value: &str, include_nodraw: bool, _include_shields: bool) -> bool {
+    value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|segment| !segment.is_empty())
+        .any(|segment| {
+            let lowered = segment.to_ascii_lowercase();
+            !include_nodraw
+                && (lowered == "nodraw"
+                    || lowered == "proxy"
+                    || lowered.starts_with("proxy")
+                    || lowered == "localgrid")
+        })
 }
 
 pub(crate) fn write_decomposed_export(
@@ -273,7 +421,9 @@ pub(crate) fn write_decomposed_export(
     let root_material_view = build_decomposed_material_view(
         &input.root_mesh,
         input.root_materials.as_ref(),
+        input.root_nmc.as_ref(),
         opts.include_nodraw,
+        opts.include_shields,
     );
 
     let root_mesh_asset = write_mesh_asset(
@@ -283,7 +433,7 @@ pub(crate) fn write_decomposed_export(
         &input.geometry_path,
         &root_material_view.mesh,
         root_material_view.glb_materials.as_ref(),
-        input.root_nmc.as_ref(),
+        root_material_view.glb_nmc.as_ref(),
         &input.root_bones,
         existing_asset_paths,
     )?;
@@ -321,7 +471,9 @@ pub(crate) fn write_decomposed_export(
         let child_material_view = build_decomposed_material_view(
             &child.mesh,
             child.materials.as_ref(),
+            child.nmc.as_ref(),
             opts.include_nodraw,
+            opts.include_shields,
         );
         let mesh_asset = write_mesh_asset(
             &mut files,
@@ -330,7 +482,7 @@ pub(crate) fn write_decomposed_export(
             &child.geometry_path,
             &child_material_view.mesh,
             child_material_view.glb_materials.as_ref(),
-            child.nmc.as_ref(),
+            child_material_view.glb_nmc.as_ref(),
             &child.bones,
             existing_asset_paths,
         )?;
@@ -410,7 +562,9 @@ pub(crate) fn write_decomposed_export(
                 let interior_material_view = build_decomposed_material_view(
                     &mesh,
                     materials.as_ref(),
+                    None,
                     opts.include_nodraw,
+                    opts.include_shields,
                 );
                 let mesh_asset = write_mesh_asset(
                     &mut files,
@@ -422,7 +576,7 @@ pub(crate) fn write_decomposed_export(
                     // Interior meshes already follow the bundled flat-mesh path.
                     // Preserving the raw NMC hierarchy here makes decomposed interiors
                     // diverge from the reference import and can double-apply placement transforms.
-                    None,
+                    interior_material_view.glb_nmc.as_ref(),
                     &[],
                     existing_asset_paths,
                 )?;
@@ -1879,6 +2033,32 @@ mod tests {
         }
     }
 
+    fn sample_nmc(node_names: &[&str]) -> NodeMeshCombo {
+        NodeMeshCombo {
+            nodes: node_names
+                .iter()
+                .map(|name| crate::nmc::NmcNode {
+                    name: (*name).to_string(),
+                    parent_index: None,
+                    world_to_bone: [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                    ],
+                    bone_to_world: [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                    ],
+                    scale: [1.0, 1.0, 1.0],
+                    geometry_type: 0,
+                    properties: Default::default(),
+                })
+                .collect(),
+            material_indices: vec![0; node_names.len()],
+        }
+    }
+
     #[test]
     fn normalize_source_paths_keep_data_prefix_and_slashes() {
         assert_eq!(
@@ -2335,7 +2515,7 @@ mod tests {
             },
         ]);
 
-        let view = build_decomposed_material_view(&mesh, Some(&materials), false);
+        let view = build_decomposed_material_view(&mesh, Some(&materials), None, false, true);
         let filtered_materials = view.sidecar_materials.expect("filtered sidecar materials");
         let glb_materials = view.glb_materials.expect("filtered glb materials");
 
@@ -2357,6 +2537,176 @@ mod tests {
                 .map(|submesh| submesh.material_id)
                 .collect::<Vec<_>>(),
             vec![1, 0]
+        );
+    }
+
+    #[test]
+    fn decomposed_material_view_drops_out_of_range_submeshes_without_restoring_hidden_materials() {
+        let mut nodraw = sample_submaterial();
+        nodraw.name = "proxy_shield".into();
+        nodraw.shader = "NoDraw".into();
+        nodraw.is_nodraw = true;
+
+        let mut hull = sample_submaterial();
+        hull.name = "hull".into();
+
+        let materials = MtlFile {
+            materials: vec![nodraw, hull],
+            source_path: Some("Data/Objects/Ships/Test/hull.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
+        };
+        let mesh = sample_mesh(vec![
+            crate::types::SubMesh {
+                material_name: Some("proxy_shield".into()),
+                material_id: 0,
+                first_index: 0,
+                num_indices: 3,
+                first_vertex: 0,
+                num_vertices: 3,
+                node_parent_index: 0,
+            },
+            crate::types::SubMesh {
+                material_name: Some("broken".into()),
+                material_id: 9,
+                first_index: 3,
+                num_indices: 3,
+                first_vertex: 0,
+                num_vertices: 3,
+                node_parent_index: 0,
+            },
+            crate::types::SubMesh {
+                material_name: Some("hull".into()),
+                material_id: 1,
+                first_index: 6,
+                num_indices: 3,
+                first_vertex: 0,
+                num_vertices: 3,
+                node_parent_index: 0,
+            },
+        ]);
+
+        let view = build_decomposed_material_view(&mesh, Some(&materials), None, false, true);
+        let filtered_materials = view.sidecar_materials.expect("filtered sidecar materials");
+        let glb_materials = view.glb_materials.expect("filtered glb materials");
+
+        assert_eq!(filtered_materials.materials.len(), 1);
+        assert_eq!(filtered_materials.materials[0].name, "hull");
+        assert_eq!(glb_materials.materials.len(), 1);
+        assert_eq!(view.mesh.submeshes.len(), 1);
+        assert_eq!(view.mesh.submeshes[0].material_id, 0);
+        assert_eq!(view.mesh.submeshes[0].material_name.as_deref(), Some("hull"));
+    }
+
+    #[test]
+    fn decomposed_material_view_preserves_shield_named_submeshes_by_default() {
+        let mut hull = sample_submaterial();
+        hull.name = "hull".into();
+
+        let materials = MtlFile {
+            materials: vec![hull],
+            source_path: Some("Data/Objects/Ships/Test/hull.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
+        };
+        let mesh = sample_mesh(vec![
+            crate::types::SubMesh {
+                material_name: Some("hull".into()),
+                material_id: 0,
+                first_index: 0,
+                num_indices: 3,
+                first_vertex: 0,
+                num_vertices: 3,
+                node_parent_index: 0,
+            },
+            crate::types::SubMesh {
+                material_name: Some("hull".into()),
+                material_id: 0,
+                first_index: 3,
+                num_indices: 3,
+                first_vertex: 0,
+                num_vertices: 3,
+                node_parent_index: 1,
+            },
+        ]);
+        let nmc = sample_nmc(&["body", "shield_geo"]);
+
+        let filtered = build_decomposed_material_view(&mesh, Some(&materials), Some(&nmc), false, false);
+        assert_eq!(filtered.mesh.submeshes.len(), 2);
+        assert_eq!(filtered.glb_nmc.as_ref().map(|combo| combo.nodes.len()), Some(2));
+    }
+
+    #[test]
+    fn decomposed_material_view_preserves_sheild_named_submeshes_by_default() {
+        let mut hull = sample_submaterial();
+        hull.name = "hull".into();
+
+        let materials = MtlFile {
+            materials: vec![hull],
+            source_path: Some("Data/Objects/Ships/Test/hull.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
+        };
+        let mesh = sample_mesh(vec![
+            crate::types::SubMesh {
+                material_name: Some("hull".into()),
+                material_id: 0,
+                first_index: 0,
+                num_indices: 3,
+                first_vertex: 0,
+                num_vertices: 3,
+                node_parent_index: 0,
+            },
+            crate::types::SubMesh {
+                material_name: Some("hull".into()),
+                material_id: 0,
+                first_index: 3,
+                num_indices: 3,
+                first_vertex: 0,
+                num_vertices: 3,
+                node_parent_index: 1,
+            },
+        ]);
+        let nmc = sample_nmc(&["body", "sheild_arm_a_geo"]);
+
+        let filtered = build_decomposed_material_view(&mesh, Some(&materials), Some(&nmc), false, false);
+        assert_eq!(filtered.mesh.submeshes.len(), 2);
+        assert_eq!(filtered.glb_nmc.as_ref().map(|combo| combo.nodes.len()), Some(2));
+    }
+
+    #[test]
+    fn decomposed_material_view_preserves_non_excluded_helper_nodes_without_submeshes() {
+        let mut hull = sample_submaterial();
+        hull.name = "hull".into();
+
+        let materials = MtlFile {
+            materials: vec![hull],
+            source_path: Some("Data/Objects/Ships/Test/hull.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
+        };
+        let mesh = sample_mesh(vec![crate::types::SubMesh {
+            material_name: Some("hull".into()),
+            material_id: 0,
+            first_index: 0,
+            num_indices: 3,
+            first_vertex: 0,
+            num_vertices: 3,
+            node_parent_index: 0,
+        }]);
+        let nmc = sample_nmc(&["body", "hardpoint_weapon_mining"]);
+
+        let filtered = build_decomposed_material_view(&mesh, Some(&materials), Some(&nmc), false, false);
+
+        assert_eq!(filtered.mesh.submeshes.len(), 1);
+        assert_eq!(filtered.glb_nmc.as_ref().map(|combo| combo.nodes.len()), Some(2));
+        assert_eq!(
+            filtered
+                .glb_nmc
+                .as_ref()
+                .and_then(|combo| combo.nodes.get(1))
+                .map(|node| node.name.as_str()),
+            Some("hardpoint_weapon_mining")
         );
     }
 
