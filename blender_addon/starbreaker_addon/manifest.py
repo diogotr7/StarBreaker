@@ -78,6 +78,19 @@ def _relative_path(path: str | None) -> Path | None:
     return Path(normalized)
 
 
+def _candidate_relative_paths(path: str | None) -> list[str]:
+    normalized = _normalize_relative_path(path)
+    if normalized is None:
+        return []
+    candidates = [normalized]
+    for prefix in ("materials/", "meshes/", "textures/"):
+        if normalized.lower().startswith(prefix):
+            stripped = normalized[len(prefix):]
+            if stripped.lower().startswith("data/"):
+                candidates.append(stripped)
+    return candidates
+
+
 @dataclass(frozen=True)
 class PaletteChannel:
     index: int
@@ -490,7 +503,10 @@ class SceneManifest:
 
 def infer_export_root(scene_path: Path, package_dir: str) -> Path:
     export_root = scene_path.resolve().parent
-    for _ in Path(package_dir).parts:
+    package_parts = Path(package_dir).parts
+    if package_parts and export_root.name.casefold() != package_parts[-1].casefold():
+        export_root = export_root.parent
+    for _ in package_parts:
         export_root = export_root.parent
     return export_root
 
@@ -535,19 +551,18 @@ class PackageBundle:
 
     @property
     def package_name(self) -> str:
-        return Path(self.scene.package_rule.package_dir).name
+        return self.scene_path.parent.name
 
     def resolve_path(self, relative_path: str | None) -> Path | None:
-        path = _relative_path(relative_path)
-        if path is None:
-            return None
-        direct = self.export_root / path
-        if direct.exists():
-            return direct
-        normalized = _normalize_relative_path(relative_path)
-        if normalized is None:
-            return None
-        return self._build_path_index().get(normalized.lower())
+        path_index = self._build_path_index()
+        for candidate in _candidate_relative_paths(relative_path):
+            direct = self.export_root / Path(candidate)
+            if direct.exists():
+                return direct
+            resolved = path_index.get(candidate.lower())
+            if resolved is not None:
+                return resolved
+        return None
 
     def load_material_sidecar(self, relative_path: str | None) -> MaterialSidecar | None:
         normalized = _normalize_relative_path(relative_path)
