@@ -24,6 +24,7 @@ NORMAL_ROLES = ("normal_gloss",)
 ROUGHNESS_ROLES = ("roughness",)
 MASK_ROLES = ("wear_mask", "pattern_mask", "stencil", "tint_palette_decal", "hal_control")
 HEIGHT_ROLES = ("height",)
+OPACITY_ROLES = ("opacity",)
 
 
 def active_submaterials(submaterials: list[SubmaterialRecord]) -> list[SubmaterialRecord]:
@@ -39,9 +40,9 @@ def template_plan_for_submaterial(submaterial: SubmaterialRecord) -> MaterialTem
     if family in {"Layer", "LayerBlend_V2"}:
         return MaterialTemplatePlan("layered_wear", "Layered Wear", "OPAQUE", "OPAQUE", True, True, True, False, False, False)
     if family == "MeshDecal" or flags.has_decal or flags.has_stencil_map:
-        return MaterialTemplatePlan("decal_stencil", "Decal Or Stencil", "BLEND", "HASHED", True, True, False, False, False, True)
+        return MaterialTemplatePlan("decal_stencil", "Decal Or Stencil", "BLEND", "NONE", True, True, False, False, False, True)
     if flags.has_parallax_occlusion_mapping:
-        return MaterialTemplatePlan("parallax_pom", "Parallax Or POM", "OPAQUE", "OPAQUE", True, True, False, False, True, False)
+        return MaterialTemplatePlan("parallax_pom", "Parallax Or POM", "BLEND", "NONE", True, True, False, False, True, True)
     if family in {"DisplayScreen", "Monitor", "UIPlane"}:
         return MaterialTemplatePlan("screen_hud", "Screen Or HUD", "BLEND", "HASHED", True, False, False, False, True, True)
     if family in {"HumanSkin_V2", "Eye", "Organic"}:
@@ -78,6 +79,7 @@ def representative_textures(submaterial: SubmaterialRecord) -> dict[str, str | N
         "roughness": first_texture_export(submaterial, ROUGHNESS_ROLES) or layer_roughness,
         "mask": first_texture_export(submaterial, MASK_ROLES),
         "height": first_texture_export(submaterial, HEIGHT_ROLES),
+        "opacity": first_texture_export(submaterial, OPACITY_ROLES),
     }
 
 
