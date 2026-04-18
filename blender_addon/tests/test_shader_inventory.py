@@ -15,8 +15,7 @@ sys.path.insert(0, str(ADDON_ROOT))
 from starbreaker_addon.shader_inventory import ShaderInventory, material_sidecar_paths
 
 
-ARGO_SIDECARE_DIR = REPO_ROOT / "ships/Data/Objects/Spaceships/Ships/ARGO/MOLE"
-ARGO_BAG = ARGO_SIDECARE_DIR / "Argo_mole_bag.materials.json"
+ARGO_SIDECARE_DIR = REPO_ROOT / "ships/Data/objects/spaceships/ships/argo/mole"
 ARGO_EXTERIOR = ARGO_SIDECARE_DIR / "argo_mole_exterior.materials.json"
 ARGO_INTERIOR = ARGO_SIDECARE_DIR / "argo_mole_interior.materials.json"
 
@@ -51,13 +50,13 @@ class ShaderInventoryTests(unittest.TestCase):
         self.assertEqual(payload["sidecar_count"], 1)
         self.assertTrue(any(entry["shader_family"] == "HardSurface" for entry in payload["families"]))
 
-    def test_inventory_preserves_monitor_family_from_fixture_sidecar(self) -> None:
-        inventory = ShaderInventory.from_sidecar_paths([ARGO_BAG], export_root=REPO_ROOT / "ships")
-        monitor = inventory.family("Monitor")
+    def test_inventory_preserves_screen_families_from_fixture_sidecar(self) -> None:
+        inventory = ShaderInventory.from_sidecar_paths([ARGO_INTERIOR], export_root=REPO_ROOT / "ships")
+        monitor = inventory.family("DisplayScreen")
 
         self.assertIsNotNone(monitor)
-        self.assertEqual(monitor.shaders, ["Monitor"])
-        self.assertIn("TexSlot1", monitor.texture_slots)
+        self.assertEqual(monitor.shaders, ["DisplayScreen"])
+        self.assertIn("TexSlot9", monitor.texture_slots)
 
     def test_shader_inventory_script_help_runs_from_file_path(self) -> None:
         result = subprocess.run(

@@ -15,7 +15,7 @@ from starbreaker_addon.manifest import LightRecord, MaterialSidecar, PackageBund
 
 
 ARGO_SCENE = REPO_ROOT / "ships/Packages/ARGO MOLE/scene.json"
-ARGO_INTERIOR = REPO_ROOT / "ships/Data/Objects/Spaceships/Ships/ARGO/MOLE/argo_mole_interior.materials.json"
+ARGO_INTERIOR = REPO_ROOT / "ships/Data/objects/spaceships/ships/argo/mole/argo_mole_interior.materials.json"
 COMPONENT_MASTER = REPO_ROOT / "ships/Data/Materials/vehicles/components/component_master_01.materials.json"
 
 
@@ -34,9 +34,9 @@ class ManifestTests(unittest.TestCase):
 
     def test_package_bundle_resolves_and_caches_material_sidecars(self) -> None:
         package = PackageBundle.load(ARGO_SCENE)
-        sidecar = package.load_material_sidecar("Data/Objects/Spaceships/Ships/ARGO/MOLE/argo_mole_interior.materials.json")
+        sidecar = package.load_material_sidecar("Data/objects/spaceships/ships/argo/mole/argo_mole_interior.materials.json")
         self.assertIsNotNone(sidecar)
-        second = package.load_material_sidecar("Data/Objects/Spaceships/Ships/ARGO/MOLE/argo_mole_interior.materials.json")
+        second = package.load_material_sidecar("Data/objects/spaceships/ships/argo/mole/argo_mole_interior.materials.json")
         self.assertIs(sidecar, second)
 
         cargo_pod = package.resolve_path("Data/Objects/Spaceships/Ships/MISC/Prospector/MISC_Prospector_Cargo_Pod_Collapsed.glb")
@@ -45,13 +45,10 @@ class ManifestTests(unittest.TestCase):
 
     def test_material_sidecar_preserves_layer_and_virtual_input_contract(self) -> None:
         interior = MaterialSidecar.from_file(ARGO_INTERIOR)
-        self.assertIsNone(interior.geometry_path)
-        self.assertEqual(interior.submaterials[1].shader_family, "UIPlane")
-        self.assertEqual(
-            interior.submaterials[1].blender_material_name,
-            f"argo_mole_interior:{interior.submaterials[1].submaterial_name}",
-        )
-        self.assertIn("$RenderToTexture", interior.submaterials[1].virtual_inputs)
+        self.assertIsNotNone(interior.geometry_path)
+        ui_plane = next(submaterial for submaterial in interior.submaterials if submaterial.shader_family == "UIPlane")
+        self.assertEqual(ui_plane.submaterial_name, "rtt_hud")
+        self.assertIn("$RenderToTexture", ui_plane.virtual_inputs)
 
         component = MaterialSidecar.from_file(COMPONENT_MASTER)
         layered = next(

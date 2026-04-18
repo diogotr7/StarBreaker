@@ -11,7 +11,7 @@ REPO_ROOT = STARBREAKER_ROOT.parent
 
 sys.path.insert(0, str(ADDON_ROOT))
 
-from starbreaker_addon.manifest import FeatureFlags, MaterialSidecar, PaletteRouting, SubmaterialRecord
+from starbreaker_addon.manifest import FeatureFlags, MaterialSidecar, PaletteRouting, SubmaterialRecord, TextureReference
 from starbreaker_addon.templates import (
     active_submaterials,
     has_virtual_input,
@@ -73,9 +73,8 @@ class TemplateTests(unittest.TestCase):
             if submaterial.shader_family == "LayerBlend_V2"
             and any(layer.palette_channel is not None for layer in submaterial.layer_manifest)
         )
-        monitor = next(submaterial for submaterial in component.submaterials if submaterial.shader_family == "Monitor")
         self.assertEqual(template_plan_for_submaterial(layered).template_key, "layered_wear")
-        self.assertEqual(template_plan_for_submaterial(monitor).template_key, "screen_hud")
+        self.assertEqual(template_plan_for_submaterial(synthetic_submaterial("Monitor")).template_key, "screen_hud")
         self.assertTrue(material_palette_channels(layered))
 
     def test_synthetic_support_covers_biology_hair_and_effect_templates(self) -> None:
@@ -89,6 +88,24 @@ class TemplateTests(unittest.TestCase):
         textures = representative_textures(hard_surface)
         self.assertIsNotNone(textures["base_color"])
         self.assertIsNotNone(textures["normal"])
+
+    def test_representative_textures_include_opacity_roles(self) -> None:
+        decal = synthetic_submaterial("MeshDecal", tokens=["DECAL"])
+        decal = SubmaterialRecord(
+            **{
+                **decal.__dict__,
+                "direct_textures": [
+                    TextureReference(
+                        role="opacity",
+                        source_path="Data/Textures/test/decal_diff.dds",
+                        export_path="Data/Textures/test/decal_diff.png",
+                        export_kind="source",
+                    )
+                ],
+            }
+        )
+        textures = representative_textures(decal)
+        self.assertEqual(textures["opacity"], "Data/Textures/test/decal_diff.png")
 
     def test_active_submaterials_filter_hidden_entries(self) -> None:
         active = synthetic_submaterial("HardSurface")

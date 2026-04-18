@@ -38,12 +38,22 @@ class MaterialContractTests(unittest.TestCase):
         self.assertEqual(hard_surface.name, "SB_HardSurface_v1")
         self.assertTrue(hard_surface.inputs)
         self.assertEqual(hard_surface.inputs[0].name, "TexSlot1_BaseColor")
+        self.assertIn("Alpha", [item.name for item in hard_surface.inputs])
+        self.assertIn("Disable Shadow", [item.name for item in hard_surface.inputs])
+        self.assertEqual(next(item.socket_type for item in hard_surface.inputs if item.name == "Disable Shadow"), "NodeSocketBool")
+        illum = contract.group_for_shader_family("Illum")
+        self.assertIsNotNone(illum)
+        self.assertIn("Alpha", [item.name for item in illum.inputs])
+        self.assertIn("Disable Shadow", [item.name for item in illum.inputs])
+        self.assertEqual(next(item.socket_type for item in illum.inputs if item.name == "Disable Shadow"), "NodeSocketBool")
         self.assertEqual(hard_surface.metadata.get("status"), "seed")
 
     def test_bundled_library_contains_core_groups_and_verified_inputs(self) -> None:
         payload = bundled_template_library_path().read_bytes()
 
         self.assertIn(b"SB_NoDraw_v1", payload)
+        self.assertIn(b'"Alpha"', payload)
+        self.assertIn(b'"Disable Shadow"', payload)
         self.assertIn(b"TexSlot10_IridescenceColor", payload)
         self.assertIn(b"TexSlot15_CondensationNormal", payload)
 
