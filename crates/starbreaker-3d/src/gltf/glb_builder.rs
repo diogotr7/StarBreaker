@@ -27,6 +27,9 @@ pub(crate) struct GlbBuilder {
     pub tex_cache: TexCache,
     pub tex_json_dedup: HashMap<(usize, usize), u32>,
     pub mat_dedup: HashMap<String, u32>,
+    /// Cache packed mesh info for child entities with the same geometry.
+    /// Key: (geometry_path, palette_hash). Avoids duplicate binary data + JSON entries.
+    pub child_mesh_cache: HashMap<(String, u64), PackedMeshInfo>,
     /// Maps lowercased node/entity name → glTF node index.
     pub node_name_to_idx: HashMap<String, u32>,
 }
@@ -35,6 +38,7 @@ pub(crate) struct GlbBuilder {
 pub(crate) type TexCache = HashMap<(usize, u64), (usize, usize)>;
 
 /// Result of packing a single entity's mesh into the builder.
+#[derive(Clone)]
 pub(crate) struct PackedMeshInfo {
     pub mesh_idx: u32,
     pub pos_accessor_idx: u32,
@@ -90,8 +94,23 @@ impl GlbBuilder {
             tex_cache: HashMap::new(),
             tex_json_dedup: HashMap::new(),
             mat_dedup: HashMap::new(),
+            child_mesh_cache: HashMap::new(),
             node_name_to_idx: HashMap::new(),
         }
+    }
+
+    /// Hash a tint palette into a u64 for use as a cache key.
+    /// Returns 0 for None palettes.
+    fn palette_hash(palette: Option<&crate::mtl::TintPalette>) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let Some(p) = palette else { return 0 };
+        let mut h = std::hash::DefaultHasher::new();
+        for c in &[p.primary, p.secondary, p.tertiary, p.glass] {
+            c[0].to_bits().hash(&mut h);
+            c[1].to_bits().hash(&mut h);
+            c[2].to_bits().hash(&mut h);
+        }
+        h.finish()
     }
 
     /// Compute a node's world-space translation by walking up the parent chain.
@@ -232,24 +251,42 @@ impl GlbBuilder {
         }
         let has_mesh = !child.mesh.positions.is_empty();
 
-        // Pack mesh data (skip for NMC-only entities with no geometry).
+        // Check child mesh cache: if the same geometry + palette was already packed,
+        // reuse the existing binary data + accessors + materials.
+        let palette = child.palette.as_ref().or(fallback_palette);
+        let cache_key = child.geometry_path.as_ref().filter(|_| has_mesh).map(|gp| {
+            (gp.clone(), Self::palette_hash(palette))
+        });
+        let from_cache;
+
         let child_packed = if has_mesh {
-            let textures = load_textures(child.materials.as_ref());
-            let packed = self.pack_mesh(
-                &child.mesh,
-                child.materials.as_ref(),
-                textures.as_ref(),
-                child.palette.as_ref().or(fallback_palette),
-                Some(&child.entity_name),
-                material_mode,
-            );
-            drop(textures);
-            child.mesh.positions = Vec::new();
-            child.mesh.uvs = None;
-            child.mesh.normals = None;
-            child.mesh.indices = Vec::new();
-            Some(packed)
+            if let Some(cached) = cache_key.as_ref().and_then(|k| self.child_mesh_cache.get(k)) {
+                log::info!("  glb '{}': reusing cached mesh for '{}'", child.entity_name, child.geometry_path.as_deref().unwrap_or("?"));
+                from_cache = true;
+                Some(cached.clone())
+            } else {
+                let textures = load_textures(child.materials.as_ref());
+                let packed = self.pack_mesh(
+                    &child.mesh,
+                    child.materials.as_ref(),
+                    textures.as_ref(),
+                    palette,
+                    Some(&child.entity_name),
+                    material_mode,
+                );
+                drop(textures);
+                if let Some(key) = cache_key {
+                    self.child_mesh_cache.insert(key, packed.clone());
+                }
+                from_cache = false;
+                child.mesh.positions = Vec::new();
+                child.mesh.uvs = None;
+                child.mesh.normals = None;
+                child.mesh.indices = Vec::new();
+                Some(packed)
+            }
         } else {
+            from_cache = false;
             None
         };
 
@@ -271,6 +308,7 @@ impl GlbBuilder {
                     child_nmc,
                     &child.mesh.submeshes,
                     has_mesh,
+                    from_cache,
                 );
 
                 // Log NMC node debug info
@@ -441,17 +479,7 @@ impl GlbBuilder {
 
         for container in &interiors.containers {
             let palette = container.palette.as_ref().or(fallback_palette);
-            let palette_key = palette.map(|p| {
-                // Hash palette colors for cache key
-                use std::hash::{Hash, Hasher};
-                let mut h = std::hash::DefaultHasher::new();
-                for c in &[p.primary, p.secondary, p.tertiary, p.glass] {
-                    c[0].to_bits().hash(&mut h);
-                    c[1].to_bits().hash(&mut h);
-                    c[2].to_bits().hash(&mut h);
-                }
-                h.finish()
-            }).unwrap_or(0);
+            let palette_key = Self::palette_hash(palette);
 
             let container_node_idx = self.nodes_json.len() as u32;
             self.nodes_json.push(json::Node {
@@ -824,17 +852,22 @@ impl GlbBuilder {
     /// Pops the flat mesh, creates per-NMC-node meshes and glTF nodes.
     /// Returns the root node indices for this entity.
     /// Registers node names in `node_name_to_idx`.
+    ///
+    /// When `from_cache` is true, the flat mesh was not created (reusing a cached
+    /// PackedMeshInfo), so we skip the pop but still create per-NMC-node meshes.
     pub fn build_nmc_hierarchy(
         &mut self,
         packed: &PackedMeshInfo,
         nmc: &NodeMeshCombo,
         submeshes: &[crate::types::SubMesh],
         has_mesh: bool,
+        from_cache: bool,
     ) -> Vec<u32> {
         use std::collections::BTreeMap;
 
         // Remove the flat mesh — we'll replace with per-NMC-node meshes.
-        if has_mesh {
+        // Skip when reusing a cached PackedMeshInfo (no flat mesh was created).
+        if has_mesh && !from_cache {
             self.meshes_json.pop();
         }
 

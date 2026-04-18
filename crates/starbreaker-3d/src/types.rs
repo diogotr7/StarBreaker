@@ -309,6 +309,8 @@ pub struct EntityPayload {
     /// Used to create attachment points for children that reference bone names.
     pub bones: Vec<crate::skeleton::Bone>,
     pub entity_name: String,
+    /// Source geometry file path (for mesh dedup across children with the same geometry).
+    pub geometry_path: Option<String>,
     /// NMC node name in the parent to attach under.
     pub parent_node_name: String,
     /// Fallback: parent entity name to attach to if parent_node_name isn't found.

@@ -148,7 +148,7 @@ pub fn write_glb(
 
         // ---- Build root NMC scene graph ----
         if let Some(nmc) = input.root_nmc.as_ref().filter(|n| !n.nodes.is_empty()) {
-            let root_nodes = builder.build_nmc_hierarchy(&root_packed, nmc, &root_mesh.submeshes, true);
+            let root_nodes = builder.build_nmc_hierarchy(&root_packed, nmc, &root_mesh.submeshes, true, false);
             root_nodes
                 .iter()
                 .map(|&i| json::Index::new(i))
@@ -335,6 +335,10 @@ mod tests {
     }
 
     fn child_entity(entity_name: &str, materials: crate::mtl::MtlFile) -> crate::types::EntityPayload {
+        child_entity_with_path(entity_name, materials, None)
+    }
+
+    fn child_entity_with_path(entity_name: &str, materials: crate::mtl::MtlFile, geometry_path: Option<&str>) -> crate::types::EntityPayload {
         crate::types::EntityPayload {
             mesh: triangle_mesh(),
             materials: Some(materials),
@@ -343,6 +347,7 @@ mod tests {
             palette: None,
             bones: Vec::new(),
             entity_name: entity_name.into(),
+            geometry_path: geometry_path.map(|s| s.to_string()),
             parent_node_name: String::new(),
             parent_entity_name: String::new(),
             no_rotation: false,
@@ -471,6 +476,87 @@ mod tests {
             (2, 1, 1),
             "expected shared child material/texture/image entries to dedupe across children",
         );
+    }
+
+    #[test]
+    fn write_glb_caches_child_mesh_by_geometry_path() {
+        let shared_materials = shared_material_file();
+        let shared_path = "Data/Objects/shared.cgam";
+        let children = vec![
+            child_entity_with_path("child_a", shared_materials.clone(), Some(shared_path)),
+            child_entity_with_path("child_b", shared_materials.clone(), Some(shared_path)),
+            child_entity_with_path("child_c", shared_materials, Some(shared_path)),
+        ];
+
+        let glb = write_glb(
+            GlbInput {
+                root_mesh: None,
+                root_materials: None,
+                root_textures: None,
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children,
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &default_opts(),
+        )
+        .expect("write_glb failed");
+
+        let json = glb_json(&glb);
+
+        // Three children with the same geometry_path should share one glTF mesh,
+        // one set of buffer views, and one set of accessors.
+        let mesh_count = json["meshes"].as_array().map_or(0, |a| a.len());
+        let accessor_count = json["accessors"].as_array().map_or(0, |a| a.len());
+        let buffer_view_count = json["bufferViews"].as_array().map_or(0, |a| a.len());
+
+        assert_eq!(mesh_count, 1, "three children with same geometry_path should share one mesh");
+        // Triangle mesh: 1 position accessor + 1 UV accessor + 1 index accessor
+        //                 + 1 pos buffer view + 1 UV buffer view + 1 index buffer view
+        assert_eq!(accessor_count, 3, "expected 3 accessors (pos + UV + index) shared across children");
+        assert_eq!(buffer_view_count, 3, "expected 3 buffer views (pos + UV + index) shared across children");
+
+        // Each child should still get its own node.
+        let node_count = json["nodes"].as_array().map_or(0, |a| a.len());
+        assert!(node_count >= 3, "each child entity should have its own node, got {node_count}");
+    }
+
+    #[test]
+    fn write_glb_no_cache_without_geometry_path() {
+        let shared_materials = shared_material_file();
+        // Children without geometry_path should NOT be cached — each gets its own mesh.
+        let children = vec![
+            child_entity("child_a", shared_materials.clone()),
+            child_entity("child_b", shared_materials),
+        ];
+
+        let glb = write_glb(
+            GlbInput {
+                root_mesh: None,
+                root_materials: None,
+                root_textures: None,
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children,
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &default_opts(),
+        )
+        .expect("write_glb failed");
+
+        let json = glb_json(&glb);
+        let mesh_count = json["meshes"].as_array().map_or(0, |a| a.len());
+        assert_eq!(mesh_count, 2, "children without geometry_path should each get their own mesh");
     }
 
     #[test]
