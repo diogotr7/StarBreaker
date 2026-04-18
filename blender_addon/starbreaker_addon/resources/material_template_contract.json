@@ -218,7 +218,12 @@
     {
       "inputs": [
         {
-          "default_value": null,
+          "default_value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
           "name": "TexSlot11_Dirt",
           "required": false,
           "semantic": "dirt",
@@ -242,7 +247,12 @@
           "source_slot": "TexSlot2"
         },
         {
-          "default_value": null,
+          "default_value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
           "name": "TexSlot4_TintColor",
           "required": false,
           "semantic": "tint_color",
@@ -499,6 +509,22 @@
           "semantic": "iridescence_color",
           "socket_type": "NodeSocketColor",
           "source_slot": "TexSlot10"
+        },
+        {
+          "default_value": false,
+          "name": "Disable Shadow",
+          "required": false,
+          "semantic": "disable_shadow",
+          "socket_type": "NodeSocketBool",
+          "source_slot": null
+        },
+        {
+          "default_value": 0.0,
+          "name": "Alpha",
+          "required": false,
+          "semantic": "alpha",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": "TexSlot1"
         }
       ],
       "metadata": {
@@ -774,6 +800,30 @@
           "semantic": "base_color_secondary",
           "socket_type": "NodeSocketColor",
           "source_slot": "TexSlot9"
+        },
+        {
+          "default_value": false,
+          "name": "Disable Shadow",
+          "required": false,
+          "semantic": "disable_shadow",
+          "socket_type": "NodeSocketBool",
+          "source_slot": null
+        },
+        {
+          "default_value": 0.0,
+          "name": "Alpha",
+          "required": false,
+          "semantic": "alpha",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": "TexSlot1"
+        },
+        {
+          "default_value": 0.0,
+          "name": "Emission Strength",
+          "required": false,
+          "semantic": "emission_strength",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": null
         }
       ],
       "metadata": {
@@ -1052,6 +1102,45 @@
           "semantic": "normal_gloss",
           "socket_type": "NodeSocketColor",
           "source_slot": "TexSlot3"
+        },
+        {
+          "default_value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "name": "Palette_Primary",
+          "required": false,
+          "semantic": "palette_primary",
+          "socket_type": "NodeSocketColor",
+          "source_slot": null
+        },
+        {
+          "default_value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "name": "Palette_Secondary",
+          "required": false,
+          "semantic": "palette_secondary",
+          "socket_type": "NodeSocketColor",
+          "source_slot": null
+        },
+        {
+          "default_value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "name": "Palette_Tertiary",
+          "required": false,
+          "semantic": "palette_tertiary",
+          "socket_type": "NodeSocketColor",
+          "source_slot": null
         }
       ],
       "metadata": {
@@ -1301,6 +1390,22 @@
           "semantic": "grime_breakup",
           "socket_type": "NodeSocketColor",
           "source_slot": "TexSlot8"
+        },
+        {
+          "default_value": 0.0,
+          "name": "Alpha",
+          "required": false,
+          "semantic": "alpha",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": "TexSlot1"
+        },
+        {
+          "default_value": false,
+          "name": "Disable Shadow",
+          "required": false,
+          "semantic": "disable_shadow",
+          "socket_type": "NodeSocketBool",
+          "source_slot": null
         }
       ],
       "metadata": {
@@ -1445,7 +1550,24 @@
       "version": 1
     },
     {
-      "inputs": [],
+      "inputs": [
+        {
+          "default_value": 0.0,
+          "name": "Alpha",
+          "required": false,
+          "semantic": "alpha",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": "TexSlot1"
+        },
+        {
+          "default_value": false,
+          "name": "Disable Shadow",
+          "required": false,
+          "semantic": "disable_shadow",
+          "socket_type": "NodeSocketBool",
+          "source_slot": null
+        }
+      ],
       "metadata": {
         "note": "Transparent no-draw group authored directly in the Blender library.",
         "status": "phase2_authored"
