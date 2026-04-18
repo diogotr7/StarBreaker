@@ -64,6 +64,9 @@ pub struct ExportOpts {
     /// Include NoDraw faces and sidecar entries in decomposed exports
     #[arg(long)]
     pub include_nodraw: bool,
+    /// Include shield helper meshes and shield attachments in exports
+    #[arg(long)]
+    pub include_shields: bool,
 }
 
 impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
@@ -94,6 +97,7 @@ impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
             include_interior: !opts.no_interior,
             include_lights: !opts.no_lights,
             include_nodraw: opts.include_nodraw,
+            include_shields: opts.include_shields,
             texture_mip: opts.mip,
             lod_level: opts.lod,
         }
