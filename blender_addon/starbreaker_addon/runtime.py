@@ -43,6 +43,10 @@ PROP_IMPORTED_SLOT_MAP = "starbreaker_imported_slot_map"
 PROP_TEMPLATE_PATH = "starbreaker_template_path"
 PROP_SOURCE_NODE_NAME = "starbreaker_source_node_name"
 PROP_MISSING_ASSET = "starbreaker_missing_asset"
+PROP_SURFACE_SHADER_MODE = "starbreaker_surface_shader_mode"
+SCENE_WEAR_STRENGTH_PROP = "starbreaker_wear_strength"
+SURFACE_SHADER_MODE_PRINCIPLED = "principled_first"
+SURFACE_SHADER_MODE_GLASS = "glass_bsdf"
 
 PACKAGE_ROOT_PREFIX = "StarBreaker"
 TEMPLATE_COLLECTION_NAME = "StarBreaker Template Cache"
@@ -57,7 +61,6 @@ SCENE_AXIS_CONVERSION = Matrix(
 )
 SCENE_AXIS_CONVERSION_INV = SCENE_AXIS_CONVERSION.inverted()
 GLTF_LIGHT_BASIS_CORRECTION = Quaternion((math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0))
-NODE_GROUP_RUNTIME_FAMILIES = frozenset({"GlassPBR", "HardSurface", "Illum", "Monitor", "NoDraw", "Unknown"})
 NON_COLOR_INPUT_KEYWORDS = ("normal", "roughness", "gloss", "mask", "height", "specular", "opacity", "id_map")
 
 
@@ -65,6 +68,28 @@ NON_COLOR_INPUT_KEYWORDS = ("normal", "roughness", "gloss", "mask", "height", "s
 class ImportedTemplate:
     mesh_asset: str
     root_names: list[str]
+
+
+@dataclass(frozen=True)
+class MaterialNodeLayout:
+    texture_x: float = -300.0
+    texture_start_y: float = 160.0
+    texture_vertical_step: float = 300.0
+    texture_width: float = 300.0
+    primary_x: float = 200.0
+    primary_y: float = -120.0
+    group_width: float = 460.0
+    output_x: float = 780.0
+    output_y: float = -120.0
+    shadow_mix_x: float = 500.0
+    shadow_mix_y: float = -120.0
+    shadow_transparent_x: float = 260.0
+    shadow_transparent_y: float = -300.0
+    shadow_light_path_x: float = 260.0
+    shadow_light_path_y: float = -480.0
+
+
+MATERIAL_NODE_LAYOUT = MaterialNodeLayout()
 
 
 def import_package(context: bpy.types.Context, scene_path: str | Path, prefer_cycles: bool = True) -> bpy.types.Object:
@@ -94,6 +119,13 @@ def apply_livery_to_selected_package(context: bpy.types.Context, livery_id: str)
     if package_root is None:
         raise RuntimeError("Select an imported StarBreaker object first")
     return apply_livery_to_package_root(context, package_root, livery_id)
+
+
+def refresh_selected_package_materials(context: bpy.types.Context) -> int:
+    package_root = find_package_root(context.active_object)
+    if package_root is None:
+        raise RuntimeError("Select an imported StarBreaker object first")
+    return refresh_package_materials(context, package_root)
 
 
 def dump_selected_metadata(context: bpy.types.Context) -> list[str]:
@@ -157,6 +189,16 @@ def apply_livery_to_package_root(context: bpy.types.Context, package_root: bpy.t
         root_palette_id,
         package.scene.root_entity.palette_id,
     ) or ""
+    return applied
+
+
+def refresh_package_materials(context: bpy.types.Context, package_root: bpy.types.Object) -> int:
+    package = _load_package_from_root(package_root)
+    importer = PackageImporter(context, package, package_root=package_root)
+    applied = 0
+    root_palette_id = _string_prop(package_root, PROP_PALETTE_ID)
+    for obj in _iter_package_objects(package_root):
+        applied += importer.rebuild_object_materials(obj, _string_prop(obj, PROP_PALETTE_ID) or root_palette_id)
     return applied
 
 
@@ -528,10 +570,15 @@ class PackageImporter:
         palette_key = palette.id if palette is not None else "none"
         material.use_nodes = True
         plan = template_plan_for_submaterial(submaterial)
+        surface_mode = SURFACE_SHADER_MODE_PRINCIPLED
 
         group_contract = self._group_contract_for_submaterial(submaterial)
         if group_contract is not None and self._build_contract_group_material(material, submaterial, palette, plan, group_contract):
-            pass
+            if submaterial.shader_family == "GlassPBR":
+                surface_mode = SURFACE_SHADER_MODE_GLASS
+        elif submaterial.shader_family == "GlassPBR":
+            self._build_glass_material(material, submaterial, palette, plan)
+            surface_mode = SURFACE_SHADER_MODE_GLASS
         elif plan.template_key == "nodraw":
             self._build_nodraw_material(material)
         elif plan.template_key == "screen_hud":
@@ -541,12 +588,15 @@ class PackageImporter:
         else:
             self._build_principled_material(material, submaterial, palette, plan)
 
+        self._apply_material_node_layout(material)
+
         material[PROP_SHADER_FAMILY] = submaterial.shader_family
         material[PROP_TEMPLATE_KEY] = plan.template_key
         material[PROP_PALETTE_ID] = palette_key
         material[PROP_MATERIAL_SIDECAR] = _canonical_material_sidecar_path(sidecar_path, sidecar)
         material[PROP_MATERIAL_IDENTITY] = material_identity
         material[PROP_SUBMATERIAL_JSON] = json.dumps(submaterial.raw, sort_keys=True)
+        material[PROP_SURFACE_SHADER_MODE] = surface_mode
 
     def _template_contract(self) -> TemplateContract:
         if self.bundled_template_contract is None:
@@ -554,8 +604,6 @@ class PackageImporter:
         return self.bundled_template_contract
 
     def _group_contract_for_submaterial(self, submaterial: SubmaterialRecord) -> ShaderGroupContract | None:
-        if submaterial.shader_family not in NODE_GROUP_RUNTIME_FAMILIES:
-            return None
         return self._template_contract().group_for_shader_family(submaterial.shader_family)
 
     def _ensure_contract_group(self, group_contract: ShaderGroupContract) -> bpy.types.ShaderNodeTree | None:
@@ -588,7 +636,7 @@ class PackageImporter:
         nodes.clear()
 
         output = nodes.new("ShaderNodeOutputMaterial")
-        output.location = (520, 0)
+        output.location = (700, 0)
         group_node = nodes.new("ShaderNodeGroup")
         group_node.node_tree = group_tree
         group_node.location = (220, 0)
@@ -596,25 +644,63 @@ class PackageImporter:
         shader_output = _output_socket(group_node, group_contract.shader_output)
         if shader_output is None:
             return False
-        links.new(shader_output, output.inputs[0])
+        surface_shader = shader_output
 
         y = 280
         for contract_input in group_contract.inputs:
             target_socket = _input_socket(group_node, contract_input.name)
             if target_socket is None:
                 continue
-            source_socket = self._contract_input_source_socket(
-                nodes,
-                submaterial,
-                palette,
-                group_contract,
-                contract_input,
-                x=-220,
-                y=y,
-            )
+            semantic = (contract_input.semantic or contract_input.name).lower()
+            if "disable" in semantic and "shadow" in semantic:
+                if hasattr(target_socket, "default_value"):
+                    target_socket.default_value = bool(self._plan_casts_no_shadows(plan, submaterial))
+                source_socket = None
+            elif semantic == "emission_strength" and hasattr(target_socket, "default_value"):
+                target_socket.default_value = self._illum_emission_strength(submaterial)
+                source_socket = None
+            else:
+                if ("alpha" in semantic or "opacity" in semantic) and hasattr(target_socket, "default_value"):
+                    target_socket.default_value = 0.0
+                source_socket = self._contract_input_source_socket(
+                    nodes,
+                    submaterial,
+                    palette,
+                    group_contract,
+                    contract_input,
+                    x=-220,
+                    y=y,
+                )
             if source_socket is not None:
                 links.new(source_socket, target_socket)
             y -= 180
+
+        group_handles_alpha = any(
+            (contract_input.semantic or contract_input.name).lower() in {"alpha", "opacity"}
+            or "alpha" in (contract_input.semantic or contract_input.name).lower()
+            or "opacity" in (contract_input.semantic or contract_input.name).lower()
+            for contract_input in group_contract.inputs
+        )
+
+        if plan.uses_alpha and not group_handles_alpha:
+            alpha_source = self._alpha_source_socket(
+                nodes,
+                submaterial,
+                representative_textures(submaterial),
+                x=-220,
+                y=y,
+            )
+            if alpha_source is not None:
+                transparent = nodes.new("ShaderNodeBsdfTransparent")
+                transparent.location = (400, -180)
+                mix = nodes.new("ShaderNodeMixShader")
+                mix.location = (560, 0)
+                links.new(alpha_source, mix.inputs[0])
+                links.new(transparent.outputs[0], mix.inputs[1])
+                links.new(surface_shader, mix.inputs[2])
+                surface_shader = mix.outputs[0]
+
+        links.new(surface_shader, output.inputs[0])
 
         self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
         return True
@@ -640,6 +726,15 @@ class PackageImporter:
             return self._palette_color_socket(nodes, palette, channel_name, x=x, y=y)
 
         semantic = (contract_input.semantic or contract_input.name).lower()
+        if "alpha" in semantic or "opacity" in semantic:
+            return self._alpha_source_socket(
+                nodes,
+                submaterial,
+                representative_textures(submaterial),
+                x=x,
+                y=y,
+            )
+
         if contract_input.source_slot is None and "roughness" in semantic:
             return self._roughness_group_source_socket(
                 nodes,
@@ -784,25 +879,50 @@ class PackageImporter:
 
         output = nodes.new("ShaderNodeOutputMaterial")
         output.location = (700, 0)
-        principled = nodes.new("ShaderNodeBsdfPrincipled")
-        principled.location = (420, 0)
-        links.new(principled.outputs[0], output.inputs[0])
+        principled = self._create_surface_bsdf(nodes)
+        surface_shader = principled.outputs[0]
 
         textures = representative_textures(submaterial)
         base_socket = self._color_source_socket(nodes, submaterial, palette, textures["base_color"], x=40, y=140)
+        if base_socket is None and palette is not None and plan.uses_palette:
+            primary = self._palette_color_socket(nodes, palette, "primary", x=80, y=120)
+            base_socket = primary
+
+        wear_factor_socket = None
+        if plan.template_key == "layered_wear":
+            wear_factor_socket = self._layered_wear_factor_socket(nodes, links, submaterial, x=40, y=-20)
+            base_socket = self._mix_layered_base_color(nodes, links, submaterial, palette, base_socket, wear_factor_socket)
+
         if base_socket is not None:
             links.new(base_socket, _input_socket(principled, "Base Color"))
-        elif palette is not None and plan.uses_palette:
-            primary = self._palette_color_socket(nodes, palette, "primary", x=80, y=120)
-            links.new(primary, _input_socket(principled, "Base Color"))
+
+        if plan.uses_alpha:
+            alpha_socket = _input_socket(principled, "Alpha")
+            alpha_source = self._alpha_source_socket(nodes, submaterial, textures, x=80, y=20)
+            if alpha_socket is not None:
+                if alpha_source is not None:
+                    links.new(alpha_source, alpha_socket)
+                elif plan.template_key == "hair":
+                    alpha_socket.default_value = 0.85
 
         roughness_socket = _input_socket(principled, "Roughness")
         roughness_node = self._image_node(nodes, textures["roughness"], x=80, y=-120, is_color=False)
+        roughness_default = 0.45 if submaterial.shader_family != "GlassPBR" else 0.08
+        roughness_source = roughness_node.outputs[0] if roughness_node is not None else None
+        if plan.template_key == "layered_wear":
+            roughness_source = self._mix_layered_roughness(
+                nodes,
+                links,
+                submaterial,
+                roughness_source,
+                wear_factor_socket,
+                default_value=roughness_default,
+            )
         if roughness_socket is not None:
-            if roughness_node is not None:
-                links.new(roughness_node.outputs[0], roughness_socket)
+            if roughness_source is not None:
+                links.new(roughness_source, roughness_socket)
             else:
-                roughness_socket.default_value = 0.45 if submaterial.shader_family != "GlassPBR" else 0.08
+                roughness_socket.default_value = roughness_default
 
         normal_input = _input_socket(principled, "Normal")
         normal_node = self._image_node(nodes, textures["normal"], x=80, y=-280, is_color=False)
@@ -855,14 +975,295 @@ class PackageImporter:
                 subsurface.default_value = 0.15
 
         if plan.template_key == "hair":
-            alpha_socket = _input_socket(principled, "Alpha")
-            if alpha_socket is not None:
-                alpha_socket.default_value = 0.85
             anisotropic = _input_socket(principled, "Anisotropic")
             if anisotropic is not None:
                 anisotropic.default_value = 0.4
 
+        if self._plan_casts_no_shadows(plan):
+            surface_shader = self._shadowless_surface_output(nodes, links, surface_shader)
+
+        links.new(surface_shader, output.inputs[0])
+
         self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
+
+    def _build_glass_material(
+        self,
+        material: bpy.types.Material,
+        submaterial: SubmaterialRecord,
+        palette: PaletteRecord | None,
+        plan: Any,
+    ) -> None:
+        nodes = material.node_tree.nodes
+        links = material.node_tree.links
+        nodes.clear()
+
+        output = nodes.new("ShaderNodeOutputMaterial")
+        output.location = (620, 0)
+        glass = nodes.new("ShaderNodeBsdfGlass")
+        glass.location = (360, 0)
+        glass.label = "StarBreaker Glass"
+        links.new(glass.outputs[0], output.inputs[0])
+
+        textures = representative_textures(submaterial)
+        base_path = textures["base_color"]
+        roughness_path = textures["roughness"] or self._texture_export_path(submaterial, "wear_gloss")
+        normal_path = textures["normal"]
+
+        base_socket = self._color_source_socket(nodes, submaterial, palette, base_path, x=40, y=140)
+        if base_socket is None and palette is not None:
+            base_socket = self._palette_color_socket(nodes, palette, "glass", x=80, y=120)
+        if base_socket is None:
+            base_socket = self._value_color_socket(nodes, (1.0, 1.0, 1.0, 1.0), x=80, y=120)
+        if base_socket is not None:
+            links.new(base_socket, _input_socket(glass, "Color"))
+
+        roughness_socket = _input_socket(glass, "Roughness")
+        roughness_node = self._image_node(nodes, roughness_path, x=80, y=-120, is_color=False)
+        if roughness_socket is not None:
+            if roughness_node is not None:
+                links.new(roughness_node.outputs[0], roughness_socket)
+            else:
+                roughness_socket.default_value = 0.08
+
+        ior_socket = _input_socket(glass, "IOR")
+        if ior_socket is not None:
+            ior_socket.default_value = 1.05
+
+        normal_input = _input_socket(glass, "Normal")
+        normal_node = self._image_node(nodes, normal_path, x=80, y=-280, is_color=False)
+        if normal_node is not None and normal_input is not None:
+            normal_map = nodes.new("ShaderNodeNormalMap")
+            normal_map.location = (240, -220)
+            strength_socket = _input_socket(normal_map, "Strength")
+            if strength_socket is not None:
+                strength_socket.default_value = 0.25
+            links.new(normal_node.outputs[0], _input_socket(normal_map, "Color"))
+            links.new(_output_socket(normal_map, "Normal"), normal_input)
+
+        self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
+
+    def _create_surface_bsdf(self, nodes: bpy.types.Nodes) -> bpy.types.ShaderNodeBsdfPrincipled:
+        principled = nodes.new("ShaderNodeBsdfPrincipled")
+        principled.location = (420, 0)
+        principled.label = "StarBreaker Surface"
+        return principled
+
+    def _wear_strength(self) -> float:
+        raw_value = getattr(self.context.scene, SCENE_WEAR_STRENGTH_PROP, 1.0)
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            value = 1.0
+        return max(0.0, min(2.0, value))
+
+    def _layered_wear_factor_socket(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        submaterial: SubmaterialRecord,
+        *,
+        x: int,
+        y: int,
+    ) -> Any:
+        textures = representative_textures(submaterial)
+        source = None
+        mask_node = self._image_node(nodes, textures["mask"], x=x, y=y, is_color=False)
+        if mask_node is not None:
+            source = mask_node.outputs[0]
+
+        wear_base = _float_public_param(submaterial, "WearBlendBase", "DamagePerObjectWear")
+        if source is None and wear_base <= 0.0:
+            return None
+
+        if source is None:
+            source = self._value_socket(nodes, min(1.0, wear_base if wear_base > 0.0 else 1.0), x=x + 180, y=y)
+        elif wear_base > 0.0 and abs(wear_base - 1.0) > 1e-6:
+            multiply = nodes.new("ShaderNodeMath")
+            multiply.location = (x + 180, y)
+            multiply.operation = "MULTIPLY"
+            multiply.use_clamp = True
+            links.new(source, multiply.inputs[0])
+            multiply.inputs[1].default_value = wear_base
+            source = multiply.outputs[0]
+
+        wear_strength = self._wear_strength()
+        if abs(wear_strength - 1.0) > 1e-6:
+            strength = nodes.new("ShaderNodeMath")
+            strength.location = (x + 360, y)
+            strength.operation = "MULTIPLY"
+            strength.use_clamp = True
+            links.new(source, strength.inputs[0])
+            strength.inputs[1].default_value = wear_strength
+            source = strength.outputs[0]
+        return source
+
+    def _mix_layered_base_color(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        submaterial: SubmaterialRecord,
+        palette: PaletteRecord | None,
+        base_socket: Any,
+        wear_factor_socket: Any,
+    ) -> Any:
+        layer_color = self._layer_color_socket(nodes, submaterial, palette, x=40, y=320)
+        if wear_factor_socket is None:
+            return base_socket or layer_color
+        if base_socket is None:
+            return layer_color
+        if layer_color is None:
+            return base_socket
+
+        mix = nodes.new("ShaderNodeMixRGB")
+        mix.location = (320, 160)
+        mix.blend_type = "MIX"
+        links.new(wear_factor_socket, mix.inputs[0])
+        self._link_color_output(base_socket, mix.inputs[1])
+        self._link_color_output(layer_color, mix.inputs[2])
+        return mix.outputs[0]
+
+    def _mix_layered_roughness(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        submaterial: SubmaterialRecord,
+        base_source: Any,
+        wear_factor_socket: Any,
+        *,
+        default_value: float,
+    ) -> Any:
+        layer_source = self._layer_roughness_socket(nodes, submaterial, x=80, y=-500)
+        if wear_factor_socket is None:
+            return base_source or layer_source
+        if base_source is None:
+            base_source = self._value_socket(nodes, default_value, x=260, y=-120)
+        if layer_source is None:
+            return base_source
+
+        mix = nodes.new("ShaderNodeMix")
+        mix.location = (320, -260)
+        if hasattr(mix, "data_type"):
+            mix.data_type = "FLOAT"
+        links.new(wear_factor_socket, mix.inputs[0])
+        links.new(base_source, mix.inputs[2])
+        links.new(layer_source, mix.inputs[3])
+        return mix.outputs[0]
+
+    def _layer_color_socket(
+        self,
+        nodes: bpy.types.Nodes,
+        submaterial: SubmaterialRecord,
+        palette: PaletteRecord | None,
+        *,
+        x: int,
+        y: int,
+    ) -> Any:
+        layer = next((item for item in submaterial.layer_manifest if item.diffuse_export_path), None)
+        if layer is None:
+            return None
+
+        source = self._image_node(nodes, layer.diffuse_export_path, x=x, y=y, is_color=True)
+        if source is None:
+            return None
+        output = source.outputs[0]
+
+        if layer.tint_color is not None and any(abs(channel - 1.0) > 1e-6 for channel in layer.tint_color):
+            tint = nodes.new("ShaderNodeRGB")
+            tint.location = (x, y - 160)
+            tint.outputs[0].default_value = (*layer.tint_color, 1.0)
+            mix = nodes.new("ShaderNodeMixRGB")
+            mix.location = (x + 180, y)
+            mix.inputs[0].default_value = 1.0
+            self._link_color_output(output, mix.inputs[1])
+            self._link_color_output(tint.outputs[0], mix.inputs[2])
+            output = mix.outputs[0]
+
+        if layer.palette_channel is not None and palette is not None:
+            palette_socket = self._palette_color_socket(nodes, palette, layer.palette_channel.name, x=x, y=y - 320)
+            mix = nodes.new("ShaderNodeMixRGB")
+            mix.location = (x + 360, y)
+            mix.blend_type = "MULTIPLY"
+            mix.inputs[0].default_value = 1.0
+            self._link_color_output(output, mix.inputs[1])
+            self._link_color_output(palette_socket, mix.inputs[2])
+            output = mix.outputs[0]
+
+        return output
+
+    def _layer_roughness_socket(
+        self,
+        nodes: bpy.types.Nodes,
+        submaterial: SubmaterialRecord,
+        *,
+        x: int,
+        y: int,
+    ) -> Any:
+        layer = next((item for item in submaterial.layer_manifest if item.roughness_export_path), None)
+        if layer is None:
+            return None
+        image_node = self._image_node(nodes, layer.roughness_export_path, x=x, y=y, is_color=False)
+        if image_node is None:
+            return None
+        return image_node.outputs[0]
+
+    def _value_socket(self, nodes: bpy.types.Nodes, value: float, *, x: int, y: int) -> Any:
+        node = nodes.new("ShaderNodeValue")
+        node.location = (x, y)
+        node.outputs[0].default_value = value
+        return node.outputs[0]
+
+    def _value_color_socket(self, nodes: bpy.types.Nodes, value: tuple[float, float, float, float], *, x: int, y: int) -> Any:
+        node = nodes.new("ShaderNodeRGB")
+        node.location = (x, y)
+        node.outputs[0].default_value = value
+        return node.outputs[0]
+
+    def _texture_export_path(self, submaterial: SubmaterialRecord, *roles: str) -> str | None:
+        for texture in [*submaterial.texture_slots, *submaterial.direct_textures, *submaterial.derived_textures]:
+            if texture.role in roles and texture.export_path:
+                return texture.export_path
+        return None
+
+    def _alpha_source_socket(
+        self,
+        nodes: bpy.types.Nodes,
+        submaterial: SubmaterialRecord,
+        textures: dict[str, str | None],
+        *,
+        x: int,
+        y: int,
+    ) -> Any:
+        opacity_path = textures.get("opacity")
+        if opacity_path:
+            opacity_node = self._image_node(nodes, opacity_path, x=x, y=y, is_color=False)
+            if opacity_node is not None:
+                return opacity_node.outputs[0]
+
+        alpha_image_path = (
+            textures.get("base_color")
+            or self._texture_export_path(submaterial, "decal_sheet", "diffuse", "alternate_base_color")
+        )
+        alpha_node = self._image_node(nodes, alpha_image_path, x=x, y=y, is_color=True)
+        if alpha_node is None:
+            return None
+        return _output_socket(alpha_node, "Alpha")
+
+    def _illum_emission_strength(self, submaterial: SubmaterialRecord) -> float:
+        glow_value = _float_authored_attribute(submaterial, "Glow")
+        if glow_value > 0.0:
+            return glow_value
+
+        if self._texture_export_path(submaterial, "emissive"):
+            return 1.0
+
+        material_name = " ".join(
+            part.lower()
+            for part in (submaterial.submaterial_name, submaterial.blender_material_name)
+            if part
+        )
+        if "glow" in material_name or "emissive" in material_name:
+            return 0.35
+        return 0.0
 
     def _color_source_socket(
         self,
@@ -904,16 +1305,139 @@ class PackageImporter:
         x: int,
         y: int,
         is_color: bool,
+        reuse_any_existing: bool = False,
     ) -> bpy.types.ShaderNodeTexImage | None:
         resolved = self.package.resolve_path(image_path)
         if resolved is None or not resolved.is_file():
             return None
+        resolved_str = str(resolved)
+        for existing in nodes:
+            if existing.bl_idname != "ShaderNodeTexImage":
+                continue
+            image = getattr(existing, "image", None)
+            if image is None:
+                continue
+            if bpy.path.abspath(image.filepath, library=image.library) != resolved_str:
+                continue
+            if reuse_any_existing:
+                existing.location = (x, y)
+                return existing
+            color_space = getattr(getattr(image, "colorspace_settings", None), "name", "")
+            if is_color and color_space != "Non-Color":
+                existing.location = (x, y)
+                return existing
+            if not is_color and color_space == "Non-Color":
+                existing.location = (x, y)
+                return existing
         node = nodes.new("ShaderNodeTexImage")
         node.location = (x, y)
         node.image = bpy.data.images.load(str(resolved), check_existing=True)
         if not is_color and node.image is not None and hasattr(node.image, "colorspace_settings"):
             node.image.colorspace_settings.name = "Non-Color"
         return node
+
+    def _apply_material_node_layout(self, material: bpy.types.Material) -> None:
+        node_tree = material.node_tree
+        if node_tree is None:
+            return
+
+        nodes = node_tree.nodes
+        links = node_tree.links
+        layout = MATERIAL_NODE_LAYOUT
+
+        output = next((node for node in nodes if node.bl_idname == "ShaderNodeOutputMaterial"), None)
+        if output is not None:
+            output.location = (layout.output_x, layout.output_y)
+
+        primary_node = self._primary_surface_node(nodes, links, output)
+        if primary_node is not None:
+            primary_node.location = (layout.primary_x, layout.primary_y)
+            if primary_node.bl_idname == "ShaderNodeGroup":
+                primary_node.width = layout.group_width
+
+        shadow_mix = next((node for node in nodes if node.bl_idname == "ShaderNodeMixShader" and node != primary_node), None)
+        if shadow_mix is not None:
+            shadow_mix.location = (layout.shadow_mix_x, layout.shadow_mix_y)
+
+        shadow_transparent = next((node for node in nodes if node.bl_idname == "ShaderNodeBsdfTransparent"), None)
+        if shadow_transparent is not None:
+            shadow_transparent.location = (layout.shadow_transparent_x, layout.shadow_transparent_y)
+
+        shadow_light_path = next((node for node in nodes if node.bl_idname == "ShaderNodeLightPath"), None)
+        if shadow_light_path is not None:
+            shadow_light_path.location = (layout.shadow_light_path_x, layout.shadow_light_path_y)
+
+        texture_nodes = [node for node in nodes if node.bl_idname == "ShaderNodeTexImage"]
+        texture_nodes.sort(key=lambda node: (float(node.location.y), node.name), reverse=True)
+        next_y = layout.texture_start_y
+        for node in texture_nodes:
+            node.location = (layout.texture_x, next_y)
+            node.width = layout.texture_width
+            next_y -= layout.texture_vertical_step
+
+    def _primary_surface_node(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        output: bpy.types.Node | None,
+    ) -> bpy.types.Node | None:
+        if output is None:
+            return None
+
+        surface_input = _input_socket(output, "Surface")
+        if surface_input is None or not surface_input.is_linked:
+            return None
+
+        primary_node = next(
+            (link.from_node for link in links if link.to_node == output and link.to_socket == surface_input),
+            None,
+        )
+        if primary_node is None:
+            return None
+
+        if self._is_shadow_wrapper_mix(primary_node):
+            shader_input = primary_node.inputs[2]
+            if shader_input.is_linked:
+                return shader_input.links[0].from_node
+
+        return primary_node
+
+    def _is_shadow_wrapper_mix(self, node: bpy.types.Node | None) -> bool:
+        if node is None or node.bl_idname != "ShaderNodeMixShader":
+            return False
+
+        factor_input = node.inputs[0]
+        transparent_input = node.inputs[1]
+        shader_input = node.inputs[2]
+        if not factor_input.is_linked or not transparent_input.is_linked or not shader_input.is_linked:
+            return False
+
+        return (
+            factor_input.links[0].from_node.bl_idname == "ShaderNodeLightPath"
+            and transparent_input.links[0].from_node.bl_idname == "ShaderNodeBsdfTransparent"
+        )
+
+    def _plan_casts_no_shadows(self, plan: Any, submaterial: SubmaterialRecord | None = None) -> bool:
+        if getattr(plan, "template_key", "") in {"decal_stencil", "parallax_pom"}:
+            return True
+        return submaterial is not None and submaterial.shader_family == "MeshDecal"
+
+    def _shadowless_surface_output(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        surface_shader: Any,
+    ) -> Any:
+        light_path = nodes.new("ShaderNodeLightPath")
+        transparent = nodes.new("ShaderNodeBsdfTransparent")
+        mix = nodes.new("ShaderNodeMixShader")
+        shadow_ray = _output_socket(light_path, "Is Shadow Ray")
+        if shadow_ray is None:
+            return surface_shader
+        links.new(shadow_ray, mix.inputs[0])
+        links.new(transparent.outputs[0], mix.inputs[1])
+        links.new(surface_shader, mix.inputs[2])
+        return mix.outputs[0]
 
     def _configure_material(self, material: bpy.types.Material, *, blend_method: str, shadow_method: str) -> None:
         if hasattr(material, "blend_method"):
@@ -1102,6 +1626,31 @@ def _string_prop(obj: bpy.types.ID, name: str) -> str | None:
     if isinstance(value, str) and value:
         return value
     return None
+
+
+def _float_public_param(submaterial: SubmaterialRecord, *names: str) -> float:
+    for name in names:
+        value = submaterial.public_params.get(name)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def _float_authored_attribute(submaterial: SubmaterialRecord, *names: str) -> float:
+    wanted = set(names)
+    for attribute in submaterial.raw.get("authored_attributes", []):
+        if attribute.get("name") not in wanted:
+            continue
+        value = attribute.get("value")
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
 
 
 def _material_identity(
