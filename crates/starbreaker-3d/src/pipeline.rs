@@ -277,7 +277,6 @@ fn export_entity_payload_cached(
     }
 
     let palette = query_tint_palette(db, record);
-
     Ok((
         mesh,
         mtl_file,
@@ -424,6 +423,7 @@ pub fn assemble_glb_with_loadout_with_progress(
     // Export root entity (mesh + textures).
     let (root_mesh, root_mtl, root_tex, _, root_palette, geometry_path, material_path, root_bones) =
         export_entity_payload(db, p4k, record, &payload_opts)?;
+    let default_root_palette = root_palette.clone();
     log::info!("[mem-pipeline] root exported: {} verts", root_mesh.positions.len());
 
     // Check for equipped paint item and resolve its SubGeometry palette/material override.
@@ -631,6 +631,7 @@ pub fn assemble_glb_with_loadout_with_progress(
         };
 
     if opts.kind == ExportKind::Decomposed {
+        let available_palettes = query_related_tint_palettes(db, record, default_root_palette.as_ref());
         let decomposed_progress = progress.map(|progress| progress.sub(0.60, 0.90));
         let decomposed = crate::decomposed::write_decomposed_export(
             p4k,
@@ -642,6 +643,7 @@ pub fn assemble_glb_with_loadout_with_progress(
                 root_materials: root_mtl,
                 root_nmc: resolved.nmc,
                 root_palette: root_palette.clone(),
+                available_palettes,
                 root_bones,
                 children: child_payloads,
                 interiors: loaded_interiors,
@@ -3361,6 +3363,73 @@ fn query_tint_palette(db: &Database, record: &Record) -> Option<mtl::TintPalette
     )
 }
 
+fn query_related_tint_palettes(
+    db: &Database,
+    record: &Record,
+    default_palette: Option<&mtl::TintPalette>,
+) -> Vec<mtl::TintPalette> {
+    let Some(tpt_si) = db.struct_id("TintPaletteTree") else {
+        return Vec::new();
+    };
+    let family_keys = tint_palette_family_keys(db.resolve_string2(record.name_offset));
+    if family_keys.is_empty() {
+        return Vec::new();
+    }
+
+    let mut seen = HashSet::new();
+    let mut palettes = Vec::new();
+    if let Some(palette) = default_palette.cloned() {
+        if let Some(source_name) = palette.source_name.clone() {
+            seen.insert(source_name);
+        }
+        palettes.push(palette);
+    }
+    for palette_record in db.records_of_type(tpt_si) {
+        let full_name = db.resolve_string2(palette_record.name_offset).to_lowercase();
+        let short_name = full_name.rsplit('.').next().unwrap_or(&full_name);
+        if !tint_palette_matches_family(short_name, &family_keys) {
+            continue;
+        }
+        if !seen.insert(short_name.to_string()) {
+            continue;
+        }
+        if let Some(palette) = query_tint_from_record(db, palette_record, Some(short_name.to_string())) {
+            palettes.push(palette);
+        }
+    }
+
+    palettes.sort_by(|left, right| left.source_name.cmp(&right.source_name));
+    palettes
+}
+
+fn tint_palette_family_keys(name: &str) -> Vec<String> {
+    let short_name = name
+        .rsplit('.')
+        .next()
+        .unwrap_or(name)
+        .rsplit('/')
+        .next()
+        .unwrap_or(name)
+        .to_lowercase();
+    if short_name.is_empty() {
+        return Vec::new();
+    }
+
+    let mut keys = vec![short_name.clone()];
+    if let Some((_, remainder)) = short_name.split_once('_')
+        && !remainder.is_empty()
+    {
+        keys.push(remainder.to_string());
+    }
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+fn tint_palette_matches_family(short_name: &str, family_keys: &[String]) -> bool {
+    family_keys.iter().any(|key| short_name == key || short_name.starts_with(&format!("{key}_")))
+}
+
 /// Convert an sRGB 0.0-1.0 component to linear.
 fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.04045 {
@@ -4460,6 +4529,23 @@ mod tests {
         assert_eq!(specs[2].child.entity_name, "missile");
         assert_eq!(specs[2].parent_entity_name, "rack");
         assert_eq!(specs[2].parent_node_name, "hardpoint_missile");
+    }
+
+    #[test]
+    fn tint_palette_family_keys_include_short_name_and_family_suffix() {
+        let keys = tint_palette_family_keys("EntityClassDefinition.rsi_aurora_mk2");
+
+        assert_eq!(keys, vec!["aurora_mk2".to_string(), "rsi_aurora_mk2".to_string()]);
+    }
+
+    #[test]
+    fn tint_palette_family_matching_accepts_family_variants_only() {
+        let keys = tint_palette_family_keys("rsi_aurora_mk2");
+
+        assert!(tint_palette_matches_family("rsi_aurora_mk2", &keys));
+        assert!(tint_palette_matches_family("aurora_mk2_pink_green_purple", &keys));
+        assert!(!tint_palette_matches_family("rsi_interior_aurora_mk2_base", &keys));
+        assert!(!tint_palette_matches_family("misc_freelancer_black_red", &keys));
     }
 
     #[test]

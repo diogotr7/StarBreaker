@@ -24,6 +24,7 @@ pub(crate) struct DecomposedInput {
     pub root_materials: Option<MtlFile>,
     pub root_nmc: Option<NodeMeshCombo>,
     pub root_palette: Option<TintPalette>,
+    pub available_palettes: Vec<TintPalette>,
     pub root_bones: Vec<Bone>,
     pub children: Vec<EntityPayload>,
     pub interiors: LoadedInteriors,
@@ -416,6 +417,9 @@ pub(crate) fn write_decomposed_export(
     let palettes_manifest_path = package_relative_path(&package_name, "palettes.json");
     let liveries_manifest_path = package_relative_path(&package_name, "liveries.json");
     report_progress(progress, 0.05, "Writing root assets");
+    for palette in &input.available_palettes {
+        register_palette(&mut palette_records, palette);
+    }
 
     let root_material_view = build_decomposed_material_view(
         &input.root_mesh,

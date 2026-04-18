@@ -77,7 +77,7 @@ class ImportedTemplate:
 class MaterialNodeLayout:
     texture_x: float = -300.0
     texture_start_y: float = 160.0
-    texture_vertical_step: float = 300.0
+    texture_vertical_step: float = 260.0
     texture_width: float = 300.0
     primary_x: float = 200.0
     primary_y: float = -120.0
@@ -171,11 +171,7 @@ def dump_selected_metadata(context: bpy.types.Context) -> list[str]:
 def apply_palette_to_package_root(context: bpy.types.Context, package_root: bpy.types.Object, palette_id: str) -> int:
     package = _load_package_from_root(package_root)
     importer = PackageImporter(context, package, package_root=package_root)
-    applied = 0
-    for obj in _iter_package_objects(package_root):
-        applied += importer.rebuild_object_materials(obj, palette_id)
-    package_root[PROP_PALETTE_ID] = palette_id
-    return applied
+    return importer.apply_palette_to_package_root(package_root, palette_id)
 
 
 def apply_livery_to_package_root(context: bpy.types.Context, package_root: bpy.types.Object, livery_id: str) -> int:
@@ -336,6 +332,121 @@ class PackageImporter:
         if effective_palette_id is not None:
             obj[PROP_PALETTE_ID] = effective_palette_id
         return applied
+
+    def apply_palette_to_package_root(self, package_root: bpy.types.Object, palette_id: str | None) -> int:
+        effective_palette_id = self._effective_palette_id(palette_id)
+        palette = palette_for_id(self.package, effective_palette_id)
+        if palette is None:
+            return 0
+
+        palette_group = self._ensure_palette_group(palette)
+        touched_materials: set[int] = set()
+        applied = 0
+        for obj in _iter_package_objects(package_root):
+            if obj.type != "MESH":
+                continue
+            for slot in obj.material_slots:
+                material = slot.material
+                if material is None:
+                    continue
+                applied += 1
+                material_pointer = material.as_pointer()
+                if material_pointer not in touched_materials:
+                    self._apply_palette_to_material(material, palette, palette_group)
+                    touched_materials.add(material_pointer)
+            if effective_palette_id is not None:
+                obj[PROP_PALETTE_ID] = effective_palette_id
+
+        if effective_palette_id is not None:
+            package_root[PROP_PALETTE_ID] = effective_palette_id
+        self.context.view_layer.update()
+        return applied
+
+    def _apply_palette_to_material(
+        self,
+        material: bpy.types.Material,
+        palette: PaletteRecord,
+        palette_group: bpy.types.ShaderNodeTree,
+    ) -> None:
+        node_tree = material.node_tree
+        if node_tree is None:
+            return
+
+        for node in node_tree.nodes:
+            if node.bl_idname != "ShaderNodeGroup":
+                continue
+            node_tree_name = getattr(getattr(node, "node_tree", None), "name", "")
+            if node_tree_name.startswith("StarBreaker Palette "):
+                node.node_tree = palette_group
+                node.label = f"StarBreaker Palette {palette.id}"
+                continue
+            if node_tree_name == "StarBreaker Runtime LayerSurface":
+                self._update_layer_surface_palette_defaults(node, palette)
+
+        self._update_virtual_tint_palette_decal_nodes(material, palette)
+        material[PROP_PALETTE_ID] = palette.id
+
+    def _update_layer_surface_palette_defaults(
+        self,
+        group_node: bpy.types.Node,
+        palette: PaletteRecord,
+    ) -> None:
+        palette_color_input = _input_socket(group_node, "Palette Color")
+        if palette_color_input is None or not palette_color_input.is_linked:
+            return
+
+        source_socket_name = palette_color_input.links[0].from_socket.name
+        channel_name = {
+            "Primary": "primary",
+            "Secondary": "secondary",
+            "Tertiary": "tertiary",
+            "Glass Color": "glass",
+        }.get(source_socket_name)
+        if channel_name is None:
+            return
+
+        self._set_socket_default(
+            _input_socket(group_node, "Palette Glossiness"),
+            palette_finish_glossiness(palette, channel_name) or 0.0,
+        )
+        self._set_socket_default(
+            _input_socket(group_node, "Palette Specular"),
+            _mean_triplet(palette_finish_specular(palette, channel_name)) or 0.0,
+        )
+
+    def _update_virtual_tint_palette_decal_nodes(
+        self,
+        material: bpy.types.Material,
+        palette: PaletteRecord,
+    ) -> None:
+        node_tree = material.node_tree
+        if node_tree is None:
+            return
+
+        color_node = next(
+            (node for node in node_tree.nodes if node.bl_idname == "ShaderNodeRGB" and getattr(node, "name", "") == "STARBREAKER_VIRTUAL_TINT_PALETTE_DECAL_COLOR"),
+            None,
+        )
+        alpha_node = next(
+            (node for node in node_tree.nodes if node.bl_idname == "ShaderNodeValue" and getattr(node, "name", "") == "STARBREAKER_VIRTUAL_TINT_PALETTE_DECAL_ALPHA"),
+            None,
+        )
+        if color_node is None and alpha_node is None:
+            return
+
+        payload = material.get(PROP_SUBMATERIAL_JSON)
+        if not isinstance(payload, str):
+            return
+        try:
+            submaterial = SubmaterialRecord.from_value(json.loads(payload))
+        except Exception:
+            return
+
+        color, alpha = self._virtual_tint_palette_decal_defaults(submaterial, palette)
+        if color_node is not None:
+            color_node.outputs[0].default_value = (*color, 1.0)
+        if alpha_node is not None:
+            alpha_node.outputs[0].default_value = alpha
 
     def instantiate_scene_instance(
         self,
@@ -942,7 +1053,7 @@ class PackageImporter:
             is_color=False,
         )
         primary_detail = self._detail_texture_channels(nodes, self._texture_path_for_slot(submaterial, "TexSlot6"), x=-720, y=-420)
-        primary_roughness = self._roughness_socket_for_texture_reference(nodes, primary_normal_ref, x=-460, y=-140)
+        primary_roughness, primary_roughness_is_smoothness = self._roughness_socket_for_texture_reference(nodes, primary_normal_ref, x=-460, y=-140)
         primary_specular = self._specular_socket_for_texture_path(nodes, self._texture_path_for_slot(submaterial, "TexSlot4"), x=-720, y=760)
         primary = self._connect_layer_surface_group(
             nodes,
@@ -951,6 +1062,7 @@ class PackageImporter:
             base_alpha_socket=decal_palette.alpha if decal_palette.alpha is not None else (_output_socket(primary_color_node, "Alpha") if primary_color_node is not None else None),
             normal_color_socket=primary_normal_node.outputs[0] if primary_normal_node is not None else None,
             roughness_socket=primary_roughness,
+            roughness_source_is_smoothness=primary_roughness_is_smoothness,
             detail_channels=primary_detail,
             detail_diffuse_strength=0.35,
             detail_gloss_strength=0.35,
@@ -983,7 +1095,7 @@ class PackageImporter:
             is_color=False,
         )
         secondary_detail = self._detail_texture_channels(nodes, self._texture_path_for_slot(submaterial, "TexSlot13"), x=-720, y=-980)
-        secondary_roughness = self._roughness_socket_for_texture_reference(nodes, secondary_normal_ref, x=-460, y=-700)
+        secondary_roughness, secondary_roughness_is_smoothness = self._roughness_socket_for_texture_reference(nodes, secondary_normal_ref, x=-460, y=-700)
         secondary_specular = self._specular_socket_for_texture_path(nodes, self._texture_path_for_slot(submaterial, "TexSlot10"), x=-720, y=980)
         secondary = self._connect_layer_surface_group(
             nodes,
@@ -992,6 +1104,7 @@ class PackageImporter:
             base_alpha_socket=_output_socket(secondary_color_node, "Alpha") if secondary_color_node is not None else None,
             normal_color_socket=secondary_normal_node.outputs[0] if secondary_normal_node is not None else None,
             roughness_socket=secondary_roughness,
+            roughness_source_is_smoothness=secondary_roughness_is_smoothness,
             detail_channels=secondary_detail,
             detail_diffuse_strength=0.35,
             detail_gloss_strength=0.35,
@@ -1103,7 +1216,7 @@ class PackageImporter:
     def _ensure_runtime_layer_surface_group(self) -> bpy.types.ShaderNodeTree:
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime LayerSurface",
-            signature="layer_surface_v1",
+            signature="layer_surface_v2",
             inputs=[
                 ("Base Color", "NodeSocketColor"),
                 ("Base Alpha", "NodeSocketFloat"),
@@ -1117,7 +1230,8 @@ class PackageImporter:
                 ("Detail Bump Strength", "NodeSocketFloat"),
                 ("Normal Color", "NodeSocketColor"),
                 ("Roughness Source", "NodeSocketFloat"),
-                ("Palette Gloss Factor", "NodeSocketFloat"),
+                ("Roughness Source Is Smoothness", "NodeSocketBool"),
+                ("Palette Glossiness", "NodeSocketFloat"),
                 ("Specular Value", "NodeSocketFloat"),
                 ("Palette Specular", "NodeSocketFloat"),
             ],
@@ -1168,14 +1282,34 @@ class PackageImporter:
         links.new(palette_mix.outputs[0], final_color.inputs[1])
         links.new(detail_mix.outputs[0], final_color.inputs[2])
 
+        roughness_invert = nodes.new("ShaderNodeMath")
+        roughness_invert.location = (-720, -300)
+        roughness_invert.operation = "SUBTRACT"
+        roughness_invert.inputs[0].default_value = 1.0
+        links.new(_output_socket(group_input, "Roughness Source"), roughness_invert.inputs[1])
+
+        roughness_source = nodes.new("ShaderNodeMix")
+        roughness_source.location = (-520, -300)
+        if hasattr(roughness_source, "data_type"):
+            roughness_source.data_type = "FLOAT"
+        links.new(_output_socket(group_input, "Roughness Source Is Smoothness"), roughness_source.inputs[0])
+        links.new(_output_socket(group_input, "Roughness Source"), roughness_source.inputs[2])
+        links.new(roughness_invert.outputs[0], roughness_source.inputs[3])
+
+        palette_gloss_factor = nodes.new("ShaderNodeMath")
+        palette_gloss_factor.location = (-720, -180)
+        palette_gloss_factor.operation = "SUBTRACT"
+        palette_gloss_factor.inputs[0].default_value = 1.0
+        links.new(_output_socket(group_input, "Palette Glossiness"), palette_gloss_factor.inputs[1])
+
         roughness_base = nodes.new("ShaderNodeMath")
-        roughness_base.location = (-520, -240)
+        roughness_base.location = (-320, -240)
         roughness_base.operation = "MULTIPLY"
-        links.new(_output_socket(group_input, "Roughness Source"), roughness_base.inputs[0])
-        links.new(_output_socket(group_input, "Palette Gloss Factor"), roughness_base.inputs[1])
+        links.new(roughness_source.outputs[0], roughness_base.inputs[0])
+        links.new(palette_gloss_factor.outputs[0], roughness_base.inputs[1])
 
         detail_gloss = nodes.new("ShaderNodeMix")
-        detail_gloss.location = (-320, -240)
+        detail_gloss.location = (-120, -240)
         if hasattr(detail_gloss, "data_type"):
             detail_gloss.data_type = "FLOAT"
         links.new(_output_socket(group_input, "Detail Gloss Strength"), detail_gloss.inputs[0])
@@ -1183,7 +1317,7 @@ class PackageImporter:
         links.new(_output_socket(group_input, "Detail Gloss Mask"), detail_gloss.inputs[3])
 
         roughness = nodes.new("ShaderNodeMath")
-        roughness.location = (-120, -240)
+        roughness.location = (80, -240)
         roughness.operation = "MULTIPLY"
         links.new(roughness_base.outputs[0], roughness.inputs[0])
         links.new(detail_gloss.outputs[0], roughness.inputs[1])
@@ -1494,7 +1628,7 @@ class PackageImporter:
         detail_channels = self._detail_texture_channels(nodes, detail_ref.export_path if detail_ref is not None else None, x=x, y=y - 420)
         normal_ref = _layer_texture_reference(layer, roles=("normal_gloss",), alpha_semantic="smoothness")
         normal_node = self._image_node(nodes, normal_ref.export_path if normal_ref is not None else None, x=x, y=y - 560, is_color=False)
-        roughness = self._roughness_socket_for_texture_reference(nodes, normal_ref, x=x + 180, y=y - 560)
+        roughness, roughness_is_smoothness = self._roughness_socket_for_texture_reference(nodes, normal_ref, x=x + 180, y=y - 560)
         return self._connect_layer_surface_group(
             nodes,
             links,
@@ -1502,6 +1636,7 @@ class PackageImporter:
             base_alpha_socket=_output_socket(base_node, "Alpha") if base_node is not None else None,
             normal_color_socket=normal_node.outputs[0] if normal_node is not None else None,
             roughness_socket=roughness,
+            roughness_source_is_smoothness=roughness_is_smoothness,
             detail_channels=detail_channels,
             detail_diffuse_strength=max(0.0, min(1.0, _float_layer_public_param(layer, "DetailDiffuse"))),
             detail_gloss_strength=max(0.0, min(1.0, _float_layer_public_param(layer, "DetailGloss"))),
@@ -1526,6 +1661,7 @@ class PackageImporter:
         base_alpha_socket: Any,
         normal_color_socket: Any,
         roughness_socket: Any,
+        roughness_source_is_smoothness: bool,
         detail_channels: dict[str, Any] | None,
         detail_diffuse_strength: float,
         detail_gloss_strength: float,
@@ -1557,9 +1693,10 @@ class PackageImporter:
         self._set_socket_default(_input_socket(group_node, "Detail Bump Strength"), detail_bump_strength)
         self._set_socket_default(_input_socket(group_node, "Normal Color"), (0.5, 0.5, 1.0, 1.0))
         self._set_socket_default(_input_socket(group_node, "Roughness Source"), 0.45)
+        self._set_socket_default(_input_socket(group_node, "Roughness Source Is Smoothness"), roughness_source_is_smoothness)
         self._set_socket_default(
-            _input_socket(group_node, "Palette Gloss Factor"),
-            max(0.0, min(1.0, 1.0 - palette_glossiness)) if palette_glossiness is not None else 1.0,
+            _input_socket(group_node, "Palette Glossiness"),
+            max(0.0, min(1.0, palette_glossiness)) if palette_glossiness is not None else 0.0,
         )
         self._set_socket_default(_input_socket(group_node, "Specular Value"), specular_value)
         self._set_socket_default(_input_socket(group_node, "Palette Specular"), palette_specular_value)
@@ -1576,15 +1713,13 @@ class PackageImporter:
                 rgb_to_bw.location = (x - 20, y - 480)
                 links.new(palette_specular_color, rgb_to_bw.inputs[0])
                 palette_specular_socket = rgb_to_bw.outputs[0]
-            if palette_gloss_socket is not None:
-                palette_gloss_socket = self._invert_value_socket(nodes, palette_gloss_socket, x=x - 20, y=y - 320)
 
         self._link_group_input(links, base_color_socket, group_node, "Base Color")
         self._link_group_input(links, base_alpha_socket, group_node, "Base Alpha")
         self._link_group_input(links, normal_color_socket, group_node, "Normal Color")
         self._link_group_input(links, roughness_socket, group_node, "Roughness Source")
         self._link_group_input(links, palette_color_socket, group_node, "Palette Color")
-        self._link_group_input(links, palette_gloss_socket, group_node, "Palette Gloss Factor")
+        self._link_group_input(links, palette_gloss_socket, group_node, "Palette Glossiness")
         self._link_group_input(links, palette_specular_socket, group_node, "Palette Specular")
         if detail_channels is not None:
             self._link_group_input(links, detail_channels.get("red"), group_node, "Detail Color Mask")
@@ -1703,17 +1838,17 @@ class PackageImporter:
         *,
         x: int,
         y: int,
-    ) -> Any:
+    ) -> tuple[Any, bool]:
         if texture is None or texture.export_path is None:
-            return None
+            return None, False
         if texture.alpha_semantic == "smoothness":
             smoothness = self._texture_alpha_socket(nodes, texture.export_path, x=x, y=y, is_color=False)
             if smoothness is not None:
-                return self._invert_value_socket(nodes, smoothness, x=x + 180, y=y)
+                return smoothness, True
         image_node = self._image_node(nodes, texture.export_path, x=x, y=y, is_color=False)
         if image_node is None:
-            return None
-        return image_node.outputs[0]
+            return None, False
+        return image_node.outputs[0], False
 
     def _specular_socket_for_texture_path(
         self,
@@ -1951,7 +2086,11 @@ class PackageImporter:
 
         semantic = (contract_input.semantic or contract_input.name).lower()
         if contract_input.source_slot is not None and contract_input.name.lower().endswith("_alpha"):
-            return self._source_slot_alpha_socket(nodes, submaterial, contract_input, x=x, y=y)
+            return self._source_slot_alpha_socket(nodes, submaterial, contract_input, palette, x=x, y=y)
+
+        texture = self._texture_reference_for_contract_input(submaterial, contract_input)
+        if texture is not None and texture.is_virtual and texture.role == "tint_palette_decal":
+            return self._virtual_tint_palette_decal_sockets(nodes, submaterial, palette, x=x, y=y).color
 
         if "alpha" in semantic or "opacity" in semantic:
             return self._alpha_source_socket(
@@ -1971,7 +2110,7 @@ class PackageImporter:
                 y=y,
             )
 
-        image_path = self._texture_path_for_contract_input(submaterial, contract_input)
+        image_path = texture.export_path if texture is not None else self._texture_path_for_contract_input(submaterial, contract_input)
         if _contract_input_uses_color(contract_input):
             if any(item.name.startswith("Palette_") for item in group_contract.inputs):
                 image_node = self._image_node(nodes, image_path, x=x, y=y, is_color=True)
@@ -2053,6 +2192,58 @@ class PackageImporter:
             return None
         return _output_socket(image_node, "Alpha")
 
+    def _virtual_tint_palette_decal_sockets(
+        self,
+        nodes: bpy.types.Nodes,
+        submaterial: SubmaterialRecord,
+        palette: PaletteRecord | None,
+        *,
+        x: int,
+        y: int,
+    ) -> LayerSurfaceSockets:
+        color_node = next(
+            (node for node in nodes if node.bl_idname == "ShaderNodeRGB" and getattr(node, "name", "") == "STARBREAKER_VIRTUAL_TINT_PALETTE_DECAL_COLOR"),
+            None,
+        )
+        alpha_node = next(
+            (node for node in nodes if node.bl_idname == "ShaderNodeValue" and getattr(node, "name", "") == "STARBREAKER_VIRTUAL_TINT_PALETTE_DECAL_ALPHA"),
+            None,
+        )
+
+        if color_node is None:
+            color_node = nodes.new("ShaderNodeRGB")
+            color_node.name = "STARBREAKER_VIRTUAL_TINT_PALETTE_DECAL_COLOR"
+            color_node.label = "StarBreaker Virtual Tint Palette Decal"
+        color_node.location = (x, y)
+
+        if alpha_node is None:
+            alpha_node = nodes.new("ShaderNodeValue")
+            alpha_node.name = "STARBREAKER_VIRTUAL_TINT_PALETTE_DECAL_ALPHA"
+            alpha_node.label = "StarBreaker Virtual Tint Palette Decal Alpha"
+        alpha_node.location = (x, y - 140)
+
+        color, alpha = self._virtual_tint_palette_decal_defaults(submaterial, palette)
+
+        color_node.outputs[0].default_value = (*color, 1.0)
+        alpha_node.outputs[0].default_value = alpha
+        return LayerSurfaceSockets(color=color_node.outputs[0], alpha=alpha_node.outputs[0])
+
+    def _virtual_tint_palette_decal_defaults(
+        self,
+        submaterial: SubmaterialRecord,
+        palette: PaletteRecord | None,
+    ) -> tuple[tuple[float, float, float], float]:
+        color = (
+            _public_param_triplet(submaterial, "StencilDiffuseColor1", "StencilDiffuse1", "StencilTintColor", "TintColor", "StencilDiffuseColor")
+            or _resolved_submaterial_palette_color(submaterial, palette)
+            or _authored_attribute_triplet(submaterial, "Diffuse")
+            or (1.0, 1.0, 1.0)
+        )
+        alpha = _optional_float_public_param(submaterial, "StencilOpacity", "DecalDiffuseOpacity", "DecalAlphaMult")
+        if alpha is None:
+            alpha = 0.85 if submaterial.shader_family == "MeshDecal" else 0.5
+        return color, max(0.0, min(1.0, alpha))
+
     def _invert_value_socket(self, nodes: bpy.types.Nodes, source_socket: Any, *, x: int, y: int) -> Any:
         invert = nodes.new("ShaderNodeMath")
         invert.location = (x, y)
@@ -2066,6 +2257,7 @@ class PackageImporter:
         nodes: bpy.types.Nodes,
         submaterial: SubmaterialRecord,
         contract_input: ContractInput,
+        palette: PaletteRecord | None,
         *,
         x: int,
         y: int,
@@ -2073,6 +2265,8 @@ class PackageImporter:
         texture = self._texture_reference_for_contract_input(submaterial, contract_input)
         if texture is None:
             return None
+        if texture.is_virtual and texture.role == "tint_palette_decal":
+            return self._virtual_tint_palette_decal_sockets(nodes, submaterial, palette, x=x, y=y).alpha
         return self._texture_alpha_socket(nodes, texture.export_path, x=x, y=y, is_color=True)
 
     def _texture_path_for_contract_input(self, submaterial: SubmaterialRecord, contract_input: ContractInput) -> str | None:
@@ -2710,7 +2904,7 @@ class PackageImporter:
         for node in palette_groups:
             node.location = (layout.primary_x - 620.0, palette_y)
             node.width = 240.0
-            palette_y -= 260.0
+            palette_y -= 220.0
 
         layer_groups = [
             node
@@ -2724,7 +2918,7 @@ class PackageImporter:
         for node in layer_groups:
             node.location = (layout.primary_x - 300.0, layer_y)
             node.width = 320.0
-            layer_y -= 280.0
+            layer_y -= 240.0
 
     def _primary_surface_node(
         self,
@@ -3153,6 +3347,67 @@ def _triplet_from_value(value: Any) -> tuple[float, float, float] | None:
         return (float(value[0]), float(value[1]), float(value[2]))
     except (TypeError, ValueError):
         return None
+
+
+def _triplet_from_string(value: Any) -> tuple[float, float, float] | None:
+    if not isinstance(value, str):
+        return None
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) < 3:
+        return None
+    try:
+        return (float(parts[0]), float(parts[1]), float(parts[2]))
+    except (TypeError, ValueError):
+        return None
+
+
+def _triplet_from_any(value: Any) -> tuple[float, float, float] | None:
+    return _triplet_from_value(value) or _triplet_from_string(value)
+
+
+def _optional_float_public_param(submaterial: SubmaterialRecord, *names: str) -> float | None:
+    for name in names:
+        value = submaterial.public_params.get(name)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _public_param_triplet(submaterial: SubmaterialRecord, *names: str) -> tuple[float, float, float] | None:
+    for name in names:
+        triplet = _triplet_from_any(submaterial.public_params.get(name))
+        if triplet is not None:
+            return triplet
+    return None
+
+
+def _authored_attribute_triplet(submaterial: SubmaterialRecord, *names: str) -> tuple[float, float, float] | None:
+    wanted = set(names)
+    for attribute in submaterial.raw.get("authored_attributes", []):
+        if attribute.get("name") not in wanted:
+            continue
+        triplet = _triplet_from_any(attribute.get("value"))
+        if triplet is not None:
+            return triplet
+    return None
+
+
+def _resolved_submaterial_palette_color(
+    submaterial: SubmaterialRecord,
+    palette: PaletteRecord | None,
+) -> tuple[float, float, float] | None:
+    if palette is None:
+        return None
+    channel = submaterial.palette_routing.material_channel
+    if channel is not None:
+        return palette_color(palette, channel.name)
+    if submaterial.shader_family == "GlassPBR":
+        return palette_color(palette, "glass")
+    return None
 
 
 def _matching_texture_reference(
