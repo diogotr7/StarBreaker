@@ -104,10 +104,15 @@ class LayerSurfaceSockets:
     specular: Any | None = None
 
 
-def import_package(context: bpy.types.Context, scene_path: str | Path, prefer_cycles: bool = True) -> bpy.types.Object:
+def import_package(
+    context: bpy.types.Context,
+    scene_path: str | Path,
+    prefer_cycles: bool = True,
+    palette_id: str | None = None,
+) -> bpy.types.Object:
     package = PackageBundle.load(scene_path)
     importer = PackageImporter(context, package)
-    return importer.import_scene(prefer_cycles=prefer_cycles)
+    return importer.import_scene(prefer_cycles=prefer_cycles, palette_id=palette_id)
 
 
 def find_package_root(obj: bpy.types.Object | None) -> bpy.types.Object | None:
@@ -230,6 +235,7 @@ class PackageImporter:
         self.material_cache: dict[str, bpy.types.Material] = {}
         self.node_index_by_entity_name: dict[str, dict[str, bpy.types.Object]] = {}
         self.bundled_template_contract: TemplateContract | None = None
+        self.import_palette_override: str | None = None
 
     def _effective_palette_id(self, palette_id: str | None) -> str | None:
         inherited_palette_id = None
@@ -237,17 +243,25 @@ class PackageImporter:
             inherited_palette_id = _string_prop(self.package_root, PROP_PALETTE_ID)
         return resolved_palette_id(
             self.package,
-            palette_id,
+            self.import_palette_override or palette_id,
             inherited_palette_id or self.package.scene.root_entity.palette_id,
         )
 
-    def import_scene(self, prefer_cycles: bool = True) -> bpy.types.Object:
+    def import_scene(self, prefer_cycles: bool = True, palette_id: str | None = None) -> bpy.types.Object:
         if prefer_cycles and hasattr(self.context.scene.render, "engine"):
             self.context.scene.render.engine = "CYCLES"
             self._ensure_cycles_denoising_support()
 
-        package_root = self.package_root or self._create_package_root()
+        initial_palette_id = resolved_palette_id(
+            self.package,
+            palette_id,
+            self.package.scene.root_entity.palette_id,
+        )
+        self.import_palette_override = initial_palette_id
+        package_root = self.package_root or self._create_package_root(initial_palette_id)
         self.package_root = package_root
+        if initial_palette_id is not None:
+            package_root[PROP_PALETTE_ID] = initial_palette_id
 
         root_anchor, root_nodes = self.instantiate_scene_instance(self.package.scene.root_entity, parent=package_root)
         self.node_index_by_entity_name[self.package.scene.root_entity.entity_name] = self._index_nodes(root_nodes)
@@ -677,7 +691,19 @@ class PackageImporter:
                 target_socket.default_value = self._illum_emission_strength(submaterial)
                 source_socket = None
             else:
-                if ("alpha" in semantic or "opacity" in semantic) and hasattr(target_socket, "default_value"):
+                if (
+                    group_contract.name == "SB_HardSurface_v1"
+                    and semantic == "base_color"
+                    and hasattr(target_socket, "default_value")
+                ):
+                    target_socket.default_value = (1.0, 1.0, 1.0, 1.0)
+                elif (
+                    group_contract.name == "SB_HardSurface_v1"
+                    and semantic == "base_color_alpha"
+                    and hasattr(target_socket, "default_value")
+                ):
+                    target_socket.default_value = 1.0
+                elif ("alpha" in semantic or "opacity" in semantic) and hasattr(target_socket, "default_value"):
                     target_socket.default_value = 0.0
                 source_socket = self._contract_input_source_socket(
                     nodes,
@@ -2000,8 +2026,16 @@ class PackageImporter:
         source_slot = contract_input.source_slot
         if source_slot is None:
             return None
-        for texture in [*submaterial.texture_slots, *submaterial.direct_textures, *submaterial.derived_textures]:
-            if texture.slot == source_slot and texture.export_path:
+        texture = _matching_texture_reference(
+            [*submaterial.texture_slots, *submaterial.direct_textures, *submaterial.derived_textures],
+            slots=(source_slot,),
+        )
+        if texture is not None:
+            return texture
+
+        for layer in submaterial.layer_manifest:
+            texture = _layer_texture_reference(layer, slots=(source_slot,))
+            if texture is not None:
                 return texture
         return None
 
@@ -2788,14 +2822,14 @@ class PackageImporter:
                 obj[PROP_PALETTE_ID] = effective_palette_id
             obj[PROP_INSTANCE_JSON] = serialized
 
-    def _create_package_root(self) -> bpy.types.Object:
+    def _create_package_root(self, palette_id: str | None = None) -> bpy.types.Object:
         package_root = bpy.data.objects.new(f"{PACKAGE_ROOT_PREFIX} {self.package.package_name}", None)
         package_root.empty_display_type = "ARROWS"
         package_root[PROP_PACKAGE_ROOT] = True
         package_root[PROP_SCENE_PATH] = str(self.package.scene_path)
         package_root[PROP_EXPORT_ROOT] = str(self.package.export_root)
         package_root[PROP_PACKAGE_NAME] = self.package.package_name
-        package_root[PROP_PALETTE_ID] = self.package.scene.root_entity.palette_id or ""
+        package_root[PROP_PALETTE_ID] = palette_id or self.package.scene.root_entity.palette_id or ""
         self.collection.objects.link(package_root)
         return package_root
 

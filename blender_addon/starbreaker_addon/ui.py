@@ -71,10 +71,20 @@ class STARBREAKER_OT_import_decomposed_package(Operator, ImportHelper):
         description="Switch the active scene to Cycles before import",
         default=True,
     )
+    palette_id_override: StringProperty(
+        name="Initial Palette ID",
+        description="Optional palette override applied during import to avoid rebuilding the package a second time",
+        default="",
+    )
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         try:
-            package_root = import_package(context, self.filepath, prefer_cycles=self.prefer_cycles)
+            package_root = import_package(
+                context,
+                self.filepath,
+                prefer_cycles=self.prefer_cycles,
+                palette_id=self.palette_id_override.strip() or None,
+            )
         except Exception as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
