@@ -31,6 +31,17 @@ Typical flow:
 3. Use `Apply Palette` or `Apply Livery` to switch preserved variants.
 4. Use `Dump Metadata` to inspect the preserved scene-instance or material contract in Blender text datablocks.
 
+## Material Node Layout
+
+Generated material nodes are laid out from the constants in `starbreaker_addon/runtime.py` under `MATERIAL_NODE_LAYOUT`.
+
+- `texture_x`, `texture_start_y`, `texture_vertical_step`, and `texture_width` control the imported image texture column.
+- `primary_x` and `primary_y` control the main shader or group node position.
+- `group_width` controls the width applied to shader-group nodes such as `SB_Illum_v1`.
+- `output_x` and `output_y` control the Material Output node position.
+
+Adjust those values if you want to retune the generated node spacing or alignment, then sync or reinstall the add-on before re-importing materials in Blender.
+
 ## Validation
 
 Pure-Python validation lives under `tests/` and runs against the checked-in ship fixtures.
