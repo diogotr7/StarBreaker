@@ -16,6 +16,12 @@
 //! SC_DATA_P4K = "C:\\Program Files\\Roberts Space Industries\\StarCitizen\\LIVE\\Data.p4k"
 //! SC_EXE = "C:\\Program Files\\Roberts Space Industries\\StarCitizen\\LIVE\\Bin64\\StarCitizen.exe"
 //! ```
+//!
+//! On Linux, StarBreaker also auto-scans the common Wine or Proton install root:
+//!
+//! ```text
+//! ~/Games/star-citizen/drive_c/Program Files/Roberts Space Industries/StarCitizen/
+//! ```
 
 use std::path::PathBuf;
 
@@ -24,16 +30,15 @@ pub const CHANNELS: &[&str] = &["LIVE", "PTU", "EPTU", "TECH-PREVIEW"];
 
 /// Default install root on Windows.
 pub const DEFAULT_ROOT: &str = r"C:\Program Files\Roberts Space Industries\StarCitizen";
+/// Common install root on Linux Wine or Proton setups.
+pub const DEFAULT_ROOT_LINUX: &str = "Games/star-citizen/drive_c/Program Files/Roberts Space Industries/StarCitizen";
 
 fn default_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
 
     if cfg!(target_os = "linux") {
         if let Some(home) = std::env::var_os("HOME") {
-            roots.push(
-                PathBuf::from(home)
-                    .join("Games/star-citizen/drive_c/Program Files/Roberts Space Industries/StarCitizen"),
-            );
+            roots.push(PathBuf::from(home).join(DEFAULT_ROOT_LINUX));
         }
     }
 
@@ -209,10 +214,28 @@ mod tests {
         if cfg!(target_os = "linux") {
             let expected = std::env::var_os("HOME")
                 .map(PathBuf::from)
-                .map(|home| home.join("Games/star-citizen/drive_c/Program Files/Roberts Space Industries/StarCitizen"));
+                .map(|home| home.join(DEFAULT_ROOT_LINUX));
             if let Some(expected) = expected {
                 assert!(roots.iter().any(|root| root == &expected));
             }
+        }
+    }
+
+    #[test]
+    fn linux_default_root_constant_matches_expected_layout() {
+        assert_eq!(
+            DEFAULT_ROOT_LINUX,
+            "Games/star-citizen/drive_c/Program Files/Roberts Space Industries/StarCitizen"
+        );
+    }
+
+    #[test]
+    fn default_root_message_lists_linux_root_when_applicable() {
+        let message = default_root_message();
+        assert!(message.contains(DEFAULT_ROOT));
+
+        if cfg!(target_os = "linux") {
+            assert!(message.contains(DEFAULT_ROOT_LINUX));
         }
     }
 }
