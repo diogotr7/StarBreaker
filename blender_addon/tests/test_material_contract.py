@@ -28,7 +28,7 @@ class MaterialContractTests(unittest.TestCase):
         self.assertEqual(contract.schema_version, 1)
         self.assertEqual(contract.metadata.get("status"), "blend_export")
         self.assertGreaterEqual(len(contract.groups), 1)
-        self.assertTrue(str(contract.generated_from).endswith("material_templates.blend"))
+        self.assertEqual(contract.generated_from, "material_templates.blend")
         hard_surface = contract.group_for_shader_family("HardSurface")
         monitor = contract.group_for_shader_family("Monitor")
         nodraw = contract.group_for_shader_family("NoDraw")
