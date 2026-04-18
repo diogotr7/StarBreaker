@@ -89,6 +89,8 @@ pub struct ExportOptions {
     pub include_lights: bool,
     /// Include NoDraw submeshes and sidecar entries in decomposed exports.
     pub include_nodraw: bool,
+    /// Include shield helper meshes and shield attachments.
+    pub include_shields: bool,
     /// LOD level (0 = highest detail, 1+ = lower).
     pub lod_level: u32,
     /// Texture mip level (0 = full resolution, 2 = 1/4 res, 4 = 1/16 res).
@@ -105,6 +107,7 @@ impl Default for ExportOptions {
             include_interior: true,
             include_lights: true,
             include_nodraw: false,
+            include_shields: false,
             lod_level: 1,
             texture_mip: 2,
         }
@@ -1212,6 +1215,35 @@ fn resolve_children(
                 .clone()
                 .unwrap_or_else(|| node.item_port_name.clone());
 
+            if !opts.include_shields
+                && is_shield_related_name(&node.entity_name)
+                    || !opts.include_shields
+                        && is_shield_related_name(&attachment_name)
+                    || !opts.include_shields
+                        && path_is_shield_related(node.geometry_path.as_deref())
+                    || !opts.include_shields
+                        && path_is_shield_related(node.material_path.as_deref())
+            {
+                log::info!(
+                    "  {} -> shield export disabled, skipping geometry and children",
+                    node.entity_name
+                );
+                return crate::types::ResolvedNode {
+                    entity_name: node.entity_name.clone(),
+                    attachment_name,
+                    no_rotation: node.no_rotation,
+                    offset_position: node.offset_position,
+                    offset_rotation: node.offset_rotation,
+                    nmc: None,
+                    bones: Vec::new(),
+                    has_geometry: false,
+                    record: node.record,
+                    geometry_path: None,
+                    material_path: node.material_path.clone(),
+                    children: Vec::new(),
+                };
+            }
+
             // Skip geometry (and entire subtree) for ports marked invisible in the vehicle XML.
             let port_invisible = invisible_ports.contains(&node.item_port_name);
 
@@ -1295,6 +1327,25 @@ fn resolve_children(
             }
         })
         .collect()
+}
+
+fn is_shield_related_name(value: &str) -> bool {
+    value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|segment| !segment.is_empty())
+        .any(|segment| {
+            let lowered = segment.to_ascii_lowercase();
+            lowered == "shield"
+                || lowered == "shld"
+                || lowered == "sheild"
+                || lowered.starts_with("shield")
+                || lowered.starts_with("sheild")
+        })
+}
+
+fn path_is_shield_related(path: Option<&str>) -> bool {
+    path.is_some_and(|value| value.to_ascii_lowercase().contains("/shields/"))
+        || path.is_some_and(|value| value.to_ascii_lowercase().contains("\\shields\\"))
 }
 
 // ── Interior loading ────────────────────────────────────────────────────────
