@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use starbreaker_datacore::database::Database;
@@ -20,6 +21,16 @@ type EntityPayload = (
     Option<mtl::TintPalette>,
     String,
     String,
+    Vec<crate::skeleton::Bone>,
+);
+
+/// Cached result of loading a child entity's mesh data from P4k.
+/// Keyed by geometry_path in the mesh load cache.
+type ChildMeshData = (
+    crate::Mesh,
+    Option<mtl::MtlFile>,
+    Option<nmc::NodeMeshCombo>,
+    Option<mtl::TintPalette>,
     Vec<crate::skeleton::Bone>,
 );
 
@@ -293,8 +304,6 @@ pub fn assemble_glb_with_loadout(
     tree: &starbreaker_datacore::loadout::LoadoutTree,
     opts: &ExportOptions,
 ) -> Result<ExportResult, Error> {
-    use crate::types::EntityPayload;
-
     log::info!("[mem-pipeline] resolving loadout meshes...");
     let resolved = resolve_loadout_meshes(db, p4k, record, tree, opts)?;
     log::info!("[mem-pipeline] resolved: {} children", resolved.children.len());
@@ -322,30 +331,45 @@ pub fn assemble_glb_with_loadout(
         ..opts.clone()
     };
     let gear_parts = query_landing_gear(db, record);
-    let mut child_payloads: Vec<EntityPayload> = Vec::new();
+    let mut child_payloads: Vec<crate::types::EntityPayload> = Vec::new();
+    let mut mesh_cache: HashMap<String, ChildMeshData> = HashMap::new();
     if opts.include_attachments {
         for (gear_path, bone_name) in &gear_parts {
-            match export_entity_from_paths(p4k, gear_path, "", &child_opts) {
-                Ok((gear_mesh, gear_mtl, _, gear_nmc, _, _, _, _)) => {
-                    let verts = gear_mesh.positions.len();
-                    child_payloads.push(EntityPayload {
-                        mesh: gear_mesh,
-                        materials: gear_mtl,
-                        textures: None,
-                        nmc: gear_nmc,
-                        palette: root_palette.clone(),
-                        bones: Vec::new(),
-                        entity_name: gear_path.rsplit('/').next().unwrap_or(gear_path).to_string(),
-                        geometry_path: Some(gear_path.to_string()),
-                        parent_node_name: bone_name.clone(),
-                        parent_entity_name: resolved.entity_name.clone(),
-                        no_rotation: false,
-                        offset_position: [0.0; 3],
-                        offset_rotation: [0.0; 3],
-                    });
-                    log::info!("  landing gear '{gear_path}' → '{bone_name}', {verts} verts");
+            // Check mesh load cache for landing gear (same gear CGF on multiple hardpoints).
+            let loaded = if let Some(cached) = mesh_cache.get(gear_path.as_str()) {
+                log::info!("  mesh cache hit for landing gear '{gear_path}'");
+                let (mesh, mtl, nmc, _, _) = cached.clone();
+                Some((mesh, mtl, nmc))
+            } else {
+                match export_entity_from_paths(p4k, gear_path, "", &child_opts) {
+                    Ok((mesh, mtl, _, nmc, _, _, _, _)) => {
+                        mesh_cache.insert(gear_path.to_string(), (mesh.clone(), mtl.clone(), nmc.clone(), None, Vec::new()));
+                        Some((mesh, mtl, nmc))
+                    }
+                    Err(e) => {
+                        log::warn!("  landing gear '{gear_path}' failed: {e}");
+                        None
+                    }
                 }
-                Err(e) => log::warn!("  landing gear '{gear_path}' failed: {e}"),
+            };
+            if let Some((gear_mesh, gear_mtl, gear_nmc)) = loaded {
+                let verts = gear_mesh.positions.len();
+                child_payloads.push(crate::types::EntityPayload {
+                    mesh: gear_mesh,
+                    materials: gear_mtl,
+                    textures: None,
+                    nmc: gear_nmc,
+                    palette: root_palette.clone(),
+                    bones: Vec::new(),
+                    entity_name: gear_path.rsplit('/').next().unwrap_or(gear_path).to_string(),
+                    geometry_path: Some(gear_path.to_string()),
+                    parent_node_name: bone_name.clone(),
+                    parent_entity_name: resolved.entity_name.clone(),
+                    no_rotation: false,
+                    offset_position: [0.0; 3],
+                    offset_rotation: [0.0; 3],
+                });
+                log::info!("  landing gear '{gear_path}' → '{bone_name}', {verts} verts");
             }
         }
         flatten_resolved_tree(
@@ -356,6 +380,7 @@ pub fn assemble_glb_with_loadout(
             p4k,
             &child_opts,
             &mut child_payloads,
+            &mut mesh_cache,
         );
     }
     let total_child_verts: usize = child_payloads.iter().map(|c| c.mesh.positions.len()).sum();
@@ -504,6 +529,7 @@ fn flatten_resolved_tree(
     p4k: &MappedP4k,
     opts: &ExportOptions,
     out: &mut Vec<crate::types::EntityPayload>,
+    mesh_cache: &mut HashMap<String, ChildMeshData>,
 ) {
     for child in children {
         let (attach_name, no_rotation) = match override_attachment {
@@ -512,7 +538,19 @@ fn flatten_resolved_tree(
         };
 
         let child_creates_nodes = if child.has_geometry {
-            if let Some((mesh, mtl, nmc, palette, bones)) = load_child_mesh(child, db, p4k, opts) {
+            // Check mesh load cache by geometry_path.
+            let loaded = if let Some(cached) = child.geometry_path.as_ref().and_then(|gp| mesh_cache.get(gp)) {
+                log::info!("  mesh cache hit for '{}' ({})", child.entity_name, child.geometry_path.as_deref().unwrap_or("?"));
+                Some(cached.clone())
+            } else if let Some(data) = load_child_mesh(child, db, p4k, opts) {
+                if let Some(gp) = &child.geometry_path {
+                    mesh_cache.insert(gp.clone(), data.clone());
+                }
+                Some(data)
+            } else {
+                None
+            };
+            if let Some((mesh, mtl, nmc, palette, bones)) = loaded {
                 out.push(crate::types::EntityPayload {
                     mesh,
                     materials: mtl,
@@ -578,6 +616,7 @@ fn flatten_resolved_tree(
                 p4k,
                 opts,
                 out,
+                mesh_cache,
             );
         } else {
             // No geometry — reparent grandchildren to this child's attachment point.
@@ -589,6 +628,7 @@ fn flatten_resolved_tree(
                 p4k,
                 opts,
                 out,
+                mesh_cache,
             );
         }
     }
