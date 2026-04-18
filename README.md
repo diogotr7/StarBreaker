@@ -288,7 +288,12 @@ cd app && npm install && npm run tauri build
 <details>
 <summary><b>Game file discovery</b></summary>
 
-The CLI and library auto-detect your Star Citizen install under `C:\Program Files\Roberts Space Industries\StarCitizen\`, scanning LIVE/PTU/EPTU channels by modification time.
+The CLI and library auto-detect your Star Citizen install by scanning the known channel roots and picking the newest `Data.p4k`.
+
+Supported default roots:
+
+- Windows: `C:\Program Files\Roberts Space Industries\StarCitizen\`
+- Linux LUG Wine or Proton installs: `~/Games/star-citizen/drive_c/Program Files/Roberts Space Industries/StarCitizen/`
 
 To override, copy `.cargo/config.toml.example` to `.cargo/config.toml` and set your paths:
 
