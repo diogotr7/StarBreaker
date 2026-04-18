@@ -670,6 +670,7 @@ pub async fn start_export(
         include_interior: request.include_interior,
         include_lights: request.include_lights,
         include_nodraw: request.include_nodraw,
+        include_shields: false,
         texture_mip: request.mip,
         lod_level: request.lod,
     };

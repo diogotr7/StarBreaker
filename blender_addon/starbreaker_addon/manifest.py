@@ -194,13 +194,21 @@ class TextureReference:
 @dataclass(frozen=True)
 class LayerManifestEntry:
     index: int
+    name: str | None
     source_material_path: str | None
     diffuse_export_path: str | None
     normal_export_path: str | None
     roughness_export_path: str | None
+    texture_slots: list[TextureReference]
     palette_channel: PaletteChannel | None
     tint_color: Color3 | None
+    wear_tint: Color3 | None
     uv_tiling: float | None
+    gloss_mult: float | None
+    wear_gloss: float | None
+    layer_snapshot: JsonDict
+    resolved_material: JsonDict
+    raw: JsonDict
 
     @classmethod
     def from_value(cls, value: Any) -> LayerManifestEntry:
@@ -209,16 +217,28 @@ class LayerManifestEntry:
         tint_color = None
         if isinstance(tint, (list, tuple)):
             tint_color = _float_tuple(tint, 3)  # type: ignore[assignment]
+        wear_tint_value = data.get("wear_tint")
+        wear_tint = None
+        if isinstance(wear_tint_value, (list, tuple)):
+            wear_tint = _float_tuple(wear_tint_value, 3)  # type: ignore[assignment]
         uv_tiling = data.get("uv_tiling")
         return cls(
             index=int(data.get("index", 0)),
+            name=_as_str(data.get("name")),
             source_material_path=_normalize_relative_path(_as_str(data.get("source_material_path"))),
             diffuse_export_path=_normalize_relative_path(_as_str(data.get("diffuse_export_path"))),
             normal_export_path=_normalize_relative_path(_as_str(data.get("normal_export_path"))),
             roughness_export_path=_normalize_relative_path(_as_str(data.get("roughness_export_path"))),
+            texture_slots=[TextureReference.from_value(item) for item in data.get("texture_slots", [])],
             palette_channel=PaletteChannel.from_value(data.get("palette_channel")),
             tint_color=tint_color,
+            wear_tint=wear_tint,
             uv_tiling=float(uv_tiling) if uv_tiling is not None else None,
+            gloss_mult=float(data.get("gloss_mult")) if data.get("gloss_mult") is not None else None,
+            wear_gloss=float(data.get("wear_gloss")) if data.get("wear_gloss") is not None else None,
+            layer_snapshot=_as_dict(data.get("layer_snapshot")),
+            resolved_material=_as_dict(data.get("resolved_material")),
+            raw=data,
         )
 
 

@@ -15,7 +15,7 @@ from starbreaker_addon.manifest import LightRecord, MaterialSidecar, PackageBund
 
 
 ARGO_SCENE = REPO_ROOT / "ships/Packages/ARGO MOLE/scene.json"
-ARGO_INTERIOR = REPO_ROOT / "ships/Data/objects/spaceships/ships/argo/mole/argo_mole_interior.materials.json"
+ARGO_INTERIOR = REPO_ROOT / "ships/Data/Objects/Spaceships/Ships/ARGO/MOLE/argo_mole_interior.materials.json"
 COMPONENT_MASTER = REPO_ROOT / "ships/Data/Materials/vehicles/components/component_master_01.materials.json"
 
 
@@ -45,7 +45,8 @@ class ManifestTests(unittest.TestCase):
 
     def test_material_sidecar_preserves_layer_and_virtual_input_contract(self) -> None:
         interior = MaterialSidecar.from_file(ARGO_INTERIOR)
-        self.assertIsNotNone(interior.geometry_path)
+        self.assertIsNotNone(interior.source_material_path)
+        self.assertTrue(interior.submaterials)
         ui_plane = next(submaterial for submaterial in interior.submaterials if submaterial.shader_family == "UIPlane")
         self.assertEqual(ui_plane.submaterial_name, "rtt_hud")
         self.assertIn("$RenderToTexture", ui_plane.virtual_inputs)
@@ -81,17 +82,44 @@ class ManifestTests(unittest.TestCase):
     def test_texture_reference_preserves_ddna_smoothness_markers(self) -> None:
         texture = TextureReference.from_value(
             {
-                "role": "roughness",
+                "role": "normal_gloss",
                 "source_path": "Data/Objects/Ships/Test/hull_ddna.dds",
-                "export_path": "Data/Objects/Ships/Test/hull_ddna.roughness.png",
-                "export_kind": "roughness_from_normal_gloss",
-                "derived_from_texture_identity": "ddna_normal",
-                "derived_from_semantic": "smoothness",
+                "export_path": "Data/Objects/Ships/Test/hull_ddna.png",
+                "export_kind": "source",
+                "texture_identity": "ddna_normal",
+                "alpha_semantic": "smoothness",
             }
         )
 
-        self.assertEqual(texture.derived_from_texture_identity, "ddna_normal")
-        self.assertEqual(texture.derived_from_semantic, "smoothness")
+        self.assertEqual(texture.texture_identity, "ddna_normal")
+        self.assertEqual(texture.alpha_semantic, "smoothness")
+
+    def test_layer_manifest_preserves_texture_slots(self) -> None:
+        component = MaterialSidecar.from_file(COMPONENT_MASTER)
+        layered = next(
+            submaterial
+            for submaterial in component.submaterials
+            if submaterial.shader_family == "LayerBlend_V2"
+            and any(layer.texture_slots for layer in submaterial.layer_manifest)
+        )
+        layer = next(layer for layer in layered.layer_manifest if layer.texture_slots)
+        smoothness_texture = next(texture for texture in layer.texture_slots if texture.alpha_semantic == "smoothness")
+        self.assertEqual(smoothness_texture.texture_identity, "ddna_normal")
+
+    def test_layer_manifest_preserves_resolved_layer_details(self) -> None:
+        exterior = MaterialSidecar.from_file(REPO_ROOT / "ships/Data/Objects/Spaceships/Ships/ARGO/MOLE/argo_mole_exterior.materials.json")
+        layered = next(
+            submaterial
+            for submaterial in exterior.submaterials
+            if submaterial.submaterial_name == "paint_primary_orange_low"
+        )
+        primary = layered.layer_manifest[0]
+
+        self.assertEqual(primary.name, "Primary")
+        self.assertAlmostEqual(primary.gloss_mult or 0.0, 0.7699999809265137)
+        self.assertEqual(primary.palette_channel.name, "primary")
+        self.assertEqual(primary.layer_snapshot["shader"], "Layer")
+        self.assertTrue(primary.resolved_material["authored_public_params"])
 
     def test_texture_reference_preserves_structured_texture_transform(self) -> None:
         texture = TextureReference.from_value(

@@ -18,6 +18,8 @@ from starbreaker_addon.palette import (
     default_palette_id,
     livery_applies_to_instance,
     palette_color,
+    palette_finish_glossiness,
+    palette_finish_specular,
     palette_for_id,
     palette_id_for_livery_instance,
     palette_signature_for_submaterial,
@@ -58,6 +60,16 @@ class PaletteTests(unittest.TestCase):
         palette = palette_for_id(package, "palette/argo_mole")
         self.assertIsNotNone(palette)
         self.assertEqual(palette_color(palette, "glass"), palette.glass)
+
+    def test_palette_finish_preserves_specular_data(self) -> None:
+        package = PackageBundle.load(ARGO_SCENE)
+        palette = palette_for_id(package, "palette/argo_mole")
+
+        self.assertEqual(
+            palette_finish_specular(palette, "primary"),
+            (0.04373502731323242, 0.04373502731323242, 0.04373502731323242),
+        )
+        self.assertIsNone(palette_finish_glossiness(palette, "primary"))
 
     def test_null_child_palette_inherits_package_root_palette(self) -> None:
         package = PackageBundle.load(ARGO_SCENE)

@@ -17,6 +17,7 @@ from starbreaker_addon.templates import (
     has_virtual_input,
     material_palette_channels,
     representative_textures,
+    smoothness_texture_reference,
     template_plan_for_submaterial,
 )
 
@@ -106,6 +107,21 @@ class TemplateTests(unittest.TestCase):
         )
         textures = representative_textures(decal)
         self.assertEqual(textures["opacity"], "Data/Textures/test/decal_diff.png")
+
+    def test_smoothness_texture_reference_falls_back_to_layer_texture_slots(self) -> None:
+        component = MaterialSidecar.from_file(COMPONENT_MASTER)
+        layered_hard_surface = next(
+            submaterial
+            for submaterial in component.submaterials
+            if submaterial.shader_family == "HardSurface"
+            and any(layer.texture_slots for layer in submaterial.layer_manifest)
+        )
+
+        texture = smoothness_texture_reference(layered_hard_surface)
+
+        self.assertIsNotNone(texture)
+        self.assertEqual(texture.alpha_semantic, "smoothness")
+        self.assertEqual(texture.texture_identity, "ddna_normal")
 
     def test_active_submaterials_filter_hidden_entries(self) -> None:
         active = synthetic_submaterial("HardSurface")

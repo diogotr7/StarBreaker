@@ -29,7 +29,7 @@ Each `*.materials.json` sidecar preserves:
 - per-submaterial name, raw shader string, shader family classification if known, and activation state
 - decoded feature flags from `StringGenMask`
 - direct texture-slot inventory with semantic roles, virtual-input flags, source paths, and exported texture paths
-- DDNA identity markers on normal-gloss sources plus smoothness-origin markers on roughness exports derived from `_ddna` alpha
+- DDNA identity markers on exported normal-gloss source PNGs plus `alpha_semantic` markers such as `smoothness` when the source texture alpha carries shader-relevant data
 - structured `texture_transform` objects derived from authored `TexMod` blocks when texture UV animation or tiling metadata is present
 - public params as structured JSON values where simple coercion is safe
 - layer manifests including source material paths, authored layer attrs, `Submtl`-selected resolved layer-material metadata, palette routing, UV tiling, resolved layer snapshots, per-layer semantic `texture_slots`, and exported layer texture references
@@ -45,6 +45,13 @@ The current sidecar contract is now substantially closer to the raw `.mtl` XML s
 
 - curated semantic fields meant for Blender reconstruction and stable downstream use
 - authored XML-derived fields kept for inspection, debugging, and future reconstruction upgrades
+
+### Texture Export Rules
+
+- Decomposed exports now write source textures as `.png` using the original `Data/...` filename with only the extension changed.
+- Rust no longer emits derived `.roughness.png` exports for DDNA textures in the decomposed material contract.
+- DDNA normal-gloss exports preserve smoothness in the PNG alpha channel so Blender shader groups can derive roughness with node logic instead of relying on Rust-side image reinterpretation.
+- Contract groups may expose paired `*_alpha` inputs next to diffuse-style color sockets. The Blender importer resolves those inputs from the alpha channel of the same source-slot texture automatically.
 
 ### Remaining XML-first Expansion Priorities
 

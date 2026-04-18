@@ -37,15 +37,28 @@ class MaterialContractTests(unittest.TestCase):
         self.assertIsNotNone(nodraw)
         self.assertEqual(hard_surface.name, "SB_HardSurface_v1")
         self.assertTrue(hard_surface.inputs)
-        self.assertEqual(hard_surface.inputs[0].name, "TexSlot1_BaseColor")
-        self.assertIn("Alpha", [item.name for item in hard_surface.inputs])
+        hard_surface_input_names = [item.name for item in hard_surface.inputs]
+        base_index = hard_surface_input_names.index("TexSlot1_BaseColor")
+        self.assertEqual(hard_surface.inputs[base_index + 1].name, "TexSlot1_BaseColor_alpha")
+        self.assertNotIn("Alpha", [item.name for item in hard_surface.inputs])
         self.assertIn("Disable Shadow", [item.name for item in hard_surface.inputs])
         self.assertEqual(next(item.socket_type for item in hard_surface.inputs if item.name == "Disable Shadow"), "NodeSocketBool")
         illum = contract.group_for_shader_family("Illum")
         self.assertIsNotNone(illum)
-        self.assertIn("Alpha", [item.name for item in illum.inputs])
+        illum_input_names = [item.name for item in illum.inputs]
+        illum_base_index = illum_input_names.index("TexSlot1_BaseColor")
+        self.assertEqual(illum.inputs[illum_base_index + 1].name, "TexSlot1_BaseColor_alpha")
+        self.assertNotIn("Alpha", illum_input_names)
         self.assertIn("Disable Shadow", [item.name for item in illum.inputs])
         self.assertEqual(next(item.socket_type for item in illum.inputs if item.name == "Disable Shadow"), "NodeSocketBool")
+        mesh_decal = contract.group_for_shader_family("MeshDecal")
+        self.assertIsNotNone(mesh_decal)
+        mesh_decal_input_names = [item.name for item in mesh_decal.inputs]
+        decal_index = mesh_decal_input_names.index("TexSlot1_DecalSource")
+        self.assertEqual(mesh_decal.inputs[decal_index + 1].name, "TexSlot1_DecalSource_alpha")
+        stencil_index = mesh_decal_input_names.index("TexSlot7_StencilSource")
+        self.assertEqual(mesh_decal.inputs[stencil_index + 1].name, "TexSlot7_StencilSource_alpha")
+        self.assertNotIn("Alpha", mesh_decal_input_names)
         self.assertEqual(hard_surface.metadata.get("status"), "seed")
 
     def test_bundled_library_contains_core_groups_and_verified_inputs(self) -> None:
@@ -54,6 +67,7 @@ class MaterialContractTests(unittest.TestCase):
         self.assertIn(b"SB_NoDraw_v1", payload)
         self.assertIn(b'"Alpha"', payload)
         self.assertIn(b'"Disable Shadow"', payload)
+        self.assertIn(b"TexSlot1_BaseColor_alpha", payload)
         self.assertIn(b"TexSlot10_IridescenceColor", payload)
         self.assertIn(b"TexSlot15_CondensationNormal", payload)
 

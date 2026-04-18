@@ -33,7 +33,6 @@ pub(crate) struct DecomposedInput {
 enum TextureFlavor {
     Generic,
     Normal,
-    Roughness,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1062,32 +1061,7 @@ fn extract_material_entry(
         }
     }
 
-    let mut derived_texture_exports = Vec::new();
-    if let Some(path) = material.normal_tex.as_deref() {
-        if path.contains("_ddna") {
-            if let Some(export_path) = export_texture_asset(
-                files,
-                p4k,
-                png_cache,
-                texture_cache,
-                path,
-                TextureFlavor::Roughness,
-                texture_mip,
-                existing_asset_paths,
-            ) {
-                derived_texture_exports.push(TextureExportRef {
-                    role: "roughness".to_string(),
-                    source_path: normalize_source_path(p4k, path),
-                    export_path,
-                    export_kind: "roughness_from_normal_gloss".to_string(),
-                    texture_identity: None,
-                    alpha_semantic: None,
-                    derived_from_texture_identity: ddna_texture_identity(path).map(str::to_string),
-                    derived_from_semantic: Some("smoothness".to_string()),
-                });
-            }
-        }
-    }
+    let derived_texture_exports = Vec::new();
 
     let layer_exports = material
         .layers
@@ -1143,20 +1117,7 @@ fn extract_material_entry(
                     existing_asset_paths,
                 )
             });
-            let roughness_export_path = normal_path
-                .filter(|path| path.contains("_ddna"))
-                .and_then(|path| {
-                    export_texture_asset(
-                        files,
-                        p4k,
-                        png_cache,
-                        texture_cache,
-                        path,
-                        TextureFlavor::Roughness,
-                        texture_mip,
-                        existing_asset_paths,
-                    )
-                });
+            let roughness_export_path = None;
 
             LayerTextureExport {
                 source_material_path: layer_material_path,
@@ -1454,16 +1415,6 @@ fn export_texture_asset(
             png_cache,
             crate::pipeline::load_normal_texture,
         ),
-        TextureFlavor::Roughness => {
-            let cache_key = format!("{}@roughness_mip{}", source_path, texture_mip);
-            if let Some(cached) = png_cache.get(&cache_key) {
-                cached.clone()
-            } else {
-                let result = crate::pipeline::load_roughness_texture(p4k, source_path, texture_mip);
-                png_cache.insert(cache_key, result.clone());
-                result
-            }
-        }
     }?;
 
     let stored_path = insert_binary_file(files, requested_path, bytes);
@@ -1550,8 +1501,7 @@ fn texture_relative_path(p4k: &MappedP4k, source_path: &str, flavor: TextureFlav
     let normalized = normalize_source_path(p4k, source_path);
     match flavor {
         TextureFlavor::Generic => replace_extension(&normalized, ".png"),
-        TextureFlavor::Normal => suffix_before_extension(&normalized, ".normal", ".png"),
-        TextureFlavor::Roughness => suffix_before_extension(&normalized, ".roughness", ".png"),
+        TextureFlavor::Normal => replace_extension(&normalized, ".png"),
     }
 }
 
@@ -1571,14 +1521,6 @@ fn replace_extension(path: &str, new_extension: &str) -> String {
         return format!("{path}{new_extension}");
     };
     stem.to_string() + new_extension
-}
-
-fn suffix_before_extension(path: &str, suffix: &str, new_extension: &str) -> String {
-    if let Some((stem, _)) = path.rsplit_once('.') {
-        format!("{stem}{suffix}{new_extension}")
-    } else {
-        format!("{path}{suffix}{new_extension}")
-    }
 }
 
 fn palette_id(palette: &TintPalette) -> String {
@@ -1832,8 +1774,7 @@ fn slot_texture_flavor(role: TextureSemanticRole) -> TextureFlavor {
 fn texture_export_kind(flavor: TextureFlavor) -> &'static str {
     match flavor {
         TextureFlavor::Generic => "source",
-        TextureFlavor::Normal => "normal_from_ddna",
-        TextureFlavor::Roughness => "roughness_from_normal_gloss",
+        TextureFlavor::Normal => "source",
     }
 }
 
@@ -2072,26 +2013,14 @@ mod tests {
     }
 
     #[test]
-    fn texture_relative_paths_keep_role_specific_suffixes() {
+    fn texture_relative_paths_preserve_source_filenames() {
         assert_eq!(
             replace_extension(&normalize_requested_source_path("Objects/Ships/Test/hull_diff.dds"), ".png"),
             "Data/Objects/Ships/Test/hull_diff.png"
         );
         assert_eq!(
-            suffix_before_extension(
-                &normalize_requested_source_path("Objects/Ships/Test/hull_ddna.dds"),
-                ".normal",
-                ".png",
-            ),
-            "Data/Objects/Ships/Test/hull_ddna.normal.png"
-        );
-        assert_eq!(
-            suffix_before_extension(
-                &normalize_requested_source_path("Objects/Ships/Test/hull_ddna.dds"),
-                ".roughness",
-                ".png",
-            ),
-            "Data/Objects/Ships/Test/hull_ddna.roughness.png"
+            replace_extension(&normalize_requested_source_path("Objects/Ships/Test/hull_ddna.dds"), ".png"),
+            "Data/Objects/Ships/Test/hull_ddna.png"
         );
     }
 
@@ -2169,15 +2098,15 @@ mod tests {
             layer_exports: vec![LayerTextureExport {
                 source_material_path: "Data/libs/materials/metal/test_layer.mtl".into(),
                 diffuse_export_path: Some("Data/libs/materials/metal/test_layer.png".into()),
-                normal_export_path: Some("Data/libs/materials/metal/test_layer.normal.png".into()),
-                roughness_export_path: Some("Data/libs/materials/metal/test_layer.roughness.png".into()),
+                normal_export_path: Some("Data/libs/materials/metal/test_layer.png".into()),
+                roughness_export_path: None,
                 slot_exports: vec![serde_json::json!({
                     "slot": "TexSlot3",
                     "role": "normal_gloss",
                     "is_virtual": false,
                     "source_path": "Data/libs/materials/metal/test_layer_ddna.dds",
-                    "export_path": "Data/libs/materials/metal/test_layer.normal.png",
-                    "export_kind": "normal",
+                    "export_path": "Data/libs/materials/metal/test_layer.png",
+                    "export_kind": "source",
                     "texture_identity": "ddna_normal",
                     "alpha_semantic": "smoothness",
                     "texture_transform": {
@@ -2192,16 +2121,7 @@ mod tests {
                     },
                 })],
             }],
-            derived_texture_exports: vec![TextureExportRef {
-                role: "roughness".into(),
-                source_path: "Data/Objects/Ships/Test/hull_ddna.dds".into(),
-                export_path: "Data/Objects/Ships/Test/hull_ddna.roughness.png".into(),
-                export_kind: "roughness_from_normal_gloss".into(),
-                texture_identity: None,
-                alpha_semantic: None,
-                derived_from_texture_identity: Some("ddna_normal".into()),
-                derived_from_semantic: Some("smoothness".into()),
-            }],
+            derived_texture_exports: vec![],
         }];
 
         let value = build_material_sidecar_value(
@@ -2251,9 +2171,7 @@ mod tests {
             .expect("wear_glossiness should be numeric");
         assert!((wear_glossiness - 0.91).abs() < 1e-6);
         assert_eq!(value["submaterials"][0]["public_params"]["WearBlendBase"], serde_json::json!(0.5));
-        assert_eq!(value["submaterials"][0]["derived_textures"][0]["export_kind"], serde_json::json!("roughness_from_normal_gloss"));
-        assert_eq!(value["submaterials"][0]["derived_textures"][0]["derived_from_texture_identity"], serde_json::json!("ddna_normal"));
-        assert_eq!(value["submaterials"][0]["derived_textures"][0]["derived_from_semantic"], serde_json::json!("smoothness"));
+        assert_eq!(value["submaterials"][0]["derived_textures"], serde_json::json!([]));
         assert_eq!(value["submaterials"][0]["virtual_inputs"][0], serde_json::json!("$TintPaletteDecal"));
     }
 

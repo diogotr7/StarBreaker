@@ -2839,6 +2839,17 @@ pub(crate) fn cached_load(
     result
 }
 
+fn encode_png_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Option<Vec<u8>> {
+    let img = image::RgbaImage::from_raw(width, height, rgba)?;
+    let mut png_buf = Vec::new();
+    img.write_to(
+        &mut std::io::Cursor::new(&mut png_buf),
+        image::ImageFormat::Png,
+    )
+    .ok()?;
+    Some(png_buf)
+}
+
 pub(crate) fn load_diffuse_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u32) -> Option<Vec<u8>> {
     if tif_path.starts_with('$') {
         return None;
@@ -2864,30 +2875,14 @@ pub(crate) fn load_diffuse_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u
     let (w, h) = dds.dimensions(mip);
     let rgba = dds.decode_rgba(mip).ok()?;
 
-    let img = image::RgbaImage::from_raw(w, h, rgba)?;
-    let mut png_buf = Vec::new();
-    img.write_to(
-        &mut std::io::Cursor::new(&mut png_buf),
-        image::ImageFormat::Png,
-    )
-    .ok()?;
-
-    Some(png_buf)
+    encode_png_rgba(w, h, rgba)
 }
 
-/// Load a normal map texture from a `_ddna.dds` file.
+/// Load a normal-gloss texture as a PNG while preserving DDNA smoothness in alpha.
 ///
-/// CryEngine stores normals in DXT5nm (BC3n) encoding:
-/// - Alpha channel = X component of the normal
-/// - Green channel = Y component of the normal
-/// - Z is reconstructed: sqrt(1 - X² - Y²)
-///
-/// Output: RGB PNG where R=X, G=Y, B=Z in tangent space.
-/// Load a normal map texture from a _ddna DDS file.
-///
-/// The DDS decoder outputs RGBA for BC5 with Z reconstructed, but degenerate
-/// pixels (background/padding) can have Z≈0 which breaks Cycles. We re-read
-/// R+G, ensure Z>0, and output a clean normal map PNG.
+/// The RGB channels come from the decoded normal texture. When sibling alpha mips
+/// are present, their smoothness values are copied into the PNG alpha channel so
+/// downstream consumers can derive roughness without Rust-side reinterpretation.
 pub(crate) fn load_normal_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u32) -> Option<Vec<u8>> {
     if tif_path.starts_with('$') {
         return None;
@@ -2925,19 +2920,18 @@ pub(crate) fn load_normal_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u3
 
     let mip = (mip_level as usize).min(dds.mip_count().saturating_sub(1));
     let (w, h) = dds.dimensions(mip);
-    let rgba = dds.decode_rgba(mip).ok()?;
+    let mut rgba = dds.decode_rgba(mip).ok()?;
 
-    // The DDS decoder already handles SNorm→unsigned conversion and Z reconstruction
-    // in expand_normal_map. Output is [0..255] where 128 = zero, ready for glTF.
-    let img = image::RgbaImage::from_raw(w, h, rgba)?;
-    let mut png_buf = Vec::new();
-    img.write_to(
-        &mut std::io::Cursor::new(&mut png_buf),
-        image::ImageFormat::Png,
-    )
-    .ok()?;
+    if dds.has_alpha_mips()
+        && let Ok(smoothness) = dds.decode_alpha_mip(mip)
+        && smoothness.len() * 4 == rgba.len()
+    {
+        for (index, value) in smoothness.iter().enumerate() {
+            rgba[index * 4 + 3] = *value;
+        }
+    }
 
-    Some(png_buf)
+    encode_png_rgba(w, h, rgba)
 }
 
 /// Extract per-pixel roughness from the alpha mips of a _ddna normal map DDS.

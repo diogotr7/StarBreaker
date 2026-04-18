@@ -83,6 +83,17 @@ def representative_textures(submaterial: SubmaterialRecord) -> dict[str, str | N
     }
 
 
+def smoothness_texture_reference(submaterial: SubmaterialRecord) -> TextureReference | None:
+    for texture in _all_texture_candidates(submaterial):
+        if texture.alpha_semantic == "smoothness" and texture.export_path:
+            return texture
+    for layer in submaterial.layer_manifest:
+        for texture in layer.texture_slots:
+            if texture.alpha_semantic == "smoothness" and texture.export_path:
+                return texture
+    return None
+
+
 def material_palette_channels(submaterial: SubmaterialRecord) -> list[PaletteChannel]:
     channels: list[PaletteChannel] = []
     if submaterial.palette_routing.material_channel is not None:

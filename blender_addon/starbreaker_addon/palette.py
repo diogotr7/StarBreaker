@@ -57,13 +57,62 @@ def palette_color(palette: PaletteRecord | None, channel_name: str | None) -> tu
     return palette.primary
 
 
+def palette_finish_channel(palette: PaletteRecord | None, channel_name: str | None) -> dict[str, object] | None:
+    if palette is None:
+        return None
+    finish = palette.raw.get("finish")
+    if not isinstance(finish, dict):
+        return None
+    if channel_name not in {"primary", "secondary", "tertiary", "glass"}:
+        channel_name = "primary"
+    channel = finish.get(channel_name)
+    if not isinstance(channel, dict):
+        return None
+    return channel
+
+
+def palette_finish_specular(palette: PaletteRecord | None, channel_name: str | None) -> tuple[float, float, float] | None:
+    channel = palette_finish_channel(palette, channel_name)
+    if channel is None:
+        return None
+    specular = channel.get("specular")
+    if not isinstance(specular, (list, tuple)) or len(specular) < 3:
+        return None
+    try:
+        return (float(specular[0]), float(specular[1]), float(specular[2]))
+    except (TypeError, ValueError):
+        return None
+
+
+def palette_finish_glossiness(palette: PaletteRecord | None, channel_name: str | None) -> float | None:
+    channel = palette_finish_channel(palette, channel_name)
+    if channel is None:
+        return None
+    glossiness = channel.get("glossiness")
+    if glossiness is None:
+        return None
+    try:
+        return float(glossiness)
+    except (TypeError, ValueError):
+        return None
+
+
 def palette_signature_for_submaterial(
     submaterial: SubmaterialRecord,
     palette: PaletteRecord | None,
-) -> dict[str, tuple[float, float, float] | None] | None:
-    signature: dict[str, tuple[float, float, float] | None] = {}
+) -> dict[str, dict[str, object] | None] | None:
+    signature: dict[str, dict[str, object] | None] = {}
     for channel in material_palette_channels(submaterial):
-        signature.setdefault(channel.name, palette_color(palette, channel.name) if palette is not None else None)
+        if channel.name in signature:
+            continue
+        if palette is None:
+            signature[channel.name] = None
+            continue
+        signature[channel.name] = {
+            "color": palette_color(palette, channel.name),
+            "specular": palette_finish_specular(palette, channel.name),
+            "glossiness": palette_finish_glossiness(palette, channel.name),
+        }
     return signature or None
 
 

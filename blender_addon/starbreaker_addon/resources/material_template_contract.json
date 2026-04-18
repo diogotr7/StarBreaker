@@ -45,6 +45,22 @@
         },
         {
           "default_value": null,
+          "name": "TexSlot9_ScreenSource",
+          "required": false,
+          "semantic": "screen_source",
+          "socket_type": "NodeSocketColor",
+          "source_slot": "TexSlot9"
+        },
+        {
+          "default_value": 0.0,
+          "name": "TexSlot9_ScreenSource_alpha",
+          "required": false,
+          "semantic": "screen_source_alpha",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": "TexSlot9"
+        },
+        {
+          "default_value": null,
           "name": "TexSlot2_NormalGloss",
           "required": false,
           "semantic": "normal_gloss",
@@ -66,14 +82,6 @@
           "semantic": "screen_surface_mask",
           "socket_type": "NodeSocketColor",
           "source_slot": "TexSlot6"
-        },
-        {
-          "default_value": null,
-          "name": "TexSlot9_ScreenSource",
-          "required": false,
-          "semantic": "screen_source",
-          "socket_type": "NodeSocketColor",
-          "source_slot": "TexSlot9"
         }
       ],
       "metadata": {
@@ -432,6 +440,14 @@
           "source_slot": "TexSlot1"
         },
         {
+          "default_value": 0.0,
+          "name": "TexSlot1_BaseColor_alpha",
+          "required": false,
+          "semantic": "base_color_alpha",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": "TexSlot1"
+        },
+        {
           "default_value": null,
           "name": "TexSlot14_Emissive",
           "required": false,
@@ -517,14 +533,6 @@
           "semantic": "disable_shadow",
           "socket_type": "NodeSocketBool",
           "source_slot": null
-        },
-        {
-          "default_value": 0.0,
-          "name": "Alpha",
-          "required": false,
-          "semantic": "alpha",
-          "socket_type": "NodeSocketFloat",
-          "source_slot": "TexSlot1"
         }
       ],
       "metadata": {
@@ -722,6 +730,14 @@
           "source_slot": "TexSlot1"
         },
         {
+          "default_value": 0.0,
+          "name": "TexSlot1_BaseColor_alpha",
+          "required": false,
+          "semantic": "base_color_alpha",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": "TexSlot1"
+        },
+        {
           "default_value": null,
           "name": "TexSlot10_SpecularSecondary",
           "required": false,
@@ -808,14 +824,6 @@
           "semantic": "disable_shadow",
           "socket_type": "NodeSocketBool",
           "source_slot": null
-        },
-        {
-          "default_value": 0.0,
-          "name": "Alpha",
-          "required": false,
-          "semantic": "alpha",
-          "socket_type": "NodeSocketFloat",
-          "source_slot": "TexSlot1"
         },
         {
           "default_value": 0.0,
@@ -1141,6 +1149,14 @@
           "semantic": "palette_tertiary",
           "socket_type": "NodeSocketColor",
           "source_slot": null
+        },
+        {
+          "default_value": 0.0,
+          "name": "TexSlot1_BaseColor_alpha",
+          "required": false,
+          "semantic": "base_color_alpha",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": "TexSlot1"
         }
       ],
       "metadata": {
@@ -1336,6 +1352,14 @@
           "source_slot": "TexSlot1"
         },
         {
+          "default_value": 0.0,
+          "name": "TexSlot1_DecalSource_alpha",
+          "required": false,
+          "semantic": "decal_source_alpha",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": "TexSlot1"
+        },
+        {
           "default_value": null,
           "name": "TexSlot2_Specular",
           "required": false,
@@ -1384,20 +1408,20 @@
           "source_slot": "TexSlot7"
         },
         {
+          "default_value": 0.0,
+          "name": "TexSlot7_StencilSource_alpha",
+          "required": false,
+          "semantic": "stencil_source_alpha",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": "TexSlot7"
+        },
+        {
           "default_value": null,
           "name": "TexSlot8_GrimeBreakup",
           "required": false,
           "semantic": "grime_breakup",
           "socket_type": "NodeSocketColor",
           "source_slot": "TexSlot8"
-        },
-        {
-          "default_value": 0.0,
-          "name": "Alpha",
-          "required": false,
-          "semantic": "alpha",
-          "socket_type": "NodeSocketFloat",
-          "source_slot": "TexSlot1"
         },
         {
           "default_value": false,
@@ -1674,19 +1698,27 @@
       "inputs": [
         {
           "default_value": null,
-          "name": "TexSlot17_PixelLayout",
-          "required": false,
-          "semantic": "pixel_layout",
-          "socket_type": "NodeSocketColor",
-          "source_slot": "TexSlot17"
-        },
-        {
-          "default_value": null,
           "name": "TexSlot9_ScreenSource",
           "required": false,
           "semantic": "screen_source",
           "socket_type": "NodeSocketColor",
           "source_slot": "TexSlot9"
+        },
+        {
+          "default_value": 0.0,
+          "name": "TexSlot9_ScreenSource_alpha",
+          "required": false,
+          "semantic": "screen_source_alpha",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": "TexSlot9"
+        },
+        {
+          "default_value": null,
+          "name": "TexSlot17_PixelLayout",
+          "required": false,
+          "semantic": "pixel_layout",
+          "socket_type": "NodeSocketColor",
+          "source_slot": "TexSlot17"
         }
       ],
       "metadata": {
@@ -1786,6 +1818,14 @@
           "required": false,
           "semantic": "base_color",
           "socket_type": "NodeSocketColor",
+          "source_slot": "TexSlot1"
+        },
+        {
+          "default_value": 0.0,
+          "name": "TexSlot1_BaseColor_alpha",
+          "required": false,
+          "semantic": "base_color_alpha",
+          "socket_type": "NodeSocketFloat",
           "source_slot": "TexSlot1"
         }
       ],
