@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, StringProperty
 from bpy.types import Operator, Panel
 from bpy_extras.io_utils import ImportHelper
 
@@ -15,12 +15,15 @@ from .runtime import (
     PROP_PALETTE_ID,
     PROP_SCENE_PATH,
     PROP_SHADER_FAMILY,
+    PROP_SURFACE_SHADER_MODE,
     PROP_TEMPLATE_KEY,
+    SCENE_WEAR_STRENGTH_PROP,
     apply_livery_to_selected_package,
     apply_palette_to_selected_package,
     dump_selected_metadata,
     find_package_root,
     import_package,
+    refresh_selected_package_materials,
 )
 
 
@@ -147,6 +150,25 @@ class STARBREAKER_OT_dump_metadata(Operator):
         return {"FINISHED"}
 
 
+class STARBREAKER_OT_refresh_materials(Operator):
+    bl_idname = "starbreaker.refresh_materials"
+    bl_label = "Refresh Materials"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return find_package_root(context.active_object) is not None
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        try:
+            applied = refresh_selected_package_materials(context)
+        except Exception as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Rebuilt {applied} material slots")
+        return {"FINISHED"}
+
+
 class STARBREAKER_PT_tools(Panel):
     bl_label = "StarBreaker"
     bl_idname = "STARBREAKER_PT_tools"
@@ -178,6 +200,11 @@ class STARBREAKER_PT_tools(Panel):
         actions.operator(STARBREAKER_OT_apply_livery.bl_idname, icon="MATERIAL")
         layout.operator(STARBREAKER_OT_dump_metadata.bl_idname, icon="TEXT")
 
+        tuning = layout.box()
+        tuning.label(text="Layered Wear")
+        tuning.prop(context.scene, SCENE_WEAR_STRENGTH_PROP, slider=True)
+        tuning.operator(STARBREAKER_OT_refresh_materials.bl_idname, icon="FILE_REFRESH")
+
         if package is not None:
             available = layout.box()
             available.label(text=f"Palettes: {', '.join(sorted(package.palettes.keys()))}")
@@ -188,6 +215,7 @@ class STARBREAKER_PT_tools(Panel):
             material_box = layout.box()
             material_box.label(text=f"Shader: {material.get(PROP_SHADER_FAMILY, '')}")
             material_box.label(text=f"Template: {material.get(PROP_TEMPLATE_KEY, '')}")
+            material_box.label(text=f"Surface: {material.get(PROP_SURFACE_SHADER_MODE, '')}")
 
 
 CLASSES = [
@@ -195,11 +223,25 @@ CLASSES = [
     STARBREAKER_OT_apply_palette,
     STARBREAKER_OT_apply_livery,
     STARBREAKER_OT_dump_metadata,
+    STARBREAKER_OT_refresh_materials,
     STARBREAKER_PT_tools,
 ]
 
 
 def register() -> None:
+    setattr(
+        bpy.types.Scene,
+        SCENE_WEAR_STRENGTH_PROP,
+        FloatProperty(
+            name="Wear Strength",
+            description="Scale layered wear contribution for imported StarBreaker layered materials",
+            default=1.0,
+            min=0.0,
+            max=2.0,
+            soft_min=0.0,
+            soft_max=2.0,
+        ),
+    )
     for cls in CLASSES:
         bpy.utils.register_class(cls)
 
@@ -207,3 +249,5 @@ def register() -> None:
 def unregister() -> None:
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)
+    if hasattr(bpy.types.Scene, SCENE_WEAR_STRENGTH_PROP):
+        delattr(bpy.types.Scene, SCENE_WEAR_STRENGTH_PROP)
