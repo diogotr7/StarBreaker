@@ -1183,6 +1183,78 @@ mod tests {
     }
 
     #[test]
+    fn resolve_layer_submaterial_accepts_numeric_selector() {
+        let mut first = dummy_submaterial("Layer", "");
+        first.name = "primary".into();
+        let mut second = dummy_submaterial("Layer", "");
+        second.name = "paint".into();
+
+        let materials = MtlFile {
+            materials: vec![first, second],
+            source_path: None,
+            paint_override: None,
+            material_set: Default::default(),
+        };
+
+        let resolved = resolve_layer_submaterial(&materials, "1").expect("numeric layer material");
+        assert_eq!(resolved.name, "paint");
+    }
+
+    #[test]
+    fn recursive_authored_blocks_preserve_nested_children() {
+        let material_set_block = AuthoredBlock {
+            tag: "VertexDeform".into(),
+            attributes: vec![AuthoredAttribute {
+                name: "DividerY".into(),
+                value: "0.25".into(),
+            }],
+            children: vec![AuthoredBlock {
+                tag: "WaveY".into(),
+                attributes: vec![AuthoredAttribute {
+                    name: "Amp".into(),
+                    value: "0.5".into(),
+                }],
+                children: Vec::new(),
+            }],
+        };
+        let texture_block = AuthoredBlock {
+            tag: "TexMod".into(),
+            attributes: vec![AuthoredAttribute {
+                name: "TileU".into(),
+                value: "2".into(),
+            }],
+            children: vec![AuthoredBlock {
+                tag: "Oscillator".into(),
+                attributes: vec![AuthoredAttribute {
+                    name: "Rate".into(),
+                    value: "0.1".into(),
+                }],
+                children: Vec::new(),
+            }],
+        };
+        let submaterial_block = AuthoredBlock {
+            tag: "VertexDeform".into(),
+            attributes: vec![AuthoredAttribute {
+                name: "DividerX".into(),
+                value: "0.5".into(),
+            }],
+            children: vec![AuthoredBlock {
+                tag: "WaveX".into(),
+                attributes: vec![AuthoredAttribute {
+                    name: "Amp".into(),
+                    value: "0.25".into(),
+                }],
+                children: Vec::new(),
+            }],
+        };
+
+        assert_eq!(material_set_block.children[0].tag, "WaveY");
+        assert_eq!(submaterial_block.children[0].tag, "WaveX");
+        assert_eq!(texture_block.children[0].tag, "Oscillator");
+        assert_eq!(texture_block.children[0].attributes[0].name, "Rate");
+    }
+
+    #[test]
     fn resolved_layer_material_summary_preserves_authored_fields() {
         let mut material = dummy_submaterial("Layer", "");
         material.name = "paint".into();
