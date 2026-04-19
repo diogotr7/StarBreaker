@@ -166,8 +166,8 @@ class STARBREAKER_OT_apply_palette(Operator):
         if not self.palette_id:
             self.report({"ERROR"}, "No palette selected")
             return {"CANCELLED"}
-        applied = apply_palette_to_selected_package(context, self.palette_id)
-        self.report({"INFO"}, f"Updated {applied} material slots")
+        apply_palette_to_selected_package(context, self.palette_id)
+        self.report({"INFO"}, f"Applied palette {self.palette_id}")
         return {"FINISHED"}
 
     def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
@@ -250,7 +250,7 @@ class STARBREAKER_PT_tools(Panel):
         info = layout.box()
         info.label(text=f"Package: {package_root.get(PROP_PACKAGE_NAME, '')}")
         info.label(text=f"Entity: {obj.get(PROP_ENTITY_NAME, obj.name) if obj else ''}")
-        info.label(text=f"Palette: {obj.get(PROP_PALETTE_ID, '') if obj else ''}")
+        info.label(text=f"Palette: {package_root.get(PROP_PALETTE_ID, '')}")
         if obj is not None:
             material_sidecar = obj.get(PROP_MATERIAL_SIDECAR)
             if isinstance(material_sidecar, str) and material_sidecar:
