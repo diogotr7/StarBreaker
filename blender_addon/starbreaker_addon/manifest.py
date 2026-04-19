@@ -11,6 +11,8 @@ Vec3 = tuple[float, float, float]
 Vec4 = tuple[float, float, float, float]
 Matrix4 = tuple[tuple[float, float, float, float], ...]
 
+_PACKAGE_BUNDLE_CACHE: dict[str, tuple[tuple[int, int, int], "PackageBundle"]] = {}
+
 
 def _load_json(path: Path) -> JsonDict:
     with path.open("r", encoding="utf-8") as handle:
@@ -317,22 +319,36 @@ class MaterialSidecar:
 class PaletteRecord:
     id: str
     source_name: str | None
+    display_name: str | None
     primary: Color3
     secondary: Color3
     tertiary: Color3
     glass: Color3
+    decal_red: Color3 | None
+    decal_green: Color3 | None
+    decal_blue: Color3 | None
+    decal_texture: str | None
     raw: JsonDict
 
     @classmethod
     def from_value(cls, value: Any) -> PaletteRecord:
         data = _as_dict(value)
+        decal = _as_dict(data.get("decal"))
+        decal_red = decal.get("red")
+        decal_green = decal.get("green")
+        decal_blue = decal.get("blue")
         return cls(
             id=str(data.get("id", "")),
             source_name=_as_str(data.get("source_name")),
+            display_name=_as_str(data.get("display_name")),
             primary=_float_tuple(data.get("primary"), 3),  # type: ignore[arg-type]
             secondary=_float_tuple(data.get("secondary"), 3),  # type: ignore[arg-type]
             tertiary=_float_tuple(data.get("tertiary"), 3),  # type: ignore[arg-type]
             glass=_float_tuple(data.get("glass"), 3),  # type: ignore[arg-type]
+            decal_red=_float_tuple(decal_red, 3) if isinstance(decal_red, (list, tuple)) else None,  # type: ignore[arg-type]
+            decal_green=_float_tuple(decal_green, 3) if isinstance(decal_green, (list, tuple)) else None,  # type: ignore[arg-type]
+            decal_blue=_float_tuple(decal_blue, 3) if isinstance(decal_blue, (list, tuple)) else None,  # type: ignore[arg-type]
+            decal_texture=_normalize_relative_path(_as_str(decal.get("export_path") or decal.get("source_path"))),
             raw=data,
         )
 
@@ -538,12 +554,17 @@ class PackageBundle:
     scene: SceneManifest
     palettes: dict[str, PaletteRecord]
     liveries: dict[str, LiveryRecord]
-    _material_cache: dict[str, MaterialSidecar] = field(default_factory=dict, repr=False)
+    _material_cache: dict[str, tuple[int, MaterialSidecar]] = field(default_factory=dict, repr=False)
     _path_index: dict[str, Path] | None = field(default=None, repr=False)
 
     @classmethod
     def load(cls, scene_path: str | Path) -> PackageBundle:
         scene_path = Path(scene_path).resolve()
+        cache_key = str(scene_path)
+        manifest_signature = _package_bundle_manifest_signature(scene_path)
+        cached = _PACKAGE_BUNDLE_CACHE.get(cache_key)
+        if cached is not None and cached[0] == manifest_signature:
+            return cached[1]
         if not scene_path.is_file():
             raise FileNotFoundError(f"Scene manifest not found: {scene_path}")
         scene = SceneManifest.from_file(scene_path)
@@ -567,7 +588,9 @@ class PackageBundle:
             livery.id: livery
             for livery in (LiveryRecord.from_value(item) for item in liveries_data.get("liveries", []))
         }
-        return cls(export_root=export_root, scene_path=scene_path, scene=scene, palettes=palettes, liveries=liveries)
+        bundle = cls(export_root=export_root, scene_path=scene_path, scene=scene, palettes=palettes, liveries=liveries)
+        _PACKAGE_BUNDLE_CACHE[cache_key] = (manifest_signature, bundle)
+        return bundle
 
     @property
     def package_name(self) -> str:
@@ -588,14 +611,15 @@ class PackageBundle:
         normalized = _normalize_relative_path(relative_path)
         if normalized is None:
             return None
-        cached = self._material_cache.get(normalized)
-        if cached is not None:
-            return cached
         resolved = self.resolve_path(normalized)
         if resolved is None or not resolved.is_file():
             return None
+        sidecar_mtime_ns = resolved.stat().st_mtime_ns
+        cached = self._material_cache.get(normalized)
+        if cached is not None and cached[0] == sidecar_mtime_ns:
+            return cached[1]
         sidecar = MaterialSidecar.from_file(resolved)
-        self._material_cache[normalized] = sidecar
+        self._material_cache[normalized] = (sidecar_mtime_ns, sidecar)
         return sidecar
 
     def _build_path_index(self) -> dict[str, Path]:
@@ -608,3 +632,18 @@ class PackageBundle:
             relative = candidate.relative_to(self.export_root).as_posix().lower()
             self._path_index.setdefault(relative, candidate)
         return self._path_index
+
+
+def _package_bundle_manifest_signature(scene_path: Path) -> tuple[int, int, int]:
+    manifest_paths = (
+        scene_path,
+        scene_path.with_name("palettes.json"),
+        scene_path.with_name("liveries.json"),
+    )
+    signature: list[int] = []
+    for path in manifest_paths:
+        try:
+            signature.append(path.stat().st_mtime_ns)
+        except FileNotFoundError:
+            signature.append(-1)
+    return tuple(signature)

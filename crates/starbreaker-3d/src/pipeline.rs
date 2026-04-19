@@ -3192,6 +3192,10 @@ fn resolve_paint_override(
                     secondary: read_entry("entryB"),
                     tertiary: read_entry("entryC"),
                     glass: read_entry("glassColor"),
+                    decal_color_r: read_rgb_value_field(root, "decalColorR"),
+                    decal_color_g: read_rgb_value_field(root, "decalColorG"),
+                    decal_color_b: read_rgb_value_field(root, "decalColorB"),
+                    decal_texture: get_value_string(root, "decalTexture").map(str::to_string),
                     finish: mtl::TintPaletteFinish {
                         primary: read_finish("entryA"),
                         secondary: read_finish("entryB"),
@@ -3478,6 +3482,25 @@ fn query_tint_from_path(
         let compiled = db.compile_path::<f32>(record.struct_id(), &path).ok()?;
         db.query_single::<f32>(&compiled, record).ok().flatten()
     };
+    let query_palette_rgb = |entry: &str| -> Option<[f32; 3]> {
+        let mut rgb = [0.0f32; 3];
+        let mut found = false;
+        for (i, ch) in ["r", "g", "b"].iter().enumerate() {
+            let path = format!("{base}.{entry}.{ch}");
+            if let Ok(compiled) = db.compile_path::<u8>(record.struct_id(), &path)
+                && let Ok(Some(v)) = db.query_single::<u8>(&compiled, record)
+            {
+                found = true;
+                rgb[i] = srgb_to_linear(v as f32 / 255.0);
+            }
+        }
+        found.then_some(rgb)
+    };
+    let query_string = |entry: &str| -> Option<String> {
+        let path = format!("{base}.{entry}");
+        let compiled = db.compile_path::<String>(record.struct_id(), &path).ok()?;
+        db.query_single::<String>(&compiled, record).ok().flatten()
+    };
 
     // Quick check: can we even query this path?
     let test_path = format!("{base}.entryA.tintColor.r");
@@ -3490,6 +3513,10 @@ fn query_tint_from_path(
         secondary: query_rgb("entryB"),
         tertiary: query_rgb("entryC"),
         glass: query_rgb("glassColor"),
+        decal_color_r: query_palette_rgb("decalColorR"),
+        decal_color_g: query_palette_rgb("decalColorG"),
+        decal_color_b: query_palette_rgb("decalColorB"),
+        decal_texture: query_string("decalTexture"),
         finish: mtl::TintPaletteFinish {
             primary: mtl::TintPaletteFinishEntry {
                 specular: query_finish_rgb("entryA"),

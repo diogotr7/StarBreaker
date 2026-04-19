@@ -537,6 +537,10 @@ mod tests {
             secondary: [0.4, 0.5, 0.6],
             tertiary: [0.7, 0.8, 0.9],
             glass: [0.2, 0.3, 0.4],
+            decal_color_r: None,
+            decal_color_g: None,
+            decal_color_b: None,
+            decal_texture: None,
             finish: crate::mtl::TintPaletteFinish {
                 primary: crate::mtl::TintPaletteFinishEntry {
                     specular: Some([0.6, 0.5, 0.4]),
@@ -558,6 +562,10 @@ mod tests {
             secondary: [0.2, 0.7, 0.6],
             tertiary: [0.4, 0.4, 0.9],
             glass: [0.6, 0.7, 0.8],
+            decal_color_r: None,
+            decal_color_g: None,
+            decal_color_b: None,
+            decal_texture: None,
             finish: Default::default(),
         }
     }

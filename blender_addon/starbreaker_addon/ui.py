@@ -23,7 +23,6 @@ from .runtime import (
     dump_selected_metadata,
     find_package_root,
     import_package,
-    refresh_selected_package_materials,
 )
 
 
@@ -40,12 +39,44 @@ def _selected_package(context: bpy.types.Context) -> PackageBundle | None:
         return None
 
 
+def _humanize_identifier(value: str) -> str:
+    parts = [part for part in value.replace("-", "_").split("_") if part]
+    words: list[str] = []
+    for part in parts:
+        lowered = part.lower()
+        if lowered == "mk2":
+            words.append("Mk2")
+        elif lowered == "rsi":
+            words.append("RSI")
+        else:
+            words.append(part.capitalize())
+    return " ".join(words) if words else value
+
+
+def _palette_display_name(palette_id: str, source_name: str | None, display_name: str | None) -> str:
+    display_value = (display_name or "").strip()
+    if display_value:
+        return display_value
+    source_key = (source_name or "").strip()
+    if source_key:
+        return _humanize_identifier(source_key)
+    return _humanize_identifier(palette_id.split("/", 1)[-1])
+
+
 def _palette_items(_: bpy.types.Operator, context: bpy.types.Context) -> list[tuple[str, str, str]]:
     package = _selected_package(context)
     if package is None:
         return [("", "No imported package", "Import a StarBreaker package first")]
     return [
-        (palette_id, palette_id, package.palettes[palette_id].source_name or palette_id)
+        (
+            palette_id,
+            _palette_display_name(
+                palette_id,
+                package.palettes[palette_id].source_name,
+                package.palettes[palette_id].display_name,
+            ),
+            package.palettes[palette_id].source_name or palette_id,
+        )
         for palette_id in sorted(package.palettes.keys())
     ]
 
@@ -160,25 +191,6 @@ class STARBREAKER_OT_dump_metadata(Operator):
         return {"FINISHED"}
 
 
-class STARBREAKER_OT_refresh_materials(Operator):
-    bl_idname = "starbreaker.refresh_materials"
-    bl_label = "Refresh Materials"
-    bl_options = {"REGISTER", "UNDO"}
-
-    @classmethod
-    def poll(cls, context: bpy.types.Context) -> bool:
-        return find_package_root(context.active_object) is not None
-
-    def execute(self, context: bpy.types.Context) -> set[str]:
-        try:
-            applied = refresh_selected_package_materials(context)
-        except Exception as exc:
-            self.report({"ERROR"}, str(exc))
-            return {"CANCELLED"}
-        self.report({"INFO"}, f"Rebuilt {applied} material slots")
-        return {"FINISHED"}
-
-
 class STARBREAKER_PT_tools(Panel):
     bl_label = "StarBreaker"
     bl_idname = "STARBREAKER_PT_tools"
@@ -213,7 +225,6 @@ class STARBREAKER_PT_tools(Panel):
         tuning = layout.box()
         tuning.label(text="Layered Wear")
         tuning.prop(context.scene, SCENE_WEAR_STRENGTH_PROP, slider=True)
-        tuning.operator(STARBREAKER_OT_refresh_materials.bl_idname, icon="FILE_REFRESH")
 
         if package is not None:
             available = layout.box()
@@ -233,7 +244,6 @@ CLASSES = [
     STARBREAKER_OT_apply_palette,
     STARBREAKER_OT_apply_livery,
     STARBREAKER_OT_dump_metadata,
-    STARBREAKER_OT_refresh_materials,
     STARBREAKER_PT_tools,
 ]
 

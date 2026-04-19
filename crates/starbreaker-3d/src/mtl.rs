@@ -25,6 +25,10 @@ pub struct TintPalette {
     pub secondary: [f32; 3], // entryB — secondary panels
     pub tertiary: [f32; 3],  // entryC — accent
     pub glass: [f32; 3],     // glass tint
+    pub decal_color_r: Option<[f32; 3]>,
+    pub decal_color_g: Option<[f32; 3]>,
+    pub decal_color_b: Option<[f32; 3]>,
+    pub decal_texture: Option<String>,
     pub finish: TintPaletteFinish,
 }
 

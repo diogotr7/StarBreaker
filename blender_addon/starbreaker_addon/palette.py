@@ -97,6 +97,24 @@ def palette_finish_glossiness(palette: PaletteRecord | None, channel_name: str |
         return None
 
 
+def palette_decal_color(palette: PaletteRecord | None, channel_name: str | None) -> tuple[float, float, float] | None:
+    if palette is None:
+        return None
+    if channel_name == "red":
+        return palette.decal_red
+    if channel_name == "green":
+        return palette.decal_green
+    if channel_name == "blue":
+        return palette.decal_blue
+    return None
+
+
+def palette_decal_texture(palette: PaletteRecord | None) -> str | None:
+    if palette is None:
+        return None
+    return palette.decal_texture
+
+
 def palette_signature_for_submaterial(
     submaterial: SubmaterialRecord,
     palette: PaletteRecord | None,

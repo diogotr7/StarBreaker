@@ -111,6 +111,7 @@ struct InteriorContainerRecord {
 struct PaletteRecord {
     id: String,
     palette: TintPalette,
+    decal_texture_export_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -669,6 +670,15 @@ pub(crate) fn write_decomposed_export(
         opts,
     );
     report_progress(progress, 0.95, "Writing manifests");
+    finalize_palette_records(
+        &mut palette_records,
+        &mut files,
+        p4k,
+        &mut png_cache,
+        &mut texture_cache,
+        opts.texture_mip,
+        existing_asset_paths,
+    );
     insert_json_file(&mut files, scene_manifest_path, scene_manifest);
     insert_json_file(
         &mut files,
@@ -761,6 +771,13 @@ fn build_palette_manifest_value(records: &BTreeMap<String, PaletteRecord>) -> se
                 "secondary": record.palette.secondary,
                 "tertiary": record.palette.tertiary,
                 "glass": record.palette.glass,
+                "decal": {
+                    "red": record.palette.decal_color_r,
+                    "green": record.palette.decal_color_g,
+                    "blue": record.palette.decal_color_b,
+                    "source_path": record.palette.decal_texture,
+                    "export_path": record.decal_texture_export_path,
+                },
                 "finish": palette_finish_json(&record.palette.finish),
             })
         }).collect::<Vec<_>>(),
@@ -1431,8 +1448,35 @@ fn register_palette(records: &mut BTreeMap<String, PaletteRecord>, palette: &Tin
     records.entry(id.clone()).or_insert_with(|| PaletteRecord {
         id: id.clone(),
         palette: palette.clone(),
+        decal_texture_export_path: None,
     });
     id
+}
+
+fn finalize_palette_records(
+    records: &mut BTreeMap<String, PaletteRecord>,
+    files: &mut BTreeMap<String, Vec<u8>>,
+    p4k: &MappedP4k,
+    png_cache: &mut PngCache,
+    texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    texture_mip: u32,
+    existing_asset_paths: Option<&HashSet<String>>,
+) {
+    for record in records.values_mut() {
+        let Some(source_path) = record.palette.decal_texture.as_deref() else {
+            continue;
+        };
+        record.decal_texture_export_path = export_texture_asset(
+            files,
+            p4k,
+            png_cache,
+            texture_cache,
+            source_path,
+            TextureFlavor::Generic,
+            texture_mip,
+            existing_asset_paths,
+        );
+    }
 }
 
 fn register_livery_usage(
@@ -2331,6 +2375,10 @@ mod tests {
             secondary: [0.3, 0.2, 0.1],
             tertiary: [0.4, 0.5, 0.6],
             glass: [0.6, 0.7, 0.8],
+            decal_color_r: Some([0.7, 0.6, 0.5]),
+            decal_color_g: Some([0.4, 0.5, 0.6]),
+            decal_color_b: Some([0.1, 0.2, 0.3]),
+            decal_texture: Some("Data/Textures/branding/test_decal.png".into()),
             finish: crate::mtl::TintPaletteFinish {
                 primary: crate::mtl::TintPaletteFinishEntry {
                     specular: Some([0.9, 0.8, 0.7]),
@@ -2346,6 +2394,8 @@ mod tests {
         assert_eq!(value["palettes"][0]["id"], serde_json::json!("palette/vehicle_palette_test"));
         assert_eq!(value["palettes"][0]["source_name"], serde_json::json!("vehicle.palette.test"));
         assert_eq!(value["palettes"][0]["glass"].as_array().map(|items| items.len()), Some(3));
+        assert_eq!(value["palettes"][0]["decal"]["source_path"], serde_json::json!("Data/Textures/branding/test_decal.png"));
+        assert_eq!(value["palettes"][0]["decal"]["red"].as_array().map(|items| items.len()), Some(3));
         let specular = value["palettes"][0]["finish"]["primary"]["specular"]
             .as_array()
             .expect("primary finish specular should be an array");
