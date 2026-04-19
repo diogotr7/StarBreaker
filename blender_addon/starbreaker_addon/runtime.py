@@ -124,7 +124,22 @@ def import_package(
 ) -> bpy.types.Object:
     package = PackageBundle.load(scene_path)
     importer = PackageImporter(context, package)
-    return importer.import_scene(prefer_cycles=prefer_cycles, palette_id=palette_id)
+    root = importer.import_scene(prefer_cycles=prefer_cycles, palette_id=palette_id)
+    _purge_orphaned_runtime_groups()
+    return root
+
+
+def _purge_orphaned_runtime_groups() -> int:
+    removed = 0
+    for group in list(bpy.data.node_groups):
+        if group.users > 0:
+            continue
+        name = group.name
+        if (name.startswith("StarBreaker Runtime LayerSurface.") or
+                name.startswith("StarBreaker Runtime HardSurface.")):
+            bpy.data.node_groups.remove(group)
+            removed += 1
+    return removed
 
 
 def find_package_root(obj: bpy.types.Object | None) -> bpy.types.Object | None:
@@ -209,6 +224,7 @@ def apply_livery_to_package_root(context: bpy.types.Context, package_root: bpy.t
             root_palette_id,
             package.scene.root_entity.palette_id,
         ) or ""
+    _purge_orphaned_runtime_groups()
     return applied
 
 
@@ -770,12 +786,6 @@ class PackageImporter:
         surface_mode = SURFACE_SHADER_MODE_PRINCIPLED
         if submaterial.shader_family == "HardSurface":
             self._build_hard_surface_material(material, submaterial, palette, plan)
-            if not _managed_material_runtime_graph_is_sane(material):
-                try:
-                    bpy.context.view_layer.update()
-                except Exception:
-                    pass
-                self._build_hard_surface_material(material, submaterial, palette, plan)
         elif submaterial.shader_family == "Illum":
             self._build_illum_material(material, submaterial, palette, plan)
         else:
@@ -1105,48 +1115,6 @@ class PackageImporter:
         )
         if emissive_node is not None:
             self._set_socket_default(_input_socket(shader_group, "Emission Strength"), 1.0)
-
-        try:
-            bpy.context.view_layer.update()
-        except Exception:
-            pass
-
-        self._link_group_input(links, top_base_color, shader_group, "Top Base Color")
-        self._link_group_input(links, top_base_alpha, shader_group, "Top Alpha")
-        self._link_group_input(links, primary.color, shader_group, "Primary Color")
-        self._link_group_input(links, primary.alpha, shader_group, "Primary Alpha")
-        self._link_group_input(links, primary.roughness, shader_group, "Primary Roughness")
-        self._link_group_input(links, primary.specular, shader_group, "Primary Specular")
-        self._link_group_input(links, primary.specular_tint, shader_group, "Primary Specular Tint")
-        self._link_group_input(links, primary.normal, shader_group, "Primary Normal")
-        self._link_group_input(links, secondary.color, shader_group, "Secondary Color")
-        self._link_group_input(links, secondary.alpha, shader_group, "Secondary Alpha")
-        self._link_group_input(links, secondary.roughness, shader_group, "Secondary Roughness")
-        self._link_group_input(links, secondary.specular, shader_group, "Secondary Specular")
-        self._link_group_input(links, secondary.specular_tint, shader_group, "Secondary Specular Tint")
-        self._link_group_input(links, secondary.normal, shader_group, "Secondary Normal")
-        self._link_group_input(links, iridescence_facing_socket, shader_group, "Iridescence Facing Color")
-        self._link_group_input(links, iridescence_grazing_socket, shader_group, "Iridescence Grazing Color")
-        self._link_group_input(links, iridescence_strength_socket, shader_group, "Iridescence Strength")
-        self._link_group_input(links, wear_factor, shader_group, "Wear Factor")
-        self._link_group_input(
-            links,
-            macro_normal_node.outputs[0] if macro_normal_node is not None else None,
-            shader_group,
-            "Macro Normal Color",
-        )
-        self._link_group_input(
-            links,
-            displacement_node.outputs[0] if displacement_node is not None else None,
-            shader_group,
-            "Displacement Height",
-        )
-        self._link_group_input(
-            links,
-            emissive_node.outputs[0] if emissive_node is not None else None,
-            shader_group,
-            "Emission Color",
-        )
 
         surface_shader = _output_socket(shader_group, "Shader")
         if surface_shader is not None:
@@ -2015,23 +1983,6 @@ class PackageImporter:
             self._link_group_input(links, detail_channels.get("green"), group_node, "Detail Height Mask")
             self._link_group_input(links, detail_channels.get("blue"), group_node, "Detail Gloss Mask")
 
-        try:
-            bpy.context.view_layer.update()
-        except Exception:
-            pass
-
-        self._link_group_input(links, base_color_socket, group_node, "Base Color")
-        self._link_group_input(links, base_alpha_socket, group_node, "Base Alpha")
-        self._link_group_input(links, normal_color_socket, group_node, "Normal Color")
-        self._link_group_input(links, roughness_socket, group_node, "Roughness Source")
-        self._link_group_input(links, palette_color_socket, group_node, "Palette Color")
-        self._link_group_input(links, palette_gloss_socket, group_node, "Palette Glossiness")
-        self._link_group_input(links, palette_specular_socket, group_node, "Palette Specular")
-        if detail_channels is not None:
-            self._link_group_input(links, detail_channels.get("red"), group_node, "Detail Color Mask")
-            self._link_group_input(links, detail_channels.get("green"), group_node, "Detail Height Mask")
-            self._link_group_input(links, detail_channels.get("blue"), group_node, "Detail Gloss Mask")
-
         return LayerSurfaceSockets(
             color=SocketRef(group_node, "Color"),
             alpha=SocketRef(group_node, "Alpha"),
@@ -2054,27 +2005,8 @@ class PackageImporter:
             if source_socket is None:
                 return
         _refresh_group_node_sockets(group_node)
-        source_node = getattr(source_socket, "node", None)
-        source_name = getattr(source_socket, "name", "")
-        _refresh_group_node_sockets(source_node)
-        if source_node is not None and source_name:
-            source_socket = _output_socket(source_node, source_name) or source_socket
-
         target_socket = _input_socket(group_node, socket_name)
         if target_socket is None:
-            return
-        target_node = getattr(target_socket, "node", None)
-        target_name = getattr(target_socket, "name", "")
-        if target_node is not None and target_name:
-            target_socket = _input_socket(target_node, target_name) or target_socket
-
-        if not getattr(source_socket, "is_output", False):
-            source_node = getattr(source_socket, "node", None)
-            source_socket = _output_socket(source_node, getattr(source_socket, "name", "")) if source_node is not None else None
-        if getattr(target_socket, "is_output", False):
-            target_node = getattr(target_socket, "node", None)
-            target_socket = _input_socket(target_node, getattr(target_socket, "name", "")) if target_node is not None else None
-        if source_socket is None or target_socket is None:
             return
         if not getattr(source_socket, "is_output", False) or getattr(target_socket, "is_output", False):
             return
@@ -4215,9 +4147,6 @@ def _managed_material_runtime_graph_is_sane(material: bpy.types.Material) -> boo
             "Primary Color",
             "Primary Alpha",
             "Primary Roughness",
-            "Secondary Color",
-            "Secondary Alpha",
-            "Secondary Roughness",
         }.issubset(linked_inputs):
             return False
         if not any(
@@ -4403,18 +4332,6 @@ def _input_socket(node: Any, *names: str) -> Any:
                 socket = node.inputs.get(name)
                 if socket is not None:
                     return socket
-            try:
-                bpy.context.view_layer.update()
-            except Exception:
-                return None
-            try:
-                node.node_tree = node_tree
-            except Exception:
-                return None
-            for name in names:
-                socket = node.inputs.get(name)
-                if socket is not None:
-                    return socket
     return None
 
 
@@ -4434,18 +4351,6 @@ def _output_socket(node: Any, *names: str) -> Any:
                 socket = node.outputs.get(name)
                 if socket is not None:
                     return socket
-            try:
-                bpy.context.view_layer.update()
-            except Exception:
-                return None
-            try:
-                node.node_tree = node_tree
-            except Exception:
-                return None
-            for name in names:
-                socket = node.outputs.get(name)
-                if socket is not None:
-                    return socket
     return None
 
 
@@ -4457,7 +4362,6 @@ def _refresh_group_node_sockets(node: Any) -> None:
         return
     try:
         node.node_tree = node_tree
-        bpy.context.view_layer.update()
     except Exception:
         return
 
