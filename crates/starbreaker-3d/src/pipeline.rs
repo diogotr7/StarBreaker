@@ -1,9 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use starbreaker_common::progress::{report as report_progress, Progress};
 use starbreaker_datacore::database::Database;
 use starbreaker_datacore::error::QueryError;
+use starbreaker_datacore::query::value::Value;
 use starbreaker_datacore::types::Record;
 use starbreaker_dds::{DdsFile, ReadSibling};
 use starbreaker_p4k::MappedP4k;
@@ -419,17 +420,25 @@ pub fn assemble_glb_with_loadout_with_progress(
     let resolved = resolve_loadout_meshes(db, p4k, record, tree, &payload_opts)?;
     log::info!("[mem-pipeline] resolved: {} children", resolved.children.len());
     report_progress(progress, 0.14, "Exporting root mesh");
+    let localization = load_localization_map(p4k);
+    let paint_display_names = build_paint_display_name_map(db, &localization);
 
     // Export root entity (mesh + textures).
-    let (root_mesh, root_mtl, root_tex, _, root_palette, geometry_path, material_path, root_bones) =
+    let (root_mesh, root_mtl, root_tex, _, mut root_palette, geometry_path, material_path, root_bones) =
         export_entity_payload(db, p4k, record, &payload_opts)?;
+    if let Some(palette) = root_palette.as_mut() {
+        populate_palette_display_name(palette, &paint_display_names);
+    }
     let default_root_palette = root_palette.clone();
     log::info!("[mem-pipeline] root exported: {} verts", root_mesh.positions.len());
 
     // Check for equipped paint item and resolve its SubGeometry palette/material override.
-    let (root_palette, root_mtl) = resolve_paint_override(
+    let (mut root_palette, root_mtl) = resolve_paint_override(
         db, p4k, record, &tree.root, root_palette, root_mtl,
     );
+    if let Some(palette) = root_palette.as_mut() {
+        populate_palette_display_name(palette, &paint_display_names);
+    }
 
     // Load landing gear as separate child entities attached to NMC nodes.
     // Landing gear CDF geometry attaches to NMC helper bones (e.g. hardpoint_landing_gear_front).
@@ -631,7 +640,10 @@ pub fn assemble_glb_with_loadout_with_progress(
         };
 
     if opts.kind == ExportKind::Decomposed {
-        let available_palettes = query_related_tint_palettes(db, record, default_root_palette.as_ref());
+        let mut available_palettes = query_related_tint_palettes(db, record, default_root_palette.as_ref());
+        for palette in &mut available_palettes {
+            populate_palette_display_name(palette, &paint_display_names);
+        }
         let decomposed_progress = progress.map(|progress| progress.sub(0.60, 0.90));
         let decomposed = crate::decomposed::write_decomposed_export(
             p4k,
@@ -3188,6 +3200,7 @@ fn resolve_paint_override(
                 };
                 Some(mtl::TintPalette {
                     source_name: Some(paint_node.entity_name.clone()),
+                    display_name: None,
                     primary: read_entry("entryA"),
                     secondary: read_entry("entryB"),
                     tertiary: read_entry("entryC"),
@@ -3434,6 +3447,97 @@ fn tint_palette_matches_family(short_name: &str, family_keys: &[String]) -> bool
     family_keys.iter().any(|key| short_name == key || short_name.starts_with(&format!("{key}_")))
 }
 
+fn load_localization_map(p4k: &MappedP4k) -> HashMap<String, String> {
+    let data = p4k
+        .read_file("Data\\Localization\\english\\global.ini")
+        .unwrap_or_default();
+    parse_localization(&data)
+}
+
+fn parse_localization(data: &[u8]) -> HashMap<String, String> {
+    let text = String::from_utf8_lossy(data);
+    let mut map = HashMap::new();
+    for line in text.lines() {
+        let line = line.trim_start_matches('\u{feff}').trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            map.insert(key.trim().to_lowercase(), value.trim().to_string());
+        }
+    }
+    map
+}
+
+fn build_paint_display_name_map(db: &Database, localization: &HashMap<String, String>) -> HashMap<String, String> {
+    use starbreaker_datacore::QueryResultExt;
+
+    if localization.is_empty() {
+        return HashMap::new();
+    }
+
+    let Ok(loc_compiled) = db
+        .compile_rooted::<Value>(
+            "EntityClassDefinition.Components[SAttachableComponentParams].AttachDef.Localization.Name",
+        )
+        .optional()
+    else {
+        return HashMap::new();
+    };
+
+    let mut display_names = HashMap::new();
+    for record in db.records_by_type_name("EntityClassDefinition") {
+        if !db.is_main_record(record) {
+            continue;
+        }
+        let file_path = db.resolve_string(record.file_name_offset).to_lowercase();
+        if !file_path.contains("entities/scitem/ships/paints/") {
+            continue;
+        }
+        let Some(display_name) = loc_compiled
+            .as_ref()
+            .and_then(|compiled| db.query_single::<Value>(compiled, record).ok().flatten())
+            .and_then(|value| localization_key_from_value(&value))
+            .and_then(|key| localization.get(&key).cloned())
+        else {
+            continue;
+        };
+
+        let full_name = db.resolve_string2(record.name_offset);
+        let short_name = full_name.rsplit('.').next().unwrap_or(full_name).to_lowercase();
+        display_names.insert(short_name.clone(), display_name.clone());
+        if let Some(stripped) = short_name.strip_prefix("paint_") {
+            display_names.entry(stripped.to_string()).or_insert(display_name);
+        }
+    }
+
+    display_names
+}
+
+fn localization_key_from_value(value: &Value) -> Option<String> {
+    let key = match value {
+        Value::String(text) | Value::Locale(text) => text.to_string(),
+        _ => return None,
+    };
+    if key.is_empty() || key == "@LOC_UNINITIALIZED" || key == "@LOC_EMPTY" {
+        return None;
+    }
+    Some(key.strip_prefix('@').unwrap_or(&key).to_lowercase())
+}
+
+fn populate_palette_display_name(palette: &mut mtl::TintPalette, display_names: &HashMap<String, String>) {
+    if palette.display_name.is_some() {
+        return;
+    }
+    let Some(source_name) = palette.source_name.as_deref() else {
+        return;
+    };
+    let key = source_name.rsplit('.').next().unwrap_or(source_name).to_lowercase();
+    if let Some(display_name) = display_names.get(&key) {
+        palette.display_name = Some(display_name.clone());
+    }
+}
+
 /// Convert an sRGB 0.0-1.0 component to linear.
 fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.04045 {
@@ -3509,6 +3613,7 @@ fn query_tint_from_path(
 
     Some(mtl::TintPalette {
         source_name,
+        display_name: None,
         primary: query_rgb("entryA"),
         secondary: query_rgb("entryB"),
         tertiary: query_rgb("entryC"),

@@ -26,8 +26,23 @@ from .runtime import (
 )
 
 
-def _selected_package(context: bpy.types.Context) -> PackageBundle | None:
+_PALETTE_ITEMS_CACHE: list[tuple[str, str, str]] = []
+_LIVERY_ITEMS_CACHE: list[tuple[str, str, str]] = []
+
+
+def _package_root_from_context(context: bpy.types.Context) -> bpy.types.Object | None:
     package_root = find_package_root(context.active_object)
+    if package_root is not None:
+        return package_root
+    for obj in context.selected_objects:
+        package_root = find_package_root(obj)
+        if package_root is not None:
+            return package_root
+    return None
+
+
+def _selected_package(context: bpy.types.Context) -> PackageBundle | None:
+    package_root = _package_root_from_context(context)
     if package_root is None:
         return None
     scene_path = package_root.get(PROP_SCENE_PATH)
@@ -64,10 +79,12 @@ def _palette_display_name(palette_id: str, source_name: str | None, display_name
 
 
 def _palette_items(_: bpy.types.Operator, context: bpy.types.Context) -> list[tuple[str, str, str]]:
+    global _PALETTE_ITEMS_CACHE
     package = _selected_package(context)
     if package is None:
-        return [("", "No imported package", "Import a StarBreaker package first")]
-    return [
+        _PALETTE_ITEMS_CACHE = [("", "No imported package", "Import a StarBreaker package first")]
+        return _PALETTE_ITEMS_CACHE
+    _PALETTE_ITEMS_CACHE = [
         (
             palette_id,
             _palette_display_name(
@@ -79,16 +96,27 @@ def _palette_items(_: bpy.types.Operator, context: bpy.types.Context) -> list[tu
         )
         for palette_id in sorted(package.palettes.keys())
     ]
+    return _PALETTE_ITEMS_CACHE
+
+
+def _first_valid_item_id(items: list[tuple[str, str, str]]) -> str:
+    for item_id, _, _ in items:
+        if item_id:
+            return item_id
+    return ""
 
 
 def _livery_items(_: bpy.types.Operator, context: bpy.types.Context) -> list[tuple[str, str, str]]:
+    global _LIVERY_ITEMS_CACHE
     package = _selected_package(context)
     if package is None:
-        return [("", "No imported package", "Import a StarBreaker package first")]
-    return [
+        _LIVERY_ITEMS_CACHE = [("", "No imported package", "Import a StarBreaker package first")]
+        return _LIVERY_ITEMS_CACHE
+    _LIVERY_ITEMS_CACHE = [
         (livery_id, livery_id, package.liveries[livery_id].palette_source_name or livery_id)
         for livery_id in sorted(package.liveries.keys())
     ]
+    return _LIVERY_ITEMS_CACHE
 
 
 class STARBREAKER_OT_import_decomposed_package(Operator, ImportHelper):
@@ -143,6 +171,15 @@ class STARBREAKER_OT_apply_palette(Operator):
         return {"FINISHED"}
 
     def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
+        if not self.palette_id:
+            package_root = _package_root_from_context(context)
+            current_palette_id = package_root.get(PROP_PALETTE_ID, "") if package_root is not None else ""
+            item_ids = _palette_items(self, context)
+            valid_ids = {item_id for item_id, _, _ in item_ids if item_id}
+            if isinstance(current_palette_id, str) and current_palette_id in valid_ids:
+                self.palette_id = current_palette_id
+            else:
+                self.palette_id = _first_valid_item_id(item_ids)
         return context.window_manager.invoke_props_dialog(self)
 
 
@@ -166,6 +203,8 @@ class STARBREAKER_OT_apply_livery(Operator):
         return {"FINISHED"}
 
     def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
+        if not self.livery_id:
+            self.livery_id = _first_valid_item_id(_livery_items(self, context))
         return context.window_manager.invoke_props_dialog(self)
 
 
@@ -203,7 +242,7 @@ class STARBREAKER_PT_tools(Panel):
         layout.operator(STARBREAKER_OT_import_decomposed_package.bl_idname, icon="IMPORT")
 
         obj = context.active_object
-        package_root = find_package_root(obj)
+        package_root = _package_root_from_context(context)
         if package_root is None:
             return
 
@@ -218,8 +257,8 @@ class STARBREAKER_PT_tools(Panel):
                 info.label(text=f"Sidecar: {Path(material_sidecar).name}")
 
         actions = layout.row(align=True)
-        actions.operator(STARBREAKER_OT_apply_palette.bl_idname, icon="COLOR")
-        actions.operator(STARBREAKER_OT_apply_livery.bl_idname, icon="MATERIAL")
+        actions.operator_menu_enum(STARBREAKER_OT_apply_palette.bl_idname, "palette_id", text="Apply Palette", icon="COLOR")
+        actions.operator_menu_enum(STARBREAKER_OT_apply_livery.bl_idname, "livery_id", text="Apply Livery", icon="MATERIAL")
         layout.operator(STARBREAKER_OT_dump_metadata.bl_idname, icon="TEXT")
 
         tuning = layout.box()

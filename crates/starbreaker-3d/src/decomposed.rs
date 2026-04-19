@@ -767,6 +767,7 @@ fn build_palette_manifest_value(records: &BTreeMap<String, PaletteRecord>) -> se
             serde_json::json!({
                 "id": record.id,
                 "source_name": record.palette.source_name,
+                "display_name": record.palette.display_name,
                 "primary": record.palette.primary,
                 "secondary": record.palette.secondary,
                 "tertiary": record.palette.tertiary,
@@ -2371,6 +2372,7 @@ mod tests {
         let mut records = BTreeMap::new();
         let palette = TintPalette {
             source_name: Some("vehicle.palette.test".into()),
+            display_name: Some("Vehicle Palette Test".into()),
             primary: [0.1, 0.2, 0.3],
             secondary: [0.3, 0.2, 0.1],
             tertiary: [0.4, 0.5, 0.6],
@@ -2393,6 +2395,7 @@ mod tests {
         assert_eq!(palette_id, "palette/vehicle_palette_test");
         assert_eq!(value["palettes"][0]["id"], serde_json::json!("palette/vehicle_palette_test"));
         assert_eq!(value["palettes"][0]["source_name"], serde_json::json!("vehicle.palette.test"));
+        assert_eq!(value["palettes"][0]["display_name"], serde_json::json!("Vehicle Palette Test"));
         assert_eq!(value["palettes"][0]["glass"].as_array().map(|items| items.len()), Some(3));
         assert_eq!(value["palettes"][0]["decal"]["source_path"], serde_json::json!("Data/Textures/branding/test_decal.png"));
         assert_eq!(value["palettes"][0]["decal"]["red"].as_array().map(|items| items.len()), Some(3));

@@ -21,6 +21,7 @@ pub struct TintPaletteFinish {
 #[derive(Debug, Clone, Default)]
 pub struct TintPalette {
     pub source_name: Option<String>,
+    pub display_name: Option<String>,
     pub primary: [f32; 3],   // entryA — main hull
     pub secondary: [f32; 3], // entryB — secondary panels
     pub tertiary: [f32; 3],  // entryC — accent

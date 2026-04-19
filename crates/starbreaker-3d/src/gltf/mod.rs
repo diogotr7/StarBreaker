@@ -533,6 +533,7 @@ mod tests {
     fn named_palette() -> crate::mtl::TintPalette {
         crate::mtl::TintPalette {
             source_name: Some("vehicle.palette.rsi_zeus_cl".into()),
+            display_name: Some("RSI Zeus CL".into()),
             primary: [0.1, 0.2, 0.3],
             secondary: [0.4, 0.5, 0.6],
             tertiary: [0.7, 0.8, 0.9],
@@ -558,6 +559,7 @@ mod tests {
     fn alternate_palette() -> crate::mtl::TintPalette {
         crate::mtl::TintPalette {
             source_name: Some("vehicle.palette.variant_b".into()),
+            display_name: Some("Variant B".into()),
             primary: [0.8, 0.3, 0.2],
             secondary: [0.2, 0.7, 0.6],
             tertiary: [0.4, 0.4, 0.9],

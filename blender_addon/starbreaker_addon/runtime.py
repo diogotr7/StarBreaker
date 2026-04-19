@@ -469,7 +469,10 @@ class PackageImporter:
         group_node: bpy.types.Node,
         palette: PaletteRecord,
     ) -> None:
-        enabled = bool(group_node.get("starbreaker_angle_shift_enabled", False))
+        palette_driven = bool(group_node.get("starbreaker_angle_shift_palette_driven", False))
+        enabled = bool(group_node.get("starbreaker_angle_shift_enabled", False)) or (
+            palette_driven and _palette_angle_shift_strength(palette) > 0.0
+        )
         self._set_socket_default(
             _input_socket(group_node, "Iridescence Facing Color"),
             (*(_palette_finish_or_color(palette, "secondary") if enabled else (0.0, 0.0, 0.0)), 1.0),
@@ -788,6 +791,12 @@ class PackageImporter:
         surface_mode = SURFACE_SHADER_MODE_PRINCIPLED
         if submaterial.shader_family == "HardSurface":
             self._build_hard_surface_material(material, submaterial, palette, plan)
+            if not _managed_material_runtime_graph_is_sane(material):
+                try:
+                    bpy.context.view_layer.update()
+                except Exception:
+                    pass
+                self._build_hard_surface_material(material, submaterial, palette, plan)
         elif submaterial.shader_family == "Illum":
             self._build_illum_material(material, submaterial, palette, plan)
         else:
@@ -954,7 +963,10 @@ class PackageImporter:
         top_base_node = self._image_node(nodes, top_base.export_path if top_base is not None else None, x=-720, y=520, is_color=True)
         top_base_color = top_base_node.outputs[0] if top_base_node is not None else None
         top_base_alpha = _output_socket(top_base_node, "Alpha") if top_base_node is not None else None
-        angle_shift_enabled = _hard_surface_angle_shift_enabled(submaterial)
+        palette_angle_shift_supported = _hard_surface_supports_palette_angle_shift(submaterial)
+        angle_shift_enabled = _hard_surface_angle_shift_enabled(submaterial) or (
+            palette_angle_shift_supported and _palette_angle_shift_strength(palette) > 0.0
+        )
 
         primary_layer = submaterial.layer_manifest[0] if submaterial.layer_manifest else None
         secondary_layer = submaterial.layer_manifest[1] if len(submaterial.layer_manifest) > 1 else None
@@ -1036,6 +1048,7 @@ class PackageImporter:
         self._set_socket_default(_input_socket(shader_group, "Emission Strength"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Disable Shadows"), self._plan_casts_no_shadows(plan))
         shader_group["starbreaker_angle_shift_enabled"] = angle_shift_enabled
+        shader_group["starbreaker_angle_shift_palette_driven"] = palette_angle_shift_supported
 
         iridescence_facing_socket = None
         iridescence_grazing_socket = None
@@ -1971,6 +1984,7 @@ class PackageImporter:
         if source_socket is None:
             return
         if isinstance(source_socket, SocketRef):
+            _refresh_group_node_sockets(source_socket.node)
             source_socket = (
                 _output_socket(source_socket.node, source_socket.name)
                 if source_socket.is_output
@@ -1978,8 +1992,10 @@ class PackageImporter:
             )
             if source_socket is None:
                 return
+        _refresh_group_node_sockets(group_node)
         source_node = getattr(source_socket, "node", None)
         source_name = getattr(source_socket, "name", "")
+        _refresh_group_node_sockets(source_node)
         if source_node is not None and source_name:
             source_socket = _output_socket(source_node, source_name) or source_socket
 
@@ -3751,6 +3767,21 @@ def _hard_surface_angle_shift_enabled(submaterial: SubmaterialRecord) -> bool:
     return has_thickness or has_support_texture
 
 
+def _hard_surface_supports_palette_angle_shift(submaterial: SubmaterialRecord) -> bool:
+    if submaterial.shader_family != "HardSurface":
+        return False
+    if not bool(submaterial.variant_membership.get("layered")) or not bool(submaterial.variant_membership.get("palette_routed")):
+        return False
+    if submaterial.decoded_feature_flags.has_iridescence:
+        return False
+    if submaterial.texture_slots:
+        return False
+    material_channel = getattr(submaterial.palette_routing, "material_channel", None)
+    if material_channel is not None and material_channel.name != "primary":
+        return True
+    return len(submaterial.layer_manifest) > 1
+
+
 def _triplet_from_value(value: Any) -> tuple[float, float, float] | None:
     if not isinstance(value, (list, tuple)) or len(value) < 3:
         return None
@@ -4303,6 +4334,19 @@ def _output_socket(node: Any, *names: str) -> Any:
                 if socket is not None:
                     return socket
     return None
+
+
+def _refresh_group_node_sockets(node: Any) -> None:
+    if getattr(node, "bl_idname", "") != "ShaderNodeGroup":
+        return
+    node_tree = getattr(node, "node_tree", None)
+    if node_tree is None:
+        return
+    try:
+        node.node_tree = node_tree
+        bpy.context.view_layer.update()
+    except Exception:
+        return
 
 
 def _contract_input_uses_color(contract_input: ContractInput) -> bool:
