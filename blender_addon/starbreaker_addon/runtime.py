@@ -1407,7 +1407,12 @@ class PackageImporter:
         for item in list(group_tree.interface.items_tree):
             group_tree.interface.remove(item)
         for socket_name, socket_type in inputs:
-            group_tree.interface.new_socket(name=socket_name, in_out="INPUT", socket_type=socket_type)
+            sock = group_tree.interface.new_socket(name=socket_name, in_out="INPUT", socket_type=socket_type)
+            if "Normal" in socket_name and hasattr(sock, "default_value"):
+                if socket_type == "NodeSocketColor":
+                    sock.default_value = (0xBC / 255, 0xBC / 255, 1.0, 1.0)
+                elif socket_type == "NodeSocketVector":
+                    sock.default_value = (0xBC / 255, 0xBC / 255, 1.0)
         for socket_name, socket_type in outputs:
             group_tree.interface.new_socket(name=socket_name, in_out="OUTPUT", socket_type=socket_type)
 
@@ -1437,7 +1442,7 @@ class PackageImporter:
     def _ensure_runtime_layer_surface_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime LayerSurface",
-            "layer_surface_v3",
+            "layer_surface_v4",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -1446,7 +1451,7 @@ class PackageImporter:
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime LayerSurface",
-            signature="layer_surface_v3",
+            signature="layer_surface_v4",
             inputs=[
                 ("Base Color", "NodeSocketColor"),
                 ("Base Alpha", "NodeSocketFloat"),
@@ -1476,7 +1481,7 @@ class PackageImporter:
                 ("Metallic", "NodeSocketFloat"),
             ],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "layer_surface_v3":
+        if group_tree.get("starbreaker_runtime_built_signature") == "layer_surface_v4":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -1587,13 +1592,13 @@ class PackageImporter:
         links.new(specular.outputs[0], group_output.inputs["Specular"])
         links.new(bump.outputs[0], group_output.inputs["Normal"])
         links.new(_output_socket(group_input, "Metallic"), group_output.inputs["Metallic"])
-        group_tree["starbreaker_runtime_built_signature"] = "layer_surface_v3"
+        group_tree["starbreaker_runtime_built_signature"] = "layer_surface_v4"
         return group_tree
 
     def _ensure_runtime_hard_surface_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime HardSurface",
-            "hard_surface_v9",
+            "hard_surface_v10",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -1603,7 +1608,7 @@ class PackageImporter:
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime HardSurface",
-            signature="hard_surface_v9",
+            signature="hard_surface_v10",
             inputs=[
                 ("Top Base Color", "NodeSocketColor"),
                 ("Top Alpha", "NodeSocketFloat"),
@@ -1636,7 +1641,7 @@ class PackageImporter:
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v9":
+        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v10":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -1828,13 +1833,13 @@ class PackageImporter:
         links.new(principled.outputs[0], shadow_mix.inputs[1])
         links.new(transparent.outputs[0], shadow_mix.inputs[2])
         links.new(shadow_mix.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v9"
+        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v10"
         return group_tree
 
     def _ensure_runtime_illum_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime Illum",
-            "illum_v2",
+            "illum_v3",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -1846,7 +1851,7 @@ class PackageImporter:
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime Illum",
-            signature="illum_v2",
+            signature="illum_v3",
             inputs=[
                 ("Primary Color", "NodeSocketColor"),
                 ("Primary Alpha", "NodeSocketFloat"),
@@ -1867,7 +1872,7 @@ class PackageImporter:
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "illum_v2":
+        if group_tree.get("starbreaker_runtime_built_signature") == "illum_v3":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -1962,7 +1967,7 @@ class PackageImporter:
         links.new(add_shader.outputs[0], shadow_mix.inputs[1])
         links.new(transparent.outputs[0], shadow_mix.inputs[2])
         links.new(shadow_mix.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "illum_v2"
+        group_tree["starbreaker_runtime_built_signature"] = "illum_v3"
         return group_tree
 
     def _connect_manifest_layer_surface_group(
@@ -3549,9 +3554,10 @@ class PackageImporter:
             group.interface.remove(item)
         group.nodes.clear()
         group.interface.new_socket(name="Image", in_out="INPUT", socket_type="NodeSocketColor")
-        group.interface.new_socket(name="Decal Red Tint", in_out="INPUT", socket_type="NodeSocketColor")
-        group.interface.new_socket(name="Decal Green Tint", in_out="INPUT", socket_type="NodeSocketColor")
-        group.interface.new_socket(name="Decal Blue Tint", in_out="INPUT", socket_type="NodeSocketColor")
+        for tint_name in ("Decal Red Tint", "Decal Green Tint", "Decal Blue Tint"):
+            sock = group.interface.new_socket(name=tint_name, in_out="INPUT", socket_type="NodeSocketColor")
+            if hasattr(sock, "default_value"):
+                sock.default_value = (1.0, 1.0, 1.0, 1.0)
         group.interface.new_socket(name="Color", in_out="OUTPUT", socket_type="NodeSocketColor")
         group.interface.new_socket(name="Alpha", in_out="OUTPUT", socket_type="NodeSocketFloat")
 
