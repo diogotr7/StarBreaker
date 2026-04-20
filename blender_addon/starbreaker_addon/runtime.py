@@ -108,6 +108,7 @@ class LayerSurfaceSockets:
     roughness: Any | None = None
     specular: Any | None = None
     specular_tint: Any | None = None
+    metallic: Any | None = None
 
 @dataclass(frozen=True)
 class SocketRef:
@@ -1100,12 +1101,14 @@ class PackageImporter:
         self._set_socket_default(_input_socket(shader_group, "Primary Roughness"), 0.45)
         self._set_socket_default(_input_socket(shader_group, "Primary Specular"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Primary Specular Tint"), (1.0, 1.0, 1.0, 1.0))
+        self._set_socket_default(_input_socket(shader_group, "Primary Metallic"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Primary Normal"), (0.0, 0.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Secondary Color"), (1.0, 1.0, 1.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Secondary Alpha"), 1.0)
         self._set_socket_default(_input_socket(shader_group, "Secondary Roughness"), 0.45)
         self._set_socket_default(_input_socket(shader_group, "Secondary Specular"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Secondary Specular Tint"), (1.0, 1.0, 1.0, 1.0))
+        self._set_socket_default(_input_socket(shader_group, "Secondary Metallic"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Secondary Normal"), (0.0, 0.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Iridescence Facing Color"), (0.0, 0.0, 0.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Iridescence Grazing Color"), (0.0, 0.0, 0.0, 1.0))
@@ -1154,12 +1157,14 @@ class PackageImporter:
         self._link_group_input(links, primary.roughness, shader_group, "Primary Roughness")
         self._link_group_input(links, primary.specular, shader_group, "Primary Specular")
         self._link_group_input(links, primary.specular_tint, shader_group, "Primary Specular Tint")
+        self._link_group_input(links, primary.metallic, shader_group, "Primary Metallic")
         self._link_group_input(links, primary.normal, shader_group, "Primary Normal")
         self._link_group_input(links, secondary.color, shader_group, "Secondary Color")
         self._link_group_input(links, secondary.alpha, shader_group, "Secondary Alpha")
         self._link_group_input(links, secondary.roughness, shader_group, "Secondary Roughness")
         self._link_group_input(links, secondary.specular, shader_group, "Secondary Specular")
         self._link_group_input(links, secondary.specular_tint, shader_group, "Secondary Specular Tint")
+        self._link_group_input(links, secondary.metallic, shader_group, "Secondary Metallic")
         self._link_group_input(links, secondary.normal, shader_group, "Secondary Normal")
         self._link_group_input(links, iridescence_facing_socket, shader_group, "Iridescence Facing Color")
         self._link_group_input(links, iridescence_grazing_socket, shader_group, "Iridescence Grazing Color")
@@ -1262,6 +1267,8 @@ class PackageImporter:
             palette_glossiness=palette_finish_glossiness(palette, material_channel),
             specular_value=0.0,
             palette_specular_value=_mean_triplet(palette_finish_specular(palette, material_channel)) or 0.0,
+            metallic_value=0.0,
+            specular_color=None,
             x=-180,
             y=220,
             label="Primary Layer",
@@ -1305,6 +1312,8 @@ class PackageImporter:
             palette_glossiness=palette_finish_glossiness(palette, material_channel),
             specular_value=0.0,
             palette_specular_value=_mean_triplet(palette_finish_specular(palette, material_channel)) or 0.0,
+            metallic_value=0.0,
+            specular_color=None,
             x=-180,
             y=-140,
             label="Secondary Layer",
@@ -1428,7 +1437,7 @@ class PackageImporter:
     def _ensure_runtime_layer_surface_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime LayerSurface",
-            "layer_surface_v2",
+            "layer_surface_v3",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -1437,7 +1446,7 @@ class PackageImporter:
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime LayerSurface",
-            signature="layer_surface_v2",
+            signature="layer_surface_v3",
             inputs=[
                 ("Base Color", "NodeSocketColor"),
                 ("Base Alpha", "NodeSocketFloat"),
@@ -1455,6 +1464,8 @@ class PackageImporter:
                 ("Palette Glossiness", "NodeSocketFloat"),
                 ("Specular Value", "NodeSocketFloat"),
                 ("Palette Specular", "NodeSocketFloat"),
+                ("Metallic", "NodeSocketFloat"),
+                ("Specular Color", "NodeSocketColor"),
             ],
             outputs=[
                 ("Color", "NodeSocketColor"),
@@ -1462,9 +1473,10 @@ class PackageImporter:
                 ("Roughness", "NodeSocketFloat"),
                 ("Specular", "NodeSocketFloat"),
                 ("Normal", "NodeSocketVector"),
+                ("Metallic", "NodeSocketFloat"),
             ],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "layer_surface_v2":
+        if group_tree.get("starbreaker_runtime_built_signature") == "layer_surface_v3":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -1562,18 +1574,26 @@ class PackageImporter:
         links.new(_output_socket(group_input, "Detail Height Mask"), bump.inputs[2])
         links.new(_output_socket(normal_map, "Normal"), bump.inputs[3])
 
-        links.new(final_color.outputs[0], group_output.inputs["Color"])
+        metallic_color_mix = nodes.new("ShaderNodeMixRGB")
+        metallic_color_mix.location = (-120, 220)
+        metallic_color_mix.blend_type = "MIX"
+        links.new(_output_socket(group_input, "Metallic"), metallic_color_mix.inputs[0])
+        links.new(final_color.outputs[0], metallic_color_mix.inputs[1])
+        links.new(_output_socket(group_input, "Specular Color"), metallic_color_mix.inputs[2])
+
+        links.new(metallic_color_mix.outputs[0], group_output.inputs["Color"])
         links.new(_output_socket(group_input, "Base Alpha"), group_output.inputs["Alpha"])
         links.new(roughness.outputs[0], group_output.inputs["Roughness"])
         links.new(specular.outputs[0], group_output.inputs["Specular"])
         links.new(bump.outputs[0], group_output.inputs["Normal"])
-        group_tree["starbreaker_runtime_built_signature"] = "layer_surface_v2"
+        links.new(_output_socket(group_input, "Metallic"), group_output.inputs["Metallic"])
+        group_tree["starbreaker_runtime_built_signature"] = "layer_surface_v3"
         return group_tree
 
     def _ensure_runtime_hard_surface_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime HardSurface",
-            "hard_surface_v8",
+            "hard_surface_v9",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -1583,7 +1603,7 @@ class PackageImporter:
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime HardSurface",
-            signature="hard_surface_v8",
+            signature="hard_surface_v9",
             inputs=[
                 ("Top Base Color", "NodeSocketColor"),
                 ("Top Alpha", "NodeSocketFloat"),
@@ -1592,12 +1612,14 @@ class PackageImporter:
                 ("Primary Roughness", "NodeSocketFloat"),
                 ("Primary Specular", "NodeSocketFloat"),
                 ("Primary Specular Tint", "NodeSocketColor"),
+                ("Primary Metallic", "NodeSocketFloat"),
                 ("Primary Normal", "NodeSocketVector"),
                 ("Secondary Color", "NodeSocketColor"),
                 ("Secondary Alpha", "NodeSocketFloat"),
                 ("Secondary Roughness", "NodeSocketFloat"),
                 ("Secondary Specular", "NodeSocketFloat"),
                 ("Secondary Specular Tint", "NodeSocketColor"),
+                ("Secondary Metallic", "NodeSocketFloat"),
                 ("Secondary Normal", "NodeSocketVector"),
                 ("Iridescence Facing Color", "NodeSocketColor"),
                 ("Iridescence Grazing Color", "NodeSocketColor"),
@@ -1614,7 +1636,7 @@ class PackageImporter:
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v8":
+        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v9":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -1743,17 +1765,29 @@ class PackageImporter:
         links.new(color_sheen.outputs[0], _input_socket(principled, "Base Color"))
         links.new(alpha_mul.outputs[0], _input_socket(principled, "Alpha"))
         links.new(roughness_mix.outputs[0], _input_socket(principled, "Roughness"))
-        metallic_mix = nodes.new("ShaderNodeMapRange")
-        metallic_mix.location = (80, -180)
-        metallic_mix.clamp = True
-        metallic_mix.inputs[1].default_value = 0.0
-        metallic_mix.inputs[2].default_value = 1.0
-        metallic_mix.inputs[3].default_value = 0.08
-        metallic_mix.inputs[4].default_value = 0.42
-        links.new(effective_strength.outputs[0], metallic_mix.inputs[0])
+        metallic_layer_mix = nodes.new("ShaderNodeMix")
+        metallic_layer_mix.location = (-700, -600)
+        if hasattr(metallic_layer_mix, "data_type"):
+            metallic_layer_mix.data_type = "FLOAT"
+        links.new(_output_socket(group_input, "Wear Factor"), metallic_layer_mix.inputs[0])
+        links.new(_output_socket(group_input, "Primary Metallic"), metallic_layer_mix.inputs[2])
+        links.new(_output_socket(group_input, "Secondary Metallic"), metallic_layer_mix.inputs[3])
+        iridescence_metallic_boost = nodes.new("ShaderNodeMapRange")
+        iridescence_metallic_boost.location = (80, -180)
+        iridescence_metallic_boost.clamp = True
+        iridescence_metallic_boost.inputs[1].default_value = 0.0
+        iridescence_metallic_boost.inputs[2].default_value = 1.0
+        iridescence_metallic_boost.inputs[3].default_value = 0.0
+        iridescence_metallic_boost.inputs[4].default_value = 1.0
+        links.new(effective_strength.outputs[0], iridescence_metallic_boost.inputs[0])
+        metallic_max = nodes.new("ShaderNodeMath")
+        metallic_max.location = (260, -180)
+        metallic_max.operation = "MAXIMUM"
+        links.new(metallic_layer_mix.outputs[0], metallic_max.inputs[0])
+        links.new(iridescence_metallic_boost.outputs[0], metallic_max.inputs[1])
         metallic_input = _input_socket(principled, "Metallic")
         if metallic_input is not None:
-            links.new(metallic_mix.outputs[0], metallic_input)
+            links.new(metallic_max.outputs[0], metallic_input)
         specular_input = _input_socket(principled, "Specular IOR Level", "Specular")
         if specular_input is not None:
             links.new(specular_mix.outputs[0], specular_input)
@@ -1794,7 +1828,7 @@ class PackageImporter:
         links.new(principled.outputs[0], shadow_mix.inputs[1])
         links.new(transparent.outputs[0], shadow_mix.inputs[2])
         links.new(shadow_mix.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v8"
+        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v9"
         return group_tree
 
     def _ensure_runtime_illum_group(self) -> bpy.types.ShaderNodeTree:
@@ -1974,6 +2008,8 @@ class PackageImporter:
             palette_glossiness=palette_finish_glossiness(palette, layer_channel_name),
             specular_value=_mean_triplet(_layer_snapshot_triplet(layer, "specular")) or 0.0,
             palette_specular_value=_mean_triplet(palette_finish_specular(palette, layer_channel_name)) or 0.0,
+            metallic_value=_layer_snapshot_float(layer, "metallic"),
+            specular_color=_layer_snapshot_triplet(layer, "specular"),
             x=x + 420,
             y=y - 120,
             label=label,
@@ -2000,6 +2036,8 @@ class PackageImporter:
         palette_glossiness: float | None,
         specular_value: float,
         palette_specular_value: float,
+        metallic_value: float,
+        specular_color: tuple[float, float, float] | None,
         x: int,
         y: int,
         label: str,
@@ -2029,6 +2067,11 @@ class PackageImporter:
         )
         self._set_socket_default(_input_socket(group_node, "Specular Value"), specular_value)
         self._set_socket_default(_input_socket(group_node, "Palette Specular"), palette_specular_value)
+        self._set_socket_default(_input_socket(group_node, "Metallic"), metallic_value)
+        self._set_socket_default(
+            _input_socket(group_node, "Specular Color"),
+            (*specular_color, 1.0) if specular_color is not None else (0.04, 0.04, 0.04, 1.0),
+        )
         if palette_finish_channel_name is not None:
             group_node["starbreaker_palette_finish_channel"] = palette_finish_channel_name
 
@@ -2067,6 +2110,7 @@ class PackageImporter:
             roughness=SocketRef(group_node, "Roughness"),
             specular=SocketRef(group_node, "Specular"),
             specular_tint=(SocketRef(palette_specular_tint_socket.node, palette_specular_tint_socket.name) if palette_specular_tint_socket is not None else None),
+            metallic=SocketRef(group_node, "Metallic"),
         )
 
     def _link_group_input(self, links: bpy.types.NodeLinks, source_socket: Any, group_node: bpy.types.Node, socket_name: str) -> None:
@@ -4105,6 +4149,14 @@ def _float_layer_public_param(layer: LayerManifestEntry, *names: str) -> float:
 
 def _layer_snapshot_triplet(layer: LayerManifestEntry, name: str) -> tuple[float, float, float] | None:
     return _triplet_from_value(layer.layer_snapshot.get(name))
+
+
+def _layer_snapshot_float(layer: LayerManifestEntry, name: str) -> float:
+    value = layer.layer_snapshot.get(name)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _float_public_param(submaterial: SubmaterialRecord, *names: str) -> float:
