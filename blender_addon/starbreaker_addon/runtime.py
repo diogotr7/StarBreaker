@@ -1464,6 +1464,8 @@ class PackageImporter:
                 ("Normal", "NodeSocketVector"),
             ],
         )
+        if group_tree.get("starbreaker_runtime_built_signature") == "layer_surface_v2":
+            return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
 
@@ -1612,6 +1614,8 @@ class PackageImporter:
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
+        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v8":
+            return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
 
@@ -1790,7 +1794,7 @@ class PackageImporter:
         links.new(principled.outputs[0], shadow_mix.inputs[1])
         links.new(transparent.outputs[0], shadow_mix.inputs[2])
         links.new(shadow_mix.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v7"
+        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v8"
         return group_tree
 
     def _ensure_runtime_illum_group(self) -> bpy.types.ShaderNodeTree:
@@ -1829,6 +1833,8 @@ class PackageImporter:
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
+        if group_tree.get("starbreaker_runtime_built_signature") == "illum_v2":
+            return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
 
