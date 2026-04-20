@@ -3698,9 +3698,9 @@ class PackageImporter:
         output = group.nodes.new("NodeGroupOutput")
         output.location = (520, -120)
 
-        primary_color = (*_palette_decal_or_fallback(palette, "red", "primary"), 1.0)
-        secondary_color = (*_palette_decal_or_fallback(palette, "green", "secondary"), 1.0)
-        tertiary_color = (*_palette_decal_or_fallback(palette, "blue", "tertiary"), 1.0)
+        primary_color = (*_palette_decal_or_fallback(palette, "red"), 1.0)
+        secondary_color = (*_palette_decal_or_fallback(palette, "green"), 1.0)
+        tertiary_color = (*_palette_decal_or_fallback(palette, "blue"), 1.0)
 
         palette_decal_node = self._image_node(group.nodes, palette_decal_texture(palette), x=-900, y=-520, is_color=True)
         if palette_decal_node is not None:
@@ -3912,9 +3912,8 @@ def _palette_finish_or_color(
 def _palette_decal_or_fallback(
     palette: PaletteRecord | None,
     decal_channel: str,
-    fallback_channel: str,
 ) -> tuple[float, float, float]:
-    return palette_decal_color(palette, decal_channel) or palette_color(palette, fallback_channel)
+    return palette_decal_color(palette, decal_channel) or (1.0, 1.0, 1.0)
 
 
 def _palette_angle_shift_strength(palette: PaletteRecord | None) -> float:
@@ -3940,7 +3939,7 @@ def _palette_angle_shift_strength(palette: PaletteRecord | None) -> float:
 
 def _palette_group_signature(palette: PaletteRecord) -> str:
     payload = {
-        'schema': 'palette_group_v2',
+        'schema': 'palette_group_v3',
         'id': palette.id,
         'primary': palette_color(palette, 'primary'),
         'secondary': palette_color(palette, 'secondary'),
