@@ -266,6 +266,13 @@ impl DdsFile {
             return decode_uncompressed(data, w, h, pf);
         }
 
+        // DX10 header with an uncompressed DXGI format (e.g. R8_UNORM)
+        if let Some(ref dx10) = self.dxt10_header {
+            if let Some(rgba) = decode_dxgi_uncompressed(data, w, h, dx10.dxgi_format)? {
+                return Ok(rgba);
+            }
+        }
+
         let format = resolve_format(pf, self.dxt10_header.as_ref())?;
         let is_snorm = matches!(format, DxgiFormat::BC4Snorm | DxgiFormat::BC5Snorm);
         let block_format = dxgi_to_block_format(format)?;
@@ -357,7 +364,14 @@ fn compute_mip_size(
         return blocks_w * blocks_h * block_size;
     }
 
-    // Uncompressed: use rgb_bit_count
+    // DX10 uncompressed formats — bytes per pixel from DXGI format
+    if let Some(dx10) = dxt10 {
+        if let Some(bpp) = dxgi_uncompressed_bpp(dx10.dxgi_format) {
+            return (w as usize) * (h as usize) * bpp;
+        }
+    }
+
+    // Legacy uncompressed: use rgb_bit_count
     let bpp = { pf.rgb_bit_count } as usize;
     let byte_pp = if bpp > 0 { bpp / 8 } else { 4 }; // default to 32-bit
     (w as usize) * (h as usize) * byte_pp
@@ -471,4 +485,99 @@ fn decode_uncompressed(
     }
 
     Ok(out)
+}
+
+/// Decode uncompressed pixel data identified by a DXGI format value in a DX10 header.
+///
+/// Returns `Ok(Some(rgba))` if the format is a known uncompressed type,
+/// `Ok(None)` if the format is not uncompressed (caller should try block-compressed),
+/// or `Err` if the data is invalid for the format.
+fn decode_dxgi_uncompressed(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    dxgi_format: u32,
+) -> Result<Option<Vec<u8>>, DdsError> {
+    let pixel_count = (width as usize) * (height as usize);
+    match dxgi_format {
+        // DXGI_FORMAT_R8_UNORM (61) — single-channel 8-bit grayscale
+        61 => {
+            if data.len() < pixel_count {
+                return Err(DdsError::Decode(format!(
+                    "R8_UNORM data too short: need {pixel_count}, have {}",
+                    data.len()
+                )));
+            }
+            let mut out = vec![255u8; pixel_count * 4];
+            for i in 0..pixel_count {
+                let v = data[i];
+                out[i * 4] = v;
+                out[i * 4 + 1] = v;
+                out[i * 4 + 2] = v;
+                // alpha stays 255
+            }
+            Ok(Some(out))
+        }
+        // DXGI_FORMAT_R8G8_UNORM (49) — two-channel 8-bit
+        49 => {
+            let expected = pixel_count * 2;
+            if data.len() < expected {
+                return Err(DdsError::Decode(format!(
+                    "R8G8_UNORM data too short: need {expected}, have {}",
+                    data.len()
+                )));
+            }
+            let mut out = vec![255u8; pixel_count * 4];
+            for i in 0..pixel_count {
+                out[i * 4] = data[i * 2];
+                out[i * 4 + 1] = data[i * 2 + 1];
+                out[i * 4 + 2] = 0;
+                // alpha stays 255
+            }
+            Ok(Some(out))
+        }
+        // DXGI_FORMAT_R8G8B8A8_UNORM (28) / R8G8B8A8_UNORM_SRGB (29)
+        28 | 29 => {
+            let expected = pixel_count * 4;
+            if data.len() < expected {
+                return Err(DdsError::Decode(format!(
+                    "R8G8B8A8_UNORM data too short: need {expected}, have {}",
+                    data.len()
+                )));
+            }
+            Ok(Some(data[..expected].to_vec()))
+        }
+        // DXGI_FORMAT_B8G8R8A8_UNORM (87) / B8G8R8A8_UNORM_SRGB (91)
+        87 | 91 => {
+            let expected = pixel_count * 4;
+            if data.len() < expected {
+                return Err(DdsError::Decode(format!(
+                    "B8G8R8A8_UNORM data too short: need {expected}, have {}",
+                    data.len()
+                )));
+            }
+            let mut out = Vec::with_capacity(expected);
+            for i in 0..pixel_count {
+                let off = i * 4;
+                out.push(data[off + 2]); // R
+                out.push(data[off + 1]); // G
+                out.push(data[off]);     // B
+                out.push(data[off + 3]); // A
+            }
+            Ok(Some(out))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Bytes per pixel for known uncompressed DXGI formats.
+/// Returns `None` for block-compressed or unknown formats.
+fn dxgi_uncompressed_bpp(dxgi_format: u32) -> Option<usize> {
+    match dxgi_format {
+        61 => Some(1),  // R8_UNORM
+        49 => Some(2),  // R8G8_UNORM
+        28 | 29 => Some(4),  // R8G8B8A8_UNORM / SRGB
+        87 | 91 => Some(4),  // B8G8R8A8_UNORM / SRGB
+        _ => None,
+    }
 }
