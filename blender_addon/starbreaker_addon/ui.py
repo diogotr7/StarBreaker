@@ -21,11 +21,13 @@ from .runtime import (
     apply_livery_to_selected_package,
     apply_palette_to_selected_package,
     dump_selected_metadata,
+    exterior_palette_ids,
     find_package_root,
     import_package,
 )
 
 
+_PAINT_ITEMS_CACHE: list[tuple[str, str, str]] = []
 _PALETTE_ITEMS_CACHE: list[tuple[str, str, str]] = []
 _LIVERY_ITEMS_CACHE: list[tuple[str, str, str]] = []
 
@@ -76,6 +78,29 @@ def _palette_display_name(palette_id: str, source_name: str | None, display_name
     if source_key:
         return _humanize_identifier(source_key)
     return _humanize_identifier(palette_id.split("/", 1)[-1])
+
+
+def _paint_items(_: bpy.types.Operator, context: bpy.types.Context) -> list[tuple[str, str, str]]:
+    global _PAINT_ITEMS_CACHE
+    package = _selected_package(context)
+    if package is None:
+        _PAINT_ITEMS_CACHE = [("", "No imported package", "Import a StarBreaker package first")]
+        return _PAINT_ITEMS_CACHE
+    available_ids = exterior_palette_ids(package)
+    _PAINT_ITEMS_CACHE = [
+        (
+            palette_id,
+            _palette_display_name(
+                palette_id,
+                package.palettes[palette_id].source_name,
+                package.palettes[palette_id].display_name,
+            ),
+            package.palettes[palette_id].source_name or palette_id,
+        )
+        for palette_id in available_ids
+        if palette_id in package.palettes
+    ]
+    return _PAINT_ITEMS_CACHE
 
 
 def _palette_items(_: bpy.types.Operator, context: bpy.types.Context) -> list[tuple[str, str, str]]:
@@ -149,6 +174,38 @@ class STARBREAKER_OT_import_decomposed_package(Operator, ImportHelper):
             return {"CANCELLED"}
         self.report({"INFO"}, f"Imported {package_root.get(PROP_PACKAGE_NAME, Path(self.filepath).parent.name)}")
         return {"FINISHED"}
+
+
+class STARBREAKER_OT_apply_paint(Operator):
+    bl_idname = "starbreaker.apply_paint"
+    bl_label = "Apply Paint"
+    bl_options = {"REGISTER", "UNDO"}
+
+    paint_id: EnumProperty(name="Paint", items=_paint_items)
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return find_package_root(context.active_object) is not None
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        if not self.paint_id:
+            self.report({"ERROR"}, "No paint selected")
+            return {"CANCELLED"}
+        apply_palette_to_selected_package(context, self.paint_id)
+        self.report({"INFO"}, f"Applied paint {self.paint_id}")
+        return {"FINISHED"}
+
+    def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
+        if not self.paint_id:
+            package_root = _package_root_from_context(context)
+            current_palette_id = package_root.get(PROP_PALETTE_ID, "") if package_root is not None else ""
+            item_ids = _paint_items(self, context)
+            valid_ids = {item_id for item_id, _, _ in item_ids if item_id}
+            if isinstance(current_palette_id, str) and current_palette_id in valid_ids:
+                self.paint_id = current_palette_id
+            else:
+                self.paint_id = _first_valid_item_id(item_ids)
+        return context.window_manager.invoke_props_dialog(self)
 
 
 class STARBREAKER_OT_apply_palette(Operator):
@@ -257,8 +314,7 @@ class STARBREAKER_PT_tools(Panel):
                 info.label(text=f"Sidecar: {Path(material_sidecar).name}")
 
         actions = layout.row(align=True)
-        actions.operator_menu_enum(STARBREAKER_OT_apply_palette.bl_idname, "palette_id", text="Apply Palette", icon="COLOR")
-        actions.operator_menu_enum(STARBREAKER_OT_apply_livery.bl_idname, "livery_id", text="Apply Livery", icon="MATERIAL")
+        actions.operator_menu_enum(STARBREAKER_OT_apply_paint.bl_idname, "paint_id", text="Apply Paint", icon="BRUSH_DATA")
         layout.operator(STARBREAKER_OT_dump_metadata.bl_idname, icon="TEXT")
 
         tuning = layout.box()
@@ -280,6 +336,7 @@ class STARBREAKER_PT_tools(Panel):
 
 CLASSES = [
     STARBREAKER_OT_import_decomposed_package,
+    STARBREAKER_OT_apply_paint,
     STARBREAKER_OT_apply_palette,
     STARBREAKER_OT_apply_livery,
     STARBREAKER_OT_dump_metadata,
