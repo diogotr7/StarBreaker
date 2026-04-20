@@ -2606,8 +2606,8 @@ class PackageImporter:
         fallback_color, alpha = self._virtual_tint_palette_decal_defaults(submaterial, palette)
         if palette is not None and self.package.resolve_path(palette_decal_texture(palette)) is not None:
             group_node = self._palette_group_node(nodes, nodes.id_data.links, palette, x=x, y=y)
-            color_socket = _output_socket(group_node, "Palette Decal Color")
-            alpha_socket = _output_socket(group_node, "Palette Decal Alpha")
+            color_socket = _output_socket(group_node, "Decal Color")
+            alpha_socket = _output_socket(group_node, "Decal Alpha")
             if color_socket is not None and alpha_socket is not None:
                 if abs(alpha - 1.0) < 1e-6:
                     return LayerSurfaceSockets(color=color_socket, alpha=alpha_socket)
@@ -3547,8 +3547,6 @@ class PackageImporter:
         expected_outputs = {
             "Decal Color",
             "Decal Alpha",
-            "Palette Decal Color",
-            "Palette Decal Alpha",
             "Primary",
             "Primary SpecColor",
             "Primary Glossiness",
@@ -3563,7 +3561,8 @@ class PackageImporter:
             "Iridescence Grazing Color",
             "Iridescence Strength",
         }
-        if group.get("starbreaker_palette_signature") == group_signature and expected_inputs.issubset(existing_inputs) and expected_outputs.issubset(existing_outputs):
+        _stale_outputs = {"Palette Decal Color", "Palette Decal Alpha"}
+        if group.get("starbreaker_palette_signature") == group_signature and expected_inputs.issubset(existing_inputs) and expected_outputs.issubset(existing_outputs) and not _stale_outputs.intersection(existing_outputs):
             return group
 
         channel_specs = (
@@ -3581,8 +3580,6 @@ class PackageImporter:
         for socket_name in (
             "Decal Color",
             "Decal Alpha",
-            "Palette Decal Color",
-            "Palette Decal Alpha",
             "Iridescence Facing Color",
             "Iridescence Grazing Color",
             "Iridescence Strength",
@@ -3601,6 +3598,10 @@ class PackageImporter:
             if socket_name not in existing_outputs:
                 socket_type = "NodeSocketFloat" if "Glossiness" in socket_name else "NodeSocketColor"
                 group.interface.new_socket(name=socket_name, in_out="OUTPUT", socket_type=socket_type)
+
+        for item in list(group.interface.items_tree):
+            if getattr(item, "item_type", None) == "SOCKET" and getattr(item, "in_out", None) == "OUTPUT" and item.name in _stale_outputs:
+                group.interface.remove(item)
 
         group.nodes.clear()
 
@@ -3654,8 +3655,6 @@ class PackageImporter:
 
             group.links.new(palette_mix_blue.outputs[0], output.inputs["Decal Color"])
             group.links.new(palette_invert.outputs[0], output.inputs["Decal Alpha"])
-            group.links.new(palette_mix_blue.outputs[0], output.inputs["Palette Decal Color"])
-            group.links.new(palette_invert.outputs[0], output.inputs["Palette Decal Alpha"])
 
         for socket_name, channel_name, y in channel_specs:
             if socket_name.endswith("SpecColor"):
