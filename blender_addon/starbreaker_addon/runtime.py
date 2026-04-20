@@ -152,6 +152,43 @@ def find_package_root(obj: bpy.types.Object | None) -> bpy.types.Object | None:
     return None
 
 
+def _exterior_material_sidecars(package: PackageBundle) -> set[str] | None:
+    """Return the set of material sidecar paths from the exterior livery group.
+
+    The exterior group is the one whose material_sidecars include the root entity's
+    sidecar.  Returns None if livery data is absent or unresolvable (caller falls back
+    to applying to all materials).
+    """
+    if not package.liveries:
+        return None
+    root_sidecar = package.scene.root_entity.material_sidecar
+    if not root_sidecar:
+        return None
+    for livery in package.liveries.values():
+        if root_sidecar in livery.material_sidecars:
+            return set(livery.material_sidecars)
+    return None
+
+
+def exterior_palette_ids(package: PackageBundle) -> list[str]:
+    """Return palette IDs applicable to the exterior livery group.
+
+    Excludes interior-only palette IDs (those that only appear as the palette_id of
+    livery groups that do NOT contain the root entity).
+    """
+    if not package.liveries:
+        return sorted(package.palettes.keys())
+    exterior_sidecars = _exterior_material_sidecars(package)
+    if exterior_sidecars is None:
+        return sorted(package.palettes.keys())
+    interior_only_palette_ids: set[str] = set()
+    for livery in package.liveries.values():
+        if not set(livery.material_sidecars).intersection(exterior_sidecars):
+            if livery.palette_id:
+                interior_only_palette_ids.add(livery.palette_id)
+    return sorted(pid for pid in package.palettes.keys() if pid not in interior_only_palette_ids)
+
+
 def apply_palette_to_selected_package(context: bpy.types.Context, palette_id: str) -> int:
     package_root = find_package_root(context.active_object)
     if package_root is None:
@@ -399,22 +436,24 @@ class PackageImporter:
         if effective_palette_id is not None:
             package_root[PROP_PALETTE_ID] = effective_palette_id
 
+        allowed_sidecars = _exterior_material_sidecars(self.package)
+
         for material in bpy.data.materials:
             if material.node_tree is None:
                 continue
             if not material.get(PROP_SUBMATERIAL_JSON):
                 continue
-            palette_node = next(
-                (
-                    n
-                    for n in material.node_tree.nodes
-                    if n.bl_idname == "ShaderNodeGroup"
-                    and getattr(getattr(n, "node_tree", None), "name", "").startswith("StarBreaker Palette ")
-                ),
-                None,
+            if allowed_sidecars is not None:
+                mat_sidecar = _string_prop(material, PROP_MATERIAL_SIDECAR)
+                if mat_sidecar is not None and mat_sidecar not in allowed_sidecars:
+                    continue
+            has_palette_node = any(
+                n.bl_idname == "ShaderNodeGroup"
+                and getattr(getattr(n, "node_tree", None), "name", "").startswith("StarBreaker Palette ")
+                for n in material.node_tree.nodes
             )
-            if palette_node is not None:
-                self._rewire_layer_palette_channels(material, palette, palette_node)
+            if has_palette_node:
+                self._apply_palette_to_material(material, palette, palette_group)
 
         self.context.view_layer.update()
         return 0
@@ -532,22 +571,12 @@ class PackageImporter:
         group_node: bpy.types.Node,
         palette: PaletteRecord,
     ) -> None:
-        palette_driven = bool(group_node.get("starbreaker_angle_shift_palette_driven", False))
-        enabled = bool(group_node.get("starbreaker_angle_shift_enabled", False)) or (
-            palette_driven and _palette_angle_shift_strength(palette) > 0.0
-        )
-        self._set_socket_default(
-            _input_socket(group_node, "Iridescence Facing Color"),
-            (*(_palette_finish_or_color(palette, "secondary") if enabled else (0.0, 0.0, 0.0)), 1.0),
-        )
-        self._set_socket_default(
-            _input_socket(group_node, "Iridescence Grazing Color"),
-            (*(_palette_finish_or_color(palette, "tertiary") if enabled else (0.0, 0.0, 0.0)), 1.0),
-        )
-        self._set_socket_default(
-            _input_socket(group_node, "Iridescence Strength"),
-            _palette_angle_shift_strength(palette) if enabled else 0.0,
-        )
+        if not bool(group_node.get("starbreaker_angle_shift_enabled", False)):
+            return
+        iridescence_active = _palette_has_iridescence(palette)
+        factor_socket = _input_socket(group_node, "Iridescence Factor")
+        if factor_socket is not None and hasattr(factor_socket, "default_value"):
+            factor_socket.default_value = 1.0 if iridescence_active else 0.0
 
     def _update_virtual_tint_palette_decal_nodes(
         self,
@@ -985,6 +1014,8 @@ class PackageImporter:
                 )
             if source_socket is not None:
                 links.new(source_socket, target_socket)
+            elif "normal" in semantic and hasattr(target_socket, "default_value"):
+                target_socket.default_value = (0.5, 0.5, 1.0, 1.0)
             y -= 180
 
         group_handles_alpha = any(
@@ -1035,8 +1066,7 @@ class PackageImporter:
         top_base_node = self._image_node(nodes, top_base.export_path if top_base is not None else None, x=-720, y=520, is_color=True)
         top_base_color = top_base_node.outputs[0] if top_base_node is not None else None
         top_base_alpha = _output_socket(top_base_node, "Alpha") if top_base_node is not None else None
-        palette_angle_shift_supported = _hard_surface_supports_palette_angle_shift(submaterial)
-        angle_shift_enabled = _hard_surface_angle_shift_enabled(submaterial) or palette_angle_shift_supported
+        angle_shift_enabled = _hard_surface_angle_shift_enabled(submaterial)
 
         primary_layer = submaterial.layer_manifest[0] if submaterial.layer_manifest else None
         secondary_layer = submaterial.layer_manifest[1] if len(submaterial.layer_manifest) > 1 else None
@@ -1110,10 +1140,16 @@ class PackageImporter:
         self._set_socket_default(_input_socket(shader_group, "Secondary Specular Tint"), (1.0, 1.0, 1.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Secondary Metallic"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Secondary Normal"), (0.0, 0.0, 1.0))
-        self._set_socket_default(_input_socket(shader_group, "Iridescence Facing Color"), (0.0, 0.0, 0.0, 1.0))
-        self._set_socket_default(_input_socket(shader_group, "Iridescence Grazing Color"), (0.0, 0.0, 0.0, 1.0))
-        self._set_socket_default(_input_socket(shader_group, "Iridescence Strength"), 0.0)
-        self._set_socket_default(_input_socket(shader_group, "Iridescence Factor"), 1.0 if angle_shift_enabled else 0.0)
+        if angle_shift_enabled and palette is not None:
+            facing_socket = self._palette_specular_socket(nodes, palette, "tertiary", x=-720, y=-1320)
+            grazing_socket = self._palette_color_socket(nodes, palette, "tertiary", x=-720, y=-1320)
+            self._link_group_input(links, facing_socket, shader_group, "Iridescence Facing Color")
+            self._link_group_input(links, grazing_socket, shader_group, "Iridescence Grazing Color")
+        else:
+            self._set_socket_default(_input_socket(shader_group, "Iridescence Facing Color"), (0.0, 0.0, 0.0, 1.0))
+            self._set_socket_default(_input_socket(shader_group, "Iridescence Grazing Color"), (0.0, 0.0, 0.0, 1.0))
+        iridescence_active = angle_shift_enabled and _palette_has_iridescence(palette)
+        self._set_socket_default(_input_socket(shader_group, "Iridescence Factor"), 1.0 if iridescence_active else 0.0)
         self._set_socket_default(_input_socket(shader_group, "Wear Factor"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Macro Normal Color"), (0.5, 0.5, 1.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Macro Normal Strength"), 0.4)
@@ -1122,33 +1158,6 @@ class PackageImporter:
         self._set_socket_default(_input_socket(shader_group, "Emission Strength"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Disable Shadows"), self._plan_casts_no_shadows(plan))
         shader_group["starbreaker_angle_shift_enabled"] = angle_shift_enabled
-        shader_group["starbreaker_angle_shift_palette_driven"] = palette_angle_shift_supported
-
-        iridescence_facing_socket = None
-        iridescence_grazing_socket = None
-        iridescence_strength_socket = None
-        if angle_shift_enabled and palette is not None:
-            iridescence_facing_socket = self._palette_iridescence_socket(
-                nodes,
-                palette,
-                "Iridescence Facing Color",
-                x=-260,
-                y=620,
-            )
-            iridescence_grazing_socket = self._palette_iridescence_socket(
-                nodes,
-                palette,
-                "Iridescence Grazing Color",
-                x=-260,
-                y=760,
-            )
-            iridescence_strength_socket = self._palette_iridescence_socket(
-                nodes,
-                palette,
-                "Iridescence Strength",
-                x=-260,
-                y=900,
-            )
 
         self._link_group_input(links, top_base_color, shader_group, "Top Base Color")
         self._link_group_input(links, top_base_alpha, shader_group, "Top Alpha")
@@ -1166,9 +1175,6 @@ class PackageImporter:
         self._link_group_input(links, secondary.specular_tint, shader_group, "Secondary Specular Tint")
         self._link_group_input(links, secondary.metallic, shader_group, "Secondary Metallic")
         self._link_group_input(links, secondary.normal, shader_group, "Secondary Normal")
-        self._link_group_input(links, iridescence_facing_socket, shader_group, "Iridescence Facing Color")
-        self._link_group_input(links, iridescence_grazing_socket, shader_group, "Iridescence Grazing Color")
-        self._link_group_input(links, iridescence_strength_socket, shader_group, "Iridescence Strength")
         self._link_group_input(links, wear_factor, shader_group, "Wear Factor")
         self._link_group_input(
             links,
@@ -1598,7 +1604,7 @@ class PackageImporter:
     def _ensure_runtime_hard_surface_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime HardSurface",
-            "hard_surface_v11",
+            "hard_surface_v12",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -1608,7 +1614,7 @@ class PackageImporter:
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime HardSurface",
-            signature="hard_surface_v11",
+            signature="hard_surface_v12",
             inputs=[
                 ("Top Base Color", "NodeSocketColor"),
                 ("Top Alpha", "NodeSocketFloat"),
@@ -1628,7 +1634,6 @@ class PackageImporter:
                 ("Secondary Normal", "NodeSocketVector"),
                 ("Iridescence Facing Color", "NodeSocketColor"),
                 ("Iridescence Grazing Color", "NodeSocketColor"),
-                ("Iridescence Strength", "NodeSocketFloat"),
                 ("Iridescence Factor", "NodeSocketFloat"),
                 ("Wear Factor", "NodeSocketFloat"),
                 ("Macro Normal Color", "NodeSocketColor"),
@@ -1641,7 +1646,7 @@ class PackageImporter:
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v11":
+        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v12":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -1682,17 +1687,10 @@ class PackageImporter:
         links.new(_output_socket(group_input, "Iridescence Grazing Color"), iridescence_color.inputs[2])
         links.new(angle_factor.outputs[0], iridescence_color.inputs[0])
 
-        effective_strength = nodes.new("ShaderNodeMath")
-        effective_strength.location = (-420, 700)
-        effective_strength.operation = "MULTIPLY"
-        effective_strength.use_clamp = True
-        links.new(_output_socket(group_input, "Iridescence Strength"), effective_strength.inputs[0])
-        links.new(_output_socket(group_input, "Iridescence Factor"), effective_strength.inputs[1])
-
         color_sheen = nodes.new("ShaderNodeMixRGB")
         color_sheen.location = (-120, 460)
         color_sheen.blend_type = "MIX"
-        links.new(effective_strength.outputs[0], color_sheen.inputs[0])
+        links.new(_output_socket(group_input, "Iridescence Factor"), color_sheen.inputs[0])
         links.new(final_color.outputs[0], color_sheen.inputs[1])
         links.new(iridescence_color.outputs[0], color_sheen.inputs[2])
 
@@ -1784,7 +1782,7 @@ class PackageImporter:
         iridescence_metallic_boost.inputs[2].default_value = 1.0
         iridescence_metallic_boost.inputs[3].default_value = 0.0
         iridescence_metallic_boost.inputs[4].default_value = 1.0
-        links.new(effective_strength.outputs[0], iridescence_metallic_boost.inputs[0])
+        links.new(_output_socket(group_input, "Iridescence Factor"), iridescence_metallic_boost.inputs[0])
         metallic_max = nodes.new("ShaderNodeMath")
         metallic_max.location = (260, -180)
         metallic_max.operation = "MAXIMUM"
@@ -1804,7 +1802,7 @@ class PackageImporter:
             links.new(iridescence_color.outputs[0], coat_tint_input)
         coat_weight_input = _input_socket(principled, "Coat Weight")
         if coat_weight_input is not None:
-            links.new(effective_strength.outputs[0], coat_weight_input)
+            links.new(_output_socket(group_input, "Iridescence Factor"), coat_weight_input)
         coat_roughness_input = _input_socket(principled, "Coat Roughness")
         if coat_roughness_input is not None:
             coat_roughness_input.default_value = 0.08
@@ -1833,7 +1831,7 @@ class PackageImporter:
         links.new(principled.outputs[0], shadow_mix.inputs[1])
         links.new(transparent.outputs[0], shadow_mix.inputs[2])
         links.new(shadow_mix.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v11"
+        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v12"
         return group_tree
 
     def _ensure_runtime_illum_group(self) -> bpy.types.ShaderNodeTree:
@@ -3645,11 +3643,8 @@ class PackageImporter:
             "Tertiary SpecColor",
             "Tertiary Glossiness",
             "Glass Color",
-            "Iridescence Facing Color",
-            "Iridescence Grazing Color",
-            "Iridescence Strength",
         }
-        _stale_outputs = {"Palette Decal Color", "Palette Decal Alpha"}
+        _stale_outputs = {"Palette Decal Color", "Palette Decal Alpha", "Iridescence Facing Color", "Iridescence Grazing Color", "Iridescence Strength"}
         if group.get("starbreaker_palette_signature") == group_signature and expected_inputs.issubset(existing_inputs) and expected_outputs.issubset(existing_outputs) and not _stale_outputs.intersection(existing_outputs):
             return group
 
@@ -3668,19 +3663,12 @@ class PackageImporter:
         for socket_name in (
             "Decal Color",
             "Decal Alpha",
-            "Iridescence Facing Color",
-            "Iridescence Grazing Color",
-            "Iridescence Strength",
         ):
             if socket_name not in existing_outputs:
                 group.interface.new_socket(
                     name=socket_name,
                     in_out="OUTPUT",
-                    socket_type=(
-                        "NodeSocketFloat"
-                        if socket_name.endswith("Alpha") or socket_name == "Iridescence Strength"
-                        else "NodeSocketColor"
-                    ),
+                    socket_type="NodeSocketFloat" if socket_name.endswith("Alpha") else "NodeSocketColor",
                 )
         for socket_name, _channel_name, _y in channel_specs:
             if socket_name not in existing_outputs:
@@ -3737,21 +3725,6 @@ class PackageImporter:
                 rgb.outputs[0].default_value = (*palette_color(palette, channel_name), 1.0)
                 group.links.new(rgb.outputs[0], output.inputs[socket_name])
 
-        for socket_name, channel_name, y in (
-            ("Iridescence Facing Color", "secondary", -1080),
-            ("Iridescence Grazing Color", "tertiary", -1220),
-        ):
-            rgb = group.nodes.new("ShaderNodeRGB")
-            rgb.location = (120, y)
-            rgb.label = socket_name
-            rgb.outputs[0].default_value = (*_palette_finish_or_color(palette, channel_name), 1.0)
-            group.links.new(rgb.outputs[0], output.inputs[socket_name])
-
-        iridescence_strength = group.nodes.new("ShaderNodeValue")
-        iridescence_strength.location = (120, -1360)
-        iridescence_strength.label = "Iridescence Strength"
-        iridescence_strength.outputs[0].default_value = _palette_angle_shift_strength(palette)
-        group.links.new(iridescence_strength.outputs[0], output.inputs["Iridescence Strength"])
         group["starbreaker_palette_signature"] = group_signature
         return group
 
@@ -3782,18 +3755,6 @@ class PackageImporter:
         group_node.label = "StarBreaker Palette"
         group_node.name = expected_name
         return group_node
-
-    def _palette_iridescence_socket(
-        self,
-        nodes: bpy.types.Nodes,
-        palette: PaletteRecord,
-        socket_name: str,
-        *,
-        x: int,
-        y: int,
-    ) -> Any:
-        group_node = self._palette_group_node(nodes, nodes.id_data.links, palette, x=x, y=y)
-        return _output_socket(group_node, socket_name)
 
     def _palette_color_socket(
         self,
@@ -3900,15 +3861,6 @@ def _mean_triplet(value: tuple[float, float, float] | None) -> float | None:
     return sum(value) / 3.0
 
 
-def _palette_finish_or_color(
-    palette: PaletteRecord | None,
-    channel_name: str,
-) -> tuple[float, float, float]:
-    if palette is None:
-        return (0.0, 0.0, 0.0)
-    return palette_finish_specular(palette, channel_name) or palette_color(palette, channel_name)
-
-
 def _palette_decal_or_fallback(
     palette: PaletteRecord | None,
     decal_channel: str,
@@ -3916,30 +3868,31 @@ def _palette_decal_or_fallback(
     return palette_decal_color(palette, decal_channel) or (1.0, 1.0, 1.0)
 
 
-def _palette_angle_shift_strength(palette: PaletteRecord | None) -> float:
+def _palette_has_iridescence(palette: PaletteRecord | None) -> bool:
+    """Return True when a palette's finish specular produces visible angle-shift iridescence.
+
+    Requires significant chroma (saturation) on both the facing (secondary) and
+    grazing (tertiary) specular channels, plus a measurable color distance between them.
+    """
     if palette is None:
-        return 0.0
-    primary = palette_color(palette, "primary")
-    facing = _palette_finish_or_color(palette, "secondary")
-    grazing = _palette_finish_or_color(palette, "tertiary")
-    primary_luma = _mean_triplet(primary) or 0.0
+        return False
+    facing = palette_finish_specular(palette, "secondary") or palette_color(palette, "secondary")
+    grazing = palette_finish_specular(palette, "tertiary") or palette_color(palette, "tertiary")
     facing_chroma = max(facing) - min(facing)
     grazing_chroma = max(grazing) - min(grazing)
+    if min(facing_chroma, grazing_chroma) < 0.10:
+        return False
     color_distance = math.sqrt(
         (facing[0] - grazing[0]) ** 2
         + (facing[1] - grazing[1]) ** 2
         + (facing[2] - grazing[2]) ** 2
     )
-    if primary_luma > 0.08:
-        return 0.0
-    if min(facing_chroma, grazing_chroma) < 0.10 or color_distance < 0.25:
-        return 0.0
-    return max(0.0, min(0.65, 0.32 + color_distance * 0.4))
+    return color_distance >= 0.25
 
 
 def _palette_group_signature(palette: PaletteRecord) -> str:
     payload = {
-        'schema': 'palette_group_v3',
+        'schema': 'palette_group_v4',
         'id': palette.id,
         'primary': palette_color(palette, 'primary'),
         'secondary': palette_color(palette, 'secondary'),
@@ -3993,21 +3946,6 @@ def _hard_surface_angle_shift_enabled(submaterial: SubmaterialRecord) -> bool:
     has_thickness = (thickness_u is not None and thickness_u > 0.0) or (thickness_v is not None and thickness_v > 0.0)
     has_support_texture = any(texture.slot == "TexSlot10" and bool(texture.export_path) for texture in submaterial.texture_slots)
     return has_thickness or has_support_texture
-
-
-def _hard_surface_supports_palette_angle_shift(submaterial: SubmaterialRecord) -> bool:
-    if submaterial.shader_family != "HardSurface":
-        return False
-    if not bool(submaterial.variant_membership.get("layered")) or not bool(submaterial.variant_membership.get("palette_routed")):
-        return False
-    if submaterial.decoded_feature_flags.has_iridescence:
-        return False
-    if submaterial.texture_slots:
-        return False
-    material_channel = getattr(submaterial.palette_routing, "material_channel", None)
-    if material_channel is not None and material_channel.name != "primary":
-        return True
-    return len(submaterial.layer_manifest) > 1
 
 
 def _triplet_from_value(value: Any) -> tuple[float, float, float] | None:
