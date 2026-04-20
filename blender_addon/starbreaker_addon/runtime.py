@@ -394,9 +394,27 @@ class PackageImporter:
 
         self._ensure_runtime_shared_groups()
         self.package_root = package_root
-        self._ensure_palette_group(palette)
+        palette_group = self._ensure_palette_group(palette)
         if effective_palette_id is not None:
             package_root[PROP_PALETTE_ID] = effective_palette_id
+
+        for material in bpy.data.materials:
+            if material.node_tree is None:
+                continue
+            if not material.get(PROP_SUBMATERIAL_JSON):
+                continue
+            palette_node = next(
+                (
+                    n
+                    for n in material.node_tree.nodes
+                    if n.bl_idname == "ShaderNodeGroup"
+                    and getattr(getattr(n, "node_tree", None), "name", "").startswith("StarBreaker Palette ")
+                ),
+                None,
+            )
+            if palette_node is not None:
+                self._rewire_layer_palette_channels(material, palette, palette_node)
+
         self.context.view_layer.update()
         return 0
 
@@ -410,6 +428,7 @@ class PackageImporter:
         if node_tree is None:
             return
 
+        palette_node: bpy.types.Node | None = None
         for node in node_tree.nodes:
             if node.bl_idname != "ShaderNodeGroup":
                 continue
@@ -417,14 +436,65 @@ class PackageImporter:
             if node_tree_name.startswith("StarBreaker Palette "):
                 node.node_tree = palette_group
                 node.label = f"StarBreaker Palette {palette.id}"
+                palette_node = node
                 continue
             if node_tree_name.startswith("StarBreaker Runtime LayerSurface"):
                 self._update_layer_surface_palette_defaults(node, palette)
             if node_tree_name.startswith("StarBreaker Runtime HardSurface"):
                 self._update_runtime_hard_surface_palette_defaults(node, palette)
 
+        if palette_node is not None:
+            self._rewire_layer_palette_channels(material, palette, palette_node)
+
         self._update_virtual_tint_palette_decal_nodes(material, palette)
         material[PROP_PALETTE_ID] = palette.id
+
+    def _rewire_layer_palette_channels(
+        self,
+        material: bpy.types.Material,
+        palette: PaletteRecord,
+        palette_node: bpy.types.Node,
+    ) -> None:
+        payload = material.get(PROP_SUBMATERIAL_JSON)
+        if not isinstance(payload, str):
+            return
+        try:
+            submaterial = SubmaterialRecord.from_value(json.loads(payload))
+        except Exception:
+            return
+        node_tree = material.node_tree
+        if node_tree is None:
+            return
+        channel_socket_name = {
+            "primary": "Primary",
+            "secondary": "Secondary",
+            "tertiary": "Tertiary",
+            "glass": "Glass Color",
+        }
+        for node in node_tree.nodes:
+            if node.bl_idname != "ShaderNodeGroup":
+                continue
+            node_tree_name = getattr(getattr(node, "node_tree", None), "name", "")
+            if not node_tree_name.startswith("StarBreaker Runtime LayerSurface"):
+                continue
+            finish_channel = node.get("starbreaker_palette_finish_channel")
+            if not isinstance(finish_channel, str) or finish_channel not in channel_socket_name:
+                continue
+            resolved = _resolved_layer_palette_diffuse_channel(submaterial, finish_channel, palette)
+            if resolved is None:
+                continue
+            target_socket_name = channel_socket_name.get(resolved, "Primary")
+            palette_color_input = _input_socket(node, "Palette Color")
+            if palette_color_input is None:
+                continue
+            current_source = palette_color_input.links[0].from_socket.name if palette_color_input.is_linked else None
+            if current_source == target_socket_name:
+                continue
+            if palette_color_input.is_linked:
+                node_tree.links.remove(palette_color_input.links[0])
+            source_socket = _output_socket(palette_node, target_socket_name)
+            if source_socket is not None:
+                node_tree.links.new(source_socket, palette_color_input)
 
     def _update_layer_surface_palette_defaults(
         self,
@@ -1041,6 +1111,7 @@ class PackageImporter:
         self._set_socket_default(_input_socket(shader_group, "Iridescence Facing Color"), (0.0, 0.0, 0.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Iridescence Grazing Color"), (0.0, 0.0, 0.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Iridescence Strength"), 0.0)
+        self._set_socket_default(_input_socket(shader_group, "Iridescence Factor"), 1.0 if angle_shift_enabled else 0.0)
         self._set_socket_default(_input_socket(shader_group, "Wear Factor"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Macro Normal Color"), (0.5, 0.5, 1.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Macro Normal Strength"), 0.4)
@@ -1501,7 +1572,7 @@ class PackageImporter:
     def _ensure_runtime_hard_surface_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime HardSurface",
-            "hard_surface_v6",
+            "hard_surface_v8",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -1511,7 +1582,7 @@ class PackageImporter:
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime HardSurface",
-            signature="hard_surface_v6",
+            signature="hard_surface_v8",
             inputs=[
                 ("Top Base Color", "NodeSocketColor"),
                 ("Top Alpha", "NodeSocketFloat"),
@@ -1530,6 +1601,7 @@ class PackageImporter:
                 ("Iridescence Facing Color", "NodeSocketColor"),
                 ("Iridescence Grazing Color", "NodeSocketColor"),
                 ("Iridescence Strength", "NodeSocketFloat"),
+                ("Iridescence Factor", "NodeSocketFloat"),
                 ("Wear Factor", "NodeSocketFloat"),
                 ("Macro Normal Color", "NodeSocketColor"),
                 ("Macro Normal Strength", "NodeSocketFloat"),
@@ -1580,16 +1652,17 @@ class PackageImporter:
         links.new(_output_socket(group_input, "Iridescence Grazing Color"), iridescence_color.inputs[2])
         links.new(angle_factor.outputs[0], iridescence_color.inputs[0])
 
-        iridescence_strength = nodes.new("ShaderNodeMath")
-        iridescence_strength.location = (-300, 700)
-        iridescence_strength.operation = "MULTIPLY"
-        links.new(_output_socket(group_input, "Iridescence Strength"), iridescence_strength.inputs[0])
-        links.new(angle_factor.outputs[0], iridescence_strength.inputs[1])
+        effective_strength = nodes.new("ShaderNodeMath")
+        effective_strength.location = (-420, 700)
+        effective_strength.operation = "MULTIPLY"
+        effective_strength.use_clamp = True
+        links.new(_output_socket(group_input, "Iridescence Strength"), effective_strength.inputs[0])
+        links.new(_output_socket(group_input, "Iridescence Factor"), effective_strength.inputs[1])
 
         color_sheen = nodes.new("ShaderNodeMixRGB")
-        color_sheen.location = (-260, 460)
-        color_sheen.blend_type = "SCREEN"
-        links.new(iridescence_strength.outputs[0], color_sheen.inputs[0])
+        color_sheen.location = (-120, 460)
+        color_sheen.blend_type = "MIX"
+        links.new(effective_strength.outputs[0], color_sheen.inputs[0])
         links.new(final_color.outputs[0], color_sheen.inputs[1])
         links.new(iridescence_color.outputs[0], color_sheen.inputs[2])
 
@@ -1674,7 +1747,7 @@ class PackageImporter:
         metallic_mix.inputs[2].default_value = 1.0
         metallic_mix.inputs[3].default_value = 0.08
         metallic_mix.inputs[4].default_value = 0.42
-        links.new(iridescence_strength.outputs[0], metallic_mix.inputs[0])
+        links.new(effective_strength.outputs[0], metallic_mix.inputs[0])
         metallic_input = _input_socket(principled, "Metallic")
         if metallic_input is not None:
             links.new(metallic_mix.outputs[0], metallic_input)
@@ -1689,7 +1762,7 @@ class PackageImporter:
             links.new(iridescence_color.outputs[0], coat_tint_input)
         coat_weight_input = _input_socket(principled, "Coat Weight")
         if coat_weight_input is not None:
-            links.new(iridescence_strength.outputs[0], coat_weight_input)
+            links.new(effective_strength.outputs[0], coat_weight_input)
         coat_roughness_input = _input_socket(principled, "Coat Roughness")
         if coat_roughness_input is not None:
             coat_roughness_input.default_value = 0.08
@@ -1718,7 +1791,7 @@ class PackageImporter:
         links.new(principled.outputs[0], shadow_mix.inputs[1])
         links.new(transparent.outputs[0], shadow_mix.inputs[2])
         links.new(shadow_mix.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v6"
+        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v7"
         return group_tree
 
     def _ensure_runtime_illum_group(self) -> bpy.types.ShaderNodeTree:
@@ -3753,7 +3826,7 @@ def _palette_angle_shift_strength(palette: PaletteRecord | None) -> float:
     )
     if primary_luma > 0.08:
         return 0.0
-    if max(facing_chroma, grazing_chroma) < 0.18 or color_distance < 0.25:
+    if min(facing_chroma, grazing_chroma) < 0.10 or color_distance < 0.25:
         return 0.0
     return max(0.0, min(0.65, 0.32 + color_distance * 0.4))
 
