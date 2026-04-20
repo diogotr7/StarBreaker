@@ -1089,8 +1089,7 @@ class PackageImporter:
         )
 
         shader_group = nodes.new("ShaderNodeGroup")
-        shader_group.node_tree = self._ensure_runtime_hard_surface_group().copy()
-        shader_group.node_tree.use_fake_user = False
+        shader_group.node_tree = self._ensure_runtime_hard_surface_group()
         _refresh_group_node_sockets(shader_group)
         shader_group.location = (140, 0)
         shader_group.label = "StarBreaker HardSurface"
@@ -2000,8 +1999,7 @@ class PackageImporter:
         label: str,
     ) -> LayerSurfaceSockets:
         group_node = nodes.new("ShaderNodeGroup")
-        group_node.node_tree = self._ensure_runtime_layer_surface_group().copy()
-        group_node.node_tree.use_fake_user = False
+        group_node.node_tree = self._ensure_runtime_layer_surface_group()
         _refresh_group_node_sockets(group_node)
         group_node.location = (x, y)
         group_node.label = label
