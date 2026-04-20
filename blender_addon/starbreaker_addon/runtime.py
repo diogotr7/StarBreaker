@@ -1598,7 +1598,7 @@ class PackageImporter:
     def _ensure_runtime_hard_surface_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime HardSurface",
-            "hard_surface_v10",
+            "hard_surface_v11",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -1608,7 +1608,7 @@ class PackageImporter:
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime HardSurface",
-            signature="hard_surface_v10",
+            signature="hard_surface_v11",
             inputs=[
                 ("Top Base Color", "NodeSocketColor"),
                 ("Top Alpha", "NodeSocketFloat"),
@@ -1641,7 +1641,7 @@ class PackageImporter:
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v10":
+        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v11":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -1669,8 +1669,8 @@ class PackageImporter:
         angle_factor = nodes.new("ShaderNodeMapRange")
         angle_factor.location = (-580, 620)
         angle_factor.clamp = True
-        angle_factor.inputs[1].default_value = 0.2
-        angle_factor.inputs[2].default_value = 0.85
+        angle_factor.inputs[1].default_value = 0.3
+        angle_factor.inputs[2].default_value = 0.45
         angle_factor.inputs[3].default_value = 1.0
         angle_factor.inputs[4].default_value = 0.0
         links.new(_output_socket(layer_weight, "Facing"), angle_factor.inputs[0])
@@ -1833,7 +1833,7 @@ class PackageImporter:
         links.new(principled.outputs[0], shadow_mix.inputs[1])
         links.new(transparent.outputs[0], shadow_mix.inputs[2])
         links.new(shadow_mix.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v10"
+        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v11"
         return group_tree
 
     def _ensure_runtime_illum_group(self) -> bpy.types.ShaderNodeTree:
