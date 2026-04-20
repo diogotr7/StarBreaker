@@ -3525,6 +3525,88 @@ class PackageImporter:
     def _link_color_output(self, output: Any, input_socket: Any) -> None:
         output.node.id_data.links.new(output, input_socket)
 
+    def _ensure_tint_decal_adaptor_group(self) -> bpy.types.ShaderNodeTree:
+        group_name = "SB_Tint_Decal_Adaptor"
+        group = bpy.data.node_groups.get(group_name)
+        if group is not None:
+            existing_inputs = {
+                item.name
+                for item in group.interface.items_tree
+                if getattr(item, "item_type", None) == "SOCKET" and getattr(item, "in_out", None) == "INPUT"
+            }
+            existing_outputs = {
+                item.name
+                for item in group.interface.items_tree
+                if getattr(item, "item_type", None) == "SOCKET" and getattr(item, "in_out", None) == "OUTPUT"
+            }
+            expected_inputs = {"Image", "Decal Red Tint", "Decal Green Tint", "Decal Blue Tint"}
+            expected_outputs = {"Color", "Alpha"}
+            if expected_inputs.issubset(existing_inputs) and expected_outputs.issubset(existing_outputs):
+                return group
+        if group is None:
+            group = bpy.data.node_groups.new(group_name, "ShaderNodeTree")
+        for item in list(group.interface.items_tree):
+            group.interface.remove(item)
+        group.nodes.clear()
+        group.interface.new_socket(name="Image", in_out="INPUT", socket_type="NodeSocketColor")
+        group.interface.new_socket(name="Decal Red Tint", in_out="INPUT", socket_type="NodeSocketColor")
+        group.interface.new_socket(name="Decal Green Tint", in_out="INPUT", socket_type="NodeSocketColor")
+        group.interface.new_socket(name="Decal Blue Tint", in_out="INPUT", socket_type="NodeSocketColor")
+        group.interface.new_socket(name="Color", in_out="OUTPUT", socket_type="NodeSocketColor")
+        group.interface.new_socket(name="Alpha", in_out="OUTPUT", socket_type="NodeSocketFloat")
+
+        group_input = group.nodes.new("NodeGroupInput")
+        group_input.location = (-380, 200)
+        group_output = group.nodes.new("NodeGroupOutput")
+        group_output.location = (660, 140)
+
+        separate_rgb = group.nodes.new("ShaderNodeSeparateColor")
+        separate_rgb.location = (-140, 300)
+        if hasattr(separate_rgb, "mode"):
+            separate_rgb.mode = "RGB"
+        group.links.new(group_input.outputs["Image"], separate_rgb.inputs[0])
+
+        separate_hsv = group.nodes.new("ShaderNodeSeparateColor")
+        separate_hsv.location = (460, 60)
+        if hasattr(separate_hsv, "mode"):
+            separate_hsv.mode = "HSV"
+        group.links.new(group_input.outputs["Image"], separate_hsv.inputs[0])
+
+        red_mix = group.nodes.new("ShaderNodeMix")
+        red_mix.label = "Red Mix"
+        red_mix.location = (60, 340)
+        red_mix.data_type = "RGBA"
+        red_mix.blend_type = "MIX"
+        red_mix.clamp_factor = True
+        red_mix.inputs[6].default_value = (0.0, 0.0, 0.0, 1.0)
+        group.links.new(_output_socket(separate_rgb, "Red", "R"), red_mix.inputs[0])
+        group.links.new(group_input.outputs["Decal Red Tint"], red_mix.inputs[7])
+
+        green_mix = group.nodes.new("ShaderNodeMix")
+        green_mix.label = "Green Mix"
+        green_mix.location = (260, 320)
+        green_mix.data_type = "RGBA"
+        green_mix.blend_type = "MIX"
+        green_mix.clamp_factor = True
+        group.links.new(_output_socket(separate_rgb, "Green", "G"), green_mix.inputs[0])
+        group.links.new(red_mix.outputs[2], green_mix.inputs[6])
+        group.links.new(group_input.outputs["Decal Green Tint"], green_mix.inputs[7])
+
+        blue_mix = group.nodes.new("ShaderNodeMix")
+        blue_mix.label = "Blue Mix"
+        blue_mix.location = (460, 300)
+        blue_mix.data_type = "RGBA"
+        blue_mix.blend_type = "MIX"
+        blue_mix.clamp_factor = True
+        group.links.new(_output_socket(separate_rgb, "Blue", "B"), blue_mix.inputs[0])
+        group.links.new(green_mix.outputs[2], blue_mix.inputs[6])
+        group.links.new(group_input.outputs["Decal Blue Tint"], blue_mix.inputs[7])
+
+        group.links.new(blue_mix.outputs[2], group_output.inputs["Color"])
+        group.links.new(_output_socket(separate_hsv, "Value", "V", "Blue"), group_output.inputs["Alpha"])
+
+        return group
+
     def _ensure_palette_group(self, palette: PaletteRecord) -> bpy.types.ShaderNodeTree:
         group_name = _palette_group_name(self.package.package_name, self._palette_scope())
         group_signature = _palette_group_signature(palette)
@@ -3616,45 +3698,17 @@ class PackageImporter:
 
         palette_decal_node = self._image_node(group.nodes, palette_decal_texture(palette), x=-900, y=-520, is_color=True)
         if palette_decal_node is not None:
-            palette_decal_rgb = group.nodes.new("ShaderNodeSeparateColor")
-            palette_decal_rgb.location = (-680, -360)
-            if hasattr(palette_decal_rgb, "mode"):
-                palette_decal_rgb.mode = "RGB"
-            group.links.new(palette_decal_node.outputs[0], palette_decal_rgb.inputs[0])
-
-            palette_decal_hsv = group.nodes.new("ShaderNodeSeparateColor")
-            palette_decal_hsv.location = (-680, -560)
-            if hasattr(palette_decal_hsv, "mode"):
-                palette_decal_hsv.mode = "HSV"
-            group.links.new(palette_decal_node.outputs[0], palette_decal_hsv.inputs[0])
-
-            palette_mix_red = group.nodes.new("ShaderNodeMixRGB")
-            palette_mix_red.location = (-420, -360)
-            palette_mix_red.blend_type = "MIX"
-            palette_mix_red.inputs[1].default_value = (0.0, 0.0, 0.0, 1.0)
-            palette_mix_red.inputs[2].default_value = primary_color
-            group.links.new(_output_socket(palette_decal_rgb, "Red", "R"), palette_mix_red.inputs[0])
-
-            palette_mix_green = group.nodes.new("ShaderNodeMixRGB")
-            palette_mix_green.location = (-220, -360)
-            palette_mix_green.blend_type = "MIX"
-            palette_mix_green.inputs[2].default_value = secondary_color
-            group.links.new(palette_mix_red.outputs[0], palette_mix_green.inputs[1])
-            group.links.new(_output_socket(palette_decal_rgb, "Green", "G"), palette_mix_green.inputs[0])
-
-            palette_mix_blue = group.nodes.new("ShaderNodeMixRGB")
-            palette_mix_blue.location = (-20, -360)
-            palette_mix_blue.blend_type = "MIX"
-            palette_mix_blue.inputs[2].default_value = tertiary_color
-            group.links.new(palette_mix_green.outputs[0], palette_mix_blue.inputs[1])
-            group.links.new(_output_socket(palette_decal_rgb, "Blue", "B"), palette_mix_blue.inputs[0])
-
-            palette_invert = group.nodes.new("ShaderNodeInvert")
-            palette_invert.location = (-220, -560)
-            group.links.new(_output_socket(palette_decal_hsv, "Value", "V", "Blue"), palette_invert.inputs[1])
-
-            group.links.new(palette_mix_blue.outputs[0], output.inputs["Decal Color"])
-            group.links.new(palette_invert.outputs[0], output.inputs["Decal Alpha"])
+            adaptor_tree = self._ensure_tint_decal_adaptor_group()
+            decal_converter = group.nodes.new("ShaderNodeGroup")
+            decal_converter.name = "DecalConverter"
+            decal_converter.node_tree = adaptor_tree
+            decal_converter.location = (-420, -420)
+            group.links.new(palette_decal_node.outputs[0], decal_converter.inputs["Image"])
+            decal_converter.inputs["Decal Red Tint"].default_value = primary_color
+            decal_converter.inputs["Decal Green Tint"].default_value = secondary_color
+            decal_converter.inputs["Decal Blue Tint"].default_value = tertiary_color
+            group.links.new(decal_converter.outputs["Color"], output.inputs["Decal Color"])
+            group.links.new(decal_converter.outputs["Alpha"], output.inputs["Decal Alpha"])
 
         for socket_name, channel_name, y in channel_specs:
             if socket_name.endswith("SpecColor"):
@@ -3880,7 +3934,7 @@ def _palette_angle_shift_strength(palette: PaletteRecord | None) -> float:
 
 def _palette_group_signature(palette: PaletteRecord) -> str:
     payload = {
-        'schema': 'palette_group_v1',
+        'schema': 'palette_group_v2',
         'id': palette.id,
         'primary': palette_color(palette, 'primary'),
         'secondary': palette_color(palette, 'secondary'),
