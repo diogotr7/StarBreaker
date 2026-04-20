@@ -644,6 +644,7 @@ pub fn assemble_glb_with_loadout_with_progress(
         for palette in &mut available_palettes {
             populate_palette_display_name(palette, &paint_display_names);
         }
+        let paint_variants = enumerate_paint_variants_for_entity(db, p4k, record, &paint_display_names);
         let decomposed_progress = progress.map(|progress| progress.sub(0.60, 0.90));
         let decomposed = crate::decomposed::write_decomposed_export(
             p4k,
@@ -659,6 +660,7 @@ pub fn assemble_glb_with_loadout_with_progress(
                 root_bones,
                 children: child_payloads,
                 interiors: loaded_interiors,
+                paint_variants,
             },
             opts,
             decomposed_progress.as_ref(),
@@ -3257,6 +3259,102 @@ fn resolve_paint_override(
 
     log::warn!("  paint tag '{subgeo_tag}' not found in SubGeometry entries");
     (default_palette, default_mtl)
+}
+
+/// Enumerate all available paint variants for a ship entity by inspecting every
+/// SubGeometry entry that carries a @Tag.  For each entry we read the variant's
+/// material path and load the MTL file, then derive a stable `paint/…` ID from
+/// the sanitized tag string.  Entries without a tag (the default material) are
+/// skipped.  Duplicate tags (some entities repeat SubGeometry entries) are
+/// de-duplicated.
+fn enumerate_paint_variants_for_entity(
+    db: &Database,
+    p4k: &MappedP4k,
+    entity_record: &Record,
+    display_names: &HashMap<String, String>,
+) -> Vec<mtl::PaintVariant> {
+    use starbreaker_datacore::query::value::Value;
+
+    let compiled = match db.compile_path::<Value>(
+        entity_record.struct_id(),
+        "Components[SGeometryResourceParams]",
+    ) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let components = db.query::<Value>(&compiled, entity_record).unwrap_or_default();
+
+    let mut variants: Vec<mtl::PaintVariant> = Vec::new();
+
+    for component in &components {
+        let geom_node = match get_value_field(component, "Geometry") {
+            Some(g) => g,
+            None => continue,
+        };
+        let sub_arr = match get_value_array(geom_node, "SubGeometry") {
+            Some(a) => a,
+            None => continue,
+        };
+
+        for sub in sub_arr {
+            let tag = get_value_string(sub, "Tags").unwrap_or("").trim();
+            // Skip the default (no-paint) SubGeometry entry.
+            if tag.is_empty() {
+                continue;
+            }
+            // Skip duplicates — some entities repeat SubGeometry entries.
+            if variants.iter().any(|v| v.subgeometry_tag.eq_ignore_ascii_case(tag)) {
+                continue;
+            }
+
+            // Derive the P4K-relative material path, normalised to backslashes for P4K lookup
+            // and stored with forward slashes for output JSON.
+            let p4k_mtl_path: Option<String> = get_value_field(sub, "Geometry")
+                .and_then(|g| get_value_field(g, "Material"))
+                .and_then(|m| get_value_string(m, "path"))
+                .filter(|p| !p.is_empty())
+                .map(|p| datacore_path_to_p4k(p));
+
+            // Load the material file for this variant using the backslash P4K path.
+            let materials = p4k_mtl_path.as_deref().and_then(|p| try_load_mtl(p4k, p));
+
+            // Store forward-slash version for output.
+            let material_path = p4k_mtl_path.map(|p| p.replace('\\', "/"));
+
+            // Derive a stable palette_id directly from the SubGeometry tag.
+            // E.g. "Paint_Aurora_Mk2_Pink_Green_Purple" → "paint/paint_aurora_mk2_pink_green_purple".
+            let sanitized_tag: String = tag
+                .chars()
+                .map(|ch| {
+                    if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                        ch.to_ascii_lowercase()
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            let palette_id = Some(format!("paint/{sanitized_tag}"));
+            // Try to look up a localized display name using the sanitized tag.
+            let display_name = display_names.get(sanitized_tag.as_str()).cloned();
+
+            log::info!(
+                "  paint variant: tag={tag:?}, material={:?}, palette_id={:?}, display={:?}",
+                material_path,
+                palette_id,
+                display_name,
+            );
+
+            variants.push(mtl::PaintVariant {
+                subgeometry_tag: tag.to_string(),
+                palette_id,
+                display_name,
+                material_path,
+                materials,
+            });
+        }
+    }
+
+    variants
 }
 
 /// Helper: get an object field from a DataCore Value.

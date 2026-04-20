@@ -547,6 +547,28 @@ def infer_export_root(scene_path: Path, package_dir: str) -> Path:
     return export_root
 
 
+@dataclass(frozen=True)
+class PaintVariantRecord:
+    """One paint cosmetic variant exported from a SubGeometry entry."""
+    palette_id: str
+    exterior_material_sidecar: str | None
+    subgeometry_tag: str | None = None
+    display_name: str | None = None
+
+    @classmethod
+    def from_value(cls, value: Any) -> PaintVariantRecord | None:
+        data = _as_dict(value)
+        palette_id = _as_str(data.get("palette_id"))
+        if not palette_id:
+            return None
+        return cls(
+            palette_id=palette_id,
+            exterior_material_sidecar=_normalize_relative_path(_as_str(data.get("exterior_material_sidecar"))),
+            subgeometry_tag=_as_str(data.get("subgeometry_tag")),
+            display_name=_as_str(data.get("display_name")),
+        )
+
+
 @dataclass
 class PackageBundle:
     export_root: Path
@@ -554,6 +576,7 @@ class PackageBundle:
     scene: SceneManifest
     palettes: dict[str, PaletteRecord]
     liveries: dict[str, LiveryRecord]
+    paints: dict[str, PaintVariantRecord]
     _material_cache: dict[str, tuple[int, MaterialSidecar]] = field(default_factory=dict, repr=False)
     _path_index: dict[str, Path] | None = field(default=None, repr=False)
 
@@ -572,6 +595,7 @@ class PackageBundle:
 
         palettes_path = scene_path.with_name("palettes.json")
         liveries_path = scene_path.with_name("liveries.json")
+        paints_path = scene_path.with_name("paints.json")
         if not palettes_path.is_file():
             raise FileNotFoundError(f"Required palettes manifest not found: {palettes_path}")
         if not liveries_path.is_file():
@@ -588,7 +612,22 @@ class PackageBundle:
             livery.id: livery
             for livery in (LiveryRecord.from_value(item) for item in liveries_data.get("liveries", []))
         }
-        bundle = cls(export_root=export_root, scene_path=scene_path, scene=scene, palettes=palettes, liveries=liveries)
+        # paints.json is optional — older exports won't have it.
+        paints: dict[str, PaintVariantRecord] = {}
+        if paints_path.is_file():
+            paints_data = _load_json(paints_path)
+            for item in paints_data.get("paint_variants", []):
+                record = PaintVariantRecord.from_value(item)
+                if record is not None:
+                    paints[record.palette_id] = record
+        bundle = cls(
+            export_root=export_root,
+            scene_path=scene_path,
+            scene=scene,
+            palettes=palettes,
+            liveries=liveries,
+            paints=paints,
+        )
         _PACKAGE_BUNDLE_CACHE[cache_key] = (manifest_signature, bundle)
         return bundle
 
@@ -634,11 +673,12 @@ class PackageBundle:
         return self._path_index
 
 
-def _package_bundle_manifest_signature(scene_path: Path) -> tuple[int, int, int]:
+def _package_bundle_manifest_signature(scene_path: Path) -> tuple[int, int, int, int]:
     manifest_paths = (
         scene_path,
         scene_path.with_name("palettes.json"),
         scene_path.with_name("liveries.json"),
+        scene_path.with_name("paints.json"),
     )
     signature: list[int] = []
     for path in manifest_paths:

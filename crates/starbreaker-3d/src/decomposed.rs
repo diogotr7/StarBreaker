@@ -28,6 +28,8 @@ pub(crate) struct DecomposedInput {
     pub root_bones: Vec<Bone>,
     pub children: Vec<EntityPayload>,
     pub interiors: LoadedInteriors,
+    /// All available paint variants for this entity, populated from SubGeometry entries.
+    pub paint_variants: Vec<crate::mtl::PaintVariant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -467,6 +469,48 @@ pub(crate) fn write_decomposed_export(
         &input.entity_name,
         root_material_sidecar.as_deref(),
     );
+
+    // Export material sidecars for each paint variant and build the paints.json manifest.
+    let mut paint_variant_json: Vec<serde_json::Value> = Vec::new();
+    for variant in &input.paint_variants {
+        let Some(materials) = variant.materials.as_ref() else { continue };
+        let Some(palette_id) = variant.palette_id.as_ref() else { continue };
+        let variant_material_path = variant
+            .material_path
+            .as_deref()
+            .unwrap_or(&input.material_path);
+        let sidecar_path = write_material_sidecar(
+            &mut files,
+            p4k,
+            &mut png_cache,
+            &mut texture_cache,
+            &palettes_manifest_path,
+            &input.entity_name,
+            &input.geometry_path,
+            variant_material_path,
+            materials,
+            opts.texture_mip,
+            existing_asset_paths,
+        );
+        paint_variant_json.push(serde_json::json!({
+            "subgeometry_tag": variant.subgeometry_tag,
+            "palette_id": palette_id,
+            "display_name": variant.display_name,
+            "exterior_material_sidecar": sidecar_path,
+        }));
+    }
+    if !paint_variant_json.is_empty() {
+        let paints_manifest_path = package_relative_path(&package_name, "paints.json");
+        insert_json_file(
+            &mut files,
+            paints_manifest_path,
+            serde_json::json!({
+                "version": 1,
+                "paint_variants": paint_variant_json,
+            }),
+        );
+    }
+
     report_progress(progress, 0.15, "Writing child assets");
 
     let mut child_instances = Vec::with_capacity(input.children.len());

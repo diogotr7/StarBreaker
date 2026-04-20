@@ -41,6 +41,24 @@ pub struct PaintOverrideInfo {
     pub material_path: Option<String>,
 }
 
+/// One available paint variant for a ship entity.
+/// Populated by enumerating SubGeometry entries on the entity at export time.
+#[derive(Debug, Clone)]
+pub struct PaintVariant {
+    /// SubGeometry @Tag that selects this variant (e.g., "Paint_Aurora_Mk2_Pink_Green_Purple").
+    pub subgeometry_tag: String,
+    /// Palette ID used in paints.json, derived from the SubGeometry tag
+    /// (e.g., "paint/paint_aurora_mk2_pink_green_purple").
+    pub palette_id: Option<String>,
+    /// Localized display name (e.g., "Shimmerscale").
+    pub display_name: Option<String>,
+    /// P4K-relative material file path for this variant
+    /// (e.g., "Data/Objects/Ships/RSI/aurora_mk2/rsi_aurora_mk2_i.mtl").
+    pub material_path: Option<String>,
+    /// Loaded material data for this variant.
+    pub materials: Option<MtlFile>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthoredAttribute {
     pub name: String,

@@ -48,6 +48,11 @@ PROP_SUBMATERIAL_JSON = "starbreaker_submaterial_json"
 PROP_MATERIAL_IDENTITY = "starbreaker_material_identity"
 PROP_IMPORTED_SLOT_MAP = "starbreaker_imported_slot_map"
 PROP_TEMPLATE_PATH = "starbreaker_template_path"
+# Records the active paint variant's exterior material sidecar on the package root.
+# Set when a paint variant with a different material file is applied; used by
+# _effective_exterior_material_sidecars() so that subsequent palette changes still
+# reach the newly-built materials.
+PROP_PAINT_VARIANT_SIDECAR = "starbreaker_paint_variant_sidecar"
 PROP_SOURCE_NODE_NAME = "starbreaker_source_node_name"
 PROP_MISSING_ASSET = "starbreaker_missing_asset"
 PROP_SURFACE_SHADER_MODE = "starbreaker_surface_shader_mode"
@@ -170,23 +175,45 @@ def _exterior_material_sidecars(package: PackageBundle) -> set[str] | None:
     return None
 
 
+def _effective_exterior_material_sidecars(
+    package: PackageBundle,
+    package_root: bpy.types.Object | None,
+) -> set[str] | None:
+    """Return the exterior sidecar set, extended with any active paint variant sidecar.
+
+    When a paint variant with a different material file is active, its sidecar is stored
+    on the package root object.  This helper ensures that palette-change operations also
+    reach materials that were rebuilt from that variant sidecar.
+    """
+    base = _exterior_material_sidecars(package)
+    paint_sidecar = _string_prop(package_root, PROP_PAINT_VARIANT_SIDECAR) if package_root is not None else None
+    if paint_sidecar is None:
+        return base
+    if base is None:
+        return {paint_sidecar}
+    return base | {paint_sidecar}
+
+
 def exterior_palette_ids(package: PackageBundle) -> list[str]:
     """Return palette IDs applicable to the exterior livery group.
 
-    Excludes interior-only palette IDs (those that only appear as the palette_id of
-    livery groups that do NOT contain the root entity).
+    Includes both palette-based IDs (from palettes.json) and paint-variant IDs
+    (from paints.json), minus any IDs that are interior-only.
     """
+    all_ids = set(package.palettes.keys()) | set(package.paints.keys())
+    if not all_ids:
+        return []
     if not package.liveries:
-        return sorted(package.palettes.keys())
+        return sorted(all_ids)
     exterior_sidecars = _exterior_material_sidecars(package)
     if exterior_sidecars is None:
-        return sorted(package.palettes.keys())
+        return sorted(all_ids)
     interior_only_palette_ids: set[str] = set()
     for livery in package.liveries.values():
         if not set(livery.material_sidecars).intersection(exterior_sidecars):
             if livery.palette_id:
                 interior_only_palette_ids.add(livery.palette_id)
-    return sorted(pid for pid in package.palettes.keys() if pid not in interior_only_palette_ids)
+    return sorted(pid for pid in all_ids if pid not in interior_only_palette_ids)
 
 
 def apply_palette_to_selected_package(context: bpy.types.Context, palette_id: str) -> int:
@@ -194,6 +221,13 @@ def apply_palette_to_selected_package(context: bpy.types.Context, palette_id: st
     if package_root is None:
         raise RuntimeError("Select an imported StarBreaker object first")
     return apply_palette_to_package_root(context, package_root, palette_id)
+
+
+def apply_paint_to_selected_package(context: bpy.types.Context, palette_id: str) -> int:
+    package_root = find_package_root(context.active_object)
+    if package_root is None:
+        raise RuntimeError("Select an imported StarBreaker object first")
+    return apply_paint_to_package_root(context, package_root, palette_id)
 
 
 def apply_livery_to_selected_package(context: bpy.types.Context, livery_id: str) -> int:
@@ -231,6 +265,47 @@ def apply_palette_to_package_root(context: bpy.types.Context, package_root: bpy.
     importer = PackageImporter(context, package, package_root=package_root)
     with _suspend_heavy_viewports(context):
         return importer.apply_palette_to_package_root(package_root, palette_id)
+
+
+def apply_paint_to_package_root(context: bpy.types.Context, package_root: bpy.types.Object, palette_id: str) -> int:
+    """Switch to the paint variant whose palette_id matches, rebuilding exterior materials
+    from the variant's material sidecar when it differs from the current one.
+
+    Falls back to a fast palette-only update when no matching paint variant is found
+    or when the variant does not carry a different material sidecar.
+    """
+    package = _load_package_from_root(package_root)
+    variant = package.paints.get(palette_id)
+    target_sidecar = variant.exterior_material_sidecar if variant is not None else None
+
+    if target_sidecar is None:
+        # No paint-variant sidecar for this palette: fast palette-only path.
+        return apply_palette_to_package_root(context, package_root, palette_id)
+
+    # Determine which objects are currently exterior so we know what to rebuild.
+    # We check against both the original livery sidecars AND any previously-active
+    # paint variant sidecar so that consecutive paint switches work correctly.
+    effective_exterior = _effective_exterior_material_sidecars(package, package_root)
+    base_exterior = _exterior_material_sidecars(package)
+    check_sidecars = effective_exterior or base_exterior
+
+    importer = PackageImporter(context, package, package_root=package_root)
+    applied = 0
+    with _suspend_heavy_viewports(context):
+        for obj in _iter_package_objects(package_root):
+            if obj.type != "MESH":
+                continue
+            obj_sidecar = _string_prop(obj, PROP_MATERIAL_SIDECAR)
+            if check_sidecars is not None and (obj_sidecar is None or obj_sidecar not in check_sidecars):
+                continue
+            # Point the object at the new sidecar then rebuild.
+            obj[PROP_MATERIAL_SIDECAR] = target_sidecar
+            applied += importer.rebuild_object_materials(obj, palette_id)
+
+    # Record the active paint variant sidecar so palette-only changes still work.
+    package_root[PROP_PAINT_VARIANT_SIDECAR] = target_sidecar
+    package_root[PROP_PALETTE_ID] = palette_id
+    return applied
 
 
 def apply_livery_to_package_root(context: bpy.types.Context, package_root: bpy.types.Object, livery_id: str) -> int:
@@ -436,7 +511,7 @@ class PackageImporter:
         if effective_palette_id is not None:
             package_root[PROP_PALETTE_ID] = effective_palette_id
 
-        allowed_sidecars = _exterior_material_sidecars(self.package)
+        allowed_sidecars = _effective_exterior_material_sidecars(self.package, package_root)
 
         for material in bpy.data.materials:
             if material.node_tree is None:

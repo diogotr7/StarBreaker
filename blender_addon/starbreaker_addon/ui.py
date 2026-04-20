@@ -19,6 +19,7 @@ from .runtime import (
     PROP_TEMPLATE_KEY,
     SCENE_WEAR_STRENGTH_PROP,
     apply_livery_to_selected_package,
+    apply_paint_to_selected_package,
     apply_palette_to_selected_package,
     dump_selected_metadata,
     exterior_palette_ids,
@@ -87,19 +88,31 @@ def _paint_items(_: bpy.types.Operator, context: bpy.types.Context) -> list[tupl
         _PAINT_ITEMS_CACHE = [("", "No imported package", "Import a StarBreaker package first")]
         return _PAINT_ITEMS_CACHE
     available_ids = exterior_palette_ids(package)
-    _PAINT_ITEMS_CACHE = [
-        (
-            palette_id,
-            _palette_display_name(
-                palette_id,
-                package.palettes[palette_id].source_name,
-                package.palettes[palette_id].display_name,
-            ),
-            package.palettes[palette_id].source_name or palette_id,
+    items = []
+    for palette_id in available_ids:
+        paint_variant = package.paints.get(palette_id)
+        palette_entry = package.palettes.get(palette_id)
+        if paint_variant is None and palette_entry is None:
+            continue
+        source_name = (
+            (paint_variant.display_name if paint_variant else None)
+            or (palette_entry.source_name if palette_entry else None)
+            or palette_id
         )
-        for palette_id in available_ids
-        if palette_id in package.palettes
-    ]
+        display_name_str = (
+            (paint_variant.display_name if paint_variant else None)
+            or (palette_entry.display_name if palette_entry else None)
+        )
+        description = (
+            (paint_variant.subgeometry_tag if paint_variant else None)
+            or source_name
+        )
+        items.append((
+            palette_id,
+            _palette_display_name(palette_id, source_name, display_name_str),
+            description,
+        ))
+    _PAINT_ITEMS_CACHE = items
     return _PAINT_ITEMS_CACHE
 
 
@@ -191,7 +204,7 @@ class STARBREAKER_OT_apply_paint(Operator):
         if not self.paint_id:
             self.report({"ERROR"}, "No paint selected")
             return {"CANCELLED"}
-        apply_palette_to_selected_package(context, self.paint_id)
+        apply_paint_to_selected_package(context, self.paint_id)
         self.report({"INFO"}, f"Applied paint {self.paint_id}")
         return {"FINISHED"}
 
