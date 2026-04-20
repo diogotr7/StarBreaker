@@ -3072,19 +3072,31 @@ class PackageImporter:
     ) -> Any:
         textures = representative_textures(submaterial)
         source = None
-        mask_node = self._image_node(nodes, textures["mask"], x=x, y=y, is_color=False)
-        if mask_node is not None:
-            source = mask_node.outputs[0]
+
+        if submaterial.decoded_feature_flags.has_vertex_colors:
+            vc_node = nodes.new("ShaderNodeVertexColor")
+            vc_node.location = (x, y)
+            vc_node.layer_name = "Col"
+            separate = nodes.new("ShaderNodeSeparateColor")
+            separate.location = (x + 180, y)
+            links.new(vc_node.outputs[0], separate.inputs[0])
+            source = separate.outputs[0]  # R channel = wear
+            node_offset = 360
+        else:
+            mask_node = self._image_node(nodes, textures["mask"], x=x, y=y, is_color=False)
+            if mask_node is not None:
+                source = mask_node.outputs[0]
+            node_offset = 180
 
         wear_base = _float_public_param(submaterial, "WearBlendBase", "DamagePerObjectWear")
         if source is None and wear_base <= 0.0:
             return None
 
         if source is None:
-            source = self._value_socket(nodes, min(1.0, wear_base if wear_base > 0.0 else 1.0), x=x + 180, y=y)
+            source = self._value_socket(nodes, min(1.0, wear_base if wear_base > 0.0 else 1.0), x=x + node_offset, y=y)
         elif wear_base > 0.0 and abs(wear_base - 1.0) > 1e-6:
             multiply = nodes.new("ShaderNodeMath")
-            multiply.location = (x + 180, y)
+            multiply.location = (x + node_offset, y)
             multiply.operation = "MULTIPLY"
             multiply.use_clamp = True
             links.new(source, multiply.inputs[0])
@@ -3094,7 +3106,7 @@ class PackageImporter:
         wear_strength = self._wear_strength()
         if abs(wear_strength - 1.0) > 1e-6:
             strength = nodes.new("ShaderNodeMath")
-            strength.location = (x + 360, y)
+            strength.location = (x + node_offset + 180, y)
             strength.operation = "MULTIPLY"
             strength.use_clamp = True
             links.new(source, strength.inputs[0])
