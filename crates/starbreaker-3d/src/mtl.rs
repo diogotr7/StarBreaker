@@ -137,6 +137,8 @@ pub struct MatLayerSnapshot {
     pub wear_specular_color: Option<[f32; 3]>,
     pub wear_glossiness: Option<f32>,
     pub surface_type: Option<String>,
+    /// Metallic classification: 1.0 for bare conductor surfaces, 0.0 for dielectrics.
+    pub metallic: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -611,6 +613,44 @@ impl SubMaterial {
         let mask = &self.string_gen_mask;
         mask.contains("%DECAL") || self.shader == "MeshDecal"
     }
+}
+
+/// Classify a layer material as metallic based on its name and source path.
+///
+/// More comprehensive than `SubMaterial::metallic()` — also checks common layer
+/// material path patterns (e.g. `metal/ship_mf_raw_steel.mtl`).
+pub fn layer_metallic(material_name: &str, source_path: &str) -> f32 {
+    let name = material_name.to_lowercase();
+    let path = source_path.to_lowercase();
+
+    // Name-based patterns (superset of SubMaterial::metallic())
+    if name.contains("chrome")
+        || name.contains("raw_metal")
+        || name.contains("raw_iron")
+        || name.contains("raw_steel")
+        || name.contains("raw_aluminum")
+        || name.contains("raw_aluminium")
+        || name.contains("brushed_metal")
+        || name.contains("iron_polished")
+        || name.contains("iron_brushed")
+        || name.contains("metal_bare")
+        || name.contains("weapon_bare")
+    {
+        return 1.0;
+    }
+
+    // Path-based: files under a `metal/` directory with "raw" or "bare" in the
+    // filename are bare conductors.
+    let segments: Vec<&str> = path.split(&['/', '\\'][..]).collect();
+    if let Some(dir_idx) = segments.iter().position(|s| *s == "metal") {
+        if let Some(filename) = segments.get(dir_idx + 1) {
+            if filename.contains("raw_") || filename.contains("bare") || filename.contains("chrome") {
+                return 1.0;
+            }
+        }
+    }
+
+    0.0
 }
 
 pub fn resolve_layer_submaterial<'a>(

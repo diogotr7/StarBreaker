@@ -3701,6 +3701,7 @@ fn load_layer_details(
             } else {
                 Some(material.surface_type.clone())
             },
+            metallic: mtl::layer_metallic(&material.name, &layer.path),
         },
         material.resolved_layer_material(),
     ))

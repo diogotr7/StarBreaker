@@ -1279,6 +1279,7 @@ fn build_submaterial_json(
                 "wear_specular_color": snapshot.wear_specular_color,
                 "wear_glossiness": snapshot.wear_glossiness,
                 "surface_type": snapshot.surface_type,
+                "metallic": snapshot.metallic,
             }));
             let resolved_material = layer.resolved_material.as_ref().map(|resolved| serde_json::json!({
                 "name": resolved.name,
