@@ -595,10 +595,7 @@ class PackageImporter:
             finish_channel = node.get("starbreaker_palette_finish_channel")
             if not isinstance(finish_channel, str) or finish_channel not in channel_socket_name:
                 continue
-            resolved = _resolved_layer_palette_diffuse_channel(submaterial, finish_channel, palette)
-            if resolved is None:
-                continue
-            target_socket_name = channel_socket_name.get(resolved, "Primary")
+            target_socket_name = channel_socket_name.get(finish_channel, "Primary")
             palette_color_input = _input_socket(node, "Palette Color")
             if palette_color_input is None:
                 continue
@@ -2081,7 +2078,7 @@ class PackageImporter:
             detail_bump_strength=max(0.0, _float_layer_public_param(layer, "DetailBump")),
             tint_color=layer.tint_color,
             palette=palette,
-            palette_channel_name=_resolved_layer_palette_diffuse_channel(submaterial, layer_channel_name, palette),
+            palette_channel_name=layer_channel_name,
             palette_finish_channel_name=layer_channel_name,
             palette_glossiness=palette_finish_glossiness(palette, layer_channel_name),
             specular_value=_mean_triplet(_layer_snapshot_triplet(layer, "specular")) or 0.0,
@@ -3985,29 +3982,6 @@ def _palette_group_signature(palette: PaletteRecord) -> str:
         'tertiary_gloss': palette_finish_glossiness(palette, 'tertiary'),
     }
     return hashlib.sha1(json.dumps(payload, sort_keys=True).encode('utf-8')).hexdigest()
-
-
-def _resolved_layer_palette_diffuse_channel(
-    submaterial: SubmaterialRecord,
-    channel_name: str | None,
-    palette: PaletteRecord | None,
-) -> str | None:
-    if channel_name in (None, "primary") or palette is None:
-        return channel_name
-    if submaterial.shader_family != "HardSurface":
-        return channel_name
-    if not bool(submaterial.variant_membership.get("layered")) or not bool(submaterial.variant_membership.get("palette_routed")):
-        return channel_name
-    if submaterial.decoded_feature_flags.has_iridescence:
-        return channel_name
-    primary_luma = _mean_triplet(palette_color(palette, "primary")) or 0.0
-    finish = palette_finish_specular(palette, channel_name)
-    if primary_luma > 0.03 or finish is None:
-        return channel_name
-    finish_chroma = max(finish) - min(finish)
-    if finish_chroma < 0.12:
-        return channel_name
-    return "primary"
 
 
 def _hard_surface_angle_shift_enabled(submaterial: SubmaterialRecord) -> bool:
