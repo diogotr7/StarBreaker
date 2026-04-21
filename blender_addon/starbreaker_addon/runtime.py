@@ -220,6 +220,8 @@ def _purge_orphaned_runtime_groups() -> int:
                 name.startswith("StarBreaker Runtime LayeredInputs.") or
                 name.startswith("StarBreaker Runtime Principled.") or
                 name.startswith("StarBreaker Runtime HardSurface Stencil.") or
+                name.startswith("StarBreaker Runtime Channel Split.") or
+                name.startswith("StarBreaker Runtime Smoothness To Roughness.") or
                 name.startswith("StarBreaker Wear Input.") or
                 name.startswith("StarBreaker Iridescence Input.")):
             bpy.data.node_groups.remove(group)
@@ -508,6 +510,8 @@ class PackageImporter:
         self._ensure_runtime_layered_inputs_group()
         self._ensure_runtime_principled_group()
         self._ensure_runtime_hardsurface_stencil_group()
+        self._ensure_runtime_channel_split_group()
+        self._ensure_runtime_smoothness_roughness_group()
         self.runtime_shared_groups_ready = True
 
     def _ensure_material_identity_index(self) -> None:
@@ -3166,6 +3170,100 @@ class PackageImporter:
         group_tree["starbreaker_runtime_built_signature"] = "hardsurface_stencil_v1"
         return group_tree
 
+    def _ensure_runtime_channel_split_group(self) -> bpy.types.ShaderNodeTree:
+        """Wrap a SeparateColor + alpha passthrough into a shader group.
+
+        Used by :meth:`_detail_texture_channels` so top-level material graphs
+        only contain the image texture plus the group node, not a bare
+        ``ShaderNodeSeparateColor``.
+        """
+        self._invalidate_runtime_group_if_unexpected(
+            "StarBreaker Runtime Channel Split",
+            "channel_split_v1",
+            {
+                "NodeGroupInput": 1,
+                "NodeGroupOutput": 1,
+                "ShaderNodeSeparateColor": 1,
+            },
+        )
+        group_tree, group_input, group_output = self._begin_runtime_shared_group(
+            "StarBreaker Runtime Channel Split",
+            signature="channel_split_v1",
+            inputs=[
+                ("Color", "NodeSocketColor"),
+                ("Alpha", "NodeSocketFloat"),
+            ],
+            outputs=[
+                ("R", "NodeSocketFloat"),
+                ("G", "NodeSocketFloat"),
+                ("B", "NodeSocketFloat"),
+                ("Alpha", "NodeSocketFloat"),
+            ],
+        )
+        if group_tree.get("starbreaker_runtime_built_signature") == "channel_split_v1":
+            return group_tree
+        nodes = group_tree.nodes
+        links = group_tree.links
+
+        _set_group_input_default(group_input, "Color", (1.0, 1.0, 1.0, 1.0))
+        _set_group_input_default(group_input, "Alpha", 1.0)
+
+        separate = nodes.new("ShaderNodeSeparateColor")
+        separate.location = (0, 0)
+        if hasattr(separate, "mode"):
+            separate.mode = "RGB"
+        links.new(_output_socket(group_input, "Color"), separate.inputs[0])
+        links.new(separate.outputs[0], group_output.inputs["R"])
+        links.new(separate.outputs[1], group_output.inputs["G"])
+        links.new(separate.outputs[2], group_output.inputs["B"])
+        links.new(_output_socket(group_input, "Alpha"), group_output.inputs["Alpha"])
+
+        group_tree["starbreaker_runtime_built_signature"] = "channel_split_v1"
+        return group_tree
+
+    def _ensure_runtime_smoothness_roughness_group(self) -> bpy.types.ShaderNodeTree:
+        """Wrap the (1 - smoothness) invert into a shader group.
+
+        Used by :meth:`_invert_value_socket` (only caller) so layered_wear
+        smoothness-to-roughness conversion keeps the top level clean.
+        """
+        self._invalidate_runtime_group_if_unexpected(
+            "StarBreaker Runtime Smoothness To Roughness",
+            "smoothness_roughness_v1",
+            {
+                "NodeGroupInput": 1,
+                "NodeGroupOutput": 1,
+                "ShaderNodeMath": 1,
+            },
+        )
+        group_tree, group_input, group_output = self._begin_runtime_shared_group(
+            "StarBreaker Runtime Smoothness To Roughness",
+            signature="smoothness_roughness_v1",
+            inputs=[
+                ("Smoothness", "NodeSocketFloat"),
+            ],
+            outputs=[
+                ("Roughness", "NodeSocketFloat"),
+            ],
+        )
+        if group_tree.get("starbreaker_runtime_built_signature") == "smoothness_roughness_v1":
+            return group_tree
+        nodes = group_tree.nodes
+        links = group_tree.links
+
+        _set_group_input_default(group_input, "Smoothness", 0.5)
+
+        invert = nodes.new("ShaderNodeMath")
+        invert.location = (0, 0)
+        invert.operation = "SUBTRACT"
+        invert.use_clamp = True
+        invert.inputs[0].default_value = 1.0
+        links.new(_output_socket(group_input, "Smoothness"), invert.inputs[1])
+        links.new(invert.outputs[0], group_output.inputs["Roughness"])
+
+        group_tree["starbreaker_runtime_built_signature"] = "smoothness_roughness_v1"
+        return group_tree
+
     def _ensure_runtime_illum_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime Illum",
@@ -3505,16 +3603,20 @@ class PackageImporter:
         image_node = self._image_node(nodes, image_path, x=x, y=y, is_color=False)
         if image_node is None:
             return None
-        separate = nodes.new("ShaderNodeSeparateColor")
-        separate.location = (x + 180, y)
-        if hasattr(separate, "mode"):
-            separate.mode = "RGB"
-        image_node.id_data.links.new(image_node.outputs[0], separate.inputs[0])
+        group_node = nodes.new("ShaderNodeGroup")
+        group_node.location = (x + 180, y)
+        group_node.node_tree = self._ensure_runtime_channel_split_group()
+        group_node.label = "StarBreaker Channel Split"
+        links = image_node.id_data.links
+        links.new(image_node.outputs[0], group_node.inputs["Color"])
+        alpha_socket = _output_socket(image_node, "Alpha")
+        if alpha_socket is not None:
+            links.new(alpha_socket, group_node.inputs["Alpha"])
         return {
-            "red": _output_socket(separate, "Red", "R"),
-            "green": _output_socket(separate, "Green", "G"),
-            "blue": _output_socket(separate, "Blue", "B"),
-            "alpha": _output_socket(image_node, "Alpha"),
+            "red": group_node.outputs["R"],
+            "green": group_node.outputs["G"],
+            "blue": group_node.outputs["B"],
+            "alpha": group_node.outputs["Alpha"],
         }
 
     def _apply_detail_color(
@@ -4259,12 +4361,12 @@ class PackageImporter:
         return color, max(0.0, min(1.0, alpha))
 
     def _invert_value_socket(self, nodes: bpy.types.Nodes, source_socket: Any, *, x: int, y: int) -> Any:
-        invert = nodes.new("ShaderNodeMath")
-        invert.location = (x, y)
-        invert.operation = "SUBTRACT"
-        invert.inputs[0].default_value = 1.0
-        invert.id_data.links.new(source_socket, invert.inputs[1])
-        return invert.outputs[0]
+        group_node = nodes.new("ShaderNodeGroup")
+        group_node.location = (x, y)
+        group_node.node_tree = self._ensure_runtime_smoothness_roughness_group()
+        group_node.label = "StarBreaker Smoothness To Roughness"
+        group_node.id_data.links.new(source_socket, group_node.inputs["Smoothness"])
+        return group_node.outputs["Roughness"]
 
     def _source_slot_alpha_socket(
         self,
