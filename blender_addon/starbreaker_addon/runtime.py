@@ -147,6 +147,64 @@ def import_package(
     return root
 
 
+#: Allowed ``bl_idname`` values for nodes at the top level of a built material.
+#:
+#: Phase 6 of the blender-exporter plan constrains material top-level node
+#: trees to the orchestration layer only: palette groups, image textures,
+#: layer / shader helper groups, and the material output. Anything else
+#: belongs inside an owned group. See ``docs/StarBreaker/todo.md`` Phase 6
+#: for the authoritative definition.
+MATERIAL_TOP_LEVEL_ALLOWED_BL_IDNAMES: frozenset[str] = frozenset({
+    "ShaderNodeOutputMaterial",
+    "ShaderNodeTexImage",
+    "ShaderNodeGroup",
+})
+
+
+def _material_top_level_violations(
+    material: "bpy.types.Material",
+    *,
+    extra_allowed: frozenset[str] | None = None,
+) -> list[tuple[str, str]]:
+    """Return ``[(node_name, bl_idname), ...]`` for nodes that break the Phase 6 rule.
+
+    The rule is documented in :data:`MATERIAL_TOP_LEVEL_ALLOWED_BL_IDNAMES`:
+    material top-level trees may only contain palette / layer / shader group
+    nodes, image texture nodes, and the material output. Callers that still
+    have known-deferred helper types at top level can pass them through
+    ``extra_allowed`` to silence those during targeted validation.
+    """
+    if material is None or material.node_tree is None:
+        return []
+    allowed = MATERIAL_TOP_LEVEL_ALLOWED_BL_IDNAMES
+    if extra_allowed:
+        allowed = allowed | extra_allowed
+    return [
+        (node.name, node.bl_idname)
+        for node in material.node_tree.nodes
+        if node.bl_idname not in allowed
+    ]
+
+
+def _assert_material_top_level_clean(
+    material: "bpy.types.Material",
+    *,
+    extra_allowed: frozenset[str] | None = None,
+) -> None:
+    """Raise ``AssertionError`` when ``material``'s top level violates Phase 6.
+
+    Used from the unittest harness and may be called from runtime build paths
+    under debug flags. See :func:`_material_top_level_violations` for the rule.
+    """
+    violations = _material_top_level_violations(material, extra_allowed=extra_allowed)
+    if not violations:
+        return
+    detail = ", ".join(f"{name}:{bl_idname}" for name, bl_idname in violations)
+    raise AssertionError(
+        f"Material {material.name!r} violates top-level hygiene: {detail}"
+    )
+
+
 def _purge_orphaned_runtime_groups() -> int:
     removed = 0
     for group in list(bpy.data.node_groups):
@@ -159,6 +217,8 @@ def _purge_orphaned_runtime_groups() -> int:
                 name.startswith("StarBreaker Runtime NoDraw.") or
                 name.startswith("StarBreaker Runtime Screen.") or
                 name.startswith("StarBreaker Runtime Effect.") or
+                name.startswith("StarBreaker Runtime LayeredInputs.") or
+                name.startswith("StarBreaker Runtime Principled.") or
                 name.startswith("StarBreaker Wear Input.") or
                 name.startswith("StarBreaker Iridescence Input.")):
             bpy.data.node_groups.remove(group)
@@ -444,6 +504,8 @@ class PackageImporter:
         self._ensure_runtime_glass_group()
         self._ensure_runtime_screen_group()
         self._ensure_runtime_effect_group()
+        self._ensure_runtime_layered_inputs_group()
+        self._ensure_runtime_principled_group()
         self.runtime_shared_groups_ready = True
 
     def _ensure_material_identity_index(self) -> None:
@@ -2572,6 +2634,269 @@ class PackageImporter:
         group_tree["starbreaker_runtime_built_signature"] = "effect_v1"
         return group_tree
 
+    def _ensure_runtime_layered_inputs_group(self) -> bpy.types.ShaderNodeTree:
+        """Helper group for layered-wear base color / roughness composition.
+
+        Inputs:
+            Base Image        color   (primary diffuse image; default white)
+            Base Palette      color   (palette channel for primary; default white = pass-through)
+            Layer Image       color   (wear-layer diffuse image; default white)
+            Layer Tint        color   (per-layer tint color; default white = pass-through)
+            Layer Palette     color   (palette channel for wear layer; default white)
+            Wear Factor       float   (0 = pure base, 1 = pure layer; default 0)
+            Base Roughness    float   (default 0.45)
+            Layer Roughness   float   (default 0.45)
+
+        Outputs:
+            Color         color
+            Roughness     float
+
+        Multiplicative composition: the ``* default white`` inputs are identity
+        when unused, so callers only need to wire sockets that are actually
+        present per-material.
+        """
+        self._invalidate_runtime_group_if_unexpected(
+            "StarBreaker Runtime LayeredInputs",
+            "layered_inputs_v1",
+            {
+                "NodeGroupInput": 1,
+                "NodeGroupOutput": 1,
+                "ShaderNodeMixRGB": 4,
+                "ShaderNodeMix": 1,
+            },
+        )
+        group_tree, group_input, group_output = self._begin_runtime_shared_group(
+            "StarBreaker Runtime LayeredInputs",
+            signature="layered_inputs_v1",
+            inputs=[
+                ("Base Image", "NodeSocketColor"),
+                ("Base Palette", "NodeSocketColor"),
+                ("Layer Image", "NodeSocketColor"),
+                ("Layer Tint", "NodeSocketColor"),
+                ("Layer Palette", "NodeSocketColor"),
+                ("Wear Factor", "NodeSocketFloat"),
+                ("Base Roughness", "NodeSocketFloat"),
+                ("Layer Roughness", "NodeSocketFloat"),
+            ],
+            outputs=[
+                ("Color", "NodeSocketColor"),
+                ("Roughness", "NodeSocketFloat"),
+            ],
+        )
+        if group_tree.get("starbreaker_runtime_built_signature") == "layered_inputs_v1":
+            return group_tree
+        nodes = group_tree.nodes
+        links = group_tree.links
+
+        # Default identity values so disconnected sockets pass through.
+        _set_group_input_default(group_input, "Base Image", (1.0, 1.0, 1.0, 1.0))
+        _set_group_input_default(group_input, "Base Palette", (1.0, 1.0, 1.0, 1.0))
+        _set_group_input_default(group_input, "Layer Image", (1.0, 1.0, 1.0, 1.0))
+        _set_group_input_default(group_input, "Layer Tint", (1.0, 1.0, 1.0, 1.0))
+        _set_group_input_default(group_input, "Layer Palette", (1.0, 1.0, 1.0, 1.0))
+        _set_group_input_default(group_input, "Wear Factor", 0.0)
+        _set_group_input_default(group_input, "Base Roughness", 0.45)
+        _set_group_input_default(group_input, "Layer Roughness", 0.45)
+
+        # base_final = Base Image * Base Palette
+        base_mult = nodes.new("ShaderNodeMixRGB")
+        base_mult.location = (-420, 260)
+        base_mult.blend_type = "MULTIPLY"
+        base_mult.inputs[0].default_value = 1.0
+        links.new(_output_socket(group_input, "Base Image"), base_mult.inputs[1])
+        links.new(_output_socket(group_input, "Base Palette"), base_mult.inputs[2])
+
+        # layer_tinted = Layer Image * Layer Tint
+        layer_tint_mult = nodes.new("ShaderNodeMixRGB")
+        layer_tint_mult.location = (-420, 40)
+        layer_tint_mult.blend_type = "MULTIPLY"
+        layer_tint_mult.inputs[0].default_value = 1.0
+        links.new(_output_socket(group_input, "Layer Image"), layer_tint_mult.inputs[1])
+        links.new(_output_socket(group_input, "Layer Tint"), layer_tint_mult.inputs[2])
+
+        # layer_final = layer_tinted * Layer Palette
+        layer_palette_mult = nodes.new("ShaderNodeMixRGB")
+        layer_palette_mult.location = (-220, 40)
+        layer_palette_mult.blend_type = "MULTIPLY"
+        layer_palette_mult.inputs[0].default_value = 1.0
+        links.new(layer_tint_mult.outputs[0], layer_palette_mult.inputs[1])
+        links.new(_output_socket(group_input, "Layer Palette"), layer_palette_mult.inputs[2])
+
+        # out_color = mix(base_final, layer_final, Wear Factor)
+        wear_color_mix = nodes.new("ShaderNodeMixRGB")
+        wear_color_mix.location = (20, 160)
+        wear_color_mix.blend_type = "MIX"
+        links.new(_output_socket(group_input, "Wear Factor"), wear_color_mix.inputs[0])
+        links.new(base_mult.outputs[0], wear_color_mix.inputs[1])
+        links.new(layer_palette_mult.outputs[0], wear_color_mix.inputs[2])
+
+        # out_rough = mix(Base Roughness, Layer Roughness, Wear Factor)
+        wear_rough_mix = nodes.new("ShaderNodeMix")
+        wear_rough_mix.location = (20, -120)
+        if hasattr(wear_rough_mix, "data_type"):
+            wear_rough_mix.data_type = "FLOAT"
+        links.new(_output_socket(group_input, "Wear Factor"), wear_rough_mix.inputs[0])
+        links.new(_output_socket(group_input, "Base Roughness"), wear_rough_mix.inputs[2])
+        links.new(_output_socket(group_input, "Layer Roughness"), wear_rough_mix.inputs[3])
+
+        links.new(wear_color_mix.outputs[0], group_output.inputs["Color"])
+        links.new(wear_rough_mix.outputs[0], group_output.inputs["Roughness"])
+        group_tree["starbreaker_runtime_built_signature"] = "layered_inputs_v1"
+        return group_tree
+
+    def _ensure_runtime_principled_group(self) -> bpy.types.ShaderNodeTree:
+        """Wrap Principled BSDF + NormalMap + Bump + shadowless mix into a shader group.
+
+        Inputs:
+            Base Color          color
+            Roughness           float
+            Metallic            float   (default 0)
+            Normal Color        color   (raw image color; default (0.5,0.5,1,1))
+            Normal Strength     float   (default 1.0)
+            Use Normal          float   (0 = geometry normal, 1 = normal map)
+            Height              float   (default 0)
+            Bump Strength       float   (default 0.02)
+            Use Bump            float   (0 = skip bump, 1 = apply bump)
+            Alpha               float   (default 1)
+            Emission Color      color   (default black)
+            Emission Strength   float   (default 0)
+            Shadowless          float   (0 = cast shadows, 1 = invisible to shadow rays)
+
+        Outputs:
+            Shader              shader
+        """
+        self._invalidate_runtime_group_if_unexpected(
+            "StarBreaker Runtime Principled",
+            "principled_v1",
+            {
+                "NodeGroupInput": 1,
+                "NodeGroupOutput": 1,
+                "ShaderNodeBsdfPrincipled": 1,
+                "ShaderNodeNormalMap": 1,
+                "ShaderNodeBump": 1,
+                "ShaderNodeNewGeometry": 1,
+                "ShaderNodeMix": 2,
+                "ShaderNodeLightPath": 1,
+                "ShaderNodeBsdfTransparent": 1,
+                "ShaderNodeMixShader": 1,
+                "ShaderNodeMath": 1,
+            },
+        )
+        group_tree, group_input, group_output = self._begin_runtime_shared_group(
+            "StarBreaker Runtime Principled",
+            signature="principled_v1",
+            inputs=[
+                ("Base Color", "NodeSocketColor"),
+                ("Roughness", "NodeSocketFloat"),
+                ("Metallic", "NodeSocketFloat"),
+                ("Normal Color", "NodeSocketColor"),
+                ("Normal Strength", "NodeSocketFloat"),
+                ("Use Normal", "NodeSocketFloat"),
+                ("Height", "NodeSocketFloat"),
+                ("Bump Strength", "NodeSocketFloat"),
+                ("Use Bump", "NodeSocketFloat"),
+                ("Alpha", "NodeSocketFloat"),
+                ("Emission Color", "NodeSocketColor"),
+                ("Emission Strength", "NodeSocketFloat"),
+                ("Shadowless", "NodeSocketFloat"),
+            ],
+            outputs=[("Shader", "NodeSocketShader")],
+        )
+        if group_tree.get("starbreaker_runtime_built_signature") == "principled_v1":
+            return group_tree
+        nodes = group_tree.nodes
+        links = group_tree.links
+
+        _set_group_input_default(group_input, "Base Color", (1.0, 1.0, 1.0, 1.0))
+        _set_group_input_default(group_input, "Roughness", 0.45)
+        _set_group_input_default(group_input, "Metallic", 0.0)
+        _set_group_input_default(group_input, "Normal Color", (0.5, 0.5, 1.0, 1.0))
+        _set_group_input_default(group_input, "Normal Strength", 1.0)
+        _set_group_input_default(group_input, "Use Normal", 0.0)
+        _set_group_input_default(group_input, "Height", 0.0)
+        _set_group_input_default(group_input, "Bump Strength", 0.02)
+        _set_group_input_default(group_input, "Use Bump", 0.0)
+        _set_group_input_default(group_input, "Alpha", 1.0)
+        _set_group_input_default(group_input, "Emission Color", (0.0, 0.0, 0.0, 1.0))
+        _set_group_input_default(group_input, "Emission Strength", 0.0)
+        _set_group_input_default(group_input, "Shadowless", 0.0)
+
+        # Normal map chain: NormalMap driven by Normal Color + Strength.
+        normal_map = nodes.new("ShaderNodeNormalMap")
+        normal_map.location = (-620, -40)
+        links.new(_output_socket(group_input, "Normal Color"), _input_socket(normal_map, "Color"))
+        links.new(_output_socket(group_input, "Normal Strength"), _input_socket(normal_map, "Strength"))
+
+        # Fallback geometry normal.
+        geometry = nodes.new("ShaderNodeNewGeometry")
+        geometry.location = (-620, -260)
+
+        # Toggle between geometry and normal map via Use Normal.
+        normal_toggle = nodes.new("ShaderNodeMix")
+        normal_toggle.location = (-420, -140)
+        if hasattr(normal_toggle, "data_type"):
+            normal_toggle.data_type = "VECTOR"
+        links.new(_output_socket(group_input, "Use Normal"), normal_toggle.inputs[0])
+        links.new(_output_socket(geometry, "Normal"), normal_toggle.inputs[4])
+        links.new(_output_socket(normal_map, "Normal"), normal_toggle.inputs[5])
+
+        # Bump node: feeds off the toggled normal vector.
+        bump = nodes.new("ShaderNodeBump")
+        bump.location = (-200, -180)
+        links.new(_output_socket(group_input, "Height"), _input_socket(bump, "Height"))
+        links.new(_output_socket(group_input, "Bump Strength"), _input_socket(bump, "Strength"))
+        links.new(normal_toggle.outputs[1], _input_socket(bump, "Normal"))
+
+        # Toggle between "no bump" (normal_toggle output) and bump output.
+        bump_toggle = nodes.new("ShaderNodeMix")
+        bump_toggle.location = (0, -120)
+        if hasattr(bump_toggle, "data_type"):
+            bump_toggle.data_type = "VECTOR"
+        links.new(_output_socket(group_input, "Use Bump"), bump_toggle.inputs[0])
+        links.new(normal_toggle.outputs[1], bump_toggle.inputs[4])
+        links.new(_output_socket(bump, "Normal"), bump_toggle.inputs[5])
+
+        # Principled BSDF.
+        principled = nodes.new("ShaderNodeBsdfPrincipled")
+        principled.location = (220, 0)
+        principled.label = "StarBreaker Surface"
+        links.new(_output_socket(group_input, "Base Color"), _input_socket(principled, "Base Color"))
+        links.new(_output_socket(group_input, "Roughness"), _input_socket(principled, "Roughness"))
+        links.new(_output_socket(group_input, "Metallic"), _input_socket(principled, "Metallic"))
+        alpha_input = _input_socket(principled, "Alpha")
+        if alpha_input is not None:
+            links.new(_output_socket(group_input, "Alpha"), alpha_input)
+        emission_color_input = _input_socket(principled, "Emission Color", "Emission")
+        if emission_color_input is not None:
+            links.new(_output_socket(group_input, "Emission Color"), emission_color_input)
+        emission_strength_input = _input_socket(principled, "Emission Strength")
+        if emission_strength_input is not None:
+            links.new(_output_socket(group_input, "Emission Strength"), emission_strength_input)
+        links.new(bump_toggle.outputs[1], _input_socket(principled, "Normal"))
+
+        # Shadowless branch: factor = Is Shadow Ray * Shadowless.
+        light_path = nodes.new("ShaderNodeLightPath")
+        light_path.location = (220, -320)
+        shadow_gate = nodes.new("ShaderNodeMath")
+        shadow_gate.location = (420, -280)
+        shadow_gate.operation = "MULTIPLY"
+        shadow_gate.use_clamp = True
+        links.new(_output_socket(light_path, "Is Shadow Ray"), shadow_gate.inputs[0])
+        links.new(_output_socket(group_input, "Shadowless"), shadow_gate.inputs[1])
+
+        transparent = nodes.new("ShaderNodeBsdfTransparent")
+        transparent.location = (420, -120)
+
+        shadow_mix = nodes.new("ShaderNodeMixShader")
+        shadow_mix.location = (620, -40)
+        links.new(shadow_gate.outputs[0], shadow_mix.inputs[0])
+        links.new(principled.outputs[0], shadow_mix.inputs[1])
+        links.new(transparent.outputs[0], shadow_mix.inputs[2])
+
+        links.new(shadow_mix.outputs[0], group_output.inputs["Shader"])
+        group_tree["starbreaker_runtime_built_signature"] = "principled_v1"
+        return group_tree
+
     def _ensure_runtime_illum_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime Illum",
@@ -3847,6 +4172,209 @@ class PackageImporter:
             links.new(surface, output.inputs[0])
         self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
 
+    def _build_layered_wear_principled_material(
+        self,
+        material: bpy.types.Material,
+        submaterial: SubmaterialRecord,
+        palette: PaletteRecord | None,
+        plan: Any,
+    ) -> None:
+        """Clean-top-level layered wear Principled builder.
+
+        Top level is restricted to Material Output, Palette group nodes,
+        Image Texture nodes, Wear Input helper group, LayeredInputs helper
+        group, and Principled shader group. All BSDF/NormalMap/Bump/MixRGB/
+        Mix/RGB nodes that the legacy ``_build_principled_material`` emitted
+        at the material top level live inside the two new shader groups;
+        per-layer tint, shadowless / emission / alpha flags, and roughness
+        defaults are seeded as group-input socket defaults.
+
+        Residual top-level helpers (``SeparateColor`` from the metallic-
+        roughness split in ``_roughness_group_source_socket`` and the
+        ``Math`` invert in ``_layer_roughness_socket``) are intentionally
+        left in place and covered by the deferred LayerSurface detail-channel
+        refactor.
+        """
+        nodes = material.node_tree.nodes
+        links = material.node_tree.links
+
+        output = nodes.new("ShaderNodeOutputMaterial")
+        output.location = (700, 0)
+
+        principled_group = nodes.new("ShaderNodeGroup")
+        principled_group.node_tree = self._ensure_runtime_principled_group()
+        _refresh_group_node_sockets(principled_group)
+        principled_group.location = (420, 0)
+        principled_group.label = "StarBreaker Principled"
+
+        layered_group = nodes.new("ShaderNodeGroup")
+        layered_group.node_tree = self._ensure_runtime_layered_inputs_group()
+        _refresh_group_node_sockets(layered_group)
+        layered_group.location = (120, 0)
+        layered_group.label = "StarBreaker LayeredInputs"
+
+        textures = representative_textures(submaterial)
+
+        # Base image (primary diffuse).
+        base_image_node = self._image_node(
+            nodes, textures["base_color"], x=-280, y=220, is_color=True
+        )
+        if base_image_node is not None:
+            base_image_socket = _input_socket(layered_group, "Base Image")
+            if base_image_socket is not None:
+                links.new(base_image_node.outputs[0], base_image_socket)
+
+        # Base palette channel (optional).
+        channels = material_palette_channels(submaterial)
+        active_channel = submaterial.palette_routing.material_channel or (
+            channels[0] if channels else None
+        )
+        if active_channel is not None and palette is not None:
+            base_palette_socket = self._palette_color_socket(
+                nodes, palette, active_channel.name, x=-280, y=40
+            )
+            if base_palette_socket is not None:
+                target = _input_socket(layered_group, "Base Palette")
+                if target is not None:
+                    self._link_color_output(base_palette_socket, target)
+
+        # Wear layer (tint + palette + diffuse).
+        wear_layer = self._layered_wear_layer(submaterial)
+        if wear_layer is None:
+            wear_layer = next(
+                (layer for layer in submaterial.layer_manifest if layer.diffuse_export_path),
+                None,
+            )
+        if wear_layer is not None:
+            if wear_layer.diffuse_export_path:
+                layer_image_node = self._image_node(
+                    nodes, wear_layer.diffuse_export_path, x=-280, y=-140, is_color=True
+                )
+                if layer_image_node is not None:
+                    target = _input_socket(layered_group, "Layer Image")
+                    if target is not None:
+                        links.new(layer_image_node.outputs[0], target)
+            if wear_layer.tint_color is not None and any(
+                abs(channel - 1.0) > 1e-6 for channel in wear_layer.tint_color
+            ):
+                tint_socket = _input_socket(layered_group, "Layer Tint")
+                if tint_socket is not None:
+                    tint_socket.default_value = (*wear_layer.tint_color, 1.0)
+            if wear_layer.palette_channel is not None and palette is not None:
+                layer_palette_socket = self._palette_color_socket(
+                    nodes, palette, wear_layer.palette_channel.name, x=-280, y=-320
+                )
+                if layer_palette_socket is not None:
+                    target = _input_socket(layered_group, "Layer Palette")
+                    if target is not None:
+                        self._link_color_output(layer_palette_socket, target)
+
+        # Wear factor (Wear Input helper group — already wrapped).
+        wear_factor_socket = self._layered_wear_factor_socket(
+            nodes, links, submaterial, x=-60, y=-460
+        )
+        if wear_factor_socket is not None:
+            target = _input_socket(layered_group, "Wear Factor")
+            if target is not None:
+                links.new(wear_factor_socket, target)
+
+        # Roughness (base + wear layer).
+        base_roughness_source = self._roughness_group_source_socket(
+            nodes, submaterial, textures["roughness"], x=-280, y=-620
+        )
+        base_roughness_target = _input_socket(layered_group, "Base Roughness")
+        if base_roughness_source is not None and base_roughness_target is not None:
+            links.new(base_roughness_source, base_roughness_target)
+
+        layer_roughness_source = self._layer_roughness_socket(
+            nodes, submaterial, x=-280, y=-780
+        )
+        layer_roughness_target = _input_socket(layered_group, "Layer Roughness")
+        if layer_roughness_source is not None and layer_roughness_target is not None:
+            links.new(layer_roughness_source, layer_roughness_target)
+
+        # LayeredInputs outputs → Principled group inputs.
+        color_output = _output_socket(layered_group, "Color")
+        roughness_output = _output_socket(layered_group, "Roughness")
+        if color_output is not None:
+            target = _input_socket(principled_group, "Base Color")
+            if target is not None:
+                links.new(color_output, target)
+        if roughness_output is not None:
+            target = _input_socket(principled_group, "Roughness")
+            if target is not None:
+                links.new(roughness_output, target)
+
+        # Normal map.
+        normal_path = textures["normal"]
+        if normal_path:
+            normal_node = self._image_node(
+                nodes, normal_path, x=-280, y=-940, is_color=False
+            )
+            if normal_node is not None:
+                target = _input_socket(principled_group, "Normal Color")
+                if target is not None:
+                    links.new(normal_node.outputs[0], target)
+                use_normal = _input_socket(principled_group, "Use Normal")
+                if use_normal is not None:
+                    use_normal.default_value = 1.0
+
+        # Height / bump.
+        height_path = textures["height"]
+        if height_path:
+            height_node = self._image_node(
+                nodes, height_path, x=-280, y=-1100, is_color=False
+            )
+            if height_node is not None:
+                target = _input_socket(principled_group, "Height")
+                if target is not None:
+                    links.new(height_node.outputs[0], target)
+                use_bump = _input_socket(principled_group, "Use Bump")
+                if use_bump is not None:
+                    use_bump.default_value = 1.0
+
+        # Alpha.
+        if plan.uses_alpha:
+            alpha_source = self._alpha_source_socket(
+                nodes, submaterial, textures, x=-280, y=-1260
+            )
+            if alpha_source is not None:
+                target = _input_socket(principled_group, "Alpha")
+                if target is not None:
+                    links.new(alpha_source, target)
+
+        # Emission.
+        if plan.uses_emission:
+            strength_socket = _input_socket(principled_group, "Emission Strength")
+            if strength_socket is not None:
+                strength_socket.default_value = 2.0
+            if color_output is not None:
+                target = _input_socket(principled_group, "Emission Color")
+                if target is not None:
+                    links.new(color_output, target)
+            elif palette is not None and plan.uses_palette:
+                emissive = self._palette_color_socket(
+                    nodes, palette, "primary", x=-280, y=360
+                )
+                if emissive is not None:
+                    target = _input_socket(principled_group, "Emission Color")
+                    if target is not None:
+                        self._link_color_output(emissive, target)
+
+        # Shadowless.
+        if self._plan_casts_no_shadows(plan):
+            shadow_socket = _input_socket(principled_group, "Shadowless")
+            if shadow_socket is not None:
+                shadow_socket.default_value = 1.0
+
+        shader_out = _output_socket(principled_group, "Shader")
+        if shader_out is not None:
+            links.new(shader_out, output.inputs[0])
+
+        self._configure_material(
+            material, blend_method=plan.blend_method, shadow_method=plan.shadow_method
+        )
+
     def _build_principled_material(
         self,
         material: bpy.types.Material,
@@ -3858,6 +4386,10 @@ class PackageImporter:
         links = material.node_tree.links
         nodes.clear()
 
+        if plan.template_key == "layered_wear":
+            self._build_layered_wear_principled_material(material, submaterial, palette, plan)
+            return
+
         output = nodes.new("ShaderNodeOutputMaterial")
         output.location = (700, 0)
         principled = self._create_surface_bsdf(nodes)
@@ -3868,11 +4400,6 @@ class PackageImporter:
         if base_socket is None and palette is not None and plan.uses_palette:
             primary = self._palette_color_socket(nodes, palette, "primary", x=80, y=120)
             base_socket = primary
-
-        wear_factor_socket = None
-        if plan.template_key == "layered_wear":
-            wear_factor_socket = self._layered_wear_factor_socket(nodes, links, submaterial, x=40, y=-20)
-            base_socket = self._mix_layered_base_color(nodes, links, submaterial, palette, base_socket, wear_factor_socket)
 
         if base_socket is not None:
             links.new(base_socket, _input_socket(principled, "Base Color"))
@@ -3895,15 +4422,6 @@ class PackageImporter:
             x=80,
             y=-120,
         )
-        if plan.template_key == "layered_wear":
-            roughness_source = self._mix_layered_roughness(
-                nodes,
-                links,
-                submaterial,
-                roughness_source,
-                wear_factor_socket,
-                default_value=roughness_default,
-            )
         if roughness_socket is not None:
             if roughness_source is not None:
                 links.new(roughness_source, roughness_socket)
@@ -5648,6 +6166,23 @@ def _output_socket(node: Any, *names: str) -> Any:
                 if socket is not None:
                     return socket
     return None
+
+
+def _set_group_input_default(group_input_node: Any, socket_name: str, value: Any) -> None:
+    """Set the default value for a named output socket on a NodeGroupInput node.
+
+    Used inside `_ensure_runtime_*_group` builders to seed identity defaults so
+    callers may leave sockets unlinked without changing the composed behavior.
+    """
+    if group_input_node is None:
+        return
+    socket = group_input_node.outputs.get(socket_name)
+    if socket is None:
+        return
+    try:
+        socket.default_value = value
+    except Exception:
+        pass
 
 
 def _refresh_group_node_sockets(node: Any) -> None:
