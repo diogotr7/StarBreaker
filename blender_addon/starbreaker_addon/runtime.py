@@ -1273,6 +1273,7 @@ class PackageImporter:
             detail_slots=("TexSlot7", "TexSlot13", "TexSlot6"),
         )
         wear_factor = self._layered_wear_factor_socket(nodes, links, submaterial, x=-720, y=-120)
+        damage_factor = self._layered_damage_factor_socket(nodes, links, submaterial, x=-720, y=-240)
 
         macro_normal_ref = _submaterial_texture_reference(submaterial, slots=("TexSlot3",), roles=("normal_gloss",))
         macro_normal_node = self._image_node(
@@ -1331,6 +1332,7 @@ class PackageImporter:
         iridescence_active = angle_shift_enabled and (submaterial.decoded_feature_flags.has_iridescence or _palette_has_iridescence(palette))
         self._set_socket_default(_input_socket(shader_group, "Iridescence Factor"), 1.0 if iridescence_active else 0.0)
         self._set_socket_default(_input_socket(shader_group, "Wear Factor"), 0.0)
+        self._set_socket_default(_input_socket(shader_group, "Damage Factor"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Macro Normal Color"), (0.5, 0.5, 1.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Macro Normal Strength"), 0.4)
         self._set_socket_default(_input_socket(shader_group, "Displacement Strength"), 0.05)
@@ -1356,6 +1358,7 @@ class PackageImporter:
         self._link_group_input(links, secondary.metallic, shader_group, "Secondary Metallic")
         self._link_group_input(links, secondary.normal, shader_group, "Secondary Normal")
         self._link_group_input(links, wear_factor, shader_group, "Wear Factor")
+        self._link_group_input(links, damage_factor, shader_group, "Damage Factor")
         self._link_group_input(
             links,
             macro_normal_node.outputs[0] if macro_normal_node is not None else None,
@@ -1784,7 +1787,7 @@ class PackageImporter:
     def _ensure_runtime_hard_surface_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime HardSurface",
-            "hard_surface_v14",
+            "hard_surface_v15",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -1794,7 +1797,7 @@ class PackageImporter:
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime HardSurface",
-            signature="hard_surface_v14",
+            signature="hard_surface_v15",
             inputs=[
                 ("Top Base Color", "NodeSocketColor"),
                 ("Top Alpha", "NodeSocketFloat"),
@@ -1816,6 +1819,7 @@ class PackageImporter:
                 ("Iridescence Grazing Color", "NodeSocketColor"),
                 ("Iridescence Factor", "NodeSocketFloat"),
                 ("Wear Factor", "NodeSocketFloat"),
+                ("Damage Factor", "NodeSocketFloat"),
                 ("Macro Normal Color", "NodeSocketColor"),
                 ("Macro Normal Strength", "NodeSocketFloat"),
                 ("Displacement Height", "NodeSocketFloat"),
@@ -1826,15 +1830,29 @@ class PackageImporter:
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v14":
+        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v15":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
 
+        damage_invert = nodes.new("ShaderNodeMath")
+        damage_invert.location = (-980, 120)
+        damage_invert.operation = "SUBTRACT"
+        damage_invert.use_clamp = True
+        damage_invert.inputs[0].default_value = 1.0
+        links.new(_output_socket(group_input, "Damage Factor"), damage_invert.inputs[1])
+
+        effective_wear_factor = nodes.new("ShaderNodeMath")
+        effective_wear_factor.location = (-820, 120)
+        effective_wear_factor.operation = "MULTIPLY"
+        effective_wear_factor.use_clamp = True
+        links.new(_output_socket(group_input, "Wear Factor"), effective_wear_factor.inputs[0])
+        links.new(damage_invert.outputs[0], effective_wear_factor.inputs[1])
+
         color_mix = nodes.new("ShaderNodeMixRGB")
         color_mix.location = (-700, 260)
         color_mix.blend_type = "MIX"
-        links.new(_output_socket(group_input, "Wear Factor"), color_mix.inputs[0])
+        links.new(effective_wear_factor.outputs[0], color_mix.inputs[0])
         links.new(_output_socket(group_input, "Primary Color"), color_mix.inputs[1])
         links.new(_output_socket(group_input, "Secondary Color"), color_mix.inputs[2])
 
@@ -1878,7 +1896,7 @@ class PackageImporter:
         alpha_mix.location = (-700, 80)
         if hasattr(alpha_mix, "data_type"):
             alpha_mix.data_type = "FLOAT"
-        links.new(_output_socket(group_input, "Wear Factor"), alpha_mix.inputs[0])
+        links.new(effective_wear_factor.outputs[0], alpha_mix.inputs[0])
         links.new(_output_socket(group_input, "Primary Alpha"), alpha_mix.inputs[2])
         links.new(_output_socket(group_input, "Secondary Alpha"), alpha_mix.inputs[3])
 
@@ -1892,7 +1910,7 @@ class PackageImporter:
         roughness_mix.location = (-700, -100)
         if hasattr(roughness_mix, "data_type"):
             roughness_mix.data_type = "FLOAT"
-        links.new(_output_socket(group_input, "Wear Factor"), roughness_mix.inputs[0])
+        links.new(effective_wear_factor.outputs[0], roughness_mix.inputs[0])
         links.new(_output_socket(group_input, "Primary Roughness"), roughness_mix.inputs[2])
         links.new(_output_socket(group_input, "Secondary Roughness"), roughness_mix.inputs[3])
 
@@ -1900,14 +1918,14 @@ class PackageImporter:
         specular_mix.location = (-700, -280)
         if hasattr(specular_mix, "data_type"):
             specular_mix.data_type = "FLOAT"
-        links.new(_output_socket(group_input, "Wear Factor"), specular_mix.inputs[0])
+        links.new(effective_wear_factor.outputs[0], specular_mix.inputs[0])
         links.new(_output_socket(group_input, "Primary Specular"), specular_mix.inputs[2])
         links.new(_output_socket(group_input, "Secondary Specular"), specular_mix.inputs[3])
 
         specular_tint_mix = nodes.new("ShaderNodeMixRGB")
         specular_tint_mix.location = (-700, -420)
         specular_tint_mix.blend_type = "MIX"
-        links.new(_output_socket(group_input, "Wear Factor"), specular_tint_mix.inputs[0])
+        links.new(effective_wear_factor.outputs[0], specular_tint_mix.inputs[0])
         links.new(_output_socket(group_input, "Primary Specular Tint"), specular_tint_mix.inputs[1])
         links.new(_output_socket(group_input, "Secondary Specular Tint"), specular_tint_mix.inputs[2])
 
@@ -1915,7 +1933,7 @@ class PackageImporter:
         normal_mix.location = (-700, -500)
         if hasattr(normal_mix, "data_type"):
             normal_mix.data_type = "VECTOR"
-        links.new(_output_socket(group_input, "Wear Factor"), normal_mix.inputs[0])
+        links.new(effective_wear_factor.outputs[0], normal_mix.inputs[0])
         links.new(_output_socket(group_input, "Primary Normal"), normal_mix.inputs[2])
         links.new(_output_socket(group_input, "Secondary Normal"), normal_mix.inputs[3])
 
@@ -1952,7 +1970,7 @@ class PackageImporter:
         metallic_layer_mix.location = (-700, -600)
         if hasattr(metallic_layer_mix, "data_type"):
             metallic_layer_mix.data_type = "FLOAT"
-        links.new(_output_socket(group_input, "Wear Factor"), metallic_layer_mix.inputs[0])
+        links.new(effective_wear_factor.outputs[0], metallic_layer_mix.inputs[0])
         links.new(_output_socket(group_input, "Primary Metallic"), metallic_layer_mix.inputs[2])
         links.new(_output_socket(group_input, "Secondary Metallic"), metallic_layer_mix.inputs[3])
         iridescence_metallic_boost = nodes.new("ShaderNodeMapRange")
@@ -2008,7 +2026,7 @@ class PackageImporter:
         links.new(principled.outputs[0], shadow_mix.inputs[1])
         links.new(transparent.outputs[0], shadow_mix.inputs[2])
         links.new(shadow_mix.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v14"
+        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v15"
         return group_tree
 
     def _ensure_runtime_illum_group(self) -> bpy.types.ShaderNodeTree:
@@ -3166,6 +3184,23 @@ class PackageImporter:
             value = 1.0
         return max(0.0, min(2.0, value))
 
+    def _vertex_color_channel_socket(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        channel: str,
+        *,
+        x: int,
+        y: int,
+    ) -> Any:
+        vc_node = nodes.new("ShaderNodeVertexColor")
+        vc_node.location = (x, y)
+        vc_node.layer_name = "Color"
+        separate = nodes.new("ShaderNodeSeparateColor")
+        separate.location = (x + 180, y)
+        links.new(vc_node.outputs[0], separate.inputs[0])
+        return _output_socket(separate, channel)
+
     def _layered_wear_factor_socket(
         self,
         nodes: bpy.types.Nodes,
@@ -3179,18 +3214,14 @@ class PackageImporter:
         source = None
 
         if submaterial.decoded_feature_flags.has_vertex_colors:
-            vc_node = nodes.new("ShaderNodeVertexColor")
-            vc_node.location = (x, y)
-            vc_node.layer_name = "Color"
-            separate = nodes.new("ShaderNodeSeparateColor")
-            separate.location = (x + 180, y)
-            links.new(vc_node.outputs[0], separate.inputs[0])
+            vertex_red = self._vertex_color_channel_socket(nodes, links, "Red", x=x, y=y)
             invert = nodes.new("ShaderNodeMath")
             invert.location = (x + 360, y)
             invert.operation = "SUBTRACT"
             invert.use_clamp = True
             invert.inputs[0].default_value = 1.0
-            links.new(separate.outputs[0], invert.inputs[1])
+            if vertex_red is not None:
+                links.new(vertex_red, invert.inputs[1])
             source = invert.outputs[0]  # Aurora COLOR_0 red uses 1.0 for pristine paint.
             node_offset = 540
         else:
@@ -3224,6 +3255,32 @@ class PackageImporter:
             strength.inputs[1].default_value = wear_strength
             source = strength.outputs[0]
         return source
+
+    def _layered_damage_factor_socket(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        submaterial: SubmaterialRecord,
+        *,
+        x: int,
+        y: int,
+    ) -> Any:
+        if "USE_DAMAGE_MAP" not in submaterial.decoded_feature_flags.tokens:
+            return None
+        if not submaterial.decoded_feature_flags.has_vertex_colors:
+            return None
+
+        damage_source = self._vertex_color_channel_socket(nodes, links, "Blue", x=x, y=y)
+        if damage_source is None:
+            return None
+
+        clamp = nodes.new("ShaderNodeMath")
+        clamp.location = (x + 360, y)
+        clamp.operation = "MULTIPLY"
+        clamp.use_clamp = True
+        links.new(damage_source, clamp.inputs[0])
+        clamp.inputs[1].default_value = 1.0
+        return clamp.outputs[0]
 
     def _mix_layered_base_color(
         self,
