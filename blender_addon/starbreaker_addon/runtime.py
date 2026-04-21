@@ -222,6 +222,7 @@ def _purge_orphaned_runtime_groups() -> int:
                 name.startswith("StarBreaker Runtime HardSurface Stencil.") or
                 name.startswith("StarBreaker Runtime Channel Split.") or
                 name.startswith("StarBreaker Runtime Smoothness To Roughness.") or
+                name.startswith("StarBreaker Runtime Color To Luma.") or
                 name.startswith("StarBreaker Wear Input.") or
                 name.startswith("StarBreaker Iridescence Input.")):
             bpy.data.node_groups.remove(group)
@@ -512,6 +513,7 @@ class PackageImporter:
         self._ensure_runtime_hardsurface_stencil_group()
         self._ensure_runtime_channel_split_group()
         self._ensure_runtime_smoothness_roughness_group()
+        self._ensure_runtime_color_to_luma_group()
         self.runtime_shared_groups_ready = True
 
     def _ensure_material_identity_index(self) -> None:
@@ -3264,6 +3266,47 @@ class PackageImporter:
         group_tree["starbreaker_runtime_built_signature"] = "smoothness_roughness_v1"
         return group_tree
 
+    def _ensure_runtime_color_to_luma_group(self) -> bpy.types.ShaderNodeTree:
+        """Wrap a single ShaderNodeRGBToBW (color → grayscale) into a group.
+
+        Used by :meth:`_specular_socket_for_texture_path` and the palette
+        specular inline block in :meth:`_emit_layer_surface_input_block` so
+        top-level material graphs stay free of bare ``ShaderNodeRGBToBW``.
+        """
+        self._invalidate_runtime_group_if_unexpected(
+            "StarBreaker Runtime Color To Luma",
+            "color_to_luma_v1",
+            {
+                "NodeGroupInput": 1,
+                "NodeGroupOutput": 1,
+                "ShaderNodeRGBToBW": 1,
+            },
+        )
+        group_tree, group_input, group_output = self._begin_runtime_shared_group(
+            "StarBreaker Runtime Color To Luma",
+            signature="color_to_luma_v1",
+            inputs=[
+                ("Color", "NodeSocketColor"),
+            ],
+            outputs=[
+                ("Luma", "NodeSocketFloat"),
+            ],
+        )
+        if group_tree.get("starbreaker_runtime_built_signature") == "color_to_luma_v1":
+            return group_tree
+        nodes = group_tree.nodes
+        links = group_tree.links
+
+        _set_group_input_default(group_input, "Color", (1.0, 1.0, 1.0, 1.0))
+
+        rgb_to_bw = nodes.new("ShaderNodeRGBToBW")
+        rgb_to_bw.location = (0, 0)
+        links.new(_output_socket(group_input, "Color"), rgb_to_bw.inputs[0])
+        links.new(rgb_to_bw.outputs[0], group_output.inputs["Luma"])
+
+        group_tree["starbreaker_runtime_built_signature"] = "color_to_luma_v1"
+        return group_tree
+
     def _ensure_runtime_illum_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime Illum",
@@ -3519,10 +3562,12 @@ class PackageImporter:
             palette_specular_color = self._palette_specular_socket(nodes, palette, finish_channel_name, x=x - 220, y=y - 480)
             if palette_specular_color is not None:
                 palette_specular_tint_socket = palette_specular_color
-                rgb_to_bw = nodes.new("ShaderNodeRGBToBW")
-                rgb_to_bw.location = (x - 20, y - 480)
-                links.new(palette_specular_color, rgb_to_bw.inputs[0])
-                palette_specular_socket = rgb_to_bw.outputs[0]
+                luma_group = nodes.new("ShaderNodeGroup")
+                luma_group.node_tree = self._ensure_runtime_color_to_luma_group()
+                luma_group.location = (x - 20, y - 480)
+                luma_group.label = "StarBreaker Color To Luma"
+                links.new(palette_specular_color, luma_group.inputs["Color"])
+                palette_specular_socket = luma_group.outputs["Luma"]
 
         self._link_group_input(links, base_color_socket, group_node, "Base Color")
         self._link_group_input(links, base_alpha_socket, group_node, "Base Alpha")
@@ -3696,10 +3741,12 @@ class PackageImporter:
         image_node = self._image_node(nodes, image_path, x=x, y=y, is_color=False)
         if image_node is None:
             return None
-        rgb_to_bw = nodes.new("ShaderNodeRGBToBW")
-        rgb_to_bw.location = (x + 180, y)
-        image_node.id_data.links.new(image_node.outputs[0], rgb_to_bw.inputs[0])
-        return rgb_to_bw.outputs[0]
+        group_node = nodes.new("ShaderNodeGroup")
+        group_node.node_tree = self._ensure_runtime_color_to_luma_group()
+        group_node.location = (x + 180, y)
+        group_node.label = "StarBreaker Color To Luma"
+        image_node.id_data.links.new(image_node.outputs[0], group_node.inputs["Color"])
+        return group_node.outputs["Luma"]
 
     def _mask_socket(self, nodes: bpy.types.Nodes, image_path: str | None, *, x: int, y: int) -> Any:
         image_node = self._image_node(nodes, image_path, x=x, y=y, is_color=False)
