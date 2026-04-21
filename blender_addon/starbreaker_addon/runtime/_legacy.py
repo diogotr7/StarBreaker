@@ -12,9 +12,9 @@ import uuid
 import bpy
 from mathutils import Euler, Matrix, Quaternion
 
-from .manifest import LayerManifestEntry, MaterialSidecar, PackageBundle, PaletteRecord, SceneInstanceRecord, SubmaterialRecord, TextureReference
-from .material_contract import ContractInput, ShaderGroupContract, TemplateContract, bundled_template_library_path, load_bundled_template_contract
-from .palette import (
+from ..manifest import LayerManifestEntry, MaterialSidecar, PackageBundle, PaletteRecord, SceneInstanceRecord, SubmaterialRecord, TextureReference
+from ..material_contract import ContractInput, ShaderGroupContract, TemplateContract, bundled_template_library_path, load_bundled_template_contract
+from ..palette import (
     palette_color,
     palette_decal_color,
     palette_decal_texture,
@@ -24,7 +24,7 @@ from .palette import (
     palette_id_for_livery_instance,
     resolved_palette_id,
 )
-from .templates import (
+from ..templates import (
     has_virtual_input,
     material_palette_channels,
     representative_textures,
