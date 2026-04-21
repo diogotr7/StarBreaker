@@ -154,7 +154,13 @@ def _purge_orphaned_runtime_groups() -> int:
             continue
         name = group.name
         if (name.startswith("StarBreaker Runtime LayerSurface.") or
-                name.startswith("StarBreaker Runtime HardSurface.")):
+                name.startswith("StarBreaker Runtime HardSurface.") or
+                name.startswith("StarBreaker Runtime Glass.") or
+                name.startswith("StarBreaker Runtime NoDraw.") or
+                name.startswith("StarBreaker Runtime Screen.") or
+                name.startswith("StarBreaker Runtime Effect.") or
+                name.startswith("StarBreaker Wear Input.") or
+                name.startswith("StarBreaker Iridescence Input.")):
             bpy.data.node_groups.remove(group)
             removed += 1
     return removed
@@ -432,6 +438,12 @@ class PackageImporter:
         self._ensure_runtime_layer_surface_group()
         self._ensure_runtime_hard_surface_group()
         self._ensure_runtime_illum_group()
+        self._ensure_runtime_wear_input_group()
+        self._ensure_runtime_iridescence_input_group()
+        self._ensure_runtime_nodraw_group()
+        self._ensure_runtime_glass_group()
+        self._ensure_runtime_screen_group()
+        self._ensure_runtime_effect_group()
         self.runtime_shared_groups_ready = True
 
     def _ensure_material_identity_index(self) -> None:
@@ -2191,6 +2203,375 @@ class PackageImporter:
         group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v29"
         return group_tree
 
+    def _ensure_runtime_wear_input_group(self) -> bpy.types.ShaderNodeTree:
+        """Helper group for wear/damage vertex-color routing.
+
+        Inputs:
+            Wear Mask           float  (from optional mask texture; used when Use Vertex Colors = 0)
+            Use Vertex Colors   float  (0 = mask-based, 1 = vertex-color COLOR_0.R invert)
+            Wear Base           float  (multiplier, from WearBlendBase/DamagePerObjectWear)
+            Wear Strength       float  (global wear multiplier)
+            Use Damage          float  (0 = force damage 0, 1 = pass COLOR_0.B through)
+
+        Outputs:
+            Wear Factor    float
+            Damage Factor  float
+        """
+        self._invalidate_runtime_group_if_unexpected(
+            "StarBreaker Wear Input",
+            "wear_input_v1",
+            {
+                "NodeGroupInput": 1,
+                "NodeGroupOutput": 1,
+                "ShaderNodeVertexColor": 1,
+                "ShaderNodeSeparateColor": 1,
+            },
+        )
+        group_tree, group_input, group_output = self._begin_runtime_shared_group(
+            "StarBreaker Wear Input",
+            signature="wear_input_v1",
+            inputs=[
+                ("Wear Mask", "NodeSocketFloat"),
+                ("Use Vertex Colors", "NodeSocketFloat"),
+                ("Wear Base", "NodeSocketFloat"),
+                ("Wear Strength", "NodeSocketFloat"),
+                ("Use Damage", "NodeSocketFloat"),
+            ],
+            outputs=[
+                ("Wear Factor", "NodeSocketFloat"),
+                ("Damage Factor", "NodeSocketFloat"),
+            ],
+        )
+        if group_tree.get("starbreaker_runtime_built_signature") == "wear_input_v1":
+            return group_tree
+        nodes = group_tree.nodes
+        links = group_tree.links
+
+        # Vertex color source: COLOR_0, separate into R/G/B.
+        vc_node = nodes.new("ShaderNodeVertexColor")
+        vc_node.location = (-720, 120)
+        vc_node.layer_name = "Color"
+        separate = nodes.new("ShaderNodeSeparateColor")
+        separate.location = (-520, 120)
+        links.new(vc_node.outputs[0], separate.inputs[0])
+
+        # Invert R (Aurora COLOR_0 red: 1.0 = pristine paint).
+        invert = nodes.new("ShaderNodeMath")
+        invert.location = (-320, 200)
+        invert.operation = "SUBTRACT"
+        invert.use_clamp = True
+        invert.inputs[0].default_value = 1.0
+        links.new(_output_socket(separate, "Red"), invert.inputs[1])
+
+        # Pick vertex-based or mask-based source.
+        select_source = nodes.new("ShaderNodeMix")
+        select_source.location = (-120, 120)
+        if hasattr(select_source, "data_type"):
+            select_source.data_type = "FLOAT"
+        links.new(_output_socket(group_input, "Use Vertex Colors"), select_source.inputs[0])
+        links.new(_output_socket(group_input, "Wear Mask"), select_source.inputs[2])
+        links.new(invert.outputs[0], select_source.inputs[3])
+
+        # Multiply by Wear Base.
+        mul_base = nodes.new("ShaderNodeMath")
+        mul_base.location = (100, 120)
+        mul_base.operation = "MULTIPLY"
+        mul_base.use_clamp = True
+        links.new(select_source.outputs[0], mul_base.inputs[0])
+        links.new(_output_socket(group_input, "Wear Base"), mul_base.inputs[1])
+
+        # Multiply by Wear Strength.
+        mul_strength = nodes.new("ShaderNodeMath")
+        mul_strength.location = (300, 120)
+        mul_strength.operation = "MULTIPLY"
+        mul_strength.use_clamp = True
+        links.new(mul_base.outputs[0], mul_strength.inputs[0])
+        links.new(_output_socket(group_input, "Wear Strength"), mul_strength.inputs[1])
+
+        # Damage path: COLOR_0.B gated by Use Damage.
+        damage_gate = nodes.new("ShaderNodeMath")
+        damage_gate.location = (-320, -200)
+        damage_gate.operation = "MULTIPLY"
+        damage_gate.use_clamp = True
+        links.new(_output_socket(separate, "Blue"), damage_gate.inputs[0])
+        links.new(_output_socket(group_input, "Use Damage"), damage_gate.inputs[1])
+
+        links.new(mul_strength.outputs[0], group_output.inputs["Wear Factor"])
+        links.new(damage_gate.outputs[0], group_output.inputs["Damage Factor"])
+        group_tree["starbreaker_runtime_built_signature"] = "wear_input_v1"
+        return group_tree
+
+    def _ensure_runtime_iridescence_input_group(self) -> bpy.types.ShaderNodeTree:
+        """Helper group for HardSurface angle-based iridescence sampling.
+
+        Inputs:
+            Thickness U   float  (scales angle factor along X; clamped 0..1)
+            Thickness V   float  (static Y coordinate; clamped 0..1)
+
+        Outputs:
+            Angle Factor  float   (0..1, from LayerWeight Facing via MapRange)
+            Ramp UV       vector  (feed into TexSlot10 ramp image node Vector input)
+        """
+        self._invalidate_runtime_group_if_unexpected(
+            "StarBreaker Iridescence Input",
+            "iridescence_input_v1",
+            {
+                "NodeGroupInput": 1,
+                "NodeGroupOutput": 1,
+                "ShaderNodeLayerWeight": 1,
+                "ShaderNodeMapRange": 1,
+                "ShaderNodeCombineXYZ": 1,
+            },
+        )
+        group_tree, group_input, group_output = self._begin_runtime_shared_group(
+            "StarBreaker Iridescence Input",
+            signature="iridescence_input_v1",
+            inputs=[
+                ("Thickness U", "NodeSocketFloat"),
+                ("Thickness V", "NodeSocketFloat"),
+            ],
+            outputs=[
+                ("Angle Factor", "NodeSocketFloat"),
+                ("Ramp UV", "NodeSocketVector"),
+            ],
+        )
+        if group_tree.get("starbreaker_runtime_built_signature") == "iridescence_input_v1":
+            return group_tree
+        nodes = group_tree.nodes
+        links = group_tree.links
+
+        layer_weight = nodes.new("ShaderNodeLayerWeight")
+        layer_weight.location = (-520, 120)
+        blend_input = _input_socket(layer_weight, "Blend")
+        if blend_input is not None:
+            blend_input.default_value = 0.3
+
+        angle_factor = nodes.new("ShaderNodeMapRange")
+        angle_factor.location = (-320, 120)
+        angle_factor.clamp = True
+        angle_factor.inputs[1].default_value = 0.0
+        angle_factor.inputs[2].default_value = 0.2
+        angle_factor.inputs[3].default_value = 0.0
+        angle_factor.inputs[4].default_value = 1.0
+        links.new(_output_socket(layer_weight, "Facing"), angle_factor.inputs[0])
+
+        scale_x = nodes.new("ShaderNodeMath")
+        scale_x.location = (-120, -40)
+        scale_x.operation = "MULTIPLY"
+        scale_x.use_clamp = True
+        links.new(angle_factor.outputs[0], scale_x.inputs[0])
+        links.new(_output_socket(group_input, "Thickness U"), scale_x.inputs[1])
+
+        combine = nodes.new("ShaderNodeCombineXYZ")
+        combine.location = (100, 0)
+        links.new(scale_x.outputs[0], combine.inputs[0])
+        links.new(_output_socket(group_input, "Thickness V"), combine.inputs[1])
+
+        links.new(angle_factor.outputs[0], group_output.inputs["Angle Factor"])
+        links.new(combine.outputs[0], group_output.inputs["Ramp UV"])
+        group_tree["starbreaker_runtime_built_signature"] = "iridescence_input_v1"
+        return group_tree
+
+    def _ensure_runtime_nodraw_group(self) -> bpy.types.ShaderNodeTree:
+        """Thin wrapper around BsdfTransparent so nodraw materials keep their top level clean."""
+        self._invalidate_runtime_group_if_unexpected(
+            "StarBreaker Runtime NoDraw",
+            "nodraw_v1",
+            {
+                "NodeGroupInput": 1,
+                "NodeGroupOutput": 1,
+                "ShaderNodeBsdfTransparent": 1,
+            },
+        )
+        group_tree, group_input, group_output = self._begin_runtime_shared_group(
+            "StarBreaker Runtime NoDraw",
+            signature="nodraw_v1",
+            inputs=[],
+            outputs=[("Shader", "NodeSocketShader")],
+        )
+        if group_tree.get("starbreaker_runtime_built_signature") == "nodraw_v1":
+            return group_tree
+        nodes = group_tree.nodes
+        links = group_tree.links
+        transparent = nodes.new("ShaderNodeBsdfTransparent")
+        transparent.location = (0, 0)
+        links.new(transparent.outputs[0], group_output.inputs["Shader"])
+        group_tree["starbreaker_runtime_built_signature"] = "nodraw_v1"
+        return group_tree
+
+    def _ensure_runtime_glass_group(self) -> bpy.types.ShaderNodeTree:
+        """Wrap BsdfGlass + NormalMap inside a reusable shader group.
+
+        Inputs:
+            Base Color      color
+            Roughness       float
+            IOR             float   (default 1.05)
+            Normal Color    color   (raw image color; internal NormalMap applies)
+            Normal Strength float   (default 0.25)
+            Use Normal      float   (0 to ignore normal map; 1 to apply)
+        Outputs:
+            Shader          shader
+        """
+        self._invalidate_runtime_group_if_unexpected(
+            "StarBreaker Runtime Glass",
+            "glass_v1",
+            {
+                "NodeGroupInput": 1,
+                "NodeGroupOutput": 1,
+                "ShaderNodeBsdfGlass": 1,
+                "ShaderNodeNormalMap": 1,
+            },
+        )
+        group_tree, group_input, group_output = self._begin_runtime_shared_group(
+            "StarBreaker Runtime Glass",
+            signature="glass_v1",
+            inputs=[
+                ("Base Color", "NodeSocketColor"),
+                ("Roughness", "NodeSocketFloat"),
+                ("IOR", "NodeSocketFloat"),
+                ("Normal Color", "NodeSocketColor"),
+                ("Normal Strength", "NodeSocketFloat"),
+                ("Use Normal", "NodeSocketFloat"),
+            ],
+            outputs=[("Shader", "NodeSocketShader")],
+        )
+        if group_tree.get("starbreaker_runtime_built_signature") == "glass_v1":
+            return group_tree
+        nodes = group_tree.nodes
+        links = group_tree.links
+
+        normal_map = nodes.new("ShaderNodeNormalMap")
+        normal_map.location = (-320, -200)
+        links.new(_output_socket(group_input, "Normal Color"), _input_socket(normal_map, "Color"))
+        links.new(_output_socket(group_input, "Normal Strength"), _input_socket(normal_map, "Strength"))
+
+        # Mix between "no normal" (geometry) and mapped normal via Use Normal toggle.
+        geometry = nodes.new("ShaderNodeNewGeometry")
+        geometry.location = (-320, -420)
+        normal_mix = nodes.new("ShaderNodeMix")
+        normal_mix.location = (-120, -300)
+        if hasattr(normal_mix, "data_type"):
+            normal_mix.data_type = "VECTOR"
+        links.new(_output_socket(group_input, "Use Normal"), normal_mix.inputs[0])
+        links.new(_output_socket(geometry, "Normal"), normal_mix.inputs[4])
+        links.new(_output_socket(normal_map, "Normal"), normal_mix.inputs[5])
+
+        glass = nodes.new("ShaderNodeBsdfGlass")
+        glass.location = (120, 0)
+        glass.label = "StarBreaker Glass"
+        links.new(_output_socket(group_input, "Base Color"), _input_socket(glass, "Color"))
+        links.new(_output_socket(group_input, "Roughness"), _input_socket(glass, "Roughness"))
+        links.new(_output_socket(group_input, "IOR"), _input_socket(glass, "IOR"))
+        links.new(normal_mix.outputs[1], _input_socket(glass, "Normal"))
+
+        links.new(glass.outputs[0], group_output.inputs["Shader"])
+        group_tree["starbreaker_runtime_built_signature"] = "glass_v1"
+        return group_tree
+
+    def _ensure_runtime_screen_group(self) -> bpy.types.ShaderNodeTree:
+        """Wrap Emission + Transparent + MixShader (optional checker fallback) into a shader group."""
+        self._invalidate_runtime_group_if_unexpected(
+            "StarBreaker Runtime Screen",
+            "screen_v1",
+            {
+                "NodeGroupInput": 1,
+                "NodeGroupOutput": 1,
+                "ShaderNodeEmission": 1,
+                "ShaderNodeBsdfTransparent": 1,
+                "ShaderNodeMixShader": 1,
+                "ShaderNodeTexChecker": 1,
+            },
+        )
+        group_tree, group_input, group_output = self._begin_runtime_shared_group(
+            "StarBreaker Runtime Screen",
+            signature="screen_v1",
+            inputs=[
+                ("Base Color", "NodeSocketColor"),
+                ("Emission Strength", "NodeSocketFloat"),
+                ("Mix Factor", "NodeSocketFloat"),
+                ("Use Checker", "NodeSocketFloat"),
+            ],
+            outputs=[("Shader", "NodeSocketShader")],
+        )
+        if group_tree.get("starbreaker_runtime_built_signature") == "screen_v1":
+            return group_tree
+        nodes = group_tree.nodes
+        links = group_tree.links
+
+        # Procedural checker fallback, selected via Use Checker.
+        checker = nodes.new("ShaderNodeTexChecker")
+        checker.location = (-520, 220)
+        checker_mix = nodes.new("ShaderNodeMixRGB")
+        checker_mix.location = (-320, 120)
+        checker_mix.blend_type = "MIX"
+        links.new(_output_socket(group_input, "Use Checker"), checker_mix.inputs[0])
+        links.new(_output_socket(group_input, "Base Color"), checker_mix.inputs[1])
+        links.new(_output_socket(checker, "Color"), checker_mix.inputs[2])
+
+        emission = nodes.new("ShaderNodeEmission")
+        emission.location = (-100, 120)
+        links.new(checker_mix.outputs[0], _input_socket(emission, "Color"))
+        links.new(_output_socket(group_input, "Emission Strength"), _input_socket(emission, "Strength"))
+
+        transparent = nodes.new("ShaderNodeBsdfTransparent")
+        transparent.location = (-100, -80)
+
+        mix = nodes.new("ShaderNodeMixShader")
+        mix.location = (120, 40)
+        links.new(_output_socket(group_input, "Mix Factor"), mix.inputs[0])
+        links.new(transparent.outputs[0], mix.inputs[1])
+        links.new(emission.outputs[0], mix.inputs[2])
+
+        links.new(mix.outputs[0], group_output.inputs["Shader"])
+        group_tree["starbreaker_runtime_built_signature"] = "screen_v1"
+        return group_tree
+
+    def _ensure_runtime_effect_group(self) -> bpy.types.ShaderNodeTree:
+        """Wrap Emission + Transparent + MixShader into an Effect shader group."""
+        self._invalidate_runtime_group_if_unexpected(
+            "StarBreaker Runtime Effect",
+            "effect_v1",
+            {
+                "NodeGroupInput": 1,
+                "NodeGroupOutput": 1,
+                "ShaderNodeEmission": 1,
+                "ShaderNodeBsdfTransparent": 1,
+                "ShaderNodeMixShader": 1,
+            },
+        )
+        group_tree, group_input, group_output = self._begin_runtime_shared_group(
+            "StarBreaker Runtime Effect",
+            signature="effect_v1",
+            inputs=[
+                ("Base Color", "NodeSocketColor"),
+                ("Emission Strength", "NodeSocketFloat"),
+                ("Mix Factor", "NodeSocketFloat"),
+            ],
+            outputs=[("Shader", "NodeSocketShader")],
+        )
+        if group_tree.get("starbreaker_runtime_built_signature") == "effect_v1":
+            return group_tree
+        nodes = group_tree.nodes
+        links = group_tree.links
+
+        emission = nodes.new("ShaderNodeEmission")
+        emission.location = (-100, 120)
+        links.new(_output_socket(group_input, "Base Color"), _input_socket(emission, "Color"))
+        links.new(_output_socket(group_input, "Emission Strength"), _input_socket(emission, "Strength"))
+
+        transparent = nodes.new("ShaderNodeBsdfTransparent")
+        transparent.location = (-100, -80)
+
+        mix = nodes.new("ShaderNodeMixShader")
+        mix.location = (120, 40)
+        links.new(_output_socket(group_input, "Mix Factor"), mix.inputs[0])
+        links.new(transparent.outputs[0], mix.inputs[1])
+        links.new(emission.outputs[0], mix.inputs[2])
+
+        links.new(mix.outputs[0], group_output.inputs["Shader"])
+        group_tree["starbreaker_runtime_built_signature"] = "effect_v1"
+        return group_tree
+
     def _ensure_runtime_illum_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime Illum",
@@ -3387,8 +3768,15 @@ class PackageImporter:
         links = material.node_tree.links
         nodes.clear()
         output = nodes.new("ShaderNodeOutputMaterial")
-        transparent = nodes.new("ShaderNodeBsdfTransparent")
-        links.new(transparent.outputs[0], output.inputs[0])
+        output.location = (250, 0)
+        shader_group = nodes.new("ShaderNodeGroup")
+        shader_group.node_tree = self._ensure_runtime_nodraw_group()
+        _refresh_group_node_sockets(shader_group)
+        shader_group.location = (0, 0)
+        shader_group.label = "StarBreaker NoDraw"
+        surface = _output_socket(shader_group, "Shader")
+        if surface is not None:
+            links.new(surface, output.inputs[0])
         self._configure_material(material, blend_method="CLIP", shadow_method="NONE")
 
     def _build_screen_material(
@@ -3404,30 +3792,27 @@ class PackageImporter:
 
         output = nodes.new("ShaderNodeOutputMaterial")
         output.location = (550, 0)
-        emission = nodes.new("ShaderNodeEmission")
-        emission.location = (250, 0)
-        transparent = nodes.new("ShaderNodeBsdfTransparent")
-        transparent.location = (250, -180)
-        mix = nodes.new("ShaderNodeMixShader")
-        mix.location = (400, 0)
-        mix.inputs[0].default_value = 0.12
+
+        shader_group = nodes.new("ShaderNodeGroup")
+        shader_group.node_tree = self._ensure_runtime_screen_group()
+        _refresh_group_node_sockets(shader_group)
+        shader_group.location = (250, 0)
+        shader_group.label = "StarBreaker Screen"
+        self._set_socket_default(_input_socket(shader_group, "Base Color"), (0.5, 0.5, 0.5, 1.0))
+        self._set_socket_default(_input_socket(shader_group, "Emission Strength"), 3.0)
+        self._set_socket_default(_input_socket(shader_group, "Mix Factor"), 0.12)
+        self._set_socket_default(_input_socket(shader_group, "Use Checker"), 0.0)
 
         image_path = representative_textures(submaterial)["base_color"]
         color_source = self._color_source_socket(nodes, submaterial, palette, image_path, x=0, y=0)
         if color_source is not None:
-            links.new(color_source, _input_socket(emission, "Color"))
+            self._link_group_input(links, color_source, shader_group, "Base Color")
         elif has_virtual_input(submaterial, "$RenderToTexture"):
-            checker = nodes.new("ShaderNodeTexChecker")
-            checker.location = (0, 0)
-            links.new(_output_socket(checker, "Color"), _input_socket(emission, "Color"))
+            self._set_socket_default(_input_socket(shader_group, "Use Checker"), 1.0)
 
-        emission_strength = _input_socket(emission, "Strength")
-        if emission_strength is not None:
-            emission_strength.default_value = 3.0
-
-        links.new(emission.outputs[0], mix.inputs[2])
-        links.new(transparent.outputs[0], mix.inputs[1])
-        links.new(mix.outputs[0], output.inputs[0])
+        surface = _output_socket(shader_group, "Shader")
+        if surface is not None:
+            links.new(surface, output.inputs[0])
         self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
 
     def _build_effect_material(
@@ -3443,24 +3828,23 @@ class PackageImporter:
 
         output = nodes.new("ShaderNodeOutputMaterial")
         output.location = (550, 0)
-        emission = nodes.new("ShaderNodeEmission")
-        emission.location = (250, 0)
-        transparent = nodes.new("ShaderNodeBsdfTransparent")
-        transparent.location = (250, -180)
-        mix = nodes.new("ShaderNodeMixShader")
-        mix.location = (400, 0)
-        mix.inputs[0].default_value = 0.35
+
+        shader_group = nodes.new("ShaderNodeGroup")
+        shader_group.node_tree = self._ensure_runtime_effect_group()
+        _refresh_group_node_sockets(shader_group)
+        shader_group.location = (250, 0)
+        shader_group.label = "StarBreaker Effect"
+        self._set_socket_default(_input_socket(shader_group, "Base Color"), (1.0, 1.0, 1.0, 1.0))
+        self._set_socket_default(_input_socket(shader_group, "Emission Strength"), 2.5)
+        self._set_socket_default(_input_socket(shader_group, "Mix Factor"), 0.35)
 
         color_source = self._color_source_socket(nodes, submaterial, palette, representative_textures(submaterial)["base_color"], x=0, y=0)
         if color_source is not None:
-            links.new(color_source, _input_socket(emission, "Color"))
-        emission_strength = _input_socket(emission, "Strength")
-        if emission_strength is not None:
-            emission_strength.default_value = 2.5
+            self._link_group_input(links, color_source, shader_group, "Base Color")
 
-        links.new(emission.outputs[0], mix.inputs[2])
-        links.new(transparent.outputs[0], mix.inputs[1])
-        links.new(mix.outputs[0], output.inputs[0])
+        surface = _output_socket(shader_group, "Shader")
+        if surface is not None:
+            links.new(surface, output.inputs[0])
         self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
 
     def _build_principled_material(
@@ -3601,10 +3985,18 @@ class PackageImporter:
 
         output = nodes.new("ShaderNodeOutputMaterial")
         output.location = (620, 0)
-        glass = nodes.new("ShaderNodeBsdfGlass")
-        glass.location = (360, 0)
-        glass.label = "StarBreaker Glass"
-        links.new(glass.outputs[0], output.inputs[0])
+
+        shader_group = nodes.new("ShaderNodeGroup")
+        shader_group.node_tree = self._ensure_runtime_glass_group()
+        _refresh_group_node_sockets(shader_group)
+        shader_group.location = (360, 0)
+        shader_group.label = "StarBreaker Glass"
+        self._set_socket_default(_input_socket(shader_group, "Base Color"), (1.0, 1.0, 1.0, 1.0))
+        self._set_socket_default(_input_socket(shader_group, "Roughness"), 0.08)
+        self._set_socket_default(_input_socket(shader_group, "IOR"), 1.05)
+        self._set_socket_default(_input_socket(shader_group, "Normal Color"), (0.5, 0.5, 1.0, 1.0))
+        self._set_socket_default(_input_socket(shader_group, "Normal Strength"), 0.25)
+        self._set_socket_default(_input_socket(shader_group, "Use Normal"), 0.0)
 
         textures = representative_textures(submaterial)
         base_path = textures["base_color"]
@@ -3617,30 +4009,20 @@ class PackageImporter:
         if base_socket is None:
             base_socket = self._value_color_socket(nodes, (1.0, 1.0, 1.0, 1.0), x=80, y=120)
         if base_socket is not None:
-            links.new(base_socket, _input_socket(glass, "Color"))
+            self._link_group_input(links, base_socket, shader_group, "Base Color")
 
-        roughness_socket = _input_socket(glass, "Roughness")
         roughness_node = self._image_node(nodes, roughness_path, x=80, y=-120, is_color=False)
-        if roughness_socket is not None:
-            if roughness_node is not None:
-                links.new(roughness_node.outputs[0], roughness_socket)
-            else:
-                roughness_socket.default_value = 0.08
+        if roughness_node is not None:
+            self._link_group_input(links, roughness_node.outputs[0], shader_group, "Roughness")
 
-        ior_socket = _input_socket(glass, "IOR")
-        if ior_socket is not None:
-            ior_socket.default_value = 1.05
-
-        normal_input = _input_socket(glass, "Normal")
         normal_node = self._image_node(nodes, normal_path, x=80, y=-280, is_color=False)
-        if normal_node is not None and normal_input is not None:
-            normal_map = nodes.new("ShaderNodeNormalMap")
-            normal_map.location = (240, -220)
-            strength_socket = _input_socket(normal_map, "Strength")
-            if strength_socket is not None:
-                strength_socket.default_value = 0.25
-            links.new(normal_node.outputs[0], _input_socket(normal_map, "Color"))
-            links.new(_output_socket(normal_map, "Normal"), normal_input)
+        if normal_node is not None:
+            self._link_group_input(links, normal_node.outputs[0], shader_group, "Normal Color")
+            self._set_socket_default(_input_socket(shader_group, "Use Normal"), 1.0)
+
+        surface = _output_socket(shader_group, "Shader")
+        if surface is not None:
+            links.new(surface, output.inputs[0])
 
         self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
 
@@ -3657,23 +4039,6 @@ class PackageImporter:
         except (TypeError, ValueError):
             value = 1.0
         return max(0.0, min(2.0, value))
-
-    def _vertex_color_channel_socket(
-        self,
-        nodes: bpy.types.Nodes,
-        links: bpy.types.NodeLinks,
-        channel: str,
-        *,
-        x: int,
-        y: int,
-    ) -> Any:
-        vc_node = nodes.new("ShaderNodeVertexColor")
-        vc_node.location = (x, y)
-        vc_node.layer_name = "Color"
-        separate = nodes.new("ShaderNodeSeparateColor")
-        separate.location = (x + 180, y)
-        links.new(vc_node.outputs[0], separate.inputs[0])
-        return _output_socket(separate, channel)
 
     def _hard_surface_angle_factor_socket(
         self,
@@ -3720,24 +4085,25 @@ class PackageImporter:
 
         thickness_u = _optional_float_public_param(submaterial, "IridescenceThicknessU")
         thickness_v = _optional_float_public_param(submaterial, "IridescenceThicknessV")
-        angle_factor = self._hard_surface_angle_factor_socket(nodes, links, x=x, y=y)
-        vector = nodes.new("ShaderNodeCombineXYZ")
-        vector.location = (x + 180, y)
-        vector.inputs[1].default_value = max(0.0, min(1.0, thickness_v if thickness_v is not None else 0.5))
-        if thickness_u is not None and abs(thickness_u - 1.0) > 1e-6:
-            scale_x = nodes.new("ShaderNodeMath")
-            scale_x.location = (x + 120, y - 120)
-            scale_x.operation = "MULTIPLY"
-            scale_x.use_clamp = True
-            links.new(angle_factor, scale_x.inputs[0])
-            scale_x.inputs[1].default_value = max(0.0, min(1.0, thickness_u))
-            links.new(scale_x.outputs[0], vector.inputs[0])
-        else:
-            links.new(angle_factor, vector.inputs[0])
 
+        group_node = nodes.new("ShaderNodeGroup")
+        group_node.node_tree = self._ensure_runtime_iridescence_input_group()
+        _refresh_group_node_sockets(group_node)
+        group_node.location = (x + 180, y)
+        group_node.label = "StarBreaker Iridescence"
+        self._set_socket_default(
+            _input_socket(group_node, "Thickness U"),
+            max(0.0, min(1.0, thickness_u if thickness_u is not None else 1.0)),
+        )
+        self._set_socket_default(
+            _input_socket(group_node, "Thickness V"),
+            max(0.0, min(1.0, thickness_v if thickness_v is not None else 0.5)),
+        )
+
+        ramp_uv = _output_socket(group_node, "Ramp UV")
         vector_input = _input_socket(ramp_node, "Vector")
-        if vector_input is not None:
-            links.new(vector.outputs[0], vector_input)
+        if ramp_uv is not None and vector_input is not None:
+            links.new(ramp_uv, vector_input)
         return ramp_node.outputs[0]
 
     def _layered_wear_factor_socket(
@@ -3750,50 +4116,32 @@ class PackageImporter:
         y: int,
     ) -> Any:
         textures = representative_textures(submaterial)
-        source = None
-
-        if submaterial.decoded_feature_flags.has_vertex_colors:
-            vertex_red = self._vertex_color_channel_socket(nodes, links, "Red", x=x, y=y)
-            invert = nodes.new("ShaderNodeMath")
-            invert.location = (x + 360, y)
-            invert.operation = "SUBTRACT"
-            invert.use_clamp = True
-            invert.inputs[0].default_value = 1.0
-            if vertex_red is not None:
-                links.new(vertex_red, invert.inputs[1])
-            source = invert.outputs[0]  # Aurora COLOR_0 red uses 1.0 for pristine paint.
-            node_offset = 540
-        else:
-            mask_node = self._image_node(nodes, textures["mask"], x=x, y=y, is_color=False)
-            if mask_node is not None:
-                source = mask_node.outputs[0]
-            node_offset = 180
-
+        has_vertex_colors = submaterial.decoded_feature_flags.has_vertex_colors
         wear_base = _float_public_param(submaterial, "WearBlendBase", "DamagePerObjectWear")
-        if source is None and wear_base <= 0.0:
+        mask_node = None
+        if not has_vertex_colors:
+            mask_node = self._image_node(nodes, textures["mask"], x=x - 220, y=y, is_color=False)
+        if not has_vertex_colors and mask_node is None and wear_base <= 0.0:
             return None
 
-        if source is None:
-            source = self._value_socket(nodes, min(1.0, wear_base if wear_base > 0.0 else 1.0), x=x + node_offset, y=y)
-        elif wear_base > 0.0 and abs(wear_base - 1.0) > 1e-6:
-            multiply = nodes.new("ShaderNodeMath")
-            multiply.location = (x + node_offset, y)
-            multiply.operation = "MULTIPLY"
-            multiply.use_clamp = True
-            links.new(source, multiply.inputs[0])
-            multiply.inputs[1].default_value = wear_base
-            source = multiply.outputs[0]
+        group_node = nodes.new("ShaderNodeGroup")
+        group_node.node_tree = self._ensure_runtime_wear_input_group()
+        _refresh_group_node_sockets(group_node)
+        group_node.location = (x, y)
+        group_node.label = "StarBreaker Wear"
+        self._set_socket_default(_input_socket(group_node, "Wear Mask"), 0.0)
+        self._set_socket_default(_input_socket(group_node, "Use Vertex Colors"), 1.0 if has_vertex_colors else 0.0)
+        self._set_socket_default(
+            _input_socket(group_node, "Wear Base"),
+            max(0.0, wear_base if wear_base > 0.0 else 1.0),
+        )
+        self._set_socket_default(_input_socket(group_node, "Wear Strength"), self._wear_strength())
+        self._set_socket_default(_input_socket(group_node, "Use Damage"), 0.0)
 
-        wear_strength = self._wear_strength()
-        if abs(wear_strength - 1.0) > 1e-6:
-            strength = nodes.new("ShaderNodeMath")
-            strength.location = (x + node_offset + 180, y)
-            strength.operation = "MULTIPLY"
-            strength.use_clamp = True
-            links.new(source, strength.inputs[0])
-            strength.inputs[1].default_value = wear_strength
-            source = strength.outputs[0]
-        return source
+        if not has_vertex_colors and mask_node is not None:
+            self._link_group_input(links, mask_node.outputs[0], group_node, "Wear Mask")
+
+        return _output_socket(group_node, "Wear Factor")
 
     def _layered_damage_factor_socket(
         self,
@@ -3809,17 +4157,17 @@ class PackageImporter:
         if not submaterial.decoded_feature_flags.has_vertex_colors:
             return None
 
-        damage_source = self._vertex_color_channel_socket(nodes, links, "Blue", x=x, y=y)
-        if damage_source is None:
-            return None
-
-        clamp = nodes.new("ShaderNodeMath")
-        clamp.location = (x + 360, y)
-        clamp.operation = "MULTIPLY"
-        clamp.use_clamp = True
-        links.new(damage_source, clamp.inputs[0])
-        clamp.inputs[1].default_value = 1.0
-        return clamp.outputs[0]
+        group_node = nodes.new("ShaderNodeGroup")
+        group_node.node_tree = self._ensure_runtime_wear_input_group()
+        _refresh_group_node_sockets(group_node)
+        group_node.location = (x, y)
+        group_node.label = "StarBreaker Damage"
+        self._set_socket_default(_input_socket(group_node, "Wear Mask"), 0.0)
+        self._set_socket_default(_input_socket(group_node, "Use Vertex Colors"), 0.0)
+        self._set_socket_default(_input_socket(group_node, "Wear Base"), 0.0)
+        self._set_socket_default(_input_socket(group_node, "Wear Strength"), 0.0)
+        self._set_socket_default(_input_socket(group_node, "Use Damage"), 1.0)
+        return _output_socket(group_node, "Damage Factor")
 
     def _mix_layered_base_color(
         self,
