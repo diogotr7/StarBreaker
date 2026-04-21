@@ -219,6 +219,7 @@ def _purge_orphaned_runtime_groups() -> int:
                 name.startswith("StarBreaker Runtime Effect.") or
                 name.startswith("StarBreaker Runtime LayeredInputs.") or
                 name.startswith("StarBreaker Runtime Principled.") or
+                name.startswith("StarBreaker Runtime HardSurface Stencil.") or
                 name.startswith("StarBreaker Wear Input.") or
                 name.startswith("StarBreaker Iridescence Input.")):
             bpy.data.node_groups.remove(group)
@@ -506,6 +507,7 @@ class PackageImporter:
         self._ensure_runtime_effect_group()
         self._ensure_runtime_layered_inputs_group()
         self._ensure_runtime_principled_group()
+        self._ensure_runtime_hardsurface_stencil_group()
         self.runtime_shared_groups_ready = True
 
     def _ensure_material_identity_index(self) -> None:
@@ -2897,6 +2899,273 @@ class PackageImporter:
         group_tree["starbreaker_runtime_built_signature"] = "principled_v1"
         return group_tree
 
+    def _ensure_runtime_hardsurface_stencil_group(self) -> bpy.types.ShaderNodeTree:
+        """Wrap the HardSurface stencil overlay chain into a fixed-shape shader group.
+
+        See :meth:`_hard_surface_stencil_overlay_sockets` for the caller-side
+        contract. Inputs and outputs mirror the public params consumed by that
+        helper; ``Mode`` selects between single-channel (0.0) and multi-channel
+        (1.0) composition.
+        """
+        self._invalidate_runtime_group_if_unexpected(
+            "StarBreaker Runtime HardSurface Stencil",
+            "hardsurface_stencil_v1",
+            {
+                "NodeGroupInput": 1,
+                "NodeGroupOutput": 1,
+                # 1 splitting the stencil color into RGB channel masks.
+                "ShaderNodeSeparateColor": 1,
+                # 3 RGBToBW: stencil luma, breakup luma, specular grayscale.
+                "ShaderNodeRGBToBW": 3,
+            },
+        )
+        group_tree, group_input, group_output = self._begin_runtime_shared_group(
+            "StarBreaker Runtime HardSurface Stencil",
+            signature="hardsurface_stencil_v1",
+            inputs=[
+                ("Stencil Color", "NodeSocketColor"),
+                ("Stencil Alpha", "NodeSocketFloat"),
+                ("Breakup Color", "NodeSocketColor"),
+                ("Breakup Alpha", "NodeSocketFloat"),
+                ("Breakup Strength", "NodeSocketFloat"),
+                ("Breakup Enable", "NodeSocketFloat"),
+                ("Stencil Opacity", "NodeSocketFloat"),
+                ("Stencil Glossiness", "NodeSocketFloat"),
+                ("Mode", "NodeSocketFloat"),
+                ("Tint1", "NodeSocketColor"),
+                ("Tint2", "NodeSocketColor"),
+                ("Tint3", "NodeSocketColor"),
+                ("Tint1 Enable", "NodeSocketFloat"),
+                ("Tint2 Enable", "NodeSocketFloat"),
+                ("Tint3 Enable", "NodeSocketFloat"),
+                ("Specular1", "NodeSocketColor"),
+                ("Specular2", "NodeSocketColor"),
+                ("Specular3", "NodeSocketColor"),
+                ("Specular1 Enable", "NodeSocketFloat"),
+                ("Specular2 Enable", "NodeSocketFloat"),
+                ("Specular3 Enable", "NodeSocketFloat"),
+            ],
+            outputs=[
+                ("Color", "NodeSocketColor"),
+                ("Color Factor", "NodeSocketFloat"),
+                ("Factor", "NodeSocketFloat"),
+                ("Roughness", "NodeSocketFloat"),
+                ("Specular", "NodeSocketFloat"),
+                ("Specular Tint", "NodeSocketColor"),
+            ],
+        )
+        if group_tree.get("starbreaker_runtime_built_signature") == "hardsurface_stencil_v1":
+            return group_tree
+        nodes = group_tree.nodes
+        links = group_tree.links
+
+        # Identity defaults.
+        _set_group_input_default(group_input, "Stencil Color", (1.0, 1.0, 1.0, 1.0))
+        _set_group_input_default(group_input, "Stencil Alpha", 1.0)
+        _set_group_input_default(group_input, "Breakup Color", (1.0, 1.0, 1.0, 1.0))
+        _set_group_input_default(group_input, "Breakup Alpha", 1.0)
+        _set_group_input_default(group_input, "Breakup Strength", 0.0)
+        _set_group_input_default(group_input, "Breakup Enable", 0.0)
+        _set_group_input_default(group_input, "Stencil Opacity", 1.0)
+        _set_group_input_default(group_input, "Stencil Glossiness", 0.0)
+        _set_group_input_default(group_input, "Mode", 0.0)
+        _set_group_input_default(group_input, "Tint1", (1.0, 1.0, 1.0, 1.0))
+        _set_group_input_default(group_input, "Tint2", (0.0, 0.0, 0.0, 1.0))
+        _set_group_input_default(group_input, "Tint3", (0.0, 0.0, 0.0, 1.0))
+        _set_group_input_default(group_input, "Tint1 Enable", 0.0)
+        _set_group_input_default(group_input, "Tint2 Enable", 0.0)
+        _set_group_input_default(group_input, "Tint3 Enable", 0.0)
+        _set_group_input_default(group_input, "Specular1", (0.0, 0.0, 0.0, 1.0))
+        _set_group_input_default(group_input, "Specular2", (0.0, 0.0, 0.0, 1.0))
+        _set_group_input_default(group_input, "Specular3", (0.0, 0.0, 0.0, 1.0))
+        _set_group_input_default(group_input, "Specular1 Enable", 0.0)
+        _set_group_input_default(group_input, "Specular2 Enable", 0.0)
+        _set_group_input_default(group_input, "Specular3 Enable", 0.0)
+
+        def _mul_f(a, b, *, x, y):
+            m = nodes.new("ShaderNodeMath")
+            m.location = (x, y)
+            m.operation = "MULTIPLY"
+            m.use_clamp = False
+            links.new(a, m.inputs[0])
+            links.new(b, m.inputs[1])
+            return m.outputs[0]
+
+        def _add_f(a, b, *, x, y, clamp=False):
+            m = nodes.new("ShaderNodeMath")
+            m.location = (x, y)
+            m.operation = "ADD"
+            m.use_clamp = clamp
+            links.new(a, m.inputs[0])
+            links.new(b, m.inputs[1])
+            return m.outputs[0]
+
+        def _sub_f(a, b, *, x, y, clamp=True):
+            m = nodes.new("ShaderNodeMath")
+            m.location = (x, y)
+            m.operation = "SUBTRACT"
+            m.use_clamp = clamp
+            links.new(a, m.inputs[0])
+            links.new(b, m.inputs[1])
+            return m.outputs[0]
+
+        def _mix_f(a, b, factor, *, x, y):
+            m = nodes.new("ShaderNodeMix")
+            m.location = (x, y)
+            if hasattr(m, "data_type"):
+                m.data_type = "FLOAT"
+            links.new(factor, m.inputs[0])
+            links.new(a, m.inputs[2])
+            links.new(b, m.inputs[3])
+            return m.outputs[0]
+
+        def _mix_c(a, b, factor, *, x, y, blend="MIX"):
+            m = nodes.new("ShaderNodeMixRGB")
+            m.location = (x, y)
+            m.blend_type = blend
+            links.new(factor, m.inputs[0])
+            links.new(a, m.inputs[1])
+            links.new(b, m.inputs[2])
+            return m.outputs[0]
+
+        def _mul_c(a, b, *, x, y):
+            m = nodes.new("ShaderNodeMixRGB")
+            m.location = (x, y)
+            m.blend_type = "MULTIPLY"
+            m.inputs[0].default_value = 1.0
+            links.new(a, m.inputs[1])
+            links.new(b, m.inputs[2])
+            return m.outputs[0]
+
+        def _add_c(a, b, *, x, y):
+            m = nodes.new("ShaderNodeMixRGB")
+            m.location = (x, y)
+            m.blend_type = "ADD"
+            m.inputs[0].default_value = 1.0
+            links.new(a, m.inputs[1])
+            links.new(b, m.inputs[2])
+            return m.outputs[0]
+
+        stencil_color = _output_socket(group_input, "Stencil Color")
+        stencil_alpha = _output_socket(group_input, "Stencil Alpha")
+        breakup_color = _output_socket(group_input, "Breakup Color")
+        breakup_alpha = _output_socket(group_input, "Breakup Alpha")
+        breakup_strength = _output_socket(group_input, "Breakup Strength")
+        breakup_enable = _output_socket(group_input, "Breakup Enable")
+        stencil_opacity = _output_socket(group_input, "Stencil Opacity")
+        stencil_gloss = _output_socket(group_input, "Stencil Glossiness")
+        mode = _output_socket(group_input, "Mode")
+
+        # Split stencil RGB → channel masks, each multiplied by stencil alpha.
+        separate = nodes.new("ShaderNodeSeparateColor")
+        separate.location = (-1000, 200)
+        if hasattr(separate, "mode"):
+            separate.mode = "RGB"
+        links.new(stencil_color, separate.inputs[0])
+        r_raw = separate.outputs[0]
+        g_raw = separate.outputs[1]
+        b_raw = separate.outputs[2]
+        m_r = _mul_f(r_raw, stencil_alpha, x=-800, y=280)
+        m_g = _mul_f(g_raw, stencil_alpha, x=-800, y=160)
+        m_b = _mul_f(b_raw, stencil_alpha, x=-800, y=40)
+
+        # Luma mask from stencil color × alpha (used for single-channel factor).
+        stencil_luma = nodes.new("ShaderNodeRGBToBW")
+        stencil_luma.location = (-1000, -60)
+        links.new(stencil_color, stencil_luma.inputs[0])
+        stencil_mask = _mul_f(stencil_luma.outputs[0], stencil_alpha, x=-800, y=-80)
+
+        # Multi-channel: per-channel enabled masks.
+        e1 = _output_socket(group_input, "Tint1 Enable")
+        e2 = _output_socket(group_input, "Tint2 Enable")
+        e3 = _output_socket(group_input, "Tint3 Enable")
+        tm_r = _mul_f(m_r, e1, x=-580, y=280)
+        tm_g = _mul_f(m_g, e2, x=-580, y=160)
+        tm_b = _mul_f(m_b, e3, x=-580, y=40)
+
+        # Per-channel colored contributions: tint × mask.
+        tint1 = _output_socket(group_input, "Tint1")
+        tint2 = _output_socket(group_input, "Tint2")
+        tint3 = _output_socket(group_input, "Tint3")
+        # Build masked tint: mix(black, tint, tm).
+        black = nodes.new("ShaderNodeRGB")
+        black.location = (-580, -260)
+        black.outputs[0].default_value = (0.0, 0.0, 0.0, 1.0)
+        black_socket = black.outputs[0]
+        masked_1 = _mix_c(black_socket, tint1, tm_r, x=-380, y=280)
+        masked_2 = _mix_c(black_socket, tint2, tm_g, x=-380, y=160)
+        masked_3 = _mix_c(black_socket, tint3, tm_b, x=-380, y=40)
+        multi_color_12 = _add_c(masked_1, masked_2, x=-180, y=220)
+        multi_color = _add_c(multi_color_12, masked_3, x=20, y=180)
+
+        multi_factor_12 = _add_f(tm_r, tm_g, x=-180, y=60, clamp=True)
+        multi_factor = _add_f(multi_factor_12, tm_b, x=20, y=40, clamp=True)
+
+        # Single-channel: raw stencil × mix(white, Tint1, Tint1Enable).
+        white = nodes.new("ShaderNodeRGB")
+        white.location = (-580, 440)
+        white.outputs[0].default_value = (1.0, 1.0, 1.0, 1.0)
+        white_socket = white.outputs[0]
+        tint1_gated = _mix_c(white_socket, tint1, e1, x=-380, y=440)
+        single_color = _mul_c(stencil_color, tint1_gated, x=-180, y=400)
+
+        # Mode mix.
+        color_mode = _mix_c(single_color, multi_color, mode, x=220, y=300)
+        factor_mode = _mix_f(stencil_mask, multi_factor, mode, x=220, y=120)
+
+        # Breakup.
+        breakup_luma = nodes.new("ShaderNodeRGBToBW")
+        breakup_luma.location = (-1000, -260)
+        links.new(breakup_color, breakup_luma.inputs[0])
+        breakup_mask = _mul_f(breakup_luma.outputs[0], breakup_alpha, x=-800, y=-260)
+        # breakup_factor = mix(1, breakup_mask, breakup_strength)
+        one_const = nodes.new("ShaderNodeValue")
+        one_const.location = (-800, -440)
+        one_const.outputs[0].default_value = 1.0
+        one_socket = one_const.outputs[0]
+        breakup_blend = _mix_f(one_socket, breakup_mask, breakup_strength, x=-580, y=-260)
+        # Apply only when BreakupEnable = 1.
+        breakup_applied = _mix_f(one_socket, breakup_blend, breakup_enable, x=-380, y=-260)
+
+        # factor_out = factor_mode × breakup_applied × opacity.
+        factor_with_breakup = _mul_f(factor_mode, breakup_applied, x=420, y=80)
+        factor_out = _mul_f(factor_with_breakup, stencil_opacity, x=620, y=80)
+
+        # Roughness output = 1 - gloss.
+        roughness_out = _sub_f(one_socket, stencil_gloss, x=420, y=-60, clamp=True)
+
+        # Specular accumulation: sum(mask_i × enable_i × spec_i) then RGBToBW.
+        spec1 = _output_socket(group_input, "Specular1")
+        spec2 = _output_socket(group_input, "Specular2")
+        spec3 = _output_socket(group_input, "Specular3")
+        se1 = _output_socket(group_input, "Specular1 Enable")
+        se2 = _output_socket(group_input, "Specular2 Enable")
+        se3 = _output_socket(group_input, "Specular3 Enable")
+        # channel_mask × specular_enable
+        sm_r = _mul_f(m_r, se1, x=-580, y=-540)
+        sm_g = _mul_f(m_g, se2, x=-580, y=-660)
+        sm_b = _mul_f(m_b, se3, x=-580, y=-780)
+        masked_s1 = _mix_c(black_socket, spec1, sm_r, x=-380, y=-540)
+        masked_s2 = _mix_c(black_socket, spec2, sm_g, x=-380, y=-660)
+        masked_s3 = _mix_c(black_socket, spec3, sm_b, x=-380, y=-780)
+        spec_sum_12 = _add_c(masked_s1, masked_s2, x=-180, y=-580)
+        spec_tint_socket = _add_c(spec_sum_12, masked_s3, x=20, y=-620)
+        spec_gray = nodes.new("ShaderNodeRGBToBW")
+        spec_gray.location = (220, -600)
+        links.new(spec_tint_socket, spec_gray.inputs[0])
+        spec_socket = spec_gray.outputs[0]
+
+        # Wire outputs.
+        links.new(color_mode, group_output.inputs["Color"])
+        links.new(factor_out, group_output.inputs["Factor"])
+        links.new(factor_out, group_output.inputs["Color Factor"])
+        links.new(roughness_out, group_output.inputs["Roughness"])
+        links.new(spec_socket, group_output.inputs["Specular"])
+        links.new(spec_tint_socket, group_output.inputs["Specular Tint"])
+
+        group_tree["starbreaker_runtime_built_signature"] = "hardsurface_stencil_v1"
+        return group_tree
+
     def _ensure_runtime_illum_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime Illum",
@@ -3472,17 +3741,6 @@ class PackageImporter:
         if stencil_node is None:
             return StencilOverlaySockets()
 
-        stencil_mask = self._image_mask_socket_from_node(nodes, links, stencil_node, x=x + 220, y=y)
-        separate = nodes.new("ShaderNodeSeparateColor")
-        separate.location = (x + 220, y + 160)
-        links.new(stencil_node.outputs[0], separate.inputs[0])
-        channel_masks = [separate.outputs[0], separate.outputs[1], separate.outputs[2]]
-        alpha_socket = _output_socket(stencil_node, "Alpha")
-        if alpha_socket is not None:
-            channel_masks = [
-                self._multiply_value_socket(nodes, links, channel_mask, alpha_socket, x=x + 420, y=y + 160 - (index * 120))
-                for index, channel_mask in enumerate(channel_masks)
-            ]
         tint = _public_param_triplet(
             submaterial,
             "StencilDiffuseColor1",
@@ -3498,51 +3756,12 @@ class PackageImporter:
         specular_3 = _public_param_triplet(submaterial, "StencilSpecularColor3", "StencilSpecular3")
         multi_channel_stencil = any(value is not None for value in (tint_2, tint_3, specular_2, specular_3))
         tint_override = _optional_float_public_param(submaterial, "StencilTintOverride") or 0.0
-        color_socket = stencil_node.outputs[0]
-        color_factor_socket = stencil_mask
-        if stencil_ref.is_virtual or tint_override > 0.0:
-            tint_socket = self._value_color_socket(
-                nodes,
-                (*tint, 1.0) if tint is not None else (1.0, 1.0, 1.0, 1.0),
-                x=x + 220,
-                y=y + 160,
-            )
-            color_socket = self._multiply_color_socket(nodes, links, color_socket, tint_socket, x=x + 420, y=y + 80)
-        elif multi_channel_stencil:
-            tinted_masks: list[Any] = []
-            active_masks: list[Any] = []
-            for index, (channel_mask, channel_tint) in enumerate(zip(channel_masks, (tint, tint_2, tint_3), strict=False)):
-                if channel_tint is None or (_mean_triplet(channel_tint) or 0.0) <= 0.01:
-                    continue
-                tinted_masks.append(
-                    self._masked_color_socket(
-                        nodes,
-                        links,
-                        channel_mask,
-                        channel_tint,
-                        x=x + 220,
-                        y=y + 40 - (index * 160),
-                    )
-                )
-                active_masks.append(channel_mask)
-            color_socket = None
-            for index, masked_color in enumerate(tinted_masks):
-                color_socket = self._add_color_socket(nodes, links, color_socket, masked_color, x=x + 620, y=y + 20 - (index * 60))
-            color_factor_socket = None
-            for index, active_mask in enumerate(active_masks):
-                color_factor_socket = self._add_clamped_value_socket(
-                    nodes,
-                    links,
-                    color_factor_socket,
-                    active_mask,
-                    x=x + 620,
-                    y=y - 140 - (index * 60),
-                )
-            if color_socket is None:
-                color_socket = stencil_node.outputs[0]
-                color_factor_socket = stencil_mask
+        stencil_glossiness = _optional_float_public_param(submaterial, "StencilGlossiness")
+        opacity = _optional_float_public_param(submaterial, "StencilOpacity")
 
-        breakup_factor = None
+        # Optional breakup image texture at top level.
+        breakup_node = None
+        breakup_strength = 0.0
         breakup_ref = _submaterial_texture_reference(submaterial, slots=("TexSlot8",), roles=("breakup", "grime_breakup"))
         if breakup_ref is not None and breakup_ref.export_path is not None:
             breakup_tiling = _optional_float_public_param(submaterial, "StencilBreakupTiling")
@@ -3556,96 +3775,80 @@ class PackageImporter:
                 tiling=breakup_tiling if breakup_tiling is not None and breakup_tiling > 0.0 else 1.0,
                 uv_map_name=stencil_uv_map,
             )
-            breakup_mask = self._image_mask_socket_from_node(nodes, links, breakup_node, x=x + 220, y=y - 220)
             breakup_strength = max(
                 0.0,
                 min(1.0, _optional_float_public_param(submaterial, "StencilDiffuseBreakup", "StencilGlossBreakup") or 0.0),
             )
-            if breakup_mask is not None and breakup_strength > 0.0:
-                breakup_strength_socket = self._value_socket(nodes, breakup_strength, x=x + 220, y=y - 360)
-                breakup_factor = self._mix_value_socket(
-                    nodes,
-                    links,
-                    self._value_socket(nodes, 1.0, x=x + 20, y=y - 360),
-                    breakup_mask,
-                    breakup_strength_socket,
-                    x=x + 420,
-                    y=y - 280,
-                )
 
-        factor_socket = stencil_mask
-        if factor_socket is not None and breakup_factor is not None:
-            factor_socket = self._multiply_value_socket(nodes, links, factor_socket, breakup_factor, x=x + 620, y=y - 80)
-        if color_factor_socket is not None and breakup_factor is not None:
-            color_factor_socket = self._multiply_value_socket(
-                nodes,
-                links,
-                color_factor_socket,
-                breakup_factor,
-                x=x + 620,
-                y=y - 260,
-            )
+        # Instantiate the Runtime HardSurface Stencil group.
+        group_node = nodes.new("ShaderNodeGroup")
+        group_node.location = (x + 420, y)
+        group_node.node_tree = self._ensure_runtime_hardsurface_stencil_group()
+        group_node.label = "StarBreaker HardSurface Stencil"
 
-        opacity = _optional_float_public_param(submaterial, "StencilOpacity")
-        if factor_socket is not None and opacity is not None:
-            factor_socket = self._multiply_value_socket(
-                nodes,
-                links,
-                factor_socket,
-                self._value_socket(nodes, max(0.0, min(1.0, opacity)), x=x + 620, y=y - 220),
-                x=x + 820,
-                y=y - 140,
-            )
-        if color_factor_socket is not None and opacity is not None:
-            color_factor_socket = self._multiply_value_socket(
-                nodes,
-                links,
-                color_factor_socket,
-                self._value_socket(nodes, max(0.0, min(1.0, opacity)), x=x + 620, y=y - 400),
-                x=x + 820,
-                y=y - 320,
-            )
+        # Wire image textures.
+        links.new(stencil_node.outputs[0], group_node.inputs["Stencil Color"])
+        stencil_alpha_socket = _output_socket(stencil_node, "Alpha")
+        if stencil_alpha_socket is not None:
+            links.new(stencil_alpha_socket, group_node.inputs["Stencil Alpha"])
+        if breakup_node is not None:
+            links.new(breakup_node.outputs[0], group_node.inputs["Breakup Color"])
+            breakup_alpha_socket = _output_socket(breakup_node, "Alpha")
+            if breakup_alpha_socket is not None:
+                links.new(breakup_alpha_socket, group_node.inputs["Breakup Alpha"])
+            group_node.inputs["Breakup Strength"].default_value = breakup_strength
+            group_node.inputs["Breakup Enable"].default_value = 1.0 if breakup_strength > 0.0 else 0.0
+        else:
+            group_node.inputs["Breakup Enable"].default_value = 0.0
 
-        roughness_socket = None
-        stencil_glossiness = _optional_float_public_param(submaterial, "StencilGlossiness")
+        if opacity is not None:
+            group_node.inputs["Stencil Opacity"].default_value = max(0.0, min(1.0, opacity))
         if stencil_glossiness is not None:
-            roughness_socket = self._value_socket(nodes, max(0.0, min(1.0, 1.0 - stencil_glossiness)), x=x + 220, y=y + 300)
+            group_node.inputs["Stencil Glossiness"].default_value = max(0.0, min(1.0, stencil_glossiness))
 
-        specular_tint_socket = None
-        for index, (channel_mask, channel_specular) in enumerate(zip(channel_masks, (specular_1, specular_2, specular_3), strict=False)):
-            if channel_specular is None or (_mean_triplet(channel_specular) or 0.0) <= 0.0:
-                continue
-            masked_specular = self._masked_color_socket(
-                nodes,
-                links,
-                channel_mask,
-                channel_specular,
-                x=x + 220,
-                y=y + 520 - (index * 160),
-            )
-            specular_tint_socket = self._add_color_socket(
-                nodes,
-                links,
-                specular_tint_socket,
-                masked_specular,
-                x=x + 620,
-                y=y + 500 - (index * 60),
-            )
+        # Decide mode + tint defaults.
+        use_override = stencil_ref.is_virtual or tint_override > 0.0
+        if use_override:
+            group_node.inputs["Mode"].default_value = 0.0
+            group_node.inputs["Tint1"].default_value = (*(tint if tint is not None else (1.0, 1.0, 1.0)), 1.0)
+            group_node.inputs["Tint1 Enable"].default_value = 1.0
+            group_node.inputs["Tint2 Enable"].default_value = 0.0
+            group_node.inputs["Tint3 Enable"].default_value = 0.0
+        elif multi_channel_stencil:
+            group_node.inputs["Mode"].default_value = 1.0
+            for slot, color in (("Tint1", tint), ("Tint2", tint_2), ("Tint3", tint_3)):
+                enable_key = f"{slot} Enable"
+                if color is not None and (_mean_triplet(color) or 0.0) > 0.01:
+                    group_node.inputs[slot].default_value = (*color, 1.0)
+                    group_node.inputs[enable_key].default_value = 1.0
+                else:
+                    group_node.inputs[enable_key].default_value = 0.0
+        else:
+            group_node.inputs["Mode"].default_value = 0.0
+            group_node.inputs["Tint1 Enable"].default_value = 0.0
+            group_node.inputs["Tint2 Enable"].default_value = 0.0
+            group_node.inputs["Tint3 Enable"].default_value = 0.0
 
-        specular_socket = None
-        if specular_tint_socket is not None:
-            rgb_to_bw = nodes.new("ShaderNodeRGBToBW")
-            rgb_to_bw.location = (x + 820, y + 500)
-            links.new(specular_tint_socket, rgb_to_bw.inputs[0])
-            specular_socket = rgb_to_bw.outputs[0]
+        # Specular tints.
+        for slot, color in (("Specular1", specular_1), ("Specular2", specular_2), ("Specular3", specular_3)):
+            enable_key = f"{slot} Enable"
+            if color is not None and (_mean_triplet(color) or 0.0) > 0.0:
+                group_node.inputs[slot].default_value = (*color, 1.0)
+                group_node.inputs[enable_key].default_value = 1.0
+            else:
+                group_node.inputs[enable_key].default_value = 0.0
+
+        has_specular = any(
+            c is not None and (_mean_triplet(c) or 0.0) > 0.0 for c in (specular_1, specular_2, specular_3)
+        )
 
         return StencilOverlaySockets(
-            color=color_socket,
-            color_factor=color_factor_socket,
-            factor=factor_socket,
-            roughness=roughness_socket,
-            specular=specular_socket,
-            specular_tint=specular_tint_socket,
+            color=group_node.outputs["Color"],
+            color_factor=group_node.outputs["Color Factor"],
+            factor=group_node.outputs["Factor"],
+            roughness=group_node.outputs["Roughness"] if stencil_glossiness is not None else None,
+            specular=group_node.outputs["Specular"] if has_specular else None,
+            specular_tint=group_node.outputs["Specular Tint"] if has_specular else None,
         )
 
     def _mix_color_socket(
