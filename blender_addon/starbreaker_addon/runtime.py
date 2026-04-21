@@ -115,6 +115,17 @@ class LayerSurfaceSockets:
     specular_tint: Any | None = None
     metallic: Any | None = None
 
+
+@dataclass
+class StencilOverlaySockets:
+    color: Any | None = None
+    color_factor: Any | None = None
+    factor: Any | None = None
+    roughness: Any | None = None
+    specular: Any | None = None
+    specular_tint: Any | None = None
+
+
 @dataclass(frozen=True)
 class SocketRef:
     node: Any
@@ -1275,6 +1286,7 @@ class PackageImporter:
         wear_factor = self._layered_wear_factor_socket(nodes, links, submaterial, x=-720, y=-120)
         damage_factor = self._layered_damage_factor_socket(nodes, links, submaterial, x=-720, y=-240)
         iridescence_ramp_color = self._iridescence_ramp_color_socket(nodes, links, submaterial, x=-980, y=-1560)
+        stencil = self._hard_surface_stencil_overlay_sockets(nodes, links, submaterial, x=-980, y=-1820)
 
         macro_normal_ref = _submaterial_texture_reference(submaterial, slots=("TexSlot3",), roles=("normal_gloss",))
         macro_normal_node = self._image_node(
@@ -1335,6 +1347,12 @@ class PackageImporter:
         self._set_socket_default(_input_socket(shader_group, "Iridescence Strength"), 1.0)
         iridescence_active = angle_shift_enabled and (submaterial.decoded_feature_flags.has_iridescence or _palette_has_iridescence(palette))
         self._set_socket_default(_input_socket(shader_group, "Iridescence Factor"), 1.0 if iridescence_active else 0.0)
+        self._set_socket_default(_input_socket(shader_group, "Stencil Color"), (1.0, 1.0, 1.0, 1.0))
+        self._set_socket_default(_input_socket(shader_group, "Stencil Color Factor"), 0.0)
+        self._set_socket_default(_input_socket(shader_group, "Stencil Factor"), 0.0)
+        self._set_socket_default(_input_socket(shader_group, "Stencil Roughness"), 0.45)
+        self._set_socket_default(_input_socket(shader_group, "Stencil Specular"), 0.0)
+        self._set_socket_default(_input_socket(shader_group, "Stencil Specular Tint"), (1.0, 1.0, 1.0, 1.0))
         self._link_group_input(links, iridescence_ramp_color, shader_group, "Iridescence Ramp Color")
         if iridescence_ramp_color is not None:
             self._set_socket_default(_input_socket(shader_group, "Iridescence Ramp Weight"), 1.0)
@@ -1369,6 +1387,12 @@ class PackageImporter:
         self._link_group_input(links, secondary.normal, shader_group, "Secondary Normal")
         self._link_group_input(links, wear_factor, shader_group, "Wear Factor")
         self._link_group_input(links, damage_factor, shader_group, "Damage Factor")
+        self._link_group_input(links, stencil.color, shader_group, "Stencil Color")
+        self._link_group_input(links, stencil.color_factor, shader_group, "Stencil Color Factor")
+        self._link_group_input(links, stencil.factor, shader_group, "Stencil Factor")
+        self._link_group_input(links, stencil.roughness, shader_group, "Stencil Roughness")
+        self._link_group_input(links, stencil.specular, shader_group, "Stencil Specular")
+        self._link_group_input(links, stencil.specular_tint, shader_group, "Stencil Specular Tint")
         self._link_group_input(
             links,
             macro_normal_node.outputs[0] if macro_normal_node is not None else None,
@@ -1797,7 +1821,7 @@ class PackageImporter:
     def _ensure_runtime_hard_surface_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime HardSurface",
-            "hard_surface_v16",
+            "hard_surface_v29",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -1807,7 +1831,7 @@ class PackageImporter:
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime HardSurface",
-            signature="hard_surface_v16",
+            signature="hard_surface_v29",
             inputs=[
                 ("Top Base Color", "NodeSocketColor"),
                 ("Top Alpha", "NodeSocketFloat"),
@@ -1833,6 +1857,12 @@ class PackageImporter:
                 ("Iridescence Factor", "NodeSocketFloat"),
                 ("Wear Factor", "NodeSocketFloat"),
                 ("Damage Factor", "NodeSocketFloat"),
+                ("Stencil Color", "NodeSocketColor"),
+                ("Stencil Color Factor", "NodeSocketFloat"),
+                ("Stencil Factor", "NodeSocketFloat"),
+                ("Stencil Roughness", "NodeSocketFloat"),
+                ("Stencil Specular", "NodeSocketFloat"),
+                ("Stencil Specular Tint", "NodeSocketColor"),
                 ("Macro Normal Color", "NodeSocketColor"),
                 ("Macro Normal Strength", "NodeSocketFloat"),
                 ("Displacement Height", "NodeSocketFloat"),
@@ -1843,7 +1873,7 @@ class PackageImporter:
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v16":
+        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v29":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -1887,30 +1917,109 @@ class PackageImporter:
 
         iridescence_source = nodes.new("ShaderNodeMixRGB")
         iridescence_source.location = (-280, 520)
-        iridescence_source.blend_type = "MIX"
+        iridescence_source.blend_type = "SCREEN"
         links.new(_output_socket(group_input, "Iridescence Ramp Weight"), iridescence_source.inputs[0])
         links.new(iridescence_color.outputs[0], iridescence_source.inputs[1])
         links.new(_output_socket(group_input, "Iridescence Ramp Color"), iridescence_source.inputs[2])
 
-        iridescence_strength_color = nodes.new("ShaderNodeCombineXYZ")
-        iridescence_strength_color.location = (-280, 340)
-        links.new(_output_socket(group_input, "Iridescence Strength"), iridescence_strength_color.inputs[0])
-        links.new(_output_socket(group_input, "Iridescence Strength"), iridescence_strength_color.inputs[1])
-        links.new(_output_socket(group_input, "Iridescence Strength"), iridescence_strength_color.inputs[2])
+        iridescence_strength_mix = nodes.new("ShaderNodeMath")
+        iridescence_strength_mix.location = (-80, 360)
+        iridescence_strength_mix.operation = "MULTIPLY"
+        iridescence_strength_mix.use_clamp = True
+        iridescence_strength_mix.inputs[1].default_value = 1.0
+        links.new(_output_socket(group_input, "Iridescence Strength"), iridescence_strength_mix.inputs[0])
 
-        iridescence_tint = nodes.new("ShaderNodeMixRGB")
-        iridescence_tint.location = (-80, 520)
-        iridescence_tint.blend_type = "MULTIPLY"
-        iridescence_tint.inputs[0].default_value = 1.0
-        links.new(iridescence_source.outputs[0], iridescence_tint.inputs[1])
-        links.new(iridescence_strength_color.outputs[0], iridescence_tint.inputs[2])
+        iridescence_consumer_factor = nodes.new("ShaderNodeMath")
+        iridescence_consumer_factor.location = (120, 340)
+        iridescence_consumer_factor.operation = "MULTIPLY"
+        iridescence_consumer_factor.use_clamp = True
+        links.new(_output_socket(group_input, "Iridescence Factor"), iridescence_consumer_factor.inputs[0])
+        links.new(iridescence_strength_mix.outputs[0], iridescence_consumer_factor.inputs[1])
 
-        color_sheen = nodes.new("ShaderNodeMixRGB")
-        color_sheen.location = (120, 460)
-        color_sheen.blend_type = "MIX"
-        links.new(_output_socket(group_input, "Iridescence Factor"), color_sheen.inputs[0])
-        links.new(final_color.outputs[0], color_sheen.inputs[1])
-        links.new(iridescence_tint.outputs[0], color_sheen.inputs[2])
+        body_iridescence_factor = nodes.new("ShaderNodeMath")
+        body_iridescence_factor.location = (120, 420)
+        body_iridescence_factor.operation = "MULTIPLY"
+        body_iridescence_factor.use_clamp = True
+        links.new(iridescence_consumer_factor.outputs[0], body_iridescence_factor.inputs[0])
+        body_iridescence_factor.inputs[1].default_value = 0.65
+
+        body_iridescence_source = nodes.new("ShaderNodeMixRGB")
+        body_iridescence_source.location = (-60, 620)
+        body_iridescence_source.blend_type = "MIX"
+        links.new(_output_socket(group_input, "Iridescence Ramp Weight"), body_iridescence_source.inputs[0])
+        links.new(iridescence_color.outputs[0], body_iridescence_source.inputs[1])
+        links.new(_output_socket(group_input, "Iridescence Ramp Color"), body_iridescence_source.inputs[2])
+
+        body_iridescence_channels = nodes.new("ShaderNodeSeparateColor")
+        body_iridescence_channels.location = (140, 660)
+        if hasattr(body_iridescence_channels, "mode"):
+            body_iridescence_channels.mode = "RGB"
+        links.new(body_iridescence_source.outputs[0], body_iridescence_channels.inputs[0])
+
+        body_iridescence_max_rg = nodes.new("ShaderNodeMath")
+        body_iridescence_max_rg.location = (320, 720)
+        body_iridescence_max_rg.operation = "MAXIMUM"
+        links.new(body_iridescence_channels.outputs[0], body_iridescence_max_rg.inputs[0])
+        links.new(body_iridescence_channels.outputs[1], body_iridescence_max_rg.inputs[1])
+
+        body_iridescence_max_rgb = nodes.new("ShaderNodeMath")
+        body_iridescence_max_rgb.location = (500, 720)
+        body_iridescence_max_rgb.operation = "MAXIMUM"
+        links.new(body_iridescence_max_rg.outputs[0], body_iridescence_max_rgb.inputs[0])
+        links.new(body_iridescence_channels.outputs[2], body_iridescence_max_rgb.inputs[1])
+
+        body_iridescence_safe_max = nodes.new("ShaderNodeMath")
+        body_iridescence_safe_max.location = (680, 720)
+        body_iridescence_safe_max.operation = "MAXIMUM"
+        links.new(body_iridescence_max_rgb.outputs[0], body_iridescence_safe_max.inputs[0])
+        body_iridescence_safe_max.inputs[1].default_value = 0.001
+
+        body_iridescence_red = nodes.new("ShaderNodeMath")
+        body_iridescence_red.location = (860, 780)
+        body_iridescence_red.operation = "DIVIDE"
+        links.new(body_iridescence_channels.outputs[0], body_iridescence_red.inputs[0])
+        links.new(body_iridescence_safe_max.outputs[0], body_iridescence_red.inputs[1])
+
+        body_iridescence_green = nodes.new("ShaderNodeMath")
+        body_iridescence_green.location = (860, 660)
+        body_iridescence_green.operation = "DIVIDE"
+        links.new(body_iridescence_channels.outputs[1], body_iridescence_green.inputs[0])
+        links.new(body_iridescence_safe_max.outputs[0], body_iridescence_green.inputs[1])
+
+        body_iridescence_blue = nodes.new("ShaderNodeMath")
+        body_iridescence_blue.location = (860, 540)
+        body_iridescence_blue.operation = "DIVIDE"
+        links.new(body_iridescence_channels.outputs[2], body_iridescence_blue.inputs[0])
+        links.new(body_iridescence_safe_max.outputs[0], body_iridescence_blue.inputs[1])
+
+        body_iridescence_tint = nodes.new("ShaderNodeCombineColor")
+        body_iridescence_tint.location = (1040, 660)
+        if hasattr(body_iridescence_tint, "mode"):
+            body_iridescence_tint.mode = "RGB"
+        links.new(body_iridescence_red.outputs[0], body_iridescence_tint.inputs[0])
+        links.new(body_iridescence_green.outputs[0], body_iridescence_tint.inputs[1])
+        links.new(body_iridescence_blue.outputs[0], body_iridescence_tint.inputs[2])
+
+        body_iridescence_tinted_base = nodes.new("ShaderNodeMixRGB")
+        body_iridescence_tinted_base.location = (1220, 560)
+        body_iridescence_tinted_base.blend_type = "MULTIPLY"
+        body_iridescence_tinted_base.inputs[0].default_value = 1.0
+        links.new(_output_socket(group_input, "Top Base Color"), body_iridescence_tinted_base.inputs[1])
+        links.new(body_iridescence_tint.outputs[0], body_iridescence_tinted_base.inputs[2])
+
+        body_iridescence_mix = nodes.new("ShaderNodeMixRGB")
+        body_iridescence_mix.location = (1400, 560)
+        body_iridescence_mix.blend_type = "MIX"
+        links.new(body_iridescence_factor.outputs[0], body_iridescence_mix.inputs[0])
+        links.new(final_color.outputs[0], body_iridescence_mix.inputs[1])
+        links.new(body_iridescence_tinted_base.outputs[0], body_iridescence_mix.inputs[2])
+
+        stencil_mix = nodes.new("ShaderNodeMixRGB")
+        stencil_mix.location = (1600, 460)
+        stencil_mix.blend_type = "MIX"
+        links.new(_output_socket(group_input, "Stencil Color Factor"), stencil_mix.inputs[0])
+        links.new(body_iridescence_mix.outputs[0], stencil_mix.inputs[1])
+        links.new(_output_socket(group_input, "Stencil Color"), stencil_mix.inputs[2])
 
         alpha_mix = nodes.new("ShaderNodeMix")
         alpha_mix.location = (-700, 80)
@@ -1934,6 +2043,14 @@ class PackageImporter:
         links.new(_output_socket(group_input, "Primary Roughness"), roughness_mix.inputs[2])
         links.new(_output_socket(group_input, "Secondary Roughness"), roughness_mix.inputs[3])
 
+        stencil_roughness_mix = nodes.new("ShaderNodeMix")
+        stencil_roughness_mix.location = (-480, -100)
+        if hasattr(stencil_roughness_mix, "data_type"):
+            stencil_roughness_mix.data_type = "FLOAT"
+        links.new(_output_socket(group_input, "Stencil Factor"), stencil_roughness_mix.inputs[0])
+        links.new(roughness_mix.outputs[0], stencil_roughness_mix.inputs[2])
+        links.new(_output_socket(group_input, "Stencil Roughness"), stencil_roughness_mix.inputs[3])
+
         specular_mix = nodes.new("ShaderNodeMix")
         specular_mix.location = (-700, -280)
         if hasattr(specular_mix, "data_type"):
@@ -1942,12 +2059,34 @@ class PackageImporter:
         links.new(_output_socket(group_input, "Primary Specular"), specular_mix.inputs[2])
         links.new(_output_socket(group_input, "Secondary Specular"), specular_mix.inputs[3])
 
+        stencil_specular_mix = nodes.new("ShaderNodeMix")
+        stencil_specular_mix.location = (-480, -280)
+        if hasattr(stencil_specular_mix, "data_type"):
+            stencil_specular_mix.data_type = "FLOAT"
+        links.new(_output_socket(group_input, "Stencil Factor"), stencil_specular_mix.inputs[0])
+        links.new(specular_mix.outputs[0], stencil_specular_mix.inputs[2])
+        links.new(_output_socket(group_input, "Stencil Specular"), stencil_specular_mix.inputs[3])
+
         specular_tint_mix = nodes.new("ShaderNodeMixRGB")
         specular_tint_mix.location = (-700, -420)
         specular_tint_mix.blend_type = "MIX"
         links.new(effective_wear_factor.outputs[0], specular_tint_mix.inputs[0])
         links.new(_output_socket(group_input, "Primary Specular Tint"), specular_tint_mix.inputs[1])
         links.new(_output_socket(group_input, "Secondary Specular Tint"), specular_tint_mix.inputs[2])
+
+        iridescence_specular_tint_mix = nodes.new("ShaderNodeMixRGB")
+        iridescence_specular_tint_mix.location = (-590, -520)
+        iridescence_specular_tint_mix.blend_type = "MIX"
+        links.new(iridescence_consumer_factor.outputs[0], iridescence_specular_tint_mix.inputs[0])
+        links.new(specular_tint_mix.outputs[0], iridescence_specular_tint_mix.inputs[1])
+        links.new(iridescence_source.outputs[0], iridescence_specular_tint_mix.inputs[2])
+
+        stencil_specular_tint_mix = nodes.new("ShaderNodeMixRGB")
+        stencil_specular_tint_mix.location = (-480, -420)
+        stencil_specular_tint_mix.blend_type = "MIX"
+        links.new(_output_socket(group_input, "Stencil Factor"), stencil_specular_tint_mix.inputs[0])
+        links.new(iridescence_specular_tint_mix.outputs[0], stencil_specular_tint_mix.inputs[1])
+        links.new(_output_socket(group_input, "Stencil Specular Tint"), stencil_specular_tint_mix.inputs[2])
 
         normal_mix = nodes.new("ShaderNodeMix")
         normal_mix.location = (-700, -500)
@@ -1983,9 +2122,9 @@ class PackageImporter:
 
         principled = self._create_surface_bsdf(nodes)
         principled.location = (320, 40)
-        links.new(color_sheen.outputs[0], _input_socket(principled, "Base Color"))
+        links.new(stencil_mix.outputs[0], _input_socket(principled, "Base Color"))
         links.new(alpha_mul.outputs[0], _input_socket(principled, "Alpha"))
-        links.new(roughness_mix.outputs[0], _input_socket(principled, "Roughness"))
+        links.new(stencil_roughness_mix.outputs[0], _input_socket(principled, "Roughness"))
         metallic_layer_mix = nodes.new("ShaderNodeMix")
         metallic_layer_mix.location = (-700, -600)
         if hasattr(metallic_layer_mix, "data_type"):
@@ -2011,16 +2150,19 @@ class PackageImporter:
             links.new(metallic_max.outputs[0], metallic_input)
         specular_input = _input_socket(principled, "Specular IOR Level", "Specular")
         if specular_input is not None:
-            links.new(specular_mix.outputs[0], specular_input)
+            links.new(stencil_specular_mix.outputs[0], specular_input)
         specular_tint_input = _input_socket(principled, "Specular Tint")
         if specular_tint_input is not None:
-            links.new(specular_tint_mix.outputs[0], specular_tint_input)
+            links.new(stencil_specular_tint_mix.outputs[0], specular_tint_input)
         coat_weight_input = _input_socket(principled, "Coat Weight")
         if coat_weight_input is not None:
-            coat_weight_input.default_value = 0.0
+            links.new(iridescence_consumer_factor.outputs[0], coat_weight_input)
         coat_roughness_input = _input_socket(principled, "Coat Roughness")
         if coat_roughness_input is not None:
             coat_roughness_input.default_value = 0.08
+        coat_tint_input = _input_socket(principled, "Coat Tint")
+        if coat_tint_input is not None:
+            links.new(iridescence_source.outputs[0], coat_tint_input)
         normal_input = _input_socket(principled, "Normal")
         if normal_input is not None:
             links.new(bump.outputs[0], normal_input)
@@ -2046,7 +2188,7 @@ class PackageImporter:
         links.new(principled.outputs[0], shadow_mix.inputs[1])
         links.new(transparent.outputs[0], shadow_mix.inputs[2])
         links.new(shadow_mix.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v16"
+        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v29"
         return group_tree
 
     def _ensure_runtime_illum_group(self) -> bpy.types.ShaderNodeTree:
@@ -2487,6 +2629,318 @@ class PackageImporter:
         if image_node is None:
             return None
         return image_node.outputs[0]
+
+    def _tiled_image_node(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        image_path: str | None,
+        *,
+        x: int,
+        y: int,
+        is_color: bool,
+        tiling: float = 1.0,
+        uv_map_name: str | None = None,
+    ) -> bpy.types.ShaderNodeTexImage | None:
+        image_node = self._image_node(nodes, image_path, x=x, y=y, is_color=is_color)
+        if image_node is None:
+            return None
+        if uv_map_name is None and math.isclose(tiling, 1.0, rel_tol=1e-6, abs_tol=1e-6):
+            return image_node
+        uv_source = None
+        if uv_map_name:
+            uv_map = nodes.new("ShaderNodeUVMap")
+            uv_map.location = (x - 360, y)
+            uv_map.uv_map = uv_map_name
+            uv_source = _output_socket(uv_map, "UV")
+        else:
+            tex_coord = nodes.new("ShaderNodeTexCoord")
+            tex_coord.location = (x - 360, y)
+            uv_source = _output_socket(tex_coord, "UV")
+        mapping = nodes.new("ShaderNodeMapping")
+        mapping.location = (x - 180, y)
+        scale_input = _input_socket(mapping, "Scale")
+        if scale_input is not None and hasattr(scale_input, "default_value"):
+            scale_input.default_value[0] = tiling
+            scale_input.default_value[1] = tiling
+            if len(scale_input.default_value) > 2:
+                scale_input.default_value[2] = 1.0
+        vector_input = _input_socket(mapping, "Vector")
+        image_vector = _input_socket(image_node, "Vector")
+        mapped_vector = _output_socket(mapping, "Vector")
+        if uv_source is not None and vector_input is not None:
+            links.new(uv_source, vector_input)
+        if mapped_vector is not None and image_vector is not None:
+            links.new(mapped_vector, image_vector)
+        return image_node
+
+    def _image_mask_socket_from_node(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        image_node: bpy.types.ShaderNodeTexImage | None,
+        *,
+        x: int,
+        y: int,
+    ) -> Any:
+        if image_node is None:
+            return None
+        rgb_to_bw = nodes.new("ShaderNodeRGBToBW")
+        rgb_to_bw.location = (x, y)
+        links.new(image_node.outputs[0], rgb_to_bw.inputs[0])
+        alpha_socket = _output_socket(image_node, "Alpha")
+        if alpha_socket is None:
+            return rgb_to_bw.outputs[0]
+        return self._multiply_value_socket(nodes, links, rgb_to_bw.outputs[0], alpha_socket, x=x + 180, y=y)
+
+    def _masked_color_socket(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        mask_socket: Any,
+        color_value: tuple[float, float, float],
+        *,
+        x: int,
+        y: int,
+    ) -> Any:
+        if mask_socket is None:
+            return None
+        tint_socket = self._value_color_socket(nodes, (*color_value, 1.0), x=x, y=y)
+        black_socket = self._value_color_socket(nodes, (0.0, 0.0, 0.0, 1.0), x=x, y=y - 120)
+        return self._mix_color_socket(nodes, links, black_socket, tint_socket, mask_socket, x=x + 180, y=y - 40)
+
+    def _add_color_socket(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        socket_a: Any,
+        socket_b: Any,
+        *,
+        x: int,
+        y: int,
+    ) -> Any:
+        if socket_a is None:
+            return socket_b
+        if socket_b is None:
+            return socket_a
+        add = nodes.new("ShaderNodeMixRGB")
+        add.location = (x, y)
+        add.blend_type = "ADD"
+        add.inputs[0].default_value = 1.0
+        self._link_color_output(socket_a, add.inputs[1])
+        self._link_color_output(socket_b, add.inputs[2])
+        return add.outputs[0]
+
+    def _hard_surface_stencil_overlay_sockets(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        submaterial: SubmaterialRecord,
+        *,
+        x: int,
+        y: int,
+    ) -> StencilOverlaySockets:
+        if not submaterial.decoded_feature_flags.has_stencil_map:
+            return StencilOverlaySockets()
+
+        stencil_ref = _submaterial_texture_reference(
+            submaterial,
+            slots=("TexSlot7",),
+            roles=("stencil", "stencil_source", "tint_palette_decal"),
+        )
+        if stencil_ref is None or stencil_ref.export_path is None:
+            return StencilOverlaySockets()
+
+        stencil_tiling = _optional_float_public_param(submaterial, "StencilTiling")
+        stencil_uv_map = "UVMap.001" if (_optional_float_public_param(submaterial, "UseUV2ForStencil") or 0.0) > 0.5 else None
+        stencil_node = self._tiled_image_node(
+            nodes,
+            links,
+            stencil_ref.export_path,
+            x=x,
+            y=y,
+            is_color=True,
+            tiling=stencil_tiling if stencil_tiling is not None and stencil_tiling > 0.0 else 1.0,
+            uv_map_name=stencil_uv_map,
+        )
+        if stencil_node is None:
+            return StencilOverlaySockets()
+
+        stencil_mask = self._image_mask_socket_from_node(nodes, links, stencil_node, x=x + 220, y=y)
+        separate = nodes.new("ShaderNodeSeparateColor")
+        separate.location = (x + 220, y + 160)
+        links.new(stencil_node.outputs[0], separate.inputs[0])
+        channel_masks = [separate.outputs[0], separate.outputs[1], separate.outputs[2]]
+        alpha_socket = _output_socket(stencil_node, "Alpha")
+        if alpha_socket is not None:
+            channel_masks = [
+                self._multiply_value_socket(nodes, links, channel_mask, alpha_socket, x=x + 420, y=y + 160 - (index * 120))
+                for index, channel_mask in enumerate(channel_masks)
+            ]
+        tint = _public_param_triplet(
+            submaterial,
+            "StencilDiffuseColor1",
+            "StencilDiffuse1",
+            "StencilTintColor",
+            "TintColor",
+            "StencilDiffuseColor",
+        )
+        tint_2 = _public_param_triplet(submaterial, "StencilDiffuseColor2", "StencilDiffuse2")
+        tint_3 = _public_param_triplet(submaterial, "StencilDiffuseColor3", "StencilDiffuse3")
+        specular_1 = _public_param_triplet(submaterial, "StencilSpecularColor1", "StencilSpecular1", "StencilSpecularColor")
+        specular_2 = _public_param_triplet(submaterial, "StencilSpecularColor2", "StencilSpecular2")
+        specular_3 = _public_param_triplet(submaterial, "StencilSpecularColor3", "StencilSpecular3")
+        multi_channel_stencil = any(value is not None for value in (tint_2, tint_3, specular_2, specular_3))
+        tint_override = _optional_float_public_param(submaterial, "StencilTintOverride") or 0.0
+        color_socket = stencil_node.outputs[0]
+        color_factor_socket = stencil_mask
+        if stencil_ref.is_virtual or tint_override > 0.0:
+            tint_socket = self._value_color_socket(
+                nodes,
+                (*tint, 1.0) if tint is not None else (1.0, 1.0, 1.0, 1.0),
+                x=x + 220,
+                y=y + 160,
+            )
+            color_socket = self._multiply_color_socket(nodes, links, color_socket, tint_socket, x=x + 420, y=y + 80)
+        elif multi_channel_stencil:
+            tinted_masks: list[Any] = []
+            active_masks: list[Any] = []
+            for index, (channel_mask, channel_tint) in enumerate(zip(channel_masks, (tint, tint_2, tint_3), strict=False)):
+                if channel_tint is None or (_mean_triplet(channel_tint) or 0.0) <= 0.01:
+                    continue
+                tinted_masks.append(
+                    self._masked_color_socket(
+                        nodes,
+                        links,
+                        channel_mask,
+                        channel_tint,
+                        x=x + 220,
+                        y=y + 40 - (index * 160),
+                    )
+                )
+                active_masks.append(channel_mask)
+            color_socket = None
+            for index, masked_color in enumerate(tinted_masks):
+                color_socket = self._add_color_socket(nodes, links, color_socket, masked_color, x=x + 620, y=y + 20 - (index * 60))
+            color_factor_socket = None
+            for index, active_mask in enumerate(active_masks):
+                color_factor_socket = self._add_clamped_value_socket(
+                    nodes,
+                    links,
+                    color_factor_socket,
+                    active_mask,
+                    x=x + 620,
+                    y=y - 140 - (index * 60),
+                )
+            if color_socket is None:
+                color_socket = stencil_node.outputs[0]
+                color_factor_socket = stencil_mask
+
+        breakup_factor = None
+        breakup_ref = _submaterial_texture_reference(submaterial, slots=("TexSlot8",), roles=("breakup", "grime_breakup"))
+        if breakup_ref is not None and breakup_ref.export_path is not None:
+            breakup_tiling = _optional_float_public_param(submaterial, "StencilBreakupTiling")
+            breakup_node = self._tiled_image_node(
+                nodes,
+                links,
+                breakup_ref.export_path,
+                x=x,
+                y=y - 220,
+                is_color=False,
+                tiling=breakup_tiling if breakup_tiling is not None and breakup_tiling > 0.0 else 1.0,
+                uv_map_name=stencil_uv_map,
+            )
+            breakup_mask = self._image_mask_socket_from_node(nodes, links, breakup_node, x=x + 220, y=y - 220)
+            breakup_strength = max(
+                0.0,
+                min(1.0, _optional_float_public_param(submaterial, "StencilDiffuseBreakup", "StencilGlossBreakup") or 0.0),
+            )
+            if breakup_mask is not None and breakup_strength > 0.0:
+                breakup_strength_socket = self._value_socket(nodes, breakup_strength, x=x + 220, y=y - 360)
+                breakup_factor = self._mix_value_socket(
+                    nodes,
+                    links,
+                    self._value_socket(nodes, 1.0, x=x + 20, y=y - 360),
+                    breakup_mask,
+                    breakup_strength_socket,
+                    x=x + 420,
+                    y=y - 280,
+                )
+
+        factor_socket = stencil_mask
+        if factor_socket is not None and breakup_factor is not None:
+            factor_socket = self._multiply_value_socket(nodes, links, factor_socket, breakup_factor, x=x + 620, y=y - 80)
+        if color_factor_socket is not None and breakup_factor is not None:
+            color_factor_socket = self._multiply_value_socket(
+                nodes,
+                links,
+                color_factor_socket,
+                breakup_factor,
+                x=x + 620,
+                y=y - 260,
+            )
+
+        opacity = _optional_float_public_param(submaterial, "StencilOpacity")
+        if factor_socket is not None and opacity is not None:
+            factor_socket = self._multiply_value_socket(
+                nodes,
+                links,
+                factor_socket,
+                self._value_socket(nodes, max(0.0, min(1.0, opacity)), x=x + 620, y=y - 220),
+                x=x + 820,
+                y=y - 140,
+            )
+        if color_factor_socket is not None and opacity is not None:
+            color_factor_socket = self._multiply_value_socket(
+                nodes,
+                links,
+                color_factor_socket,
+                self._value_socket(nodes, max(0.0, min(1.0, opacity)), x=x + 620, y=y - 400),
+                x=x + 820,
+                y=y - 320,
+            )
+
+        roughness_socket = None
+        stencil_glossiness = _optional_float_public_param(submaterial, "StencilGlossiness")
+        if stencil_glossiness is not None:
+            roughness_socket = self._value_socket(nodes, max(0.0, min(1.0, 1.0 - stencil_glossiness)), x=x + 220, y=y + 300)
+
+        specular_tint_socket = None
+        for index, (channel_mask, channel_specular) in enumerate(zip(channel_masks, (specular_1, specular_2, specular_3), strict=False)):
+            if channel_specular is None or (_mean_triplet(channel_specular) or 0.0) <= 0.0:
+                continue
+            masked_specular = self._masked_color_socket(
+                nodes,
+                links,
+                channel_mask,
+                channel_specular,
+                x=x + 220,
+                y=y + 520 - (index * 160),
+            )
+            specular_tint_socket = self._add_color_socket(
+                nodes,
+                links,
+                specular_tint_socket,
+                masked_specular,
+                x=x + 620,
+                y=y + 500 - (index * 60),
+            )
+
+        specular_socket = None
+        if specular_tint_socket is not None:
+            rgb_to_bw = nodes.new("ShaderNodeRGBToBW")
+            rgb_to_bw.location = (x + 820, y + 500)
+            links.new(specular_tint_socket, rgb_to_bw.inputs[0])
+            specular_socket = rgb_to_bw.outputs[0]
+
+        return StencilOverlaySockets(
+            color=color_socket,
+            color_factor=color_factor_socket,
+            factor=factor_socket,
+            roughness=roughness_socket,
+            specular=specular_socket,
+            specular_tint=specular_tint_socket,
+        )
 
     def _mix_color_socket(
         self,
@@ -3240,8 +3694,8 @@ class PackageImporter:
         angle_factor.clamp = True
         angle_factor.inputs[1].default_value = 0.0
         angle_factor.inputs[2].default_value = 0.2
-        angle_factor.inputs[3].default_value = 1.0
-        angle_factor.inputs[4].default_value = 0.0
+        angle_factor.inputs[3].default_value = 0.0
+        angle_factor.inputs[4].default_value = 1.0
         links.new(_output_socket(layer_weight, "Facing"), angle_factor.inputs[0])
         return angle_factor.outputs[0]
 
@@ -3264,11 +3718,22 @@ class PackageImporter:
         if hasattr(ramp_node, "extension"):
             ramp_node.extension = "EXTEND"
 
+        thickness_u = _optional_float_public_param(submaterial, "IridescenceThicknessU")
+        thickness_v = _optional_float_public_param(submaterial, "IridescenceThicknessV")
         angle_factor = self._hard_surface_angle_factor_socket(nodes, links, x=x, y=y)
         vector = nodes.new("ShaderNodeCombineXYZ")
         vector.location = (x + 180, y)
-        vector.inputs[1].default_value = 0.5
-        links.new(angle_factor, vector.inputs[0])
+        vector.inputs[1].default_value = max(0.0, min(1.0, thickness_v if thickness_v is not None else 0.5))
+        if thickness_u is not None and abs(thickness_u - 1.0) > 1e-6:
+            scale_x = nodes.new("ShaderNodeMath")
+            scale_x.location = (x + 120, y - 120)
+            scale_x.operation = "MULTIPLY"
+            scale_x.use_clamp = True
+            links.new(angle_factor, scale_x.inputs[0])
+            scale_x.inputs[1].default_value = max(0.0, min(1.0, thickness_u))
+            links.new(scale_x.outputs[0], vector.inputs[0])
+        else:
+            links.new(angle_factor, vector.inputs[0])
 
         vector_input = _input_socket(ramp_node, "Vector")
         if vector_input is not None:

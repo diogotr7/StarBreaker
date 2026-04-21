@@ -83,6 +83,10 @@ class TemplateTests(unittest.TestCase):
         self.assertEqual(template_plan_for_submaterial(synthetic_submaterial("HairPBR")).template_key, "hair")
         self.assertEqual(template_plan_for_submaterial(synthetic_submaterial("Hologram")).template_key, "effects")
 
+    def test_hard_surface_stencil_material_stays_on_hard_surface_path(self) -> None:
+        hard_surface_stencil = synthetic_submaterial("HardSurface", tokens=["STENCIL_MAP", "STENCIL_AS_STICKER"])
+        self.assertEqual(template_plan_for_submaterial(hard_surface_stencil).template_key, "physical_surface")
+
     def test_representative_textures_pick_exportable_maps(self) -> None:
         component = MaterialSidecar.from_file(COMPONENT_MASTER)
         hard_surface = next(submaterial for submaterial in component.submaterials if submaterial.shader_family == "HardSurface")
