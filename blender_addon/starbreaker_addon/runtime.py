@@ -1274,6 +1274,7 @@ class PackageImporter:
         )
         wear_factor = self._layered_wear_factor_socket(nodes, links, submaterial, x=-720, y=-120)
         damage_factor = self._layered_damage_factor_socket(nodes, links, submaterial, x=-720, y=-240)
+        iridescence_ramp_color = self._iridescence_ramp_color_socket(nodes, links, submaterial, x=-980, y=-1560)
 
         macro_normal_ref = _submaterial_texture_reference(submaterial, slots=("TexSlot3",), roles=("normal_gloss",))
         macro_normal_node = self._image_node(
@@ -1329,8 +1330,17 @@ class PackageImporter:
         else:
             self._set_socket_default(_input_socket(shader_group, "Iridescence Facing Color"), (0.0, 0.0, 0.0, 1.0))
             self._set_socket_default(_input_socket(shader_group, "Iridescence Grazing Color"), (0.0, 0.0, 0.0, 1.0))
+        self._set_socket_default(_input_socket(shader_group, "Iridescence Ramp Color"), (0.0, 0.0, 0.0, 1.0))
+        self._set_socket_default(_input_socket(shader_group, "Iridescence Ramp Weight"), 0.0)
+        self._set_socket_default(_input_socket(shader_group, "Iridescence Strength"), 1.0)
         iridescence_active = angle_shift_enabled and (submaterial.decoded_feature_flags.has_iridescence or _palette_has_iridescence(palette))
         self._set_socket_default(_input_socket(shader_group, "Iridescence Factor"), 1.0 if iridescence_active else 0.0)
+        self._link_group_input(links, iridescence_ramp_color, shader_group, "Iridescence Ramp Color")
+        if iridescence_ramp_color is not None:
+            self._set_socket_default(_input_socket(shader_group, "Iridescence Ramp Weight"), 1.0)
+        iridescence_strength = _optional_float_public_param(submaterial, "IridescenceStrength")
+        if iridescence_strength is not None and iridescence_strength > 0.0:
+            self._set_socket_default(_input_socket(shader_group, "Iridescence Strength"), iridescence_strength)
         self._set_socket_default(_input_socket(shader_group, "Wear Factor"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Damage Factor"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Macro Normal Color"), (0.5, 0.5, 1.0, 1.0))
@@ -1787,7 +1797,7 @@ class PackageImporter:
     def _ensure_runtime_hard_surface_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime HardSurface",
-            "hard_surface_v15",
+            "hard_surface_v16",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -1797,7 +1807,7 @@ class PackageImporter:
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime HardSurface",
-            signature="hard_surface_v15",
+            signature="hard_surface_v16",
             inputs=[
                 ("Top Base Color", "NodeSocketColor"),
                 ("Top Alpha", "NodeSocketFloat"),
@@ -1817,6 +1827,9 @@ class PackageImporter:
                 ("Secondary Normal", "NodeSocketVector"),
                 ("Iridescence Facing Color", "NodeSocketColor"),
                 ("Iridescence Grazing Color", "NodeSocketColor"),
+                ("Iridescence Ramp Color", "NodeSocketColor"),
+                ("Iridescence Ramp Weight", "NodeSocketFloat"),
+                ("Iridescence Strength", "NodeSocketFloat"),
                 ("Iridescence Factor", "NodeSocketFloat"),
                 ("Wear Factor", "NodeSocketFloat"),
                 ("Damage Factor", "NodeSocketFloat"),
@@ -1830,7 +1843,7 @@ class PackageImporter:
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v15":
+        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v16":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -1863,34 +1876,41 @@ class PackageImporter:
         links.new(_output_socket(group_input, "Top Base Color"), final_color.inputs[1])
         links.new(color_mix.outputs[0], final_color.inputs[2])
 
-        layer_weight = nodes.new("ShaderNodeLayerWeight")
-        layer_weight.location = (-720, 520)
-        blend_input = _input_socket(layer_weight, "Blend")
-        if blend_input is not None:
-            blend_input.default_value = 0.3
-
-        angle_factor = nodes.new("ShaderNodeMapRange")
-        angle_factor.location = (-580, 620)
-        angle_factor.clamp = True
-        angle_factor.inputs[1].default_value = 0.0
-        angle_factor.inputs[2].default_value = 0.2
-        angle_factor.inputs[3].default_value = 1.0
-        angle_factor.inputs[4].default_value = 0.0
-        links.new(_output_socket(layer_weight, "Facing"), angle_factor.inputs[0])
+        angle_factor = self._hard_surface_angle_factor_socket(nodes, links, x=-720, y=520)
 
         iridescence_color = nodes.new("ShaderNodeMixRGB")
         iridescence_color.location = (-500, 520)
         iridescence_color.blend_type = "MIX"
         links.new(_output_socket(group_input, "Iridescence Facing Color"), iridescence_color.inputs[1])
         links.new(_output_socket(group_input, "Iridescence Grazing Color"), iridescence_color.inputs[2])
-        links.new(angle_factor.outputs[0], iridescence_color.inputs[0])
+        links.new(angle_factor, iridescence_color.inputs[0])
+
+        iridescence_source = nodes.new("ShaderNodeMixRGB")
+        iridescence_source.location = (-280, 520)
+        iridescence_source.blend_type = "MIX"
+        links.new(_output_socket(group_input, "Iridescence Ramp Weight"), iridescence_source.inputs[0])
+        links.new(iridescence_color.outputs[0], iridescence_source.inputs[1])
+        links.new(_output_socket(group_input, "Iridescence Ramp Color"), iridescence_source.inputs[2])
+
+        iridescence_strength_color = nodes.new("ShaderNodeCombineXYZ")
+        iridescence_strength_color.location = (-280, 340)
+        links.new(_output_socket(group_input, "Iridescence Strength"), iridescence_strength_color.inputs[0])
+        links.new(_output_socket(group_input, "Iridescence Strength"), iridescence_strength_color.inputs[1])
+        links.new(_output_socket(group_input, "Iridescence Strength"), iridescence_strength_color.inputs[2])
+
+        iridescence_tint = nodes.new("ShaderNodeMixRGB")
+        iridescence_tint.location = (-80, 520)
+        iridescence_tint.blend_type = "MULTIPLY"
+        iridescence_tint.inputs[0].default_value = 1.0
+        links.new(iridescence_source.outputs[0], iridescence_tint.inputs[1])
+        links.new(iridescence_strength_color.outputs[0], iridescence_tint.inputs[2])
 
         color_sheen = nodes.new("ShaderNodeMixRGB")
-        color_sheen.location = (-120, 460)
+        color_sheen.location = (120, 460)
         color_sheen.blend_type = "MIX"
         links.new(_output_socket(group_input, "Iridescence Factor"), color_sheen.inputs[0])
         links.new(final_color.outputs[0], color_sheen.inputs[1])
-        links.new(iridescence_color.outputs[0], color_sheen.inputs[2])
+        links.new(iridescence_tint.outputs[0], color_sheen.inputs[2])
 
         alpha_mix = nodes.new("ShaderNodeMix")
         alpha_mix.location = (-700, 80)
@@ -2026,7 +2046,7 @@ class PackageImporter:
         links.new(principled.outputs[0], shadow_mix.inputs[1])
         links.new(transparent.outputs[0], shadow_mix.inputs[2])
         links.new(shadow_mix.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v15"
+        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v16"
         return group_tree
 
     def _ensure_runtime_illum_group(self) -> bpy.types.ShaderNodeTree:
@@ -3200,6 +3220,60 @@ class PackageImporter:
         separate.location = (x + 180, y)
         links.new(vc_node.outputs[0], separate.inputs[0])
         return _output_socket(separate, channel)
+
+    def _hard_surface_angle_factor_socket(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        *,
+        x: int,
+        y: int,
+    ) -> Any:
+        layer_weight = nodes.new("ShaderNodeLayerWeight")
+        layer_weight.location = (x, y)
+        blend_input = _input_socket(layer_weight, "Blend")
+        if blend_input is not None:
+            blend_input.default_value = 0.3
+
+        angle_factor = nodes.new("ShaderNodeMapRange")
+        angle_factor.location = (x + 140, y + 100)
+        angle_factor.clamp = True
+        angle_factor.inputs[1].default_value = 0.0
+        angle_factor.inputs[2].default_value = 0.2
+        angle_factor.inputs[3].default_value = 1.0
+        angle_factor.inputs[4].default_value = 0.0
+        links.new(_output_socket(layer_weight, "Facing"), angle_factor.inputs[0])
+        return angle_factor.outputs[0]
+
+    def _iridescence_ramp_color_socket(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        submaterial: SubmaterialRecord,
+        *,
+        x: int,
+        y: int,
+    ) -> Any:
+        ramp_path = self._texture_path_for_slot(submaterial, "TexSlot10")
+        if ramp_path is None:
+            return None
+
+        ramp_node = self._image_node(nodes, ramp_path, x=x + 360, y=y, is_color=True)
+        if ramp_node is None:
+            return None
+        if hasattr(ramp_node, "extension"):
+            ramp_node.extension = "EXTEND"
+
+        angle_factor = self._hard_surface_angle_factor_socket(nodes, links, x=x, y=y)
+        vector = nodes.new("ShaderNodeCombineXYZ")
+        vector.location = (x + 180, y)
+        vector.inputs[1].default_value = 0.5
+        links.new(angle_factor, vector.inputs[0])
+
+        vector_input = _input_socket(ramp_node, "Vector")
+        if vector_input is not None:
+            links.new(vector.outputs[0], vector_input)
+        return ramp_node.outputs[0]
 
     def _layered_wear_factor_socket(
         self,
