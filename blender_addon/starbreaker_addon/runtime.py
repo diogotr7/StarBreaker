@@ -223,6 +223,7 @@ def _purge_orphaned_runtime_groups() -> int:
                 name.startswith("StarBreaker Runtime Channel Split.") or
                 name.startswith("StarBreaker Runtime Smoothness To Roughness.") or
                 name.startswith("StarBreaker Runtime Color To Luma.") or
+                name.startswith("StarBreaker Runtime Shadowless Wrapper.") or
                 name.startswith("StarBreaker Wear Input.") or
                 name.startswith("StarBreaker Iridescence Input.")):
             bpy.data.node_groups.remove(group)
@@ -514,6 +515,7 @@ class PackageImporter:
         self._ensure_runtime_channel_split_group()
         self._ensure_runtime_smoothness_roughness_group()
         self._ensure_runtime_color_to_luma_group()
+        self._ensure_runtime_shadowless_wrapper_group()
         self.runtime_shared_groups_ready = True
 
     def _ensure_material_identity_index(self) -> None:
@@ -1448,7 +1450,6 @@ class PackageImporter:
         self._set_socket_default(_input_socket(shader_group, "Displacement Strength"), 0.05)
         self._set_socket_default(_input_socket(shader_group, "Emission Color"), (0.0, 0.0, 0.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Emission Strength"), 0.0)
-        self._set_socket_default(_input_socket(shader_group, "Disable Shadows"), self._plan_casts_no_shadows(plan))
         shader_group["starbreaker_angle_shift_enabled"] = angle_shift_enabled
 
         self._link_group_input(links, top_base_color, shader_group, "Top Base Color")
@@ -1497,8 +1498,7 @@ class PackageImporter:
             self._set_socket_default(_input_socket(shader_group, "Emission Strength"), 1.0)
 
         surface_shader = _output_socket(shader_group, "Shader")
-        if surface_shader is not None:
-            links.new(surface_shader, output.inputs[0])
+        self._wire_surface_shader_to_output(nodes, links, surface_shader, output, plan, submaterial)
         self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
 
     def _build_illum_material(
@@ -1644,7 +1644,6 @@ class PackageImporter:
         self._set_socket_default(_input_socket(shader_group, "Blend Mask"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "POM Strength"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Emission Strength"), self._illum_emission_strength(submaterial))
-        self._set_socket_default(_input_socket(shader_group, "Disable Shadows"), self._plan_casts_no_shadows(plan))
 
         self._link_group_input(links, primary.color, shader_group, "Primary Color")
         self._link_group_input(links, primary.alpha, shader_group, "Primary Alpha")
@@ -1666,8 +1665,7 @@ class PackageImporter:
             )
 
         surface_shader = _output_socket(shader_group, "Shader")
-        if surface_shader is not None:
-            links.new(surface_shader, output.inputs[0])
+        self._wire_surface_shader_to_output(nodes, links, surface_shader, output, plan, submaterial)
         self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
 
     def _ensure_cycles_denoising_support(self) -> None:
@@ -1903,17 +1901,16 @@ class PackageImporter:
     def _ensure_runtime_hard_surface_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime HardSurface",
-            "hard_surface_v29",
+            "hard_surface_v30",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
                 "ShaderNodeBsdfPrincipled": 1,
-                "ShaderNodeMixShader": 1,
             },
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime HardSurface",
-            signature="hard_surface_v29",
+            signature="hard_surface_v30",
             inputs=[
                 ("Top Base Color", "NodeSocketColor"),
                 ("Top Alpha", "NodeSocketFloat"),
@@ -1951,11 +1948,10 @@ class PackageImporter:
                 ("Displacement Strength", "NodeSocketFloat"),
                 ("Emission Color", "NodeSocketColor"),
                 ("Emission Strength", "NodeSocketFloat"),
-                ("Disable Shadows", "NodeSocketBool"),
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v29":
+        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v30":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -2255,22 +2251,8 @@ class PackageImporter:
         if emission_strength is not None:
             links.new(_output_socket(group_input, "Emission Strength"), emission_strength)
 
-        light_path = nodes.new("ShaderNodeLightPath")
-        light_path.location = (520, -200)
-        shadow_toggle = nodes.new("ShaderNodeMath")
-        shadow_toggle.location = (700, -200)
-        shadow_toggle.operation = "MULTIPLY"
-        links.new(_output_socket(group_input, "Disable Shadows"), shadow_toggle.inputs[0])
-        links.new(_output_socket(light_path, "Is Shadow Ray"), shadow_toggle.inputs[1])
-        transparent = nodes.new("ShaderNodeBsdfTransparent")
-        transparent.location = (700, -380)
-        shadow_mix = nodes.new("ShaderNodeMixShader")
-        shadow_mix.location = (900, -40)
-        links.new(shadow_toggle.outputs[0], shadow_mix.inputs[0])
-        links.new(principled.outputs[0], shadow_mix.inputs[1])
-        links.new(transparent.outputs[0], shadow_mix.inputs[2])
-        links.new(shadow_mix.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v29"
+        links.new(principled.outputs[0], group_output.inputs["Shader"])
+        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v30"
         return group_tree
 
     def _ensure_runtime_wear_input_group(self) -> bpy.types.ShaderNodeTree:
@@ -2753,7 +2735,15 @@ class PackageImporter:
         return group_tree
 
     def _ensure_runtime_principled_group(self) -> bpy.types.ShaderNodeTree:
-        """Wrap Principled BSDF + NormalMap + Bump + shadowless mix into a shader group.
+        """Wrap Principled BSDF + NormalMap + Bump into a shader group.
+
+        The shadowless behaviour is provided separately by
+        :meth:`_ensure_runtime_shadowless_wrapper_group`, which the caller
+        wraps around this group's output only when the material is supposed
+        to cast no shadows. Unconditionally embedding the shadowless
+        ``MixShader`` / ``LightPath`` / ``Transparent`` chain here inflates
+        Cycles kernel memory for every non-shadowless material, so it lives
+        outside.
 
         Inputs:
             Base Color          color
@@ -2768,14 +2758,13 @@ class PackageImporter:
             Alpha               float   (default 1)
             Emission Color      color   (default black)
             Emission Strength   float   (default 0)
-            Shadowless          float   (0 = cast shadows, 1 = invisible to shadow rays)
 
         Outputs:
             Shader              shader
         """
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime Principled",
-            "principled_v1",
+            "principled_v2",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -2784,15 +2773,11 @@ class PackageImporter:
                 "ShaderNodeBump": 1,
                 "ShaderNodeNewGeometry": 1,
                 "ShaderNodeMix": 2,
-                "ShaderNodeLightPath": 1,
-                "ShaderNodeBsdfTransparent": 1,
-                "ShaderNodeMixShader": 1,
-                "ShaderNodeMath": 1,
             },
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime Principled",
-            signature="principled_v1",
+            signature="principled_v2",
             inputs=[
                 ("Base Color", "NodeSocketColor"),
                 ("Roughness", "NodeSocketFloat"),
@@ -2806,11 +2791,10 @@ class PackageImporter:
                 ("Alpha", "NodeSocketFloat"),
                 ("Emission Color", "NodeSocketColor"),
                 ("Emission Strength", "NodeSocketFloat"),
-                ("Shadowless", "NodeSocketFloat"),
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "principled_v1":
+        if group_tree.get("starbreaker_runtime_built_signature") == "principled_v2":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -2827,7 +2811,6 @@ class PackageImporter:
         _set_group_input_default(group_input, "Alpha", 1.0)
         _set_group_input_default(group_input, "Emission Color", (0.0, 0.0, 0.0, 1.0))
         _set_group_input_default(group_input, "Emission Strength", 0.0)
-        _set_group_input_default(group_input, "Shadowless", 0.0)
 
         # Normal map chain: NormalMap driven by Normal Color + Strength.
         normal_map = nodes.new("ShaderNodeNormalMap")
@@ -2882,27 +2865,8 @@ class PackageImporter:
             links.new(_output_socket(group_input, "Emission Strength"), emission_strength_input)
         links.new(bump_toggle.outputs[1], _input_socket(principled, "Normal"))
 
-        # Shadowless branch: factor = Is Shadow Ray * Shadowless.
-        light_path = nodes.new("ShaderNodeLightPath")
-        light_path.location = (220, -320)
-        shadow_gate = nodes.new("ShaderNodeMath")
-        shadow_gate.location = (420, -280)
-        shadow_gate.operation = "MULTIPLY"
-        shadow_gate.use_clamp = True
-        links.new(_output_socket(light_path, "Is Shadow Ray"), shadow_gate.inputs[0])
-        links.new(_output_socket(group_input, "Shadowless"), shadow_gate.inputs[1])
-
-        transparent = nodes.new("ShaderNodeBsdfTransparent")
-        transparent.location = (420, -120)
-
-        shadow_mix = nodes.new("ShaderNodeMixShader")
-        shadow_mix.location = (620, -40)
-        links.new(shadow_gate.outputs[0], shadow_mix.inputs[0])
-        links.new(principled.outputs[0], shadow_mix.inputs[1])
-        links.new(transparent.outputs[0], shadow_mix.inputs[2])
-
-        links.new(shadow_mix.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "principled_v1"
+        links.new(principled.outputs[0], group_output.inputs["Shader"])
+        group_tree["starbreaker_runtime_built_signature"] = "principled_v2"
         return group_tree
 
     def _ensure_runtime_hardsurface_stencil_group(self) -> bpy.types.ShaderNodeTree:
@@ -3307,22 +3271,77 @@ class PackageImporter:
         group_tree["starbreaker_runtime_built_signature"] = "color_to_luma_v1"
         return group_tree
 
+    def _ensure_runtime_shadowless_wrapper_group(self) -> bpy.types.ShaderNodeTree:
+        """Wrap a shader in a shadow-ray → transparent mix.
+
+        Input ``Shader`` is passed through unchanged on camera / diffuse /
+        glossy / transmission rays; on shadow rays it is replaced by a
+        ``BsdfTransparent`` so the surface casts no shadow.
+
+        This exists as a standalone wrapper so the main surface groups
+        (``StarBreaker Runtime Principled``, ``StarBreaker Runtime
+        HardSurface``) do not have to carry the ``LightPath`` /
+        ``MixShader`` / ``BsdfTransparent`` chain unconditionally. Cycles
+        must compile both branches of every ``MixShader`` (the factor is
+        runtime-variable), so keeping the chain out of the always-
+        instantiated surface groups avoids inflating kernel memory for the
+        majority of materials that do cast shadows normally.
+        """
+        self._invalidate_runtime_group_if_unexpected(
+            "StarBreaker Runtime Shadowless Wrapper",
+            "shadowless_wrapper_v1",
+            {
+                "NodeGroupInput": 1,
+                "NodeGroupOutput": 1,
+                "ShaderNodeLightPath": 1,
+                "ShaderNodeBsdfTransparent": 1,
+                "ShaderNodeMixShader": 1,
+            },
+        )
+        group_tree, group_input, group_output = self._begin_runtime_shared_group(
+            "StarBreaker Runtime Shadowless Wrapper",
+            signature="shadowless_wrapper_v1",
+            inputs=[
+                ("Shader", "NodeSocketShader"),
+            ],
+            outputs=[
+                ("Shader", "NodeSocketShader"),
+            ],
+        )
+        if group_tree.get("starbreaker_runtime_built_signature") == "shadowless_wrapper_v1":
+            return group_tree
+        nodes = group_tree.nodes
+        links = group_tree.links
+
+        light_path = nodes.new("ShaderNodeLightPath")
+        light_path.location = (-200, -200)
+        transparent = nodes.new("ShaderNodeBsdfTransparent")
+        transparent.location = (0, -200)
+        mix_shader = nodes.new("ShaderNodeMixShader")
+        mix_shader.location = (200, 0)
+        links.new(_output_socket(light_path, "Is Shadow Ray"), mix_shader.inputs[0])
+        links.new(_output_socket(group_input, "Shader"), mix_shader.inputs[1])
+        links.new(transparent.outputs[0], mix_shader.inputs[2])
+        links.new(mix_shader.outputs[0], group_output.inputs["Shader"])
+
+        group_tree["starbreaker_runtime_built_signature"] = "shadowless_wrapper_v1"
+        return group_tree
+
     def _ensure_runtime_illum_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime Illum",
-            "illum_v3",
+            "illum_v4",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
                 "ShaderNodeBsdfPrincipled": 1,
                 "ShaderNodeEmission": 1,
                 "ShaderNodeAddShader": 1,
-                "ShaderNodeMixShader": 1,
             },
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime Illum",
-            signature="illum_v3",
+            signature="illum_v4",
             inputs=[
                 ("Primary Color", "NodeSocketColor"),
                 ("Primary Alpha", "NodeSocketFloat"),
@@ -3339,11 +3358,10 @@ class PackageImporter:
                 ("Secondary Height", "NodeSocketFloat"),
                 ("POM Strength", "NodeSocketFloat"),
                 ("Emission Strength", "NodeSocketFloat"),
-                ("Disable Shadows", "NodeSocketBool"),
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "illum_v3":
+        if group_tree.get("starbreaker_runtime_built_signature") == "illum_v4":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -3423,22 +3441,8 @@ class PackageImporter:
         links.new(principled.outputs[0], add_shader.inputs[0])
         links.new(emission.outputs[0], add_shader.inputs[1])
 
-        light_path = nodes.new("ShaderNodeLightPath")
-        light_path.location = (320, -220)
-        shadow_toggle = nodes.new("ShaderNodeMath")
-        shadow_toggle.location = (500, -220)
-        shadow_toggle.operation = "MULTIPLY"
-        links.new(_output_socket(group_input, "Disable Shadows"), shadow_toggle.inputs[0])
-        links.new(_output_socket(light_path, "Is Shadow Ray"), shadow_toggle.inputs[1])
-        transparent = nodes.new("ShaderNodeBsdfTransparent")
-        transparent.location = (500, -400)
-        shadow_mix = nodes.new("ShaderNodeMixShader")
-        shadow_mix.location = (700, -40)
-        links.new(shadow_toggle.outputs[0], shadow_mix.inputs[0])
-        links.new(add_shader.outputs[0], shadow_mix.inputs[1])
-        links.new(transparent.outputs[0], shadow_mix.inputs[2])
-        links.new(shadow_mix.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "illum_v3"
+        links.new(add_shader.outputs[0], group_output.inputs["Shader"])
+        group_tree["starbreaker_runtime_built_signature"] = "illum_v4"
         return group_tree
 
     def _connect_manifest_layer_surface_group(
@@ -4488,8 +4492,7 @@ class PackageImporter:
             self._set_socket_default(_input_socket(shader_group, "Use Checker"), 1.0)
 
         surface = _output_socket(shader_group, "Shader")
-        if surface is not None:
-            links.new(surface, output.inputs[0])
+        self._wire_surface_shader_to_output(nodes, links, surface, output, plan, submaterial)
         self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
 
     def _build_effect_material(
@@ -4520,8 +4523,7 @@ class PackageImporter:
             self._link_group_input(links, color_source, shader_group, "Base Color")
 
         surface = _output_socket(shader_group, "Shader")
-        if surface is not None:
-            links.new(surface, output.inputs[0])
+        self._wire_surface_shader_to_output(nodes, links, surface, output, plan, submaterial)
         self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
 
     def _build_layered_wear_principled_material(
@@ -4713,15 +4715,8 @@ class PackageImporter:
                     if target is not None:
                         self._link_color_output(emissive, target)
 
-        # Shadowless.
-        if self._plan_casts_no_shadows(plan):
-            shadow_socket = _input_socket(principled_group, "Shadowless")
-            if shadow_socket is not None:
-                shadow_socket.default_value = 1.0
-
         shader_out = _output_socket(principled_group, "Shader")
-        if shader_out is not None:
-            links.new(shader_out, output.inputs[0])
+        self._wire_surface_shader_to_output(nodes, links, shader_out, output, plan, submaterial)
 
         self._configure_material(
             material, blend_method=plan.blend_method, shadow_method=plan.shadow_method
@@ -4835,10 +4830,7 @@ class PackageImporter:
             if anisotropic is not None:
                 anisotropic.default_value = 0.4
 
-        if self._plan_casts_no_shadows(plan):
-            surface_shader = self._shadowless_surface_output(nodes, links, surface_shader)
-
-        links.new(surface_shader, output.inputs[0])
+        self._wire_surface_shader_to_output(nodes, links, surface_shader, output, plan, submaterial)
 
         self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
 
@@ -4891,8 +4883,7 @@ class PackageImporter:
             self._set_socket_default(_input_socket(shader_group, "Use Normal"), 1.0)
 
         surface = _output_socket(shader_group, "Shader")
-        if surface is not None:
-            links.new(surface, output.inputs[0])
+        self._wire_surface_shader_to_output(nodes, links, surface, output, plan, submaterial)
 
         self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
 
@@ -5433,6 +5424,35 @@ class PackageImporter:
         if getattr(plan, "template_key", "") in {"decal_stencil", "parallax_pom"}:
             return True
         return submaterial is not None and submaterial.shader_family == "MeshDecal"
+
+    def _wire_surface_shader_to_output(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        surface_shader: Any,
+        output_node: bpy.types.Node,
+        plan: Any,
+        submaterial: SubmaterialRecord | None = None,
+    ) -> None:
+        """Link *surface_shader* to *output_node*'s Surface socket.
+
+        If ``_plan_casts_no_shadows(plan, submaterial)`` is True, insert the
+        shared ``StarBreaker Runtime Shadowless Wrapper`` group so the
+        surface becomes invisible to shadow rays while preserving top-level
+        graph hygiene. Otherwise link directly.
+        """
+        if surface_shader is None:
+            return
+        if self._plan_casts_no_shadows(plan, submaterial):
+            wrapper = nodes.new("ShaderNodeGroup")
+            wrapper.node_tree = self._ensure_runtime_shadowless_wrapper_group()
+            _refresh_group_node_sockets(wrapper)
+            wrapper.location = (output_node.location.x - 180, output_node.location.y - 140)
+            wrapper.label = "StarBreaker Shadowless"
+            links.new(surface_shader, wrapper.inputs["Shader"])
+            links.new(wrapper.outputs["Shader"], output_node.inputs[0])
+        else:
+            links.new(surface_shader, output_node.inputs[0])
 
     def _shadowless_surface_output(
         self,
