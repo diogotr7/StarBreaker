@@ -614,21 +614,24 @@ pub(crate) fn write_decomposed_export(
                     opts.include_nodraw,
                     opts.include_shields,
                 );
-                let mesh_asset = write_mesh_asset(
-                    &mut files,
-                    p4k,
-                    &entry.name,
-                    &entry.cgf_path,
-                    &interior_material_view.mesh,
-                    interior_material_view.glb_materials.as_ref(),
-                    // Interior meshes already follow the bundled flat-mesh path.
-                    // Preserving the raw NMC hierarchy here makes decomposed interiors
-                    // diverge from the reference import and can double-apply placement transforms.
-                    interior_material_view.glb_nmc.as_ref(),
-                    &[],
-                    existing_asset_paths,
-                )?;
+                let requested_mesh_asset = mesh_asset_relative_path(p4k, &entry.cgf_path, &entry.name);
+                let requested_material_sidecar = interior_material_view.sidecar_materials.as_ref().map(|materials| {
+                    let source_material_path = material_source_path(
+                        p4k,
+                        materials,
+                        entry.material_path.as_deref().unwrap_or(""),
+                        &entry.cgf_path,
+                    );
+                    material_sidecar_relative_path(&source_material_path, &entry.name)
+                });
                 let material_sidecar = interior_material_view.sidecar_materials.as_ref().map(|materials| {
+                    if let Some(requested_path) = requested_material_sidecar.as_ref() {
+                        if files.contains_key(requested_path)
+                            || existing_asset_paths.is_some_and(|paths| paths.contains(&requested_path.to_ascii_lowercase()))
+                        {
+                            return requested_path.clone();
+                        }
+                    }
                     write_material_sidecar(
                         &mut files,
                         p4k,
@@ -643,6 +646,29 @@ pub(crate) fn write_decomposed_export(
                         existing_asset_paths,
                     )
                 });
+                let reuse_existing_mesh_asset = (files.contains_key(&requested_mesh_asset)
+                    || existing_asset_paths.is_some_and(|paths| paths.contains(&requested_mesh_asset.to_ascii_lowercase())))
+                    && requested_material_sidecar
+                        .as_ref()
+                        .is_none_or(|requested_path| material_sidecar.as_deref() == Some(requested_path.as_str()));
+                let mesh_asset = if reuse_existing_mesh_asset {
+                    requested_mesh_asset
+                } else {
+                    write_mesh_asset(
+                        &mut files,
+                        p4k,
+                        &entry.name,
+                        &entry.cgf_path,
+                        &interior_material_view.mesh,
+                        interior_material_view.glb_materials.as_ref(),
+                        // Interior meshes already follow the bundled flat-mesh path.
+                        // Preserving the raw NMC hierarchy here makes decomposed interiors
+                        // diverge from the reference import and can double-apply placement transforms.
+                        interior_material_view.glb_nmc.as_ref(),
+                        &[],
+                        existing_asset_paths,
+                    )?
+                };
                 interior_asset_cache.insert(cache_key, (mesh_asset.clone(), material_sidecar.clone()));
                 (mesh_asset, material_sidecar)
             };
@@ -1961,6 +1987,7 @@ mod tests {
                     wear_specular_color: Some([0.7, 0.7, 0.7]),
                     wear_glossiness: Some(0.91),
                     surface_type: Some("metal_shell".into()),
+                    metallic: 0.0,
                 }),
                 resolved_material: Some(mtl::ResolvedLayerMaterial {
                     name: "paint".into(),

@@ -1297,8 +1297,10 @@ impl GlbBuilder {
         let asset_extras = {
             let mut map = serde_json::Map::new();
             map.insert("generator_version".into(), serde_json::json!(env!("CARGO_PKG_VERSION")));
-            if let Ok(d) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-                map.insert("export_timestamp_unix".into(), serde_json::json!(d.as_secs()));
+            if metadata.export_options.kind != "Decomposed" {
+                if let Ok(d) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+                    map.insert("export_timestamp_unix".into(), serde_json::json!(d.as_secs()));
+                }
             }
             let eo = &metadata.export_options;
             map.insert("export_options".into(), serde_json::json!({

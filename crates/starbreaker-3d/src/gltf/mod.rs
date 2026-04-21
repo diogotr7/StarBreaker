@@ -215,13 +215,16 @@ pub fn write_glb_with_progress(
     // ---- Entity + palette extras on root node ----
     {
         let mut map = serde_json::Map::new();
-        if let Some(ref entity_name) = opts.metadata.entity_name {
-            map.insert("entity_name".into(), serde_json::json!(entity_name));
-            if let Some(ref gp) = opts.metadata.geometry_path {
-                map.insert("geometry_path".into(), serde_json::json!(gp));
-            }
-            if let Some(ref mp) = opts.metadata.material_path {
-                map.insert("material_path".into(), serde_json::json!(mp));
+        let include_root_entity_extras = opts.metadata.export_options.kind != "Decomposed";
+        if include_root_entity_extras {
+            if let Some(ref entity_name) = opts.metadata.entity_name {
+                map.insert("entity_name".into(), serde_json::json!(entity_name));
+                if let Some(ref gp) = opts.metadata.geometry_path {
+                    map.insert("geometry_path".into(), serde_json::json!(gp));
+                }
+                if let Some(ref mp) = opts.metadata.material_path {
+                    map.insert("material_path".into(), serde_json::json!(mp));
+                }
             }
         }
         if let Some(ref pal) = input.root_palette {
@@ -1551,6 +1554,70 @@ mod tests {
         assert_eq!(mesh_count, 3, "root plus two palette-specific meshes should still be emitted");
         assert_eq!(accessor_count, 3, "palette variants should reuse shared geometry accessors instead of duplicating them");
         assert_eq!(buffer_view_count, 3, "palette variants should reuse shared geometry buffer views instead of duplicating them");
+    }
+
+    #[test]
+    fn write_glb_decomposed_output_ignores_instance_metadata() {
+        let mut first_opts = default_opts();
+        first_opts.metadata.entity_name = Some("EntityVariantA".into());
+        first_opts.metadata.geometry_path = Some("Data/Objects/test_variant_a.skin".into());
+        first_opts.metadata.material_path = Some("Data/Objects/test_variant_a.mtl".into());
+        first_opts.metadata.export_options.kind = "Decomposed".to_string();
+
+        let mut second_opts = default_opts();
+        second_opts.metadata.entity_name = Some("EntityVariantB".into());
+        second_opts.metadata.geometry_path = Some("Data/Objects/test_variant_b.skin".into());
+        second_opts.metadata.material_path = Some("Data/Objects/test_variant_b.mtl".into());
+        second_opts.metadata.export_options.kind = "Decomposed".to_string();
+
+        let first_glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: Some(shared_material_file()),
+                root_textures: None,
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_, _| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &first_opts,
+        )
+        .expect("write_glb failed");
+
+        let second_glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: Some(shared_material_file()),
+                root_textures: None,
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_, _| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &second_opts,
+        )
+        .expect("write_glb failed");
+
+        assert_eq!(first_glb, second_glb, "decomposed GLBs should stay byte-identical when only instance metadata changes");
+
+        let json = glb_json(&first_glb);
+        assert!(json["asset"]["extras"]["export_timestamp_unix"].is_null(), "decomposed GLBs should omit volatile export timestamps");
+        let node_with_extras = json["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|node| node["extras"].is_object());
+        assert!(node_with_extras.is_none(), "decomposed GLBs should not embed per-instance root entity metadata");
     }
 
     #[test]
