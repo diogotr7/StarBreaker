@@ -4,6 +4,19 @@ from .manifest import LiveryRecord, PackageBundle, PaletteRecord, SceneInstanceR
 from .templates import material_palette_channels
 
 
+def _palette_id_candidates(palette_id: str | None) -> tuple[str, ...]:
+    if not palette_id:
+        return ()
+    candidates = [palette_id]
+    if palette_id.startswith("paint/"):
+        suffix = palette_id[len("paint/"):]
+        candidates.append(f"palette/{suffix}")
+        if suffix.startswith("paint_"):
+            candidates.append(f"palette/{suffix[len('paint_'):]}")
+    # Preserve order while removing duplicates.
+    return tuple(dict.fromkeys(candidates))
+
+
 def available_palette_ids(package: PackageBundle) -> list[str]:
     return sorted(package.palettes.keys())
 
@@ -25,10 +38,12 @@ def resolved_palette_id(
     palette_id: str | None,
     inherited_palette_id: str | None = None,
 ) -> str | None:
-    if palette_id and palette_id in package.palettes:
-        return palette_id
-    if inherited_palette_id and inherited_palette_id in package.palettes:
-        return inherited_palette_id
+    for candidate in _palette_id_candidates(palette_id):
+        if candidate in package.palettes:
+            return candidate
+    for candidate in _palette_id_candidates(inherited_palette_id):
+        if candidate in package.palettes:
+            return candidate
     return default_palette_id(package)
 
 

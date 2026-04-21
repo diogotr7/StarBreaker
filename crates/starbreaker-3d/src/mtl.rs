@@ -48,7 +48,7 @@ pub struct PaintVariant {
     /// SubGeometry @Tag that selects this variant (e.g., "Paint_Aurora_Mk2_Pink_Green_Purple").
     pub subgeometry_tag: String,
     /// Palette ID used in paints.json, derived from the SubGeometry tag
-    /// (e.g., "paint/paint_aurora_mk2_pink_green_purple").
+    /// (e.g., "palette/aurora_mk2_pink_green_purple").
     pub palette_id: Option<String>,
     /// Localized display name (e.g., "Shimmerscale").
     pub display_name: Option<String>,

@@ -8,6 +8,7 @@ from bpy.types import Operator, Panel
 from bpy_extras.io_utils import ImportHelper
 
 from .manifest import PackageBundle
+from .palette import resolved_palette_id
 from .runtime import (
     PROP_ENTITY_NAME,
     PROP_MATERIAL_SIDECAR,
@@ -88,7 +89,7 @@ def _paint_items(_: bpy.types.Operator, context: bpy.types.Context) -> list[tupl
         _PAINT_ITEMS_CACHE = [("", "No imported package", "Import a StarBreaker package first")]
         return _PAINT_ITEMS_CACHE
     available_ids = exterior_palette_ids(package)
-    items = []
+    deduped_items: dict[str, tuple[str, str, str]] = {}
     for palette_id in available_ids:
         paint_variant = package.paints.get(palette_id)
         palette_entry = package.palettes.get(palette_id)
@@ -107,11 +108,17 @@ def _paint_items(_: bpy.types.Operator, context: bpy.types.Context) -> list[tupl
             (paint_variant.subgeometry_tag if paint_variant else None)
             or source_name
         )
-        items.append((
+        item = (
             palette_id,
             _palette_display_name(palette_id, source_name, display_name_str),
             description,
-        ))
+        )
+        canonical_id = resolved_palette_id(package, palette_id) or palette_id
+        existing = deduped_items.get(canonical_id)
+        if existing is not None and paint_variant is None:
+            continue
+        deduped_items[canonical_id] = item
+    items = sorted(deduped_items.values(), key=lambda item: item[1])
     _PAINT_ITEMS_CACHE = items
     return _PAINT_ITEMS_CACHE
 

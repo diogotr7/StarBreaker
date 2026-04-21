@@ -3321,8 +3321,8 @@ fn enumerate_paint_variants_for_entity(
             // Store forward-slash version for output.
             let material_path = p4k_mtl_path.map(|p| p.replace('\\', "/"));
 
-            // Derive a stable palette_id directly from the SubGeometry tag.
-            // E.g. "Paint_Aurora_Mk2_Pink_Green_Purple" → "paint/paint_aurora_mk2_pink_green_purple".
+            // Derive a stable canonical palette_id directly from the SubGeometry tag.
+            // E.g. "Paint_Aurora_Mk2_Pink_Green_Purple" → "palette/aurora_mk2_pink_green_purple".
             let sanitized_tag: String = tag
                 .chars()
                 .map(|ch| {
@@ -3333,7 +3333,10 @@ fn enumerate_paint_variants_for_entity(
                     }
                 })
                 .collect();
-            let palette_id = Some(format!("paint/{sanitized_tag}"));
+            let canonical_tag = sanitized_tag
+                .strip_prefix("paint_")
+                .unwrap_or(sanitized_tag.as_str());
+            let palette_id = Some(format!("palette/{canonical_tag}"));
             // Try to look up a localized display name using the sanitized tag.
             let display_name = display_names.get(sanitized_tag.as_str()).cloned();
 

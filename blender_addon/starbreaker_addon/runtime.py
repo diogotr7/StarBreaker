@@ -74,7 +74,7 @@ SCENE_AXIS_CONVERSION = Matrix(
 SCENE_AXIS_CONVERSION_INV = SCENE_AXIS_CONVERSION.inverted()
 GLTF_LIGHT_BASIS_CORRECTION = Quaternion((math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0))
 NON_COLOR_INPUT_KEYWORDS = ("normal", "roughness", "gloss", "mask", "height", "specular", "opacity", "id_map")
-MATERIAL_IDENTITY_SCHEMA = "runtime_material_v7"
+MATERIAL_IDENTITY_SCHEMA = "runtime_material_v10"
 
 
 @dataclass(frozen=True)
@@ -130,7 +130,8 @@ def import_package(
 ) -> bpy.types.Object:
     package = PackageBundle.load(scene_path)
     importer = PackageImporter(context, package)
-    root = importer.import_scene(prefer_cycles=prefer_cycles, palette_id=palette_id)
+    with _suspend_heavy_viewports(context):
+        root = importer.import_scene(prefer_cycles=prefer_cycles, palette_id=palette_id)
     _purge_orphaned_runtime_groups()
     return root
 
@@ -214,6 +215,21 @@ def exterior_palette_ids(package: PackageBundle) -> list[str]:
             if livery.palette_id:
                 interior_only_palette_ids.add(livery.palette_id)
     return sorted(pid for pid in all_ids if pid not in interior_only_palette_ids)
+
+
+def _paint_variant_for_palette_id(package: PackageBundle, palette_id: str | None) -> Any | None:
+    if not palette_id:
+        return None
+    direct = package.paints.get(palette_id)
+    if direct is not None:
+        return direct
+    canonical_id = resolved_palette_id(package, palette_id)
+    if canonical_id is None:
+        return None
+    for candidate_id, variant in package.paints.items():
+        if resolved_palette_id(package, candidate_id) == canonical_id:
+            return variant
+    return None
 
 
 def apply_palette_to_selected_package(context: bpy.types.Context, palette_id: str) -> int:
@@ -385,16 +401,54 @@ class PackageImporter:
         self.collection = self._ensure_collection(package.package_name)
         self.template_collection = self._ensure_template_collection()
         self.package_root = package_root
+        self.exterior_material_sidecars = _exterior_material_sidecars(package)
         self.template_cache: dict[str, ImportedTemplate] = {}
         self.material_cache: dict[str, bpy.types.Material] = {}
         self.node_index_by_entity_name: dict[str, dict[str, bpy.types.Object]] = {}
         self.bundled_template_contract: TemplateContract | None = None
         self.import_palette_override: str | None = None
+        self.import_paint_variant_sidecar: str | None = None
+        self.runtime_shared_groups_ready = False
+        self.material_identity_index: dict[str, bpy.types.Material] = {}
+        self.material_identity_index_ready = False
+        self.sidecar_submaterials_by_index: dict[str, dict[int, SubmaterialRecord]] = {}
+        self.sidecar_submaterials_by_name: dict[str, dict[str, SubmaterialRecord]] = {}
+        self.slot_mapping_cache: dict[int, list[int | None] | None] = {}
 
     def _ensure_runtime_shared_groups(self) -> None:
+        if self.runtime_shared_groups_ready:
+            return
         self._ensure_runtime_layer_surface_group()
         self._ensure_runtime_hard_surface_group()
         self._ensure_runtime_illum_group()
+        self.runtime_shared_groups_ready = True
+
+    def _ensure_material_identity_index(self) -> None:
+        if self.material_identity_index_ready:
+            return
+        for material in bpy.data.materials:
+            material_identity = material.get(PROP_MATERIAL_IDENTITY)
+            if isinstance(material_identity, str) and material_identity:
+                self.material_identity_index[material_identity] = material
+        self.material_identity_index_ready = True
+
+    def _submaterials_by_index(self, sidecar_path: str, sidecar: MaterialSidecar) -> dict[int, SubmaterialRecord]:
+        canonical_path = _canonical_material_sidecar_path(sidecar_path, sidecar)
+        cached = self.sidecar_submaterials_by_index.get(canonical_path)
+        if cached is not None:
+            return cached
+        indexed = {submaterial.index: submaterial for submaterial in sidecar.submaterials}
+        self.sidecar_submaterials_by_index[canonical_path] = indexed
+        return indexed
+
+    def _submaterials_by_unique_name(self, sidecar_path: str, sidecar: MaterialSidecar) -> dict[str, SubmaterialRecord]:
+        canonical_path = _canonical_material_sidecar_path(sidecar_path, sidecar)
+        cached = self.sidecar_submaterials_by_name.get(canonical_path)
+        if cached is not None:
+            return cached
+        indexed = _unique_submaterials_by_name(sidecar)
+        self.sidecar_submaterials_by_name[canonical_path] = indexed
+        return indexed
 
     def _effective_palette_id(self, palette_id: str | None) -> str | None:
         inherited_palette_id = None
@@ -418,11 +472,19 @@ class PackageImporter:
             palette_id,
             self.package.scene.root_entity.palette_id,
         )
+        initial_paint_variant = _paint_variant_for_palette_id(self.package, palette_id)
         self.import_palette_override = initial_palette_id
+        self.import_paint_variant_sidecar = (
+            initial_paint_variant.exterior_material_sidecar
+            if initial_paint_variant is not None
+            else None
+        )
         package_root = self.package_root or self._create_package_root(initial_palette_id)
         self.package_root = package_root
         if initial_palette_id is not None:
             package_root[PROP_PALETTE_ID] = initial_palette_id
+        if self.import_paint_variant_sidecar is not None:
+            package_root[PROP_PAINT_VARIANT_SIDECAR] = self.import_paint_variant_sidecar
 
         root_anchor, root_nodes = self.instantiate_scene_instance(self.package.scene.root_entity, parent=package_root)
         self.node_index_by_entity_name[self.package.scene.root_entity.entity_name] = self._index_nodes(root_nodes)
@@ -441,6 +503,17 @@ class PackageImporter:
 
         return package_root
 
+    def _effective_import_material_sidecar(self, sidecar_path: str | None) -> str | None:
+        if sidecar_path is None:
+            return None
+        if self.import_paint_variant_sidecar is None:
+            return sidecar_path
+        if self.exterior_material_sidecars is None:
+            return self.import_paint_variant_sidecar
+        if sidecar_path in self.exterior_material_sidecars:
+            return self.import_paint_variant_sidecar
+        return sidecar_path
+
     def rebuild_object_materials(self, obj: bpy.types.Object, palette_id: str | None) -> int:
         self._ensure_runtime_shared_groups()
         if obj.type != "MESH":
@@ -455,14 +528,32 @@ class PackageImporter:
         palette = palette_for_id(self.package, effective_palette_id)
         applied = 0
         mesh_materials = getattr(obj.data, "materials", None)
-        slot_mapping = _slot_mapping_for_object(obj)
+        data = getattr(obj, "data", None)
+        data_pointer = data.as_pointer() if data is not None else 0
+        slot_mapping = self.slot_mapping_cache.get(data_pointer)
+        if data_pointer not in self.slot_mapping_cache:
+            slot_mapping = _slot_mapping_for_object(obj)
+            self.slot_mapping_cache[data_pointer] = slot_mapping
         if slot_mapping is not None:
             if mesh_materials is not None:
                 while len(mesh_materials) < len(slot_mapping):
                     mesh_materials.append(None)
-            submaterials_by_index = {submaterial.index: submaterial for submaterial in sidecar.submaterials}
+            source_sidecar_path = _slot_mapping_source_sidecar_path(obj, sidecar_path)
+            source_sidecar = self.package.load_material_sidecar(source_sidecar_path)
+            if source_sidecar is None:
+                source_sidecar = sidecar
+            source_submaterials_by_index = self._submaterials_by_index(source_sidecar_path, source_sidecar)
+            target_submaterials_by_index = self._submaterials_by_index(sidecar_path, sidecar)
+            target_submaterials_by_name = self._submaterials_by_unique_name(sidecar_path, sidecar)
             for slot_index, mapped_index in enumerate(slot_mapping):
-                submaterial = submaterials_by_index.get(mapped_index if mapped_index is not None else slot_index)
+                fallback_index = mapped_index if mapped_index is not None else slot_index
+                source_submaterial = source_submaterials_by_index.get(fallback_index)
+                submaterial = _remapped_submaterial_for_slot(
+                    source_submaterial,
+                    fallback_index,
+                    target_submaterials_by_index,
+                    target_submaterials_by_name,
+                )
                 if submaterial is None:
                     print(
                         f"StarBreaker: missing sidecar submaterial index {mapped_index} for {obj.name}"
@@ -796,22 +887,29 @@ class PackageImporter:
     def ensure_template(self, mesh_asset: str | None) -> ImportedTemplate:
         if not mesh_asset:
             raise RuntimeError("Scene instance is missing mesh_asset")
-        cached = self.template_cache.get(mesh_asset)
-        if cached is not None:
-            return cached
 
         asset_path = self.package.resolve_path(mesh_asset)
         if asset_path is None or not asset_path.is_file():
             raise RuntimeError(f"Missing mesh asset: {mesh_asset}")
+        asset_key = str(asset_path.resolve())
+
+        cached = self.template_cache.get(asset_key)
+        if cached is not None:
+            return cached
 
         before = {obj.as_pointer() for obj in bpy.data.objects}
-        before_materials = {material.as_pointer() for material in bpy.data.materials}
         result = bpy.ops.import_scene.gltf(filepath=str(asset_path), import_pack_images=False, merge_vertices=False)
         if "FINISHED" not in result:
             raise RuntimeError(f"Failed to import {asset_path}")
 
         imported = [obj for obj in bpy.data.objects if obj.as_pointer() not in before]
-        imported_materials = [material for material in bpy.data.materials if material.as_pointer() not in before_materials]
+        imported_materials_by_pointer: dict[int, bpy.types.Material] = {}
+        for obj in imported:
+            for slot in getattr(obj, "material_slots", []):
+                material = getattr(slot, "material", None)
+                if material is not None:
+                    imported_materials_by_pointer[material.as_pointer()] = material
+        imported_materials = list(imported_materials_by_pointer.values())
         root_objects = self._root_objects(imported)
         for obj in imported:
             for collection in list(obj.users_collection):
@@ -826,7 +924,7 @@ class PackageImporter:
         self._purge_unused_materials(imported_materials)
 
         template = ImportedTemplate(mesh_asset=mesh_asset, root_names=[obj.name for obj in root_objects])
-        self.template_cache[mesh_asset] = template
+        self.template_cache[asset_key] = template
         return template
 
     def instantiate_template(
@@ -900,15 +998,18 @@ class PackageImporter:
             existing_identity = reusable.get(PROP_MATERIAL_IDENTITY)
             if isinstance(existing_identity, str) and existing_identity == cache_key:
                 self.material_cache[cache_key] = reusable
+                self.material_identity_index[cache_key] = reusable
                 return reusable
             self._build_managed_material(reusable, sidecar_path, sidecar, submaterial, palette, cache_key)
             self.material_cache[cache_key] = reusable
+            self.material_identity_index[cache_key] = reusable
             return reusable
 
         material_name = _material_name(sidecar_path, sidecar, submaterial, cache_key)
         material = bpy.data.materials.new(material_name)
         self._build_managed_material(material, sidecar_path, sidecar, submaterial, palette, cache_key)
         self.material_cache[cache_key] = material
+        self.material_identity_index[cache_key] = material
         return material
 
     def _reusable_material(
@@ -933,14 +1034,18 @@ class PackageImporter:
         ):
             return preferred
 
-        for material in bpy.data.materials:
-            existing_identity = material.get(PROP_MATERIAL_IDENTITY)
-            if (
-                isinstance(existing_identity, str)
-                and existing_identity == material_identity
-                and _material_is_compatible(material, self.package, sidecar_path, sidecar, submaterial, palette, palette_scope)
-            ):
-                return material
+        self._ensure_material_identity_index()
+        indexed_material = self.material_identity_index.get(material_identity)
+        if indexed_material is not None and _material_is_compatible(
+            indexed_material,
+            self.package,
+            sidecar_path,
+            sidecar,
+            submaterial,
+            palette,
+            palette_scope,
+        ):
+            return indexed_material
         return None
 
     def _build_managed_material(
@@ -961,7 +1066,7 @@ class PackageImporter:
         elif submaterial.shader_family == "Illum":
             self._build_illum_material(material, submaterial, palette, plan)
         else:
-            group_contract = self._group_contract_for_submaterial(submaterial)
+            group_contract = None if plan.template_key == "layered_wear" else self._group_contract_for_submaterial(submaterial)
             if group_contract is not None and self._build_contract_group_material(material, submaterial, palette, plan, group_contract):
                 if submaterial.shader_family == "GlassPBR":
                     surface_mode = SURFACE_SHADER_MODE_GLASS
@@ -1138,7 +1243,10 @@ class PackageImporter:
         top_base_node = self._image_node(nodes, top_base.export_path if top_base is not None else None, x=-720, y=520, is_color=True)
         top_base_color = top_base_node.outputs[0] if top_base_node is not None else None
         top_base_alpha = _output_socket(top_base_node, "Alpha") if top_base_node is not None else None
-        angle_shift_enabled = _hard_surface_angle_shift_enabled(submaterial)
+        material_channel = submaterial.palette_routing.material_channel.name if submaterial.palette_routing.material_channel is not None else None
+        angle_shift_enabled = _hard_surface_angle_shift_enabled(submaterial) or (
+            material_channel == "tertiary" and _palette_has_iridescence(palette)
+        )
 
         primary_layer = submaterial.layer_manifest[0] if submaterial.layer_manifest else None
         secondary_layer = submaterial.layer_manifest[1] if len(submaterial.layer_manifest) > 1 else None
@@ -1213,8 +1321,8 @@ class PackageImporter:
         self._set_socket_default(_input_socket(shader_group, "Secondary Metallic"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Secondary Normal"), (0.0, 0.0, 1.0))
         if angle_shift_enabled and palette is not None:
-            facing_socket = self._palette_specular_socket(nodes, palette, "tertiary", x=-720, y=-1320)
-            grazing_socket = self._palette_color_socket(nodes, palette, "tertiary", x=-720, y=-1320)
+            facing_socket = self._palette_color_socket(nodes, palette, "tertiary", x=-720, y=-1320)
+            grazing_socket = self._palette_specular_socket(nodes, palette, "tertiary", x=-720, y=-1320)
             self._link_group_input(links, facing_socket, shader_group, "Iridescence Facing Color")
             self._link_group_input(links, grazing_socket, shader_group, "Iridescence Grazing Color")
         else:
@@ -1676,7 +1784,7 @@ class PackageImporter:
     def _ensure_runtime_hard_surface_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime HardSurface",
-            "hard_surface_v12",
+            "hard_surface_v14",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -1686,7 +1794,7 @@ class PackageImporter:
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime HardSurface",
-            signature="hard_surface_v12",
+            signature="hard_surface_v14",
             inputs=[
                 ("Top Base Color", "NodeSocketColor"),
                 ("Top Alpha", "NodeSocketFloat"),
@@ -1718,7 +1826,7 @@ class PackageImporter:
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v12":
+        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v14":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -1746,8 +1854,8 @@ class PackageImporter:
         angle_factor = nodes.new("ShaderNodeMapRange")
         angle_factor.location = (-580, 620)
         angle_factor.clamp = True
-        angle_factor.inputs[1].default_value = 0.3
-        angle_factor.inputs[2].default_value = 0.45
+        angle_factor.inputs[1].default_value = 0.0
+        angle_factor.inputs[2].default_value = 0.2
         angle_factor.inputs[3].default_value = 1.0
         angle_factor.inputs[4].default_value = 0.0
         links.new(_output_socket(layer_weight, "Facing"), angle_factor.inputs[0])
@@ -1869,12 +1977,9 @@ class PackageImporter:
         specular_tint_input = _input_socket(principled, "Specular Tint")
         if specular_tint_input is not None:
             links.new(specular_tint_mix.outputs[0], specular_tint_input)
-        coat_tint_input = _input_socket(principled, "Coat Tint")
-        if coat_tint_input is not None:
-            links.new(iridescence_color.outputs[0], coat_tint_input)
         coat_weight_input = _input_socket(principled, "Coat Weight")
         if coat_weight_input is not None:
-            links.new(_output_socket(group_input, "Iridescence Factor"), coat_weight_input)
+            coat_weight_input.default_value = 0.0
         coat_roughness_input = _input_socket(principled, "Coat Roughness")
         if coat_roughness_input is not None:
             coat_roughness_input.default_value = 0.08
@@ -1903,7 +2008,7 @@ class PackageImporter:
         links.new(principled.outputs[0], shadow_mix.inputs[1])
         links.new(transparent.outputs[0], shadow_mix.inputs[2])
         links.new(shadow_mix.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v12"
+        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v14"
         return group_tree
 
     def _ensure_runtime_illum_group(self) -> bpy.types.ShaderNodeTree:
@@ -3076,12 +3181,18 @@ class PackageImporter:
         if submaterial.decoded_feature_flags.has_vertex_colors:
             vc_node = nodes.new("ShaderNodeVertexColor")
             vc_node.location = (x, y)
-            vc_node.layer_name = "Col"
+            vc_node.layer_name = "Color"
             separate = nodes.new("ShaderNodeSeparateColor")
             separate.location = (x + 180, y)
             links.new(vc_node.outputs[0], separate.inputs[0])
-            source = separate.outputs[0]  # R channel = wear
-            node_offset = 360
+            invert = nodes.new("ShaderNodeMath")
+            invert.location = (x + 360, y)
+            invert.operation = "SUBTRACT"
+            invert.use_clamp = True
+            invert.inputs[0].default_value = 1.0
+            links.new(separate.outputs[0], invert.inputs[1])
+            source = invert.outputs[0]  # Aurora COLOR_0 red uses 1.0 for pristine paint.
+            node_offset = 540
         else:
             mask_node = self._image_node(nodes, textures["mask"], x=x, y=y, is_color=False)
             if mask_node is not None:
@@ -3166,6 +3277,13 @@ class PackageImporter:
         links.new(layer_source, mix.inputs[3])
         return mix.outputs[0]
 
+    def _layered_wear_layer(self, submaterial: SubmaterialRecord) -> LayerManifestEntry | None:
+        if len(submaterial.layer_manifest) > 1:
+            return submaterial.layer_manifest[1]
+        if submaterial.layer_manifest:
+            return submaterial.layer_manifest[0]
+        return None
+
     def _layer_color_socket(
         self,
         nodes: bpy.types.Nodes,
@@ -3175,7 +3293,10 @@ class PackageImporter:
         x: int,
         y: int,
     ) -> Any:
-        layer = next((item for item in submaterial.layer_manifest if item.diffuse_export_path), None)
+        wear_layer = self._layered_wear_layer(submaterial)
+        layer = wear_layer if wear_layer is not None and wear_layer.diffuse_export_path else None
+        if layer is None:
+            layer = next((item for item in submaterial.layer_manifest if item.diffuse_export_path), None)
         if layer is None:
             return None
 
@@ -3215,15 +3336,23 @@ class PackageImporter:
         x: int,
         y: int,
     ) -> Any:
-        layer = next(
-            (
-                item
-                for item in submaterial.layer_manifest
-                if item.roughness_export_path
-                or any(texture.alpha_semantic == "smoothness" and texture.export_path for texture in item.texture_slots)
-            ),
-            None,
-        )
+        wear_layer = self._layered_wear_layer(submaterial)
+        layer = None
+        if wear_layer is not None and (
+            wear_layer.roughness_export_path
+            or any(texture.alpha_semantic == "smoothness" and texture.export_path for texture in wear_layer.texture_slots)
+        ):
+            layer = wear_layer
+        if layer is None:
+            layer = next(
+                (
+                    item
+                    for item in submaterial.layer_manifest
+                    if item.roughness_export_path
+                    or any(texture.alpha_semantic == "smoothness" and texture.export_path for texture in item.texture_slots)
+                ),
+                None,
+            )
         if layer is None:
             return None
         if layer.roughness_export_path:
@@ -3521,10 +3650,11 @@ class PackageImporter:
         record: SceneInstanceRecord,
         effective_palette_id: str | None,
     ) -> None:
+        effective_material_sidecar = self._effective_import_material_sidecar(record.material_sidecar)
         serialized = json.dumps(record.raw or {
             "entity_name": record.entity_name,
             "mesh_asset": record.mesh_asset,
-            "material_sidecar": record.material_sidecar,
+            "material_sidecar": effective_material_sidecar,
             "palette_id": record.palette_id,
         }, sort_keys=True)
         for obj in objects:
@@ -3534,8 +3664,8 @@ class PackageImporter:
             obj[PROP_ENTITY_NAME] = record.entity_name
             if record.mesh_asset is not None:
                 obj[PROP_MESH_ASSET] = record.mesh_asset
-            if record.material_sidecar is not None:
-                obj[PROP_MATERIAL_SIDECAR] = record.material_sidecar
+            if effective_material_sidecar is not None:
+                obj[PROP_MATERIAL_SIDECAR] = effective_material_sidecar
             if effective_palette_id is not None:
                 obj[PROP_PALETTE_ID] = effective_palette_id
             obj[PROP_INSTANCE_JSON] = serialized
@@ -4467,6 +4597,42 @@ def _slot_mapping_for_object(obj: bpy.types.Object) -> list[int | None] | None:
         except (TypeError, ValueError):
             mapping.append(None)
     return mapping
+
+
+def _slot_mapping_source_sidecar_path(obj: bpy.types.Object, current_sidecar_path: str) -> str:
+    instance = _scene_instance_from_object(obj)
+    if instance is not None and instance.material_sidecar:
+        return instance.material_sidecar
+    return current_sidecar_path
+
+
+def _unique_submaterials_by_name(sidecar: MaterialSidecar) -> dict[str, SubmaterialRecord]:
+    grouped: dict[str, list[SubmaterialRecord]] = {}
+    for submaterial in sidecar.submaterials:
+        name = submaterial.submaterial_name.strip()
+        if not name:
+            continue
+        grouped.setdefault(name, []).append(submaterial)
+    return {
+        name: submaterials[0]
+        for name, submaterials in grouped.items()
+        if len(submaterials) == 1
+    }
+
+
+def _remapped_submaterial_for_slot(
+    source_submaterial: SubmaterialRecord | None,
+    fallback_index: int,
+    target_submaterials_by_index: dict[int, SubmaterialRecord],
+    target_submaterials_by_name: dict[str, SubmaterialRecord],
+) -> SubmaterialRecord | None:
+    if source_submaterial is not None:
+        source_name = source_submaterial.submaterial_name.strip()
+        if source_name:
+            remapped = target_submaterials_by_name.get(source_name)
+            if remapped is not None:
+                return remapped
+    return target_submaterials_by_index.get(fallback_index)
 
 
 def _imported_slot_mapping_from_materials(materials: Any) -> list[int | None] | None:
