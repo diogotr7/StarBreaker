@@ -87,6 +87,39 @@ def _safe_identifier(value: str) -> str:
 
 
 class BuildersMixin:
+    def _apply_uv_tiling(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        image_node: bpy.types.ShaderNodeTexImage | None,
+        tile: float,
+        *,
+        x: int,
+        y: int,
+    ) -> None:
+        """Phase 8: inject a Mapping + TexCoord pair before ``image_node`` to
+        scale UVs by ``tile``. No-op when ``image_node`` is missing or the
+        tiling factor is effectively 1.0. ``ShaderNodeMapping`` and
+        ``ShaderNodeTexCoord`` are explicitly allowed at the top level by
+        ``validators.MATERIAL_TOP_LEVEL_ALLOWED_BL_IDNAMES``.
+        """
+        if image_node is None:
+            return
+        if tile <= 0.0 or abs(tile - 1.0) < 1e-4:
+            return
+        tex_coord = nodes.new("ShaderNodeTexCoord")
+        tex_coord.location = (x - 220, y)
+        mapping = nodes.new("ShaderNodeMapping")
+        mapping.location = (x, y)
+        mapping.vector_type = "POINT"
+        scale_socket = mapping.inputs.get("Scale")
+        if scale_socket is not None:
+            scale_socket.default_value = (tile, tile, 1.0)
+        links.new(tex_coord.outputs["UV"], mapping.inputs["Vector"])
+        vector_input = image_node.inputs.get("Vector")
+        if vector_input is not None:
+            links.new(mapping.outputs["Vector"], vector_input)
+
     def _build_managed_material(
         self,
         material: bpy.types.Material,
@@ -271,6 +304,18 @@ class BuildersMixin:
         palette: PaletteRecord | None,
         plan: Any,
     ) -> None:
+        # Phase 8 notes on public params that cannot be mapped here:
+        #   * SelfShadowStrength — no matching socket in the HardSurface
+        #     runtime group today; adding one requires a group schema bump
+        #     plus re-plumbing the self-shadow path. Deferred.
+        #   * DamageTiling — there is no dedicated damage map sampler at
+        #     this level; damage is composited via
+        #     ``_layered_damage_factor_socket``. Deferred until a damage
+        #     texture is sampled here directly.
+        #   * FarGlowStartDistance / FarGlowEndDistance / FarGlowMultiplier
+        #     — distance-based emissive falloff is a CryEngine post-process
+        #     / HDR feature with no direct Blender shader equivalent. Not
+        #     mapped intentionally.
         nodes = material.node_tree.nodes
         links = material.node_tree.links
         nodes.clear()
@@ -341,6 +386,15 @@ class BuildersMixin:
             is_color=True,
         )
 
+        # Phase 8: public-param UV tiling. MacroTiling scales the detail
+        # macro-normal sampler; EmissiveTiling scales the emissive sampler.
+        # Both are no-ops when the corresponding public param is absent or
+        # equal to 1.0.
+        macro_tiling = _float_public_param(submaterial, "MacroTiling", "MacroNormalTiling") or 1.0
+        self._apply_uv_tiling(nodes, links, macro_normal_node, macro_tiling, x=-1040, y=-420)
+        emissive_tiling = _float_public_param(submaterial, "EmissiveTiling") or 1.0
+        self._apply_uv_tiling(nodes, links, emissive_node, emissive_tiling, x=-1040, y=-1020)
+
         shader_group = nodes.new("ShaderNodeGroup")
         shader_group.node_tree = self._ensure_runtime_hard_surface_group()
         _refresh_group_node_sockets(shader_group)
@@ -391,7 +445,27 @@ class BuildersMixin:
         self._set_socket_default(_input_socket(shader_group, "Damage Factor"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Macro Normal Color"), (0.5, 0.5, 1.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Macro Normal Strength"), 0.4)
-        self._set_socket_default(_input_socket(shader_group, "Displacement Strength"), 0.05)
+        # Phase 8: read authored POM displacement from PomDisplacement /
+        # POMHeightBias when %PARALLAX_OCCLUSION_MAPPING% is enabled; fall
+        # back to 0.05 (the empirical bake-in value that matches non-POM
+        # HardSurface materials).
+        if submaterial.decoded_feature_flags.has_parallax_occlusion_mapping:
+            pom_displacement = _float_public_param(
+                submaterial,
+                "PomDisplacement",
+                "POMHeightBias",
+                "POM_HeightBias",
+                "POMDisplacement",
+            )
+            if pom_displacement is None or pom_displacement <= 0.0:
+                pom_displacement = 0.08
+            # Match the illum-path clamp (see _build_illum_material): keep
+            # a 0.03 floor so POM stays visible and a 0.2 ceiling so it
+            # never blows out the geometry.
+            pom_displacement = max(0.03, min(0.2, pom_displacement))
+        else:
+            pom_displacement = 0.05
+        self._set_socket_default(_input_socket(shader_group, "Displacement Strength"), pom_displacement)
         self._set_socket_default(_input_socket(shader_group, "Emission Color"), (0.0, 0.0, 0.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Emission Strength"), 0.0)
         shader_group["starbreaker_angle_shift_enabled"] = angle_shift_enabled

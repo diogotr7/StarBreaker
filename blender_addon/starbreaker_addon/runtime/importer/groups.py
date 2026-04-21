@@ -245,7 +245,7 @@ class GroupsMixin:
     def _ensure_runtime_hard_surface_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime HardSurface",
-            "hard_surface_v30",
+            "hard_surface_v31",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -254,7 +254,7 @@ class GroupsMixin:
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime HardSurface",
-            signature="hard_surface_v30",
+            signature="hard_surface_v31",
             inputs=[
                 ("Top Base Color", "NodeSocketColor"),
                 ("Top Alpha", "NodeSocketFloat"),
@@ -295,7 +295,7 @@ class GroupsMixin:
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v30":
+        if group_tree.get("starbreaker_runtime_built_signature") == "hard_surface_v31":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -554,19 +554,15 @@ class GroupsMixin:
         links.new(effective_wear_factor.outputs[0], metallic_layer_mix.inputs[0])
         links.new(_output_socket(group_input, "Primary Metallic"), metallic_layer_mix.inputs[2])
         links.new(_output_socket(group_input, "Secondary Metallic"), metallic_layer_mix.inputs[3])
-        iridescence_metallic_boost = nodes.new("ShaderNodeMapRange")
-        iridescence_metallic_boost.location = (80, -180)
-        iridescence_metallic_boost.clamp = True
-        iridescence_metallic_boost.inputs[1].default_value = 0.0
-        iridescence_metallic_boost.inputs[2].default_value = 1.0
-        iridescence_metallic_boost.inputs[3].default_value = 0.0
-        iridescence_metallic_boost.inputs[4].default_value = 1.0
-        links.new(_output_socket(group_input, "Iridescence Factor"), iridescence_metallic_boost.inputs[0])
+        # Phase 8: Iridescence Factor is already a clamped 0/1 float driven
+        # from the material builder; the previous MapRange (0..1 -> 0..1,
+        # clamp=True) was an identity no-op. Feed it directly into the
+        # metallic MAX.
         metallic_max = nodes.new("ShaderNodeMath")
         metallic_max.location = (260, -180)
         metallic_max.operation = "MAXIMUM"
         links.new(metallic_layer_mix.outputs[0], metallic_max.inputs[0])
-        links.new(iridescence_metallic_boost.outputs[0], metallic_max.inputs[1])
+        links.new(_output_socket(group_input, "Iridescence Factor"), metallic_max.inputs[1])
         metallic_input = _input_socket(principled, "Metallic")
         if metallic_input is not None:
             links.new(metallic_max.outputs[0], metallic_input)
@@ -596,7 +592,7 @@ class GroupsMixin:
             links.new(_output_socket(group_input, "Emission Strength"), emission_strength)
 
         links.new(principled.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v30"
+        group_tree["starbreaker_runtime_built_signature"] = "hard_surface_v31"
         return group_tree
 
     def _ensure_runtime_wear_input_group(self) -> bpy.types.ShaderNodeTree:

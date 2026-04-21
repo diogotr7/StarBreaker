@@ -15,10 +15,18 @@ import bpy
 
 
 #: Block bl_idnames allowed at the top level of any managed material.
+#:
+#: Image Texture nodes stay at top level so palette / livery switching
+#: can locate and re-wire them. Mapping + Texture Coordinate nodes are
+#: allowed at top level because they are orchestration for those image
+#: textures (UV scale / offset from public-param tiling values), not
+#: shader logic. All BSDFs, math, mixes, etc. belong inside a Node Group.
 MATERIAL_TOP_LEVEL_ALLOWED_BL_IDNAMES: frozenset[str] = frozenset({
     "ShaderNodeOutputMaterial",
     "ShaderNodeTexImage",
     "ShaderNodeGroup",
+    "ShaderNodeMapping",
+    "ShaderNodeTexCoord",
 })
 
 
