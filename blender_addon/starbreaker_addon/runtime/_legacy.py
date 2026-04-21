@@ -32,49 +32,41 @@ from ..templates import (
     template_plan_for_submaterial,
 )
 
-PROP_PACKAGE_ROOT = "starbreaker_package_root"
-PROP_SCENE_PATH = "starbreaker_scene_path"
-PROP_EXPORT_ROOT = "starbreaker_export_root"
-PROP_PACKAGE_NAME = "starbreaker_package_name"
-PROP_ENTITY_NAME = "starbreaker_entity_name"
-PROP_INSTANCE_JSON = "starbreaker_instance_json"
-PROP_MESH_ASSET = "starbreaker_mesh_asset"
-PROP_MATERIAL_SIDECAR = "starbreaker_material_sidecar"
-PROP_PALETTE_ID = "starbreaker_palette_id"
-PROP_PALETTE_SCOPE = "starbreaker_palette_scope"
-PROP_SHADER_FAMILY = "starbreaker_shader_family"
-PROP_TEMPLATE_KEY = "starbreaker_template_key"
-PROP_SUBMATERIAL_JSON = "starbreaker_submaterial_json"
-PROP_MATERIAL_IDENTITY = "starbreaker_material_identity"
-PROP_IMPORTED_SLOT_MAP = "starbreaker_imported_slot_map"
-PROP_TEMPLATE_PATH = "starbreaker_template_path"
-# Records the active paint variant's exterior material sidecar on the package root.
-# Set when a paint variant with a different material file is applied; used by
-# _effective_exterior_material_sidecars() so that subsequent palette changes still
-# reach the newly-built materials.
-PROP_PAINT_VARIANT_SIDECAR = "starbreaker_paint_variant_sidecar"
-PROP_SOURCE_NODE_NAME = "starbreaker_source_node_name"
-PROP_MISSING_ASSET = "starbreaker_missing_asset"
-PROP_SURFACE_SHADER_MODE = "starbreaker_surface_shader_mode"
-SCENE_WEAR_STRENGTH_PROP = "starbreaker_wear_strength"
-SURFACE_SHADER_MODE_PRINCIPLED = "principled_first"
-SURFACE_SHADER_MODE_GLASS = "glass_bsdf"
-
-PACKAGE_ROOT_PREFIX = "StarBreaker"
-TEMPLATE_COLLECTION_NAME = "StarBreaker Template Cache"
-GLTF_PBR_WATTS_TO_LUMENS = 683.0
-SCENE_AXIS_CONVERSION = Matrix(
-    (
-        (1.0, 0.0, 0.0, 0.0),
-        (0.0, 0.0, -1.0, 0.0),
-        (0.0, 1.0, 0.0, 0.0),
-        (0.0, 0.0, 0.0, 1.0),
-    )
+# Phase 7.2: constants migrated to runtime.constants; re-imported here so any
+# code still referencing them in this file continues to work unchanged.
+from .constants import (
+    GLTF_LIGHT_BASIS_CORRECTION,
+    GLTF_PBR_WATTS_TO_LUMENS,
+    MATERIAL_IDENTITY_SCHEMA,
+    NON_COLOR_INPUT_KEYWORDS,
+    PACKAGE_ROOT_PREFIX,
+    PROP_ENTITY_NAME,
+    PROP_EXPORT_ROOT,
+    PROP_IMPORTED_SLOT_MAP,
+    PROP_INSTANCE_JSON,
+    PROP_MATERIAL_IDENTITY,
+    PROP_MATERIAL_SIDECAR,
+    PROP_MESH_ASSET,
+    PROP_MISSING_ASSET,
+    PROP_PACKAGE_NAME,
+    PROP_PACKAGE_ROOT,
+    PROP_PAINT_VARIANT_SIDECAR,
+    PROP_PALETTE_ID,
+    PROP_PALETTE_SCOPE,
+    PROP_SCENE_PATH,
+    PROP_SHADER_FAMILY,
+    PROP_SOURCE_NODE_NAME,
+    PROP_SUBMATERIAL_JSON,
+    PROP_SURFACE_SHADER_MODE,
+    PROP_TEMPLATE_KEY,
+    PROP_TEMPLATE_PATH,
+    SCENE_AXIS_CONVERSION,
+    SCENE_AXIS_CONVERSION_INV,
+    SCENE_WEAR_STRENGTH_PROP,
+    SURFACE_SHADER_MODE_GLASS,
+    SURFACE_SHADER_MODE_PRINCIPLED,
+    TEMPLATE_COLLECTION_NAME,
 )
-SCENE_AXIS_CONVERSION_INV = SCENE_AXIS_CONVERSION.inverted()
-GLTF_LIGHT_BASIS_CORRECTION = Quaternion((math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0))
-NON_COLOR_INPUT_KEYWORDS = ("normal", "roughness", "gloss", "mask", "height", "specular", "opacity", "id_map")
-MATERIAL_IDENTITY_SCHEMA = "runtime_material_v10"
 
 
 @dataclass(frozen=True)
@@ -154,81 +146,13 @@ def import_package(
 #: layer / shader helper groups, and the material output. Anything else
 #: belongs inside an owned group. See ``docs/StarBreaker/todo.md`` Phase 6
 #: for the authoritative definition.
-MATERIAL_TOP_LEVEL_ALLOWED_BL_IDNAMES: frozenset[str] = frozenset({
-    "ShaderNodeOutputMaterial",
-    "ShaderNodeTexImage",
-    "ShaderNodeGroup",
-})
-
-
-def _material_top_level_violations(
-    material: "bpy.types.Material",
-    *,
-    extra_allowed: frozenset[str] | None = None,
-) -> list[tuple[str, str]]:
-    """Return ``[(node_name, bl_idname), ...]`` for nodes that break the Phase 6 rule.
-
-    The rule is documented in :data:`MATERIAL_TOP_LEVEL_ALLOWED_BL_IDNAMES`:
-    material top-level trees may only contain palette / layer / shader group
-    nodes, image texture nodes, and the material output. Callers that still
-    have known-deferred helper types at top level can pass them through
-    ``extra_allowed`` to silence those during targeted validation.
-    """
-    if material is None or material.node_tree is None:
-        return []
-    allowed = MATERIAL_TOP_LEVEL_ALLOWED_BL_IDNAMES
-    if extra_allowed:
-        allowed = allowed | extra_allowed
-    return [
-        (node.name, node.bl_idname)
-        for node in material.node_tree.nodes
-        if node.bl_idname not in allowed
-    ]
-
-
-def _assert_material_top_level_clean(
-    material: "bpy.types.Material",
-    *,
-    extra_allowed: frozenset[str] | None = None,
-) -> None:
-    """Raise ``AssertionError`` when ``material``'s top level violates Phase 6.
-
-    Used from the unittest harness and may be called from runtime build paths
-    under debug flags. See :func:`_material_top_level_violations` for the rule.
-    """
-    violations = _material_top_level_violations(material, extra_allowed=extra_allowed)
-    if not violations:
-        return
-    detail = ", ".join(f"{name}:{bl_idname}" for name, bl_idname in violations)
-    raise AssertionError(
-        f"Material {material.name!r} violates top-level hygiene: {detail}"
-    )
-
-
-def _purge_orphaned_runtime_groups() -> int:
-    removed = 0
-    for group in list(bpy.data.node_groups):
-        if group.users > 0:
-            continue
-        name = group.name
-        if (name.startswith("StarBreaker Runtime LayerSurface.") or
-                name.startswith("StarBreaker Runtime HardSurface.") or
-                name.startswith("StarBreaker Runtime Glass.") or
-                name.startswith("StarBreaker Runtime NoDraw.") or
-                name.startswith("StarBreaker Runtime Screen.") or
-                name.startswith("StarBreaker Runtime Effect.") or
-                name.startswith("StarBreaker Runtime LayeredInputs.") or
-                name.startswith("StarBreaker Runtime Principled.") or
-                name.startswith("StarBreaker Runtime HardSurface Stencil.") or
-                name.startswith("StarBreaker Runtime Channel Split.") or
-                name.startswith("StarBreaker Runtime Smoothness To Roughness.") or
-                name.startswith("StarBreaker Runtime Color To Luma.") or
-                name.startswith("StarBreaker Runtime Shadowless Wrapper.") or
-                name.startswith("StarBreaker Wear Input.") or
-                name.startswith("StarBreaker Iridescence Input.")):
-            bpy.data.node_groups.remove(group)
-            removed += 1
-    return removed
+# Phase 7.2: validator helpers migrated to runtime.validators.
+from .validators import (
+    MATERIAL_TOP_LEVEL_ALLOWED_BL_IDNAMES,
+    _assert_material_top_level_clean,
+    _material_top_level_violations,
+    _purge_orphaned_runtime_groups,
+)
 
 
 def find_package_root(obj: bpy.types.Object | None) -> bpy.types.Object | None:
@@ -6503,70 +6427,23 @@ def _imported_submaterial_index(material: bpy.types.Material | None) -> int | No
 
 
 def _input_socket(node: Any, *names: str) -> Any:
-    for name in names:
-        socket = node.inputs.get(name)
-        if socket is not None:
-            return socket
-    if getattr(node, "bl_idname", "") == "ShaderNodeGroup":
-        node_tree = getattr(node, "node_tree", None)
-        if node_tree is not None:
-            try:
-                node.node_tree = node_tree
-            except Exception:
-                return None
-            for name in names:
-                socket = node.inputs.get(name)
-                if socket is not None:
-                    return socket
-    return None
+    from .node_utils import _input_socket as _impl
+    return _impl(node, *names)
 
 
 def _output_socket(node: Any, *names: str) -> Any:
-    for name in names:
-        socket = node.outputs.get(name)
-        if socket is not None:
-            return socket
-    if getattr(node, "bl_idname", "") == "ShaderNodeGroup":
-        node_tree = getattr(node, "node_tree", None)
-        if node_tree is not None:
-            try:
-                node.node_tree = node_tree
-            except Exception:
-                return None
-            for name in names:
-                socket = node.outputs.get(name)
-                if socket is not None:
-                    return socket
-    return None
+    from .node_utils import _output_socket as _impl
+    return _impl(node, *names)
 
 
 def _set_group_input_default(group_input_node: Any, socket_name: str, value: Any) -> None:
-    """Set the default value for a named output socket on a NodeGroupInput node.
-
-    Used inside `_ensure_runtime_*_group` builders to seed identity defaults so
-    callers may leave sockets unlinked without changing the composed behavior.
-    """
-    if group_input_node is None:
-        return
-    socket = group_input_node.outputs.get(socket_name)
-    if socket is None:
-        return
-    try:
-        socket.default_value = value
-    except Exception:
-        pass
+    from .node_utils import _set_group_input_default as _impl
+    _impl(group_input_node, socket_name, value)
 
 
 def _refresh_group_node_sockets(node: Any) -> None:
-    if getattr(node, "bl_idname", "") != "ShaderNodeGroup":
-        return
-    node_tree = getattr(node, "node_tree", None)
-    if node_tree is None:
-        return
-    try:
-        node.node_tree = node_tree
-    except Exception:
-        return
+    from .node_utils import _refresh_group_node_sockets as _impl
+    _impl(node)
 
 
 def _contract_input_uses_color(contract_input: ContractInput) -> bool:
