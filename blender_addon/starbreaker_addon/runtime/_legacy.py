@@ -3065,28 +3065,21 @@ def _is_axis_conversion_root(obj: bpy.types.Object) -> bool:
 
 
 def _should_neutralize_axis_root(obj: bpy.types.Object, mesh_asset: str) -> bool:
-    return _is_axis_conversion_root(obj) and _has_non_identity_descendants(obj, mesh_asset)
+    """Phase 12: neutralize any ``CryEngine_Z_up`` template root when the
+    instance is parented to a hardpoint.
 
-
-def _has_non_identity_descendants(root: bpy.types.Object, mesh_asset: str) -> bool:
-    stack = list(root.children)
-    while stack:
-        current = stack.pop()
-        if current.get(PROP_TEMPLATE_PATH) != mesh_asset:
-            continue
-        if not _matrix_is_identityish(current.matrix_local):
-            return True
-        stack.extend(current.children)
-    return False
-
-
-def _matrix_is_identityish(matrix: Matrix, epsilon: float = 1e-4) -> bool:
-    identity = Matrix.Identity(4)
-    for row_index in range(4):
-        for column_index in range(4):
-            if abs(matrix[row_index][column_index] - identity[row_index][column_index]) > epsilon:
-                return False
-    return True
+    Historically this additionally required ``_has_non_identity_descendants``
+    to be true, which meant templates whose axis-conversion empty had
+    only identity-transformed descendants (e.g. ``geo_vtol_fan`` inside
+    ``rsi_aurora_mk2_fan_vtol.glb``) kept the 90° Z-up→Y-up rotation
+    baked into their top-level transform even though the parent
+    hardpoint already provides the correct orientation. For
+    hardpoint-attached instances the axis conversion is always
+    redundant — the scene matrix conversion
+    (``_scene_matrix_to_blender``) has already brought the hardpoint
+    into Blender space — so we strip it unconditionally.
+    """
+    return _is_axis_conversion_root(obj)
 
 
 def _slot_mapping_for_object(obj: bpy.types.Object) -> list[int | None] | None:
