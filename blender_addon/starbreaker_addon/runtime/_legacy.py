@@ -398,6 +398,10 @@ class PackageImporter(BuildersMixin, GroupsMixin):
                 applied += 1
             if effective_palette_id is not None:
                 obj[PROP_PALETTE_ID] = effective_palette_id
+            # Option E2-Lite: after every slot is assigned, rebind decal
+            # slots to per-host-channel clones so each decal picks up the
+            # palette colour of the nearest paint material on the mesh.
+            self._rebind_mesh_decal_for_host(obj, palette)
             return applied
         for submaterial in sorted(sidecar.submaterials, key=lambda item: item.index):
             if mesh_materials is not None:
@@ -415,6 +419,10 @@ class PackageImporter(BuildersMixin, GroupsMixin):
             applied += 1
         if effective_palette_id is not None:
             obj[PROP_PALETTE_ID] = effective_palette_id
+        # Option E2-Lite: after every slot is assigned, rebind decal
+        # slots to per-host-channel clones so each decal picks up the
+        # palette colour of the nearest paint material on the mesh.
+        self._rebind_mesh_decal_for_host(obj, palette)
         return applied
 
     def apply_palette_to_package_root(self, package_root: bpy.types.Object, palette_id: str | None) -> int:

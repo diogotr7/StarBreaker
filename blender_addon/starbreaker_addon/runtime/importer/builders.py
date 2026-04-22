@@ -1483,3 +1483,172 @@ class BuildersMixin:
 
         self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
 
+    # ------------------------------------------------------------------
+    # Option E2-Lite: per-(decal, host-channel) clones so each decal
+    # object picks up the palette colour of its nearest paint material
+    # instead of the palette's ship-UV-space ``Decal Color`` lookup.
+    # ------------------------------------------------------------------
+
+    _MESH_DECAL_HOST_CHANNEL_OUTPUT: dict[str, str] = {
+        "primary": "Primary",
+        "secondary": "Secondary",
+        "tertiary": "Tertiary",
+        "glass": "Glass Color",
+    }
+
+    def _mesh_decal_host_channel_for_object(self, obj: bpy.types.Object) -> str | None:
+        """Scan ``obj``'s material slots for a non-decal paint material
+        with a palette channel assignment. Returns the canonical channel
+        name ("primary" / "secondary" / "tertiary" / "glass") of the
+        first paint slot we can read, or None if no host paint material
+        is found. Prefers explicit palette_routing metadata on the
+        submaterial JSON; falls back to a material name heuristic
+        ("_Paint_Primary" etc.).
+        """
+        priorities = ("primary", "secondary", "tertiary", "glass")
+        best: str | None = None
+        for slot in getattr(obj, "material_slots", []):
+            mat = slot.material if slot is not None else None
+            if mat is None:
+                continue
+            family = mat.get("starbreaker_shader_family") if hasattr(mat, "get") else None
+            if family == "MeshDecal":
+                continue
+            channel: str | None = None
+            sj = mat.get("starbreaker_submaterial_json") if hasattr(mat, "get") else None
+            if isinstance(sj, str):
+                try:
+                    parsed = json.loads(sj)
+                except Exception:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    routing = parsed.get("palette_routing") or {}
+                    mc = routing.get("material_channel") or {}
+                    name = (mc.get("name") if isinstance(mc, dict) else None) or ""
+                    if name:
+                        channel = str(name).lower()
+                    else:
+                        for binding in routing.get("layer_channels", []) or []:
+                            ch = (binding or {}).get("channel") or {}
+                            nm = ch.get("name") if isinstance(ch, dict) else None
+                            if nm:
+                                channel = str(nm).lower()
+                                break
+            if channel is None:
+                lname = mat.name.lower()
+                for key in priorities:
+                    if f"_paint_{key}" in lname or f"paint_{key}" in lname:
+                        channel = key
+                        break
+            if channel is None:
+                continue
+            if best is None or priorities.index(channel) < priorities.index(best):
+                best = channel
+                if best == priorities[0]:
+                    break
+        return best
+
+    def _ensure_mesh_decal_host_variant(
+        self,
+        material: bpy.types.Material,
+        channel: str,
+        palette: PaletteRecord | None,
+    ) -> bpy.types.Material:
+        """Return a cloned decal material keyed by ``channel`` whose
+        ``Host Tint`` input is wired to the palette's per-channel colour
+        output (``Primary`` / ``Secondary`` / ``Tertiary`` / ``Glass
+        Color``) instead of the default ``Decal Color`` lookup. Cached
+        in ``bpy.data.materials`` under ``<name>__host_<channel>``; the
+        cache key is deterministic so repeat import calls reuse clones.
+        """
+        if palette is None or material is None or material.node_tree is None:
+            return material
+        output_name = self._MESH_DECAL_HOST_CHANNEL_OUTPUT.get(channel)
+        if output_name is None:
+            return material
+        clone_name = f"{material.name}__host_{channel}"
+        clone = bpy.data.materials.get(clone_name)
+        if clone is not None and clone.get("starbreaker_decal_host_channel") == channel:
+            return clone
+        if clone is None:
+            clone = material.copy()
+            clone.name = clone_name
+        clone["starbreaker_decal_host_channel"] = channel
+
+        nodes = clone.node_tree.nodes
+        links = clone.node_tree.links
+        decal_group_node = next(
+            (
+                n
+                for n in nodes
+                if n.bl_idname == "ShaderNodeGroup"
+                and getattr(n, "node_tree", None) is not None
+                and n.node_tree.name.startswith("SB_MeshDecal")
+            ),
+            None,
+        )
+        if decal_group_node is None:
+            return clone
+        host_tint = decal_group_node.inputs.get("Host Tint")
+        if host_tint is None:
+            return clone
+        palette_group_node = next(
+            (
+                n
+                for n in nodes
+                if n.bl_idname == "ShaderNodeGroup"
+                and getattr(n, "node_tree", None) is not None
+                and n.node_tree.name.startswith("StarBreaker Palette ")
+            ),
+            None,
+        )
+        if palette_group_node is None:
+            # No palette group ever got instantiated inside this material
+            # (``_build_contract_group_material`` only wires it when the
+            # palette authors decal colour data). Build one now so we
+            # can source the per-channel colour.
+            try:
+                palette_group_node = self._palette_group_node(nodes, links, palette, x=-420, y=0)
+            except Exception:
+                palette_group_node = None
+        if palette_group_node is None:
+            return clone
+        new_source = _output_socket(palette_group_node, output_name)
+        if new_source is None:
+            return clone
+        # Drop any existing link into Host Tint, then rewire.
+        for link in list(host_tint.links):
+            links.remove(link)
+        links.new(new_source, host_tint)
+        return clone
+
+    def _rebind_mesh_decal_for_host(
+        self,
+        obj: bpy.types.Object,
+        palette: PaletteRecord | None,
+    ) -> int:
+        """Post-pass called after all slots on ``obj`` have been
+        assigned. For each slot carrying a MeshDecal material, detect
+        the object's nearest paint channel and swap the slot to a
+        channel-keyed clone. Returns the number of slots rebinded.
+        """
+        if palette is None:
+            return 0
+        channel = self._mesh_decal_host_channel_for_object(obj)
+        if channel is None:
+            return 0
+        rebound = 0
+        for slot in getattr(obj, "material_slots", []):
+            mat = slot.material if slot is not None else None
+            if mat is None:
+                continue
+            if mat.get("starbreaker_shader_family") != "MeshDecal":
+                continue
+            if mat.get("starbreaker_decal_host_channel") == channel:
+                continue
+            variant = self._ensure_mesh_decal_host_variant(mat, channel, palette)
+            if variant is not mat:
+                slot.material = variant
+                rebound += 1
+        return rebound
+
