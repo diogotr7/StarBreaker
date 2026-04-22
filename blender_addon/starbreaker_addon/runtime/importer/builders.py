@@ -1496,6 +1496,23 @@ class BuildersMixin:
         "glass": "Glass Color",
     }
 
+    # Suffix of the palette output for each channel's specular reflectance
+    # colour and glossiness. Primary/Secondary/Tertiary expose
+    # ``<Channel> SpecColor`` / ``<Channel> Glossiness``; glass exposes
+    # ``Glass SpecColor`` / ``Glass Glossiness``.
+    _MESH_DECAL_HOST_CHANNEL_SPEC: dict[str, str] = {
+        "primary": "Primary SpecColor",
+        "secondary": "Secondary SpecColor",
+        "tertiary": "Tertiary SpecColor",
+        "glass": "Glass SpecColor",
+    }
+    _MESH_DECAL_HOST_CHANNEL_GLOSS: dict[str, str] = {
+        "primary": "Primary Glossiness",
+        "secondary": "Secondary Glossiness",
+        "tertiary": "Tertiary Glossiness",
+        "glass": "Glass Glossiness",
+    }
+
     def _mesh_decal_host_channel_for_object(self, obj: bpy.types.Object) -> str | None:
         """Scan ``obj``'s material slots for a non-decal paint material
         with a palette channel assignment. Returns the canonical channel
@@ -1620,6 +1637,42 @@ class BuildersMixin:
         for link in list(host_tint.links):
             links.remove(link)
         links.new(new_source, host_tint)
+
+        # Option E2-Lite metallic+roughness: also rewire Host Specular
+        # Tint and Host Roughness from the matching palette outputs.
+        spec_input = decal_group_node.inputs.get("Host Specular Tint")
+        spec_output_name = self._MESH_DECAL_HOST_CHANNEL_SPEC.get(channel)
+        if spec_input is not None and spec_output_name is not None:
+            spec_source = _output_socket(palette_group_node, spec_output_name)
+            if spec_source is not None:
+                for link in list(spec_input.links):
+                    links.remove(link)
+                links.new(spec_source, spec_input)
+
+        rough_input = decal_group_node.inputs.get("Host Roughness")
+        gloss_output_name = self._MESH_DECAL_HOST_CHANNEL_GLOSS.get(channel)
+        if rough_input is not None and gloss_output_name is not None:
+            gloss_source = _output_socket(palette_group_node, gloss_output_name)
+            if gloss_source is not None:
+                for link in list(rough_input.links):
+                    links.remove(link)
+                # Invert glossiness to roughness via a math node cached
+                # by name on the clone so repeat calls don't accumulate.
+                inv_name = f"SB_DecalHostRoughInvert_{channel}"
+                inv = nodes.get(inv_name)
+                if inv is None or inv.bl_idname != "ShaderNodeMath":
+                    inv = nodes.new("ShaderNodeMath")
+                    inv.name = inv_name
+                    inv.operation = "SUBTRACT"
+                    inv.use_clamp = True
+                    inv.label = "1 - glossiness (host)"
+                    inv.location = (palette_group_node.location.x + 220.0, palette_group_node.location.y - 140.0)
+                inv.inputs[0].default_value = 1.0
+                # Clear any prior links into inputs[1] before rewiring.
+                for link in list(inv.inputs[1].links):
+                    links.remove(link)
+                links.new(gloss_source, inv.inputs[1])
+                links.new(inv.outputs[0], rough_input)
         return clone
 
     def _rebind_mesh_decal_for_host(

@@ -1527,6 +1527,27 @@
           "source_slot": null
         },
         {
+          "default_value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "name": "Host Specular Tint",
+          "required": false,
+          "semantic": "host_specular_tint",
+          "socket_type": "NodeSocketColor",
+          "source_slot": null
+        },
+        {
+          "default_value": 0.5,
+          "name": "Host Roughness",
+          "required": false,
+          "semantic": "host_roughness",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": null
+        },
+        {
           "default_value": false,
           "name": "Disable Shadow",
           "required": false,
