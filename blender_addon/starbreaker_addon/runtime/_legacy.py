@@ -1984,7 +1984,7 @@ class PackageImporter(BuildersMixin, GroupsMixin):
         x: int,
         y: int,
     ) -> Any:
-        if "USE_DAMAGE_MAP" not in submaterial.decoded_feature_flags.tokens:
+        if not submaterial.decoded_feature_flags.has_damage_map:
             return None
         if not submaterial.decoded_feature_flags.has_vertex_colors:
             return None
@@ -2662,6 +2662,8 @@ class PackageImporter(BuildersMixin, GroupsMixin):
             "Tertiary SpecColor",
             "Tertiary Glossiness",
             "Glass Color",
+            "Glass SpecColor",
+            "Glass Glossiness",
         }
         _stale_outputs = {"Palette Decal Color", "Palette Decal Alpha", "Iridescence Facing Color", "Iridescence Grazing Color", "Iridescence Strength"}
         if group.get("starbreaker_palette_signature") == group_signature and expected_inputs.issubset(existing_inputs) and expected_outputs.issubset(existing_outputs) and not _stale_outputs.intersection(existing_outputs):
@@ -2678,6 +2680,8 @@ class PackageImporter(BuildersMixin, GroupsMixin):
             ("Tertiary SpecColor", "tertiary", -640),
             ("Tertiary Glossiness", "tertiary", -760),
             ("Glass Color", "glass", -900),
+            ("Glass SpecColor", "glass", -1020),
+            ("Glass Glossiness", "glass", -1140),
         )
         for socket_name in (
             "Decal Color",

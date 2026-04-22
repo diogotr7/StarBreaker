@@ -160,6 +160,50 @@ class FeatureFlags:
             has_vertex_colors=_as_bool(data.get("has_vertex_colors")),
         )
 
+    def _has_token(self, token: str) -> bool:
+        """Phase 9: case-insensitive presence check on the raw token list.
+
+        The decoded boolean fields above are promoted from engine
+        feature-flag tokens by the exporter. For flags that the exporter
+        does not currently promote (``USE_DAMAGE_MAP``, ``BLENDLAYER``,
+        ``STENCIL_AS_STICKER``, ``USE_DETAIL_MAPS``, ``EMISSIVE_MAP``,
+        ``SECONDARY_LAYER``, ``WEAR_LAYER``), the runtime falls back to
+        scanning ``tokens`` directly.
+        """
+        upper = token.upper()
+        for entry in self.tokens:
+            if entry.upper() == upper:
+                return True
+        return False
+
+    @property
+    def has_damage_map(self) -> bool:
+        return self._has_token("USE_DAMAGE_MAP")
+
+    @property
+    def has_detail_maps(self) -> bool:
+        return self._has_token("USE_DETAIL_MAPS")
+
+    @property
+    def has_stencil_as_sticker(self) -> bool:
+        return self._has_token("STENCIL_AS_STICKER")
+
+    @property
+    def has_blend_layer(self) -> bool:
+        return self._has_token("BLENDLAYER")
+
+    @property
+    def has_emissive_map(self) -> bool:
+        return self._has_token("EMISSIVE_MAP")
+
+    @property
+    def has_secondary_layer(self) -> bool:
+        return self._has_token("SECONDARY_LAYER")
+
+    @property
+    def has_wear_layer(self) -> bool:
+        return self._has_token("WEAR_LAYER")
+
 
 @dataclass(frozen=True)
 class TextureReference:

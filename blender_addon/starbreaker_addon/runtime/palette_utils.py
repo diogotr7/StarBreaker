@@ -51,7 +51,7 @@ def _palette_has_iridescence(palette: PaletteRecord | None) -> bool:
 
 def _palette_group_signature(palette: PaletteRecord) -> str:
     payload = {
-        'schema': 'palette_group_v4',
+        'schema': 'palette_group_v5',
         'id': palette.id,
         'primary': palette_color(palette, 'primary'),
         'secondary': palette_color(palette, 'secondary'),
