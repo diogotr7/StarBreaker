@@ -172,6 +172,65 @@ class BuildersMixin:
             # preserving them would anchor removed children, so drop them too.
             nodes.remove(node)
 
+    def _wire_runtime_parallax(
+        self,
+        material: bpy.types.Material,
+        height_node: bpy.types.Node,
+        target_image_nodes: list[bpy.types.Node],
+        scale_value: float,
+        location: tuple[float, float] = (-1280, 720),
+    ) -> bpy.types.Node | None:
+        """Insert a ``StarBreaker Runtime Parallax`` group between the base
+        UV coords and ``target_image_nodes``' ``Vector`` inputs, reading
+        its ``Height`` from ``height_node``'s first output.
+
+        Shared between ``_build_hard_surface_material`` and
+        ``_build_contract_group_material`` (MeshDecal POM path). Returns
+        the newly-created parallax group node, or ``None`` if the
+        material has no node tree. Target nodes whose ``Vector`` socket
+        is already linked are skipped so an existing per-sampler tiling
+        chain (see ``_apply_uv_tiling``) is not clobbered.
+        """
+        node_tree = material.node_tree
+        if node_tree is None or height_node is None:
+            return None
+        nodes = node_tree.nodes
+        links = node_tree.links
+
+        tex_coord = nodes.new("ShaderNodeTexCoord")
+        tex_coord.location = (location[0], location[1])
+        parallax_node = nodes.new("ShaderNodeGroup")
+        parallax_node.node_tree = self._ensure_runtime_parallax_group()
+        _refresh_group_node_sockets(parallax_node)
+        parallax_node.location = (location[0] + 300, location[1])
+        parallax_node.label = "StarBreaker Parallax"
+
+        uv_input = _input_socket(parallax_node, "UV")
+        view_input = _input_socket(parallax_node, "View")
+        height_input = _input_socket(parallax_node, "Height")
+        scale_input = _input_socket(parallax_node, "Scale")
+        if uv_input is not None:
+            links.new(tex_coord.outputs["UV"], uv_input)
+        if view_input is not None:
+            links.new(tex_coord.outputs["Camera"], view_input)
+        if height_input is not None and height_node.outputs:
+            links.new(height_node.outputs[0], height_input)
+        if scale_input is not None:
+            self._set_socket_default(scale_input, scale_value)
+
+        offset_uv = _output_socket(parallax_node, "Offset UV")
+        if offset_uv is None:
+            return parallax_node
+        for tex_node in target_image_nodes:
+            if tex_node is None:
+                continue
+            vector_input = tex_node.inputs.get("Vector")
+            if vector_input is None or vector_input.is_linked:
+                # Preserve existing per-sampler tiling / mapping chains.
+                continue
+            links.new(offset_uv, vector_input)
+        return parallax_node
+
     def _build_managed_material(
         self,
         material: bpy.types.Material,
@@ -346,6 +405,44 @@ class BuildersMixin:
                 surface_shader = mix.outputs[0]
 
         links.new(surface_shader, output.inputs[0])
+
+        if submaterial.decoded_feature_flags.has_parallax_occlusion_mapping:
+            # Phase 12 (POM plan, Phase 2 extension): contract-group
+            # materials (notably MeshDecal, which ships authored height
+            # samples in ``TexSlot4_Height``) get the same parallax
+            # treatment as HardSurface. Find the tex image feeding the
+            # height/displacement input of the group, then route all
+            # other tex images feeding the group through the shared
+            # ``StarBreaker Runtime Parallax`` node.
+            height_node: bpy.types.Node | None = None
+            targets: list[bpy.types.Node] = []
+            group_node_name = group_node.name
+            for link in material.node_tree.links:
+                if link.to_node.name != group_node_name or link.from_node.bl_idname != "ShaderNodeTexImage":
+                    continue
+                socket_name = link.to_socket.name.lower()
+                if "height" in socket_name or "displacement" in socket_name:
+                    height_node = link.from_node
+                elif all(t.name != link.from_node.name for t in targets):
+                    targets.append(link.from_node)
+            if height_node is not None and targets:
+                pom_scale = _float_public_param(
+                    submaterial,
+                    "PomDisplacement",
+                    "POMHeightBias",
+                    "POM_HeightBias",
+                    "POMDisplacement",
+                )
+                if pom_scale is None or pom_scale <= 0.0:
+                    pom_scale = 0.05
+                pom_scale = max(0.005, min(0.2, pom_scale))
+                self._wire_runtime_parallax(
+                    material,
+                    height_node=height_node,
+                    target_image_nodes=targets,
+                    scale_value=pom_scale,
+                    location=(-760, 320),
+                )
 
         self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
         return True
@@ -544,29 +641,12 @@ class BuildersMixin:
             and displacement_node is not None
             and top_base_node is not None
         ):
-            tex_coord = nodes.new("ShaderNodeTexCoord")
-            tex_coord.location = (-1280, 720)
-            parallax_node = nodes.new("ShaderNodeGroup")
-            parallax_node.node_tree = self._ensure_runtime_parallax_group()
-            _refresh_group_node_sockets(parallax_node)
-            parallax_node.location = (-980, 720)
-            parallax_node.label = "StarBreaker Parallax"
-            uv_input = _input_socket(parallax_node, "UV")
-            view_input = _input_socket(parallax_node, "View")
-            height_input = _input_socket(parallax_node, "Height")
-            scale_input = _input_socket(parallax_node, "Scale")
-            if uv_input is not None:
-                links.new(tex_coord.outputs["UV"], uv_input)
-            if view_input is not None:
-                links.new(tex_coord.outputs["Camera"], view_input)
-            if height_input is not None:
-                links.new(displacement_node.outputs[0], height_input)
-            if scale_input is not None:
-                self._set_socket_default(scale_input, pom_displacement)
-            offset_uv = _output_socket(parallax_node, "Offset UV")
-            vector_input = top_base_node.inputs.get("Vector")
-            if offset_uv is not None and vector_input is not None:
-                links.new(offset_uv, vector_input)
+            self._wire_runtime_parallax(
+                material,
+                height_node=displacement_node,
+                target_image_nodes=[top_base_node],
+                scale_value=pom_displacement,
+            )
         self._set_socket_default(_input_socket(shader_group, "Emission Color"), (0.0, 0.0, 0.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Emission Strength"), 0.0)
         shader_group["starbreaker_angle_shift_enabled"] = angle_shift_enabled
