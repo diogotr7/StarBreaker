@@ -118,6 +118,38 @@ class StencilOverlaySockets:
     specular_tint: Any | None = None
 
 
+BITANGENT_SIGN_ATTRIBUTE = "starbreaker_bitangent_sign"
+
+
+def _bake_bitangent_sign_attribute(mesh: bpy.types.Mesh) -> bool:
+    """Bake per-corner MikkTSpace bitangent sign into a float attribute.
+
+    The POM ``tangent_space`` group multiplies its bitangent projection by
+    this attribute to compensate for UV-mirrored regions, where a shared
+    tangent direction produces an inverted bitangent. Meshes without a UV
+    map, or without loops, are skipped silently.
+    """
+    if mesh is None or not getattr(mesh, "loops", None):
+        return False
+    if not mesh.uv_layers:
+        return False
+    try:
+        mesh.calc_tangents()
+    except Exception:
+        return False
+    existing = mesh.attributes.get(BITANGENT_SIGN_ATTRIBUTE)
+    if existing is not None:
+        mesh.attributes.remove(existing)
+    attr = mesh.attributes.new(BITANGENT_SIGN_ATTRIBUTE, "FLOAT", "CORNER")
+    for idx, loop in enumerate(mesh.loops):
+        attr.data[idx].value = loop.bitangent_sign
+    try:
+        mesh.free_tangents()
+    except Exception:
+        pass
+    return True
+
+
 @dataclass(frozen=True)
 class SocketRef:
     node: Any
@@ -717,6 +749,14 @@ class PackageImporter(BuildersMixin, GroupsMixin):
 
         self._clear_template_material_bindings(imported)
         self._purge_unused_materials(imported_materials)
+
+        baked_meshes: set[int] = set()
+        for obj in imported:
+            mesh = obj.data if getattr(obj, "type", None) == "MESH" else None
+            if mesh is None or mesh.as_pointer() in baked_meshes:
+                continue
+            if _bake_bitangent_sign_attribute(mesh):
+                baked_meshes.add(mesh.as_pointer())
 
         template = ImportedTemplate(mesh_asset=mesh_asset, root_names=[obj.name for obj in root_objects])
         self.template_cache[asset_key] = template
