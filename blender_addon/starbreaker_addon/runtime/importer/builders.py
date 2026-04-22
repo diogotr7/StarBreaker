@@ -385,6 +385,32 @@ class BuildersMixin:
                         except Exception:
                             pass
                 source_socket = None
+            elif semantic == "host_tint":
+                # Option E: wire the package palette's ``Decal Color``
+                # output into the decal group's Host Tint input so decals
+                # participate in livery-driven tinting. Leaves the default
+                # white when the palette does not author real decal colour
+                # data (``Decal Color`` output socket unlinked inside the
+                # palette group), to avoid blackening decals on packages
+                # without a decal palette layer.
+                source_socket = None
+                if palette is not None and hasattr(self, "_palette_group_node"):
+                    try:
+                        palette_node = self._palette_group_node(nodes, links, palette, x=-420, y=y)
+                    except Exception:
+                        palette_node = None
+                    if palette_node is not None:
+                        palette_tree = getattr(palette_node, "node_tree", None)
+                        provides_decal = False
+                        if palette_tree is not None:
+                            for subnode in palette_tree.nodes:
+                                if subnode.type == "GROUP_OUTPUT":
+                                    decal_input = subnode.inputs.get("Decal Color")
+                                    if decal_input is not None and decal_input.is_linked:
+                                        provides_decal = True
+                                    break
+                        if provides_decal:
+                            source_socket = _output_socket(palette_node, "Decal Color")
             else:
                 if (
                     group_contract.name == "SB_HardSurface_v1"

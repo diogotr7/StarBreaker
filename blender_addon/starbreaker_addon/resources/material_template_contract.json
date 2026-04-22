@@ -1514,6 +1514,19 @@
           "source_slot": null
         },
         {
+          "default_value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "name": "Host Tint",
+          "required": false,
+          "semantic": "host_tint",
+          "socket_type": "NodeSocketColor",
+          "source_slot": null
+        },
+        {
           "default_value": false,
           "name": "Disable Shadow",
           "required": false,
