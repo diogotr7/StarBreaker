@@ -1784,3 +1784,114 @@ class GroupsMixin:
         links.new(add_shader.outputs[0], group_output.inputs["Shader"])
         group_tree["starbreaker_runtime_built_signature"] = "illum_v4"
         return group_tree
+
+    def _ensure_runtime_parallax_group(self) -> bpy.types.ShaderNodeTree:
+        """Phase 12 (POM plan, Phase 1): procedural single-sample parallax
+        mapping group.
+
+        This is an intentionally simple first-pass implementation aligned
+        with the user's POM-test.blend *reference*. It performs one
+        displacement-texture sample at the incoming UV and offsets the
+        output UV by ``(height − 0.5) * Scale * view.xy`` — i.e. the
+        classic "offset mapping" / "simple parallax" algorithm without
+        the ray-march loop of full POM.
+
+        Full POM requires unrolling N sampling iterations (see
+        ``POM_Iteration`` in docs/StarBreaker/POM-test.blend) which in
+        Blender means either bundling a multi-sampled group per-material
+        or generating one programmatically with 8–32 copies of the
+        sample sub-tree. The MVP here exposes a simple
+        ``Height + View + UV`` interface so the group can later be
+        replaced with a proper POM implementation without touching the
+        HardSurface builder wiring. The ``Height`` sample happens at the
+        material top-level (so image sharing stays intact); the group
+        itself has no texture nodes and is therefore safe to share.
+
+        Inputs:
+            UV         — base UV coordinates (Vector).
+            View       — view vector in tangent-ish space (Vector); the
+                         builder feeds it from a ShaderNodeTexCoord's
+                         ``Camera`` output which approximates tangent
+                         space on unit-scale meshes.
+            Height     — height sample at ``UV`` (Float); the builder
+                         feeds it from the displacement image's first
+                         colour channel.
+            Scale      — displacement scale (Float); the builder clamps
+                         ``PomDisplacement`` to 0.03–0.2 and drives it
+                         here.
+
+        Output:
+            Offset UV  — ``UV + (Height − 0.5) * Scale * view_xy``
+                         (Vector).
+        """
+        self._invalidate_runtime_group_if_unexpected(
+            "StarBreaker Runtime Parallax",
+            "parallax_v1",
+            {
+                "NodeGroupInput": 1,
+                "NodeGroupOutput": 1,
+                "ShaderNodeMath": 2,
+                "ShaderNodeVectorMath": 2,
+                "ShaderNodeSeparateXYZ": 1,
+                "ShaderNodeCombineXYZ": 1,
+            },
+        )
+        group_tree, group_input, group_output = self._begin_runtime_shared_group(
+            "StarBreaker Runtime Parallax",
+            signature="parallax_v1",
+            inputs=[
+                ("UV", "NodeSocketVector"),
+                ("View", "NodeSocketVector"),
+                ("Height", "NodeSocketFloat"),
+                ("Scale", "NodeSocketFloat"),
+            ],
+            outputs=[
+                ("Offset UV", "NodeSocketVector"),
+            ],
+        )
+        if group_tree.get("starbreaker_runtime_built_signature") == "parallax_v1":
+            return group_tree
+        nodes = group_tree.nodes
+        links = group_tree.links
+
+        # height_offset = (Height − 0.5) * Scale
+        height_centered = nodes.new("ShaderNodeMath")
+        height_centered.location = (-620, 200)
+        height_centered.operation = "SUBTRACT"
+        height_centered.inputs[1].default_value = 0.5
+        links.new(_output_socket(group_input, "Height"), height_centered.inputs[0])
+
+        height_scaled = nodes.new("ShaderNodeMath")
+        height_scaled.location = (-420, 200)
+        height_scaled.operation = "MULTIPLY"
+        links.new(height_centered.outputs[0], height_scaled.inputs[0])
+        links.new(_output_socket(group_input, "Scale"), height_scaled.inputs[1])
+
+        # view.xy (drop z) as an offset direction
+        view_xyz = nodes.new("ShaderNodeSeparateXYZ")
+        view_xyz.location = (-620, -80)
+        links.new(_output_socket(group_input, "View"), view_xyz.inputs[0])
+
+        view_xy = nodes.new("ShaderNodeCombineXYZ")
+        view_xy.location = (-420, -80)
+        links.new(view_xyz.outputs["X"], view_xy.inputs["X"])
+        links.new(view_xyz.outputs["Y"], view_xy.inputs["Y"])
+        # Leave Z = 0 so the Offset UV stays in the UV plane.
+
+        # offset = view_xy * height_scaled (scalar-broadcast)
+        offset_vec = nodes.new("ShaderNodeVectorMath")
+        offset_vec.location = (-220, 60)
+        offset_vec.operation = "SCALE"
+        links.new(view_xy.outputs[0], offset_vec.inputs[0])
+        links.new(height_scaled.outputs[0], offset_vec.inputs["Scale"])
+
+        # uv_out = UV + offset
+        uv_add = nodes.new("ShaderNodeVectorMath")
+        uv_add.location = (-20, 60)
+        uv_add.operation = "ADD"
+        links.new(_output_socket(group_input, "UV"), uv_add.inputs[0])
+        links.new(offset_vec.outputs["Vector"], uv_add.inputs[1])
+
+        links.new(uv_add.outputs["Vector"], group_output.inputs["Offset UV"])
+        group_tree["starbreaker_runtime_built_signature"] = "parallax_v1"
+        return group_tree

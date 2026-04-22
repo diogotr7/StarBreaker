@@ -527,6 +527,46 @@ class BuildersMixin:
         else:
             pom_displacement = 0.05
         self._set_socket_default(_input_socket(shader_group, "Displacement Strength"), pom_displacement)
+
+        # Phase 12 (POM plan, Phase 2): when
+        # ``%PARALLAX_OCCLUSION_MAPPING%`` is on and we have an authored
+        # displacement sample to read, inject the
+        # ``StarBreaker Runtime Parallax`` group between the UV source and
+        # the base-colour sampler so the diffuse lookup reads from the
+        # parallax-offset coordinates. TexSlot3 (macro normal) and
+        # TexSlot14 (emissive) already have their own UV-mapping chain
+        # via ``_apply_uv_tiling`` (public-param tiling) — we leave those
+        # alone for now to avoid double-driving the ``Vector`` socket.
+        # The height sample is taken at the *base* UV (not the offset
+        # one) to match the standard offset-mapping algorithm.
+        if (
+            submaterial.decoded_feature_flags.has_parallax_occlusion_mapping
+            and displacement_node is not None
+            and top_base_node is not None
+        ):
+            tex_coord = nodes.new("ShaderNodeTexCoord")
+            tex_coord.location = (-1280, 720)
+            parallax_node = nodes.new("ShaderNodeGroup")
+            parallax_node.node_tree = self._ensure_runtime_parallax_group()
+            _refresh_group_node_sockets(parallax_node)
+            parallax_node.location = (-980, 720)
+            parallax_node.label = "StarBreaker Parallax"
+            uv_input = _input_socket(parallax_node, "UV")
+            view_input = _input_socket(parallax_node, "View")
+            height_input = _input_socket(parallax_node, "Height")
+            scale_input = _input_socket(parallax_node, "Scale")
+            if uv_input is not None:
+                links.new(tex_coord.outputs["UV"], uv_input)
+            if view_input is not None:
+                links.new(tex_coord.outputs["Camera"], view_input)
+            if height_input is not None:
+                links.new(displacement_node.outputs[0], height_input)
+            if scale_input is not None:
+                self._set_socket_default(scale_input, pom_displacement)
+            offset_uv = _output_socket(parallax_node, "Offset UV")
+            vector_input = top_base_node.inputs.get("Vector")
+            if offset_uv is not None and vector_input is not None:
+                links.new(offset_uv, vector_input)
         self._set_socket_default(_input_socket(shader_group, "Emission Color"), (0.0, 0.0, 0.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Emission Strength"), 0.0)
         shader_group["starbreaker_angle_shift_enabled"] = angle_shift_enabled
