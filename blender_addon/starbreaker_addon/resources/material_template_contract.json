@@ -5,14 +5,6 @@
       "inputs": [
         {
           "default_value": null,
-          "name": "TexSlot10_CrackMask",
-          "required": false,
-          "semantic": "crack_mask",
-          "socket_type": "NodeSocketColor",
-          "source_slot": "TexSlot10"
-        },
-        {
-          "default_value": null,
           "name": "TexSlot9_ScreenSource",
           "required": false,
           "semantic": "screen_source",
@@ -26,6 +18,14 @@
           "semantic": "screen_source_alpha",
           "socket_type": "NodeSocketFloat",
           "source_slot": "TexSlot9"
+        },
+        {
+          "default_value": null,
+          "name": "TexSlot10_CrackMask",
+          "required": false,
+          "semantic": "crack_mask",
+          "socket_type": "NodeSocketColor",
+          "source_slot": "TexSlot10"
         },
         {
           "default_value": null,
@@ -1452,6 +1452,64 @@
           "name": "Param_ETintModeType",
           "required": false,
           "semantic": "public_param_etintmodetype",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": null
+        },
+        {
+          "default_value": 0.0,
+          "name": "Param_WearBlendBase",
+          "required": false,
+          "semantic": "public_param_wearblendbase",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": null
+        },
+        {
+          "default_value": 0.5,
+          "name": "Param_WearBlendFalloff",
+          "required": false,
+          "semantic": "public_param_wearblendfalloff",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": null
+        },
+        {
+          "default_value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "name": "Param_WearDiffuseColor",
+          "required": false,
+          "semantic": "public_param_weardiffusecolor",
+          "socket_type": "NodeSocketColor",
+          "source_slot": null
+        },
+        {
+          "default_value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "name": "Param_WearSpecularColor",
+          "required": false,
+          "semantic": "public_param_wearspecularcolor",
+          "socket_type": "NodeSocketColor",
+          "source_slot": null
+        },
+        {
+          "default_value": 1.0,
+          "name": "Param_WearGlossiness",
+          "required": false,
+          "semantic": "public_param_wearglossiness",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": null
+        },
+        {
+          "default_value": 0.0,
+          "name": "Param_DamagePerObjectWear",
+          "required": false,
+          "semantic": "public_param_damageperobjectwear",
           "socket_type": "NodeSocketFloat",
           "source_slot": null
         },
