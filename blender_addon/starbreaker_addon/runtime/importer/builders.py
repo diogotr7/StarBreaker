@@ -47,6 +47,7 @@ from ..record_utils import (
     _matching_texture_reference,
     _mean_triplet,
     _optional_float_public_param,
+    _resolve_public_param_default,
     _resolved_submaterial_palette_color,
     _routes_virtual_tint_palette_decal_alpha_to_decal_source,
     _routes_virtual_tint_palette_decal_to_decal_source,
@@ -367,6 +368,22 @@ class BuildersMixin:
                 source_socket = None
             elif semantic == "emission_strength" and hasattr(target_socket, "default_value"):
                 target_socket.default_value = self._illum_emission_strength(submaterial)
+                source_socket = None
+            elif semantic.startswith("public_param_"):
+                # Generic authored-param default: the group input's semantic
+                # is ``public_param_<lowercase param name>`` and the value
+                # comes directly from ``submaterial.public_params`` (matched
+                # case-insensitively). Scalars use the socket default_value
+                # verbatim; the socket keeps its authored default when the
+                # submaterial does not set the param.
+                param_key = semantic.removeprefix("public_param_")
+                if hasattr(target_socket, "default_value"):
+                    resolved = _resolve_public_param_default(submaterial, param_key)
+                    if resolved is not None:
+                        try:
+                            target_socket.default_value = resolved
+                        except Exception:
+                            pass
                 source_socket = None
             else:
                 if (

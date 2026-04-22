@@ -61,6 +61,33 @@ def _optional_float_public_param(submaterial: SubmaterialRecord, *names: str) ->
     return None
 
 
+def _resolve_public_param_default(
+    submaterial: SubmaterialRecord, lowercase_name: str
+) -> float | tuple[float, float, float, float] | None:
+    """Resolve an authored public param for a ``public_param_<name>`` semantic.
+
+    The contract semantic is lowercased by convention; this helper matches it
+    case-insensitively against the submaterial's public-params dict and returns
+    a value suitable for assignment to a ``NodeSocketFloat.default_value`` or
+    ``NodeSocketColor.default_value`` (RGBA tuple). Returns ``None`` when the
+    param is absent or unparseable, so the socket retains its authored default.
+    """
+    if not lowercase_name:
+        return None
+    lookup = {key.lower(): value for key, value in submaterial.public_params.items()}
+    raw = lookup.get(lowercase_name)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        pass
+    triplet = _triplet_from_any(raw)
+    if triplet is not None:
+        return (triplet[0], triplet[1], triplet[2], 1.0)
+    return None
+
+
 def _authored_attribute_string(submaterial: SubmaterialRecord, *names: str) -> str | None:
     wanted = set(names)
     for attribute in submaterial.raw.get("authored_attributes", []):

@@ -13,6 +13,22 @@
         },
         {
           "default_value": null,
+          "name": "TexSlot9_ScreenSource",
+          "required": false,
+          "semantic": "screen_source",
+          "socket_type": "NodeSocketColor",
+          "source_slot": "TexSlot9"
+        },
+        {
+          "default_value": 0.0,
+          "name": "TexSlot9_ScreenSource_alpha",
+          "required": false,
+          "semantic": "screen_source_alpha",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": "TexSlot9"
+        },
+        {
+          "default_value": null,
           "name": "TexSlot11_Dirt",
           "required": false,
           "semantic": "dirt",
@@ -42,22 +58,6 @@
           "semantic": "pixel_layout",
           "socket_type": "NodeSocketColor",
           "source_slot": "TexSlot17"
-        },
-        {
-          "default_value": null,
-          "name": "TexSlot9_ScreenSource",
-          "required": false,
-          "semantic": "screen_source",
-          "socket_type": "NodeSocketColor",
-          "source_slot": "TexSlot9"
-        },
-        {
-          "default_value": 0.0,
-          "name": "TexSlot9_ScreenSource_alpha",
-          "required": false,
-          "semantic": "screen_source_alpha",
-          "socket_type": "NodeSocketFloat",
-          "source_slot": "TexSlot9"
         },
         {
           "default_value": null,
@@ -1422,6 +1422,38 @@
           "semantic": "grime_breakup",
           "socket_type": "NodeSocketColor",
           "source_slot": "TexSlot8"
+        },
+        {
+          "default_value": 1.0,
+          "name": "Param_DecalDiffuseOpacity",
+          "required": false,
+          "semantic": "public_param_decaldiffuseopacity",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": null
+        },
+        {
+          "default_value": 1.0,
+          "name": "Param_DecalAlphaMultiplier",
+          "required": false,
+          "semantic": "public_param_decalalphamultiplier",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": null
+        },
+        {
+          "default_value": 1.0,
+          "name": "Param_DecalFalloff",
+          "required": false,
+          "semantic": "public_param_decalfalloff",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": null
+        },
+        {
+          "default_value": 0.0,
+          "name": "Param_ETintModeType",
+          "required": false,
+          "semantic": "public_param_etintmodetype",
+          "socket_type": "NodeSocketFloat",
+          "source_slot": null
         },
         {
           "default_value": false,
