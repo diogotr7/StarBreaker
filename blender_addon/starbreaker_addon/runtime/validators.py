@@ -98,3 +98,30 @@ def _purge_orphaned_runtime_groups() -> int:
             bpy.data.node_groups.remove(group)
             removed += 1
     return removed
+
+
+def _purge_orphaned_file_backed_images() -> int:
+    """Remove ``bpy.data.images`` datablocks with no users that were loaded
+    from an on-disk file.
+
+    After the per-material
+    :meth:`~starbreaker_addon.runtime.importer.builders.BuildersMixin._sweep_unreachable_nodes`
+    pass, any :class:`ShaderNodeTexImage` nodes that were never wired into
+    a Material Output have been dropped. The images they referenced may
+    have fallen to ``users == 0`` as a result; this helper frees their
+    pixel data (and, transitively, the VRAM Cycles would have uploaded
+    for them).
+
+    Only file-backed images are considered, so internal datablocks like
+    ``Render Result`` and ``Viewer Node`` (which always have
+    ``users == 0`` and no backing file) are left alone.
+    """
+    removed = 0
+    for image in list(bpy.data.images):
+        if image.users > 0:
+            continue
+        if not image.filepath:
+            continue
+        bpy.data.images.remove(image)
+        removed += 1
+    return removed

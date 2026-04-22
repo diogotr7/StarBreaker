@@ -28,7 +28,7 @@ from .constants import (
     PROP_SCENE_PATH,
     PROP_SUBMATERIAL_JSON,
 )
-from .validators import _purge_orphaned_runtime_groups
+from .validators import _purge_orphaned_file_backed_images, _purge_orphaned_runtime_groups
 
 
 def import_package(
@@ -44,6 +44,7 @@ def import_package(
     with _suspend_heavy_viewports(context):
         root = importer.import_scene(prefer_cycles=prefer_cycles, palette_id=palette_id)
     _purge_orphaned_runtime_groups()
+    _purge_orphaned_file_backed_images()
     return root
 
 
@@ -225,6 +226,8 @@ def apply_paint_to_package_root(context: bpy.types.Context, package_root: bpy.ty
     # Record the active paint variant sidecar so palette-only changes still work.
     package_root[PROP_PAINT_VARIANT_SIDECAR] = target_sidecar
     package_root[PROP_PALETTE_ID] = palette_id
+    _purge_orphaned_runtime_groups()
+    _purge_orphaned_file_backed_images()
     return applied
 
 
@@ -260,6 +263,7 @@ def apply_livery_to_package_root(context: bpy.types.Context, package_root: bpy.t
             package.scene.root_entity.palette_id,
         ) or ""
     _purge_orphaned_runtime_groups()
+    _purge_orphaned_file_backed_images()
     return applied
 
 

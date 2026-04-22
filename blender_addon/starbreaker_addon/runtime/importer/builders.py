@@ -120,6 +120,58 @@ class BuildersMixin:
         if vector_input is not None:
             links.new(mapping.outputs["Vector"], vector_input)
 
+    def _sweep_unreachable_nodes(self, material: bpy.types.Material) -> None:
+        """Remove nodes that cannot be reached by walking backwards from the
+        ``ShaderNodeOutputMaterial`` output(s).
+
+        VRAM optimization: after a material has been built, some sampler
+        nodes (`ShaderNodeTexImage`) and their helpers
+        (`ShaderNodeMapping`, `ShaderNodeTexCoord`, `ShaderNodeNormalMap`,
+        …) may have been created by builders that then chose not to wire
+        them — typically because a feature flag resolved to ``False``
+        after the node was already created (or because a fallback path
+        short-circuited wiring). Such nodes have no effect on the
+        rendered output but still cause Cycles to load their images into
+        VRAM.
+
+        This pass performs a standard dead-code-elimination sweep: start
+        from every ``ShaderNodeOutputMaterial``, walk *upstream* through
+        ``node_tree.links``, mark every visited node as reachable, then
+        remove every unmarked node.
+
+        Safe for paint switching — ``rebuild_object_materials`` always
+        calls ``nodes.clear()`` at the start of each builder, so no
+        builder relies on finding pre-existing nodes from a prior build.
+        """
+        node_tree = material.node_tree
+        if node_tree is None:
+            return
+        nodes = node_tree.nodes
+        links = node_tree.links
+
+        # Build reverse-adjacency: for each node, the set of nodes feeding it.
+        incoming: dict[bpy.types.Node, set[bpy.types.Node]] = {}
+        for link in links:
+            incoming.setdefault(link.to_node, set()).add(link.from_node)
+
+        reachable: set[bpy.types.Node] = set()
+        stack: list[bpy.types.Node] = [n for n in nodes if n.bl_idname == "ShaderNodeOutputMaterial"]
+        while stack:
+            node = stack.pop()
+            if node in reachable:
+                continue
+            reachable.add(node)
+            for predecessor in incoming.get(node, ()):
+                if predecessor not in reachable:
+                    stack.append(predecessor)
+
+        for node in list(nodes):
+            if node in reachable:
+                continue
+            # Frame nodes hold no logic but parent other nodes visually;
+            # preserving them would anchor removed children, so drop them too.
+            nodes.remove(node)
+
     def _build_managed_material(
         self,
         material: bpy.types.Material,
@@ -155,6 +207,7 @@ class BuildersMixin:
                 self._build_principled_material(material, submaterial, palette, plan)
 
         self._apply_material_node_layout(material)
+        self._sweep_unreachable_nodes(material)
 
         material[PROP_SHADER_FAMILY] = submaterial.shader_family
         material[PROP_TEMPLATE_KEY] = plan.template_key
