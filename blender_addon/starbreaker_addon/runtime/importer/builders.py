@@ -860,14 +860,25 @@ class BuildersMixin:
             y=520,
             is_color=True,
         )
-        decal_palette = self._palette_decal_sockets(
-            nodes,
-            links,
-            palette,
-            material_channel,
-            x=-420,
-            y=520,
-        )
+        # POM trims/details (parallax_pom plans) are hardsurface art with
+        # their own authored diffuse maps. Routing the palette's
+        # ship-UV-space ``Decal Color`` lookup into the host's Primary
+        # base colour washes them out with whatever the livery decal
+        # layer happens to sample, which is never the artist's intent.
+        # Skip the decal-palette source here so POM materials always use
+        # their authored primary texture (or the channel-matched palette
+        # finish colour if there is no texture).
+        if plan.template_key == "parallax_pom":
+            decal_palette = type("_NoDecal", (), {"color": None, "alpha": None})()
+        else:
+            decal_palette = self._palette_decal_sockets(
+                nodes,
+                links,
+                palette,
+                material_channel,
+                x=-420,
+                y=520,
+            )
         primary_normal_ref = _submaterial_texture_reference(submaterial, slots=("TexSlot2",), roles=("normal_gloss",))
         primary_normal_node = self._image_node(
             nodes,
