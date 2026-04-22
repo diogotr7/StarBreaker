@@ -417,8 +417,16 @@ class BuildersMixin:
         self._set_socket_default(_input_socket(shader_group, "Secondary Metallic"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Secondary Normal"), (0.0, 0.0, 1.0))
         if angle_shift_enabled and palette is not None:
-            facing_socket = self._palette_color_socket(nodes, palette, "tertiary", x=-720, y=-1320)
-            grazing_socket = self._palette_specular_socket(nodes, palette, "tertiary", x=-720, y=-1320)
+            # The palette encodes the shimmerscale pair with the two angle
+            # endpoints swapped between the ``color`` and ``specular`` slots
+            # of the tertiary entry (e.g. Aurora Mk II Shimmerscale stores
+            # purple as ``tertiary.color`` and green as
+            # ``tertiary.finish.specular``). Ground-truth screenshots show
+            # the facing hit reading green and the grazing falloff reading
+            # purple, so we feed the specular slot into Facing and the
+            # color slot into Grazing.
+            facing_socket = self._palette_specular_socket(nodes, palette, "tertiary", x=-720, y=-1320)
+            grazing_socket = self._palette_color_socket(nodes, palette, "tertiary", x=-720, y=-1320)
             self._link_group_input(links, facing_socket, shader_group, "Iridescence Facing Color")
             self._link_group_input(links, grazing_socket, shader_group, "Iridescence Grazing Color")
         else:
