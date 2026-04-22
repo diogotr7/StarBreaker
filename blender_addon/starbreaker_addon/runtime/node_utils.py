@@ -53,6 +53,14 @@ def _set_group_input_default(group_input_node: Any, socket_name: str, value: Any
     Used inside ``_ensure_runtime_*_group`` builders to seed identity defaults
     so callers may leave sockets unlinked without changing the composed
     behaviour.
+
+    Also propagates the default to the group tree's interface socket so that
+    newly created instances of the group pick up the same default on their
+    unlinked input sockets. Without this, interface sockets start at their
+    socket-type zero (e.g. Alpha=0.0) even when the internal Group Input
+    node outputs default to the intended identity value (e.g. Alpha=1.0),
+    causing fully-transparent materials whenever the caller does not wire
+    the socket.
     """
     if group_input_node is None:
         return
@@ -63,6 +71,23 @@ def _set_group_input_default(group_input_node: Any, socket_name: str, value: Any
         socket.default_value = value
     except Exception:
         pass
+    tree = getattr(group_input_node, "id_data", None)
+    if tree is not None and hasattr(tree, "interface"):
+        try:
+            items = tree.interface.items_tree
+        except Exception:
+            items = ()
+        for item in items:
+            if (
+                getattr(item, "in_out", None) == "INPUT"
+                and getattr(item, "name", None) == socket_name
+                and hasattr(item, "default_value")
+            ):
+                try:
+                    item.default_value = value
+                except Exception:
+                    pass
+                break
 
 
 def _refresh_group_node_sockets(node: Any) -> None:
