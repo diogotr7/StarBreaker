@@ -951,6 +951,51 @@ class BuildersMixin:
         self._wire_surface_shader_to_output(nodes, links, surface_shader, output, plan, submaterial)
         self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
 
+        # Phase 12 (POM follow-up): Illum-family POM materials (typically
+        # ``DECAL`` + ``PARALLAX_OCCLUSION_MAPPING``) carry a dedicated
+        # ``TexSlot8`` height sampler (role=``height``, filename
+        # ``*_displ*``). Route the bundled ``POM_Vector`` group so the
+        # Primary TexSlot1 diffuse + TexSlot2 ddna samplers read from
+        # offset UVs. Without this ``POM Strength`` alone can only drive
+        # the cheap single-sample offset inside the illum shader group —
+        # the unrolled ray-march in ``pom_library.blend`` is what
+        # produces the perceptible depth.
+        if submaterial.decoded_feature_flags.has_parallax_occlusion_mapping:
+            height_ref = _submaterial_texture_reference(
+                submaterial,
+                slots=("TexSlot8",),
+                roles=("height",),
+            )
+            if (
+                height_ref is not None
+                and height_ref.export_path
+                and primary_color_node is not None
+            ):
+                height_image_node = self._image_node(
+                    nodes,
+                    height_ref.export_path,
+                    x=-1480,
+                    y=-1240,
+                    is_color=False,
+                    reuse_any_existing=True,
+                )
+                if height_image_node is not None and height_image_node.image is not None:
+                    illum_targets: list[bpy.types.ShaderNodeTexImage] = [primary_color_node]
+                    if primary_normal_node is not None:
+                        illum_targets.append(primary_normal_node)
+                    illum_pom_scale = _float_public_param(
+                        submaterial, "PomDisplacement", "HeightBias"
+                    )
+                    if illum_pom_scale is None or illum_pom_scale <= 0.0:
+                        illum_pom_scale = 0.08
+                    illum_pom_scale = max(0.03, min(0.2, illum_pom_scale))
+                    self._wire_runtime_parallax(
+                        material,
+                        height_node=height_image_node,
+                        target_image_nodes=illum_targets,
+                        scale_value=illum_pom_scale,
+                    )
+
 
     def _build_nodraw_material(self, material: bpy.types.Material) -> None:
         nodes = material.node_tree.nodes
