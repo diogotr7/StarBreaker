@@ -1913,11 +1913,11 @@ class PackageImporter(BuildersMixin, GroupsMixin):
         return principled
 
     def _wear_strength(self) -> float:
-        raw_value = getattr(self.context.scene, SCENE_WEAR_STRENGTH_PROP, 1.0)
+        raw_value = getattr(self.context.scene, SCENE_WEAR_STRENGTH_PROP, 0.0)
         try:
             value = float(raw_value)
         except (TypeError, ValueError):
-            value = 1.0
+            value = 0.0
         return max(0.0, min(2.0, value))
 
     def _hard_surface_angle_factor_socket(

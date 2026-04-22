@@ -370,8 +370,15 @@ def register() -> None:
         SCENE_WEAR_STRENGTH_PROP,
         FloatProperty(
             name="Wear Strength",
-            description="Scale layered wear contribution for imported StarBreaker layered materials",
-            default=1.0,
+            description=(
+                "Scale layered wear contribution for imported StarBreaker "
+                "layered materials. Default is 0 because vertex-colour-driven "
+                "wear on ship hulls would otherwise blend the primary paint "
+                "toward a worn-grey layer on every import, which does not "
+                "match the default in-game appearance of a freshly spawned "
+                "ship. Raise this slider to expose the authored wear layer."
+            ),
+            default=0.0,
             min=0.0,
             max=2.0,
             soft_min=0.0,
