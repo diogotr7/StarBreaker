@@ -14,6 +14,7 @@ initialises (``runtime_shared_groups_ready`` etc.).
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import bpy
@@ -23,6 +24,17 @@ from ..node_utils import (
     _output_socket,
     _refresh_group_node_sockets,
     _set_group_input_default,
+)
+
+_POM_LIBRARY_PATH = Path(__file__).resolve().parent.parent.parent / "resources" / "pom_library.blend"
+_POM_LIBRARY_ROOT_GROUPS = (
+    "POM_Vector",
+    "POM_10x_Layer_Steps",
+    "POM_parallax",
+    "POM_disp",
+    "HeightMap",
+    "Clamp",
+    "tangent_space",
 )
 
 
@@ -1785,113 +1797,102 @@ class GroupsMixin:
         group_tree["starbreaker_runtime_built_signature"] = "illum_v4"
         return group_tree
 
-    def _ensure_runtime_parallax_group(self) -> bpy.types.ShaderNodeTree:
-        """Phase 12 (POM plan, Phase 1): procedural single-sample parallax
-        mapping group.
+    def _ensure_runtime_parallax_group(
+        self,
+        height_image: bpy.types.Image | None = None,
+    ) -> bpy.types.ShaderNodeTree | None:
+        """Phase 12 (POM plan, Phase 1 — revised): return a per-height-image
+        copy of the production-quality POM pipeline authored in
+        ``docs/StarBreaker/POM-test.blend``.
 
-        This is an intentionally simple first-pass implementation aligned
-        with the user's POM-test.blend *reference*. It performs one
-        displacement-texture sample at the incoming UV and offsets the
-        output UV by ``(height − 0.5) * Scale * view.xy`` — i.e. the
-        classic "offset mapping" / "simple parallax" algorithm without
-        the ray-march loop of full POM.
+        A true parallax-occlusion effect requires a ray-march over the
+        height field, which Blender's shader graph cannot express as a
+        runtime loop — the reference file unrolls it as ~30 sampling
+        steps via nested ``POM_Vector`` → ``POM_10x_Layer_Steps`` →
+        ``POM_parallax`` → ``POM_disp`` groups. Because ``POM_disp``
+        contains a ``ShaderNodeTexImage`` sampler and Blender shader
+        groups cannot accept a sampler datablock as an *input*, every
+        material that uses a different height map needs its own copy of
+        ``POM_disp`` — and, transitively, its own copies of every group
+        that references ``POM_disp`` up the chain.
 
-        Full POM requires unrolling N sampling iterations (see
-        ``POM_Iteration`` in docs/StarBreaker/POM-test.blend) which in
-        Blender means either bundling a multi-sampled group per-material
-        or generating one programmatically with 8–32 copies of the
-        sample sub-tree. The MVP here exposes a simple
-        ``Height + View + UV`` interface so the group can later be
-        replaced with a proper POM implementation without touching the
-        HardSurface builder wiring. The ``Height`` sample happens at the
-        material top-level (so image sharing stays intact); the group
-        itself has no texture nodes and is therefore safe to share.
+        This helper appends the bundled ``POM_Vector`` + dependencies
+        from ``starbreaker_addon/resources/pom_library.blend`` once per
+        *height image*, renames the appended chain with a stable
+        ``StarBreaker POM …`` prefix that encodes the image name, and
+        patches the embedded ``HeightMap`` / ``POM_disp`` tex samplers
+        to point at that image. Subsequent calls with the same image
+        return the cached copy.
 
-        Inputs:
-            UV         — base UV coordinates (Vector).
-            View       — view vector in tangent-ish space (Vector); the
-                         builder feeds it from a ShaderNodeTexCoord's
-                         ``Camera`` output which approximates tangent
-                         space on unit-scale meshes.
-            Height     — height sample at ``UV`` (Float); the builder
-                         feeds it from the displacement image's first
-                         colour channel.
-            Scale      — displacement scale (Float); the builder clamps
-                         ``PomDisplacement`` to 0.03–0.2 and drives it
-                         here.
-
-        Output:
-            Offset UV  — ``UV + (Height − 0.5) * Scale * view_xy``
-                         (Vector).
+        Returns ``None`` when no height image is supplied (single-sample
+        offset mapping is no longer used — silent no-op signals the
+        caller to skip parallax wiring).
         """
-        self._invalidate_runtime_group_if_unexpected(
-            "StarBreaker Runtime Parallax",
-            "parallax_v1",
-            {
-                "NodeGroupInput": 1,
-                "NodeGroupOutput": 1,
-                "ShaderNodeMath": 2,
-                "ShaderNodeVectorMath": 2,
-                "ShaderNodeSeparateXYZ": 1,
-                "ShaderNodeCombineXYZ": 1,
-            },
-        )
-        group_tree, group_input, group_output = self._begin_runtime_shared_group(
-            "StarBreaker Runtime Parallax",
-            signature="parallax_v1",
-            inputs=[
-                ("UV", "NodeSocketVector"),
-                ("View", "NodeSocketVector"),
-                ("Height", "NodeSocketFloat"),
-                ("Scale", "NodeSocketFloat"),
-            ],
-            outputs=[
-                ("Offset UV", "NodeSocketVector"),
-            ],
-        )
-        if group_tree.get("starbreaker_runtime_built_signature") == "parallax_v1":
-            return group_tree
-        nodes = group_tree.nodes
-        links = group_tree.links
+        if height_image is None:
+            return None
+        image_key = height_image.name
+        cached_name = f"StarBreaker POM [{image_key}]"
+        cached = bpy.data.node_groups.get(cached_name)
+        if cached is not None:
+            return cached
 
-        # height_offset = (Height − 0.5) * Scale
-        height_centered = nodes.new("ShaderNodeMath")
-        height_centered.location = (-620, 200)
-        height_centered.operation = "SUBTRACT"
-        height_centered.inputs[1].default_value = 0.5
-        links.new(_output_socket(group_input, "Height"), height_centered.inputs[0])
+        library_path = _POM_LIBRARY_PATH
+        if not library_path.is_file():
+            return None
 
-        height_scaled = nodes.new("ShaderNodeMath")
-        height_scaled.location = (-420, 200)
-        height_scaled.operation = "MULTIPLY"
-        links.new(height_centered.outputs[0], height_scaled.inputs[0])
-        links.new(_output_socket(group_input, "Scale"), height_scaled.inputs[1])
+        # Snapshot existing group names so we can tell which ones were
+        # created by this append (Blender auto-suffixes duplicates).
+        before = {g.name for g in bpy.data.node_groups}
+        with bpy.data.libraries.load(str(library_path), link=False) as (src, dst):
+            # Appending the root also pulls in every group it references
+            # transitively; request the full set explicitly so the
+            # reference graph stays intact even when ``POM_Vector`` has
+            # already been appended previously.
+            dst.node_groups = [name for name in _POM_LIBRARY_ROOT_GROUPS if name in src.node_groups]
+        added = [g for g in bpy.data.node_groups if g.name not in before]
 
-        # view.xy (drop z) as an offset direction
-        view_xyz = nodes.new("ShaderNodeSeparateXYZ")
-        view_xyz.location = (-620, -80)
-        links.new(_output_socket(group_input, "View"), view_xyz.inputs[0])
+        # Find the newly-appended ``POM_Vector`` — Blender will have
+        # renamed it to ``POM_Vector.001`` etc. if the name collided.
+        pom_vector_new = None
+        for g in added:
+            if g.name.startswith("POM_Vector"):
+                pom_vector_new = g
+                break
+        if pom_vector_new is None:
+            # No ``POM_Vector`` appended — treat as silent failure so
+            # the caller falls back to no parallax wiring.
+            for g in added:
+                g.use_fake_user = False
+                if g.users == 0:
+                    bpy.data.node_groups.remove(g, do_unlink=True)
+            return None
 
-        view_xy = nodes.new("ShaderNodeCombineXYZ")
-        view_xy.location = (-420, -80)
-        links.new(view_xyz.outputs["X"], view_xy.inputs["X"])
-        links.new(view_xyz.outputs["Y"], view_xy.inputs["Y"])
-        # Leave Z = 0 so the Offset UV stays in the UV plane.
+        # Patch every ``ShaderNodeTexImage`` inside the appended group
+        # chain to point at ``height_image``. ``POM_disp`` and
+        # ``HeightMap`` are the only groups in the reference pipeline
+        # that carry samplers, but we walk the full appended set so a
+        # future library refactor doesn't silently leave stale images
+        # behind.
+        for g in added:
+            for n in g.nodes:
+                if n.bl_idname == "ShaderNodeTexImage":
+                    n.image = height_image
 
-        # offset = view_xy * height_scaled (scalar-broadcast)
-        offset_vec = nodes.new("ShaderNodeVectorMath")
-        offset_vec.location = (-220, 60)
-        offset_vec.operation = "SCALE"
-        links.new(view_xy.outputs[0], offset_vec.inputs[0])
-        links.new(height_scaled.outputs[0], offset_vec.inputs["Scale"])
+        # Rename the root (and keep the internal chain under a prefix
+        # so it's obvious in the node-group browser which copies belong
+        # to which image).
+        pom_vector_new.name = cached_name
+        pom_vector_new.use_fake_user = False
+        prefix = f"StarBreaker POM [{image_key}] / "
+        for g in added:
+            if g is pom_vector_new:
+                continue
+            # Strip any ``.001``-style suffix Blender added.
+            base = g.name.rsplit(".", 1)[0]
+            # Only prefix copies we appended as part of the POM chain;
+            # shared helpers that happened to already exist would have
+            # been excluded by the ``before`` snapshot above.
+            g.name = f"{prefix}{base}"
+            g.use_fake_user = False
 
-        # uv_out = UV + offset
-        uv_add = nodes.new("ShaderNodeVectorMath")
-        uv_add.location = (-20, 60)
-        uv_add.operation = "ADD"
-        links.new(_output_socket(group_input, "UV"), uv_add.inputs[0])
-        links.new(offset_vec.outputs["Vector"], uv_add.inputs[1])
-
-        links.new(uv_add.outputs["Vector"], group_output.inputs["Offset UV"])
-        group_tree["starbreaker_runtime_built_signature"] = "parallax_v1"
-        return group_tree
+        return pom_vector_new

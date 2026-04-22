@@ -180,46 +180,64 @@ class BuildersMixin:
         scale_value: float,
         location: tuple[float, float] = (-1280, 720),
     ) -> bpy.types.Node | None:
-        """Insert a ``StarBreaker Runtime Parallax`` group between the base
-        UV coords and ``target_image_nodes``' ``Vector`` inputs, reading
-        its ``Height`` from ``height_node``'s first output.
+        """Insert the bundled ``POM_Vector`` production POM pipeline
+        (30-step ray-march, authored in ``docs/StarBreaker/POM-test.blend``
+        and bundled as ``resources/pom_library.blend``) between the
+        material's UV source and ``target_image_nodes``' ``Vector``
+        inputs.
+
+        ``height_node`` must be a ``ShaderNodeTexImage`` whose ``image``
+        slot holds the authored displacement map — its pixels drive the
+        ray-march. Because ``POM_Vector``'s internal ``POM_disp`` /
+        ``HeightMap`` groups contain sampler datablocks that Blender
+        cannot override from outside the group, each unique displacement
+        image gets its own appended copy of the whole POM chain (cached
+        by image name, see ``_ensure_runtime_parallax_group``).
 
         Shared between ``_build_hard_surface_material`` and
         ``_build_contract_group_material`` (MeshDecal POM path). Returns
         the newly-created parallax group node, or ``None`` if the
-        material has no node tree. Target nodes whose ``Vector`` socket
-        is already linked are skipped so an existing per-sampler tiling
-        chain (see ``_apply_uv_tiling``) is not clobbered.
+        material has no node tree, no height image is available, or the
+        POM library could not be appended. Target nodes whose ``Vector``
+        socket is already linked are skipped so an existing per-sampler
+        tiling chain (see ``_apply_uv_tiling``) is not clobbered.
+
+        ``scale_value`` is the authored ``PomDisplacement`` public param
+        (typically 0.02–0.1 in CryEngine's units). It is scaled up to
+        POM-test's ``Scale`` range (≈1.0–3.0) so a 0.05 PomDisplacement
+        reads as ≈1.5 POM scale — the reference file's hand-tuned
+        default. ``Layers`` is fixed at 40 and ``Bias`` at 0.5 to match
+        the reference.
         """
         node_tree = material.node_tree
         if node_tree is None or height_node is None:
             return None
+        if height_node.bl_idname != "ShaderNodeTexImage" or height_node.image is None:
+            return None
+
+        pom_tree = self._ensure_runtime_parallax_group(height_image=height_node.image)
+        if pom_tree is None:
+            return None
+
         nodes = node_tree.nodes
         links = node_tree.links
-
-        tex_coord = nodes.new("ShaderNodeTexCoord")
-        tex_coord.location = (location[0], location[1])
         parallax_node = nodes.new("ShaderNodeGroup")
-        parallax_node.node_tree = self._ensure_runtime_parallax_group()
+        parallax_node.node_tree = pom_tree
         _refresh_group_node_sockets(parallax_node)
-        parallax_node.location = (location[0] + 300, location[1])
-        parallax_node.label = "StarBreaker Parallax"
+        parallax_node.location = (location[0], location[1])
+        parallax_node.label = "StarBreaker POM"
 
-        uv_input = _input_socket(parallax_node, "UV")
-        view_input = _input_socket(parallax_node, "View")
-        height_input = _input_socket(parallax_node, "Height")
-        scale_input = _input_socket(parallax_node, "Scale")
-        if uv_input is not None:
-            links.new(tex_coord.outputs["UV"], uv_input)
-        if view_input is not None:
-            links.new(tex_coord.outputs["Camera"], view_input)
-        if height_input is not None and height_node.outputs:
-            links.new(height_node.outputs[0], height_input)
-        if scale_input is not None:
-            self._set_socket_default(scale_input, scale_value)
+        # POM_Vector inputs: Layers (Int), Scale (Float), Bias (Float),
+        # Non-planar (Bool). Drive Scale from the authored PomDisplacement
+        # (CryEngine-space ≈0.02–0.1) rescaled into POM-test's default
+        # range (≈1.5 for 0.05 input) by multiplying by 30.
+        self._set_socket_default(_input_socket(parallax_node, "Layers"), 40)
+        self._set_socket_default(_input_socket(parallax_node, "Scale"), max(0.3, min(3.0, scale_value * 30.0)))
+        self._set_socket_default(_input_socket(parallax_node, "Bias"), 0.5)
+        self._set_socket_default(_input_socket(parallax_node, "Non-planar"), True)
 
-        offset_uv = _output_socket(parallax_node, "Offset UV")
-        if offset_uv is None:
+        offset_vec = _output_socket(parallax_node, "Vector")
+        if offset_vec is None:
             return parallax_node
         for tex_node in target_image_nodes:
             if tex_node is None:
@@ -228,7 +246,7 @@ class BuildersMixin:
             if vector_input is None or vector_input.is_linked:
                 # Preserve existing per-sampler tiling / mapping chains.
                 continue
-            links.new(offset_uv, vector_input)
+            links.new(offset_vec, vector_input)
         return parallax_node
 
     def _build_managed_material(

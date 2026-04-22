@@ -85,6 +85,13 @@ _RUNTIME_GROUP_PREFIXES: tuple[str, ...] = (
     "StarBreaker Runtime Shadowless Wrapper.",
     "StarBreaker Wear Input.",
     "StarBreaker Iridescence Input.",
+    # Phase 12 POM: appended copies of the production POM pipeline
+    # from resources/pom_library.blend. Each POM-flagged material
+    # triggers a unique copy (keyed by height-image name) via
+    # ``_ensure_runtime_parallax_group``; purging orphans here keeps
+    # the blend file clean when those materials are rebuilt onto a
+    # different paint or removed.
+    "StarBreaker POM [",
 )
 
 
