@@ -43,6 +43,7 @@ from ..record_utils import (
     _float_public_param,
     _hard_surface_angle_shift_enabled,
     _is_virtual_tint_palette_stencil_decal,
+    _layer_texture_reference,
     _matching_texture_reference,
     _mean_triplet,
     _optional_float_public_param,
@@ -665,6 +666,71 @@ class BuildersMixin:
                 target_image_nodes=[top_base_node],
                 scale_value=pom_displacement,
             )
+        # Phase 12 (POM follow-up): some HardSurface materials have no
+        # top-level TexSlot6 displacement but DO carry a height map inside
+        # their ``layer_manifest[0].texture_slots`` (TexSlot3 tagged with
+        # the misleading ``alternate_base_color`` role, filename ending
+        # in ``_displ``). This is the pattern used by tileable surfaces
+        # like ``rsi_aurora_mk2:Tile_Grill_A``. Load the Primary-layer
+        # height on demand and route parallax into the Primary layer's
+        # base-colour + normal_gloss samplers. Without this 27 Aurora
+        # Mk2 POM-flagged materials would render flat despite authored
+        # height data existing in the sidecar.
+        if (
+            submaterial.decoded_feature_flags.has_parallax_occlusion_mapping
+            and displacement_node is None
+            and primary_layer is not None
+        ):
+            layer_height_ref = _layer_texture_reference(primary_layer, slots=("TexSlot3",))
+            if (
+                layer_height_ref is not None
+                and layer_height_ref.export_path
+                and "_displ" in (layer_height_ref.source_path or "").lower()
+            ):
+                layer_height_node = self._image_node(
+                    nodes,
+                    layer_height_ref.export_path,
+                    x=-1480,
+                    y=-720,
+                    is_color=False,
+                    reuse_any_existing=True,
+                )
+                if layer_height_node is not None and layer_height_node.image is not None:
+                    layer_targets: list[bpy.types.ShaderNodeTexImage] = []
+                    layer_base_ref = _layer_texture_reference(
+                        primary_layer,
+                        slots=("TexSlot1",),
+                        roles=("base_color", "diffuse"),
+                    )
+                    layer_normal_ref = _layer_texture_reference(
+                        primary_layer,
+                        roles=("normal_gloss",),
+                        alpha_semantic="smoothness",
+                    )
+                    for ref in (layer_base_ref, layer_normal_ref):
+                        if ref is None or not ref.export_path:
+                            continue
+                        resolved = self.package.resolve_path(ref.export_path)
+                        if resolved is None:
+                            continue
+                        resolved_str = str(resolved)
+                        for node in nodes:
+                            if node.bl_idname != "ShaderNodeTexImage" or node.image is None:
+                                continue
+                            if node is layer_height_node:
+                                continue
+                            if bpy.path.abspath(
+                                node.image.filepath, library=node.image.library
+                            ) == resolved_str:
+                                layer_targets.append(node)
+                                break
+                    if layer_targets:
+                        self._wire_runtime_parallax(
+                            material,
+                            height_node=layer_height_node,
+                            target_image_nodes=layer_targets,
+                            scale_value=pom_displacement,
+                        )
         self._set_socket_default(_input_socket(shader_group, "Emission Color"), (0.0, 0.0, 0.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Emission Strength"), 0.0)
         shader_group["starbreaker_angle_shift_enabled"] = angle_shift_enabled
