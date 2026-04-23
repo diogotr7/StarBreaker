@@ -541,6 +541,29 @@ class OrchestrationMixin:
             if _bake_bitangent_sign_attribute(mesh):
                 baked_meshes.add(mesh.as_pointer())
 
+        # Phase 19 — glTF meshes coming out of the Rust exporter carry
+        # per-vertex normals that the exporter reconstructs from the
+        # source mesh. The reconstruction does not weight shared-vertex
+        # normals by face area, which leaves subtle flat-spots on every
+        # curved panel once Blender averages them at runtime. Attaching
+        # a default Weighted Normal modifier (Face Area / weight 50 /
+        # threshold 0.01) to every imported mesh object restores the
+        # expected rounded shading without mutating the mesh data, so
+        # it composes cleanly with any later edits. ``source.copy()``
+        # in ``_duplicate_object_tree`` carries the modifier stack into
+        # every clone, so adding it once here covers every instance.
+        for obj in imported:
+            if getattr(obj, "type", None) != "MESH":
+                continue
+            if obj.data is None or not obj.data.polygons:
+                continue
+            if any(m.type == "WEIGHTED_NORMAL" for m in obj.modifiers):
+                continue
+            modifier = obj.modifiers.new(name="StarBreaker Weighted Normal", type="WEIGHTED_NORMAL")
+            modifier.mode = "FACE_AREA"
+            modifier.weight = 50
+            modifier.thresh = 0.01
+
         template = ImportedTemplate(mesh_asset=mesh_asset, root_names=[obj.name for obj in root_objects])
         self.template_cache[asset_key] = template
         return template
