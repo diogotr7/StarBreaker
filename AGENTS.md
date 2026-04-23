@@ -19,9 +19,6 @@ server, export pipeline). Blender-addon-specific guidance lives in
 - `app/` — Tauri + React app (see `tasks.json` for build tasks).
 - `docs/` — in-repo reference: export contract, material authoring,
   shader family inventory.
-- Out-of-repo plans: `../docs/StarBreaker/todo.md` is the live phased
-  plan. `../docs/StarBreaker/lights-research.md` is the light schema
-  reference. Ships and extracted packages live under `../ships/`.
 
 ## Building
 
@@ -42,32 +39,24 @@ Exception: the Blender addon test suite runs with the system
 ## CLI re-export
 
 After changing the Rust exporter, re-export a ship and reimport it in
-Blender to verify behaviour. The canonical command (Linux):
+Blender to verify behaviour. The binary is `target/release/starbreaker`
+(package name `starbreaker`, not `starbreaker-cli`). Invoke it with:
 
 ```bash
-SC_DATA_P4K="/home/tom/Games/star-citizen/drive_c/Program Files/Roberts Space Industries/StarCitizen/LIVE/Data.p4k" \
-  ./target/release/starbreaker entity export "aurora_mk2" \
-  "/home/tom/projects/scorg_tools/ships/Packages/RSI Aurora Mk2" \
+SC_DATA_P4K=<path to Data.p4k> \
+  ./target/release/starbreaker entity export <entity_name> <export_root> \
   --kind decomposed
 ```
 
 `--kind decomposed` emits the reusable `scene.json` +
 `Packages/<name>/` layout documented in
-`docs/decomposed-export-contract.md`. The Aurora's scene.json lives at
-`ships/Packages/RSI Aurora Mk2/Packages/RSI Aurora Mk2/scene.json`
-(note the nested `Packages/`).
-
-Other test ships: `mole`, `talon`, `vulture`. Temporary export roots
-live under `../target/tmp/`.
+`docs/decomposed-export-contract.md`. Workspace-specific ship paths
+and the `SC_DATA_P4K` location are in the workspace-root AGENTS.md.
 
 ## Git
 
-The StarBreaker repo is self-contained (root = `StarBreaker/`). The
-parent workspace `/home/tom/projects/scorg_tools` is NOT a git repo;
-files under `../docs/`, `../ships/`, `../assets/` are not
-version-controlled from here.
-
-Commit with an explicit author (the default user identity is not
+The StarBreaker repo is self-contained (root = `StarBreaker/`); the
+parent workspace is not a git repo. Commit with an explicit author (the default user identity is not
 configured):
 
 ```bash
@@ -146,6 +135,4 @@ data without shelling out to the CLI:
   reusable Blender material node templates.
 - `docs/blender-shader-family-inventory.json` — the canonical list of
   CryEngine shader families we know about.
-- `../docs/StarBreaker/` (outside the repo) — research notes and
-  phased todos. `todo.md` is the source of truth for current work.
 

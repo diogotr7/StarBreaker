@@ -132,13 +132,15 @@ for m in [x for x in bpy.data.materials
 
 ```python
 bpy.ops.starbreaker.import_decomposed_package(
-    filepath="/home/tom/projects/scorg_tools/ships/Packages/"
-             "RSI Aurora Mk2/Packages/RSI Aurora Mk2/scene.json"
+    filepath="<path to a decomposed scene.json>",
 )
 ```
 
-Note the nested `Packages/` in the path — decomposed exports put the
-ship scene.json one level deeper than the export root.
+Decomposed exports put the ship `scene.json` under a nested
+`Packages/<name>/Packages/<name>/scene.json` layout — point the
+operator at the deepest `scene.json`, not the outer package folder.
+Concrete ship paths for this workspace are in the workspace-root
+`AGENTS.md`.
 
 ### MCP output size
 
@@ -164,8 +166,8 @@ printing.
   reapplies colour, temperature, and energy per light from the
   chosen state. Lights that lack that state keep their current values.
 
-See `../../docs/StarBreaker/lights-research.md` for the full schema
-and per-phase history.
+See the workspace-root `AGENTS.md` for the full light-schema notes and
+per-phase history (stored outside this repo).
 
 ## Material Pipeline Notes
 
@@ -185,13 +187,14 @@ and per-phase history.
   Weight=50, Threshold=0.01) to smooth shading across flat faces
   (Phase 19).
 
-See `../docs/blender-material-contract-naming-rules.md` and
-`../../docs/starbreaker-materials.md` for the material contract.
+See `../docs/blender-material-contract-naming-rules.md` for the
+in-repo material contract. Higher-level material research lives in
+the workspace-root `AGENTS.md`.
 
 ## Phased Plan
 
-The live plan is `../../docs/StarBreaker/todo.md` (outside the git
-repo). Each phase has Context / Acceptance / Steps sections and is
-marked `✅` when landed with a commit hash. When starting a new phase,
-re-read the most recent completed phase for conventions, then update
-the todo file as you go.
+The live plan lives in the workspace (outside this repo) — see the
+workspace-root `AGENTS.md` for the path. Each phase has Context /
+Acceptance / Steps sections and is marked `✅` when landed with a
+commit hash. When starting a new phase, re-read the most recent
+completed phase for conventions, then update the todo file as you go.
