@@ -4027,9 +4027,12 @@ pub(crate) fn try_load_mtl(p4k: &MappedP4k, p4k_path: &str) -> Option<mtl::MtlFi
 
 fn populate_layer_snapshots(p4k: &MappedP4k, mtl: &mut mtl::MtlFile) {
     for material in &mut mtl.materials {
+        let parent_surface_type = material.surface_type.clone();
         for layer in &mut material.layers {
             if layer.snapshot.is_none() || layer.resolved_material.is_none() {
-                if let Some((snapshot, resolved_material)) = load_layer_details(p4k, layer) {
+                if let Some((snapshot, resolved_material)) =
+                    load_layer_details(p4k, layer, &parent_surface_type)
+                {
                     if layer.snapshot.is_none() {
                         layer.snapshot = Some(snapshot);
                     }
@@ -4045,12 +4048,28 @@ fn populate_layer_snapshots(p4k: &MappedP4k, mtl: &mut mtl::MtlFile) {
 fn load_layer_details(
     p4k: &MappedP4k,
     layer: &mtl::MatLayer,
+    parent_surface_type: &str,
 ) -> Option<(mtl::MatLayerSnapshot, mtl::ResolvedLayerMaterial)> {
     let p4k_path = datacore_path_to_p4k(&layer.path);
     let entry = p4k.entry_case_insensitive(&p4k_path)?;
     let data = p4k.read(entry).ok()?;
     let layer_mtl = mtl::parse_mtl(&data).ok()?;
     let material = mtl::resolve_layer_submaterial(&layer_mtl, &layer.sub_material)?;
+
+    // Prefer the parent submaterial's SurfaceType (e.g. the hard-surface
+    // material carries ``metal_dense`` / ``rubber_dense`` etc. and
+    // expresses the intended PBR class). Layer sub-mtls sometimes
+    // declare their own SurfaceType that reflects the *sampling*
+    // material rather than the parent's intent (e.g. a rubber panel
+    // whose "Primary" layer is ``ship_lf_panel_rubber_a_base.mtl`` with
+    // SurfaceType=metal_shell). Trusting the parent avoids false
+    // metallic classifications in that case, while still falling back
+    // to the layer's SurfaceType when the parent is unset.
+    let effective_surface_type = if !parent_surface_type.is_empty() {
+        parent_surface_type
+    } else {
+        material.surface_type.as_str()
+    };
 
     Some((
         mtl::MatLayerSnapshot {
@@ -4060,12 +4079,12 @@ fn load_layer_details(
             shininess: material.shininess,
             wear_specular_color: material.public_param_rgb(&["WearSpecularColor"]),
             wear_glossiness: material.public_param_f32(&["WearGlossiness"]),
-            surface_type: if material.surface_type.is_empty() {
+            surface_type: if effective_surface_type.is_empty() {
                 None
             } else {
-                Some(material.surface_type.clone())
+                Some(effective_surface_type.to_string())
             },
-            metallic: mtl::layer_metallic(&material.name, &layer.path),
+            metallic: mtl::layer_metallic(&material.name, &layer.path, effective_surface_type),
         },
         material.resolved_layer_material(),
     ))

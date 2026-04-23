@@ -633,11 +633,23 @@ impl SubMaterial {
     }
 }
 
-/// Classify a layer material as metallic based on its name and source path.
+/// Classify a layer material as metallic based on its name, source path, and
+/// CryEngine ``SurfaceType`` tag.
 ///
 /// More comprehensive than `SubMaterial::metallic()` — also checks common layer
-/// material path patterns (e.g. `metal/ship_mf_raw_steel.mtl`).
-pub fn layer_metallic(material_name: &str, source_path: &str) -> f32 {
+/// material path patterns (e.g. `metal/ship_mf_raw_steel.mtl`,
+/// `panels/RSI_panel_primary_a_metal.mtl`).
+///
+/// NOTE on SurfaceType: CryEngine's `SurfaceType` (metal_dense, metal_thin,
+/// rubber_dense, …) is primarily a physics/audio classification, not a PBR
+/// class. Painted steel hulls carry `metal_dense` because that's what a bullet
+/// impact or footstep should sound/feel like, but the shader renders them as
+/// dielectric paint. Using SurfaceType to drive `Metallic=1.0` therefore
+/// mis-classifies all painted panels as bare metal. We accept `surface_type`
+/// as an input for completeness (and to be available for future, narrower
+/// heuristics such as combining it with name cues) but do not classify on it
+/// by itself.
+pub fn layer_metallic(material_name: &str, source_path: &str, _surface_type: &str) -> f32 {
     let name = material_name.to_lowercase();
     let path = source_path.to_lowercase();
 
@@ -665,6 +677,19 @@ pub fn layer_metallic(material_name: &str, source_path: &str) -> f32 {
             if filename.contains("raw_") || filename.contains("bare") || filename.contains("chrome") {
                 return 1.0;
             }
+        }
+    }
+
+    // Path-based: layer files whose basename ends in `_metal.mtl` or contains
+    // `_metal_` (e.g. `RSI_panel_primary_a_metal.mtl`,
+    // `ship_mf_panel_bare_metal_a.mtl`) are the bare-metal base layers used
+    // under paint/wear stacks. The paint layer (`*_white.mtl`,
+    // `*_primary.mtl`, etc.) sits on top and is dielectric; only this
+    // exposed bare-metal variant is classified metallic here.
+    if let Some(filename) = segments.last() {
+        let stem = filename.trim_end_matches(".mtl");
+        if stem.ends_with("_metal") || stem.contains("_metal_") {
+            return 1.0;
         }
     }
 
