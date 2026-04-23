@@ -43,6 +43,11 @@ SURFACE_SHADER_MODE_GLASS = "glass_bsdf"
 PACKAGE_ROOT_PREFIX = "StarBreaker"
 TEMPLATE_COLLECTION_NAME = "StarBreaker Template Cache"
 GLTF_PBR_WATTS_TO_LUMENS = 683.0
+# Luminous efficacy of a broadband white LED (~100-160 lm/W). Used to convert
+# Star Citizen light intensity values (authored in lumens) into Blender's
+# radiant-flux Watts for Point/Spot/Area lights. See
+# ``docs/StarBreaker/lights-research.md``.
+LUMENS_PER_WATT_WHITE = 120.0
 SCENE_AXIS_CONVERSION = Matrix(
     (
         (1.0, 0.0, 0.0, 0.0),

@@ -17,6 +17,7 @@ from mathutils import Matrix, Quaternion
 from ..constants import (
     GLTF_LIGHT_BASIS_CORRECTION,
     GLTF_PBR_WATTS_TO_LUMENS,
+    LUMENS_PER_WATT_WHITE,
     MATERIAL_IDENTITY_SCHEMA,
     NON_COLOR_INPUT_KEYWORDS,
     PROP_IMPORTED_SLOT_MAP,
@@ -200,10 +201,19 @@ def _blender_light_type(light: Any) -> str:
 
 
 def _light_energy_to_blender(intensity: float, blender_light_type: str) -> float:
+    """Convert a Star Citizen light intensity (lumens) to Blender light energy.
+
+    Blender Point/Spot/Area lights take Watts of radiant flux; Sun lights take
+    W/m^2 (irradiance). SC authors light flux in lumens directly, so for
+    Point/Spot/Area we divide by a broadband white-LED luminous efficacy
+    (``LUMENS_PER_WATT_WHITE``). For Sun we keep the legacy lux→W/m^2 ratio.
+
+    See ``docs/StarBreaker/lights-research.md``.
+    """
     intensity = max(float(intensity), 0.0)
     if blender_light_type == "SUN":
         return intensity / GLTF_PBR_WATTS_TO_LUMENS
-    return intensity * 4.0 * math.pi / GLTF_PBR_WATTS_TO_LUMENS
+    return intensity / LUMENS_PER_WATT_WHITE
 
 
 def _is_axis_conversion_root(obj: bpy.types.Object) -> bool:

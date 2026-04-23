@@ -10,6 +10,7 @@ from __future__ import annotations
 from .constants import (
     GLTF_LIGHT_BASIS_CORRECTION,
     GLTF_PBR_WATTS_TO_LUMENS,
+    LUMENS_PER_WATT_WHITE,
     MATERIAL_IDENTITY_SCHEMA,
     NON_COLOR_INPUT_KEYWORDS,
     PACKAGE_ROOT_PREFIX,
