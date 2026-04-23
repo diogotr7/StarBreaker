@@ -691,29 +691,48 @@ fn build_light_info_from_component(
         .unwrap_or("Omni")
         .to_string();
 
-    // Locate <defaultState>.
-    let default_state = xml
-        .node_children(component)
-        .find(|c| xml.node_tag(c) == "defaultState");
-    let default_state_attrs: HashMap<&str, &str> = default_state
+    // Locate the state to import. CryEngine light components expose several
+    // runtime states (off / default / auxiliary / emergency / cinematic). The
+    // default state is often authored with intensity=0 (the light is "off by
+    // default" and the game enables auxiliary at runtime — e.g. the Aurora
+    // cabin fills have warm-white auxiliary on a blue default). Pick the
+    // first state with a non-zero intensity, in the order the engine would
+    // fall back through: default -> auxiliary -> emergency -> cinematic.
+    const STATE_ORDER: &[&str] = &[
+        "defaultState",
+        "auxiliaryState",
+        "emergencyState",
+        "cinematicState",
+    ];
+    let state_node = STATE_ORDER.iter().find_map(|tag| {
+        xml.node_children(component)
+            .find(|c| xml.node_tag(c) == *tag)
+            .filter(|n| {
+                xml.node_attributes(n)
+                    .find(|(k, _)| *k == "intensity")
+                    .and_then(|(_, v)| v.parse::<f32>().ok())
+                    .map(|i| i > 0.0)
+                    .unwrap_or(false)
+            })
+    });
+    let state_attrs: HashMap<&str, &str> = state_node
         .map(|n| {
             xml.node_attributes(n)
                 .filter(|(k, _)| *k != "__type")
                 .collect()
         })
         .unwrap_or_default();
-    let intensity = default_state_attrs
+    let intensity = state_attrs
         .get("intensity")
         .and_then(|s| s.parse::<f32>().ok())
-        .unwrap_or(0.0)
-        .max(0.001);
-    let temperature = default_state_attrs
+        .unwrap_or(0.0);
+    let temperature = state_attrs
         .get("temperature")
         .and_then(|s| s.parse::<f32>().ok())
         .unwrap_or(6500.0);
 
-    // Color: child of <defaultState>.
-    let (color_r, color_g, color_b) = default_state
+    // Color: child of the chosen state.
+    let (color_r, color_g, color_b) = state_node
         .and_then(|ds| {
             xml.node_children(ds)
                 .find(|c| xml.node_tag(c) == "color")
