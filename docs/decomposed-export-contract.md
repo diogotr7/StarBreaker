@@ -21,6 +21,28 @@ Within that export root:
 - interior container transforms, placement records, and exported light data
 - material sidecar and palette references for every scene instance
 
+## Light Records
+
+Each entry in a scene's `lights` list carries:
+
+- `name`, `light_type` (`Omni`, `SoftOmni`, `Projector`, `Ambient`),
+  `position`, `rotation` (CryEngine-space; the Blender addon applies
+  the axis conversion and the spot-axis basis correction)
+- `color` (linear RGB), `intensity` (candela), `radius`,
+  `inner_angle` / `outer_angle` for projectors
+- `temperature` (Kelvin) + `use_temperature` flag so Cycles can match
+  the in-engine blackbody colour
+- `projector_texture` (package-root-relative DDS path) for light
+  cookies / gobos
+- `active_state` and a `states` map capturing every authored
+  CryEngine state (`offState`, `defaultState`, `auxiliaryState`,
+  `emergencyState`, `cinematicState`). The flat `color` / `intensity`
+  / `temperature` fields are copied from the first non-zero state in
+  priority order `default → auxiliary → emergency → cinematic`; the
+  full map lets the Blender addon switch between states at runtime
+  without re-exporting. See `docs/StarBreaker/lights-research.md` for
+  the full schema.
+
 ## Material Sidecars
 
 Each `*.materials.json` sidecar preserves:
