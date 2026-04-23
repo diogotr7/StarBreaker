@@ -70,6 +70,6 @@ SCENE_AXIS_CONVERSION = Matrix(
     )
 )
 SCENE_AXIS_CONVERSION_INV = SCENE_AXIS_CONVERSION.inverted()
-GLTF_LIGHT_BASIS_CORRECTION = Quaternion((math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0))
+GLTF_LIGHT_BASIS_CORRECTION = Quaternion((math.sqrt(0.5), 0.0, -math.sqrt(0.5), 0.0))
 NON_COLOR_INPUT_KEYWORDS = ("normal", "roughness", "gloss", "mask", "height", "specular", "opacity", "id_map")
 MATERIAL_IDENTITY_SCHEMA = "runtime_material_v10"

@@ -469,6 +469,11 @@ class OrchestrationMixin:
             inner_angle = min(light.inner_angle or 0.0, outer_angle)
             inner_ratio = min(max(inner_angle / outer_angle, 0.0), 1.0)
             light_data.spot_blend = 1.0 - inner_ratio
+        # Phase 25: give point/spot lights a non-zero shadow soft size so
+        # shadow edges aren't pin-sharp. Star Citizen doesn't publish a
+        # dedicated emitter radius, so fall back to a small floor.
+        if blender_light_type in {"POINT", "SPOT"} and hasattr(light_data, "shadow_soft_size"):
+            light_data.shadow_soft_size = max(float(getattr(light_data, "shadow_soft_size", 0.0) or 0.0), 0.02)
 
         self._wire_light_gobo(light_data, light)
 
