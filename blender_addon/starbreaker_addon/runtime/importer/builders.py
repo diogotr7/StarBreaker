@@ -1815,6 +1815,29 @@ class BuildersMixin:
         recognisable runtime group or all candidate inputs are still
         at their default white.
         """
+        submaterial_json = material.get(PROP_SUBMATERIAL_JSON) if hasattr(material, "get") else None
+        if isinstance(submaterial_json, str):
+            try:
+                parsed = json.loads(submaterial_json)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                for layer in parsed.get("layer_manifest", []) or []:
+                    for attribute in layer.get("authored_attributes", []) or []:
+                        if str((attribute or {}).get("name", "")).lower() != "tintcolor":
+                            continue
+                        value = (attribute or {}).get("value")
+                        if not isinstance(value, str):
+                            continue
+                        parts = [part.strip() for part in value.split(",")]
+                        if len(parts) < 3:
+                            continue
+                        try:
+                            rgb = (float(parts[0]), float(parts[1]), float(parts[2]))
+                        except ValueError:
+                            continue
+                        if rgb != (1.0, 1.0, 1.0):
+                            return rgb
         preferred = ("Tint Color", "Primary Color", "Base Color")
         fallback: tuple[float, float, float] | None = None
         for node in material.node_tree.nodes:
@@ -1835,6 +1858,48 @@ class BuildersMixin:
                     continue
                 return (float(r), float(g), float(b))
         return fallback
+
+    def _ensure_illum_pom_host_rgb_variant(
+        self,
+        material: bpy.types.Material,
+        rgb: tuple[float, float, float],
+    ) -> bpy.types.Material:
+        """Clone an Illum POM decal material and tint its runtime
+        LayerSurface inputs with a fixed host RGB.
+
+        This mirrors the MeshDecal host-RGB fallback for decal materials
+        that are authored as ``Illum`` + ``DECAL`` + ``POM`` rather than
+        ``MeshDecal``. Those materials still need to inherit the host
+        panel colour instead of rendering their white decal atlas at face
+        value.
+        """
+        if material is None or material.node_tree is None:
+            return material
+        rgb_key = self._rgb_variant_key(rgb)
+        clone_name = f"{material.name}__host_rgb_{rgb_key}"
+        clone = bpy.data.materials.get(clone_name)
+        if clone is not None and clone.get("starbreaker_decal_host_rgb_key") == rgb_key:
+            return clone
+        if clone is None:
+            clone = material.copy()
+            clone.name = clone_name
+        clone["starbreaker_decal_host_rgb_key"] = rgb_key
+
+        for node in clone.node_tree.nodes:
+            if node.bl_idname != "ShaderNodeGroup":
+                continue
+            tree = getattr(node, "node_tree", None)
+            if tree is None or tree.name != "StarBreaker Runtime LayerSurface":
+                continue
+            tint_socket = node.inputs.get("Tint Color")
+            if tint_socket is not None:
+                for link in list(tint_socket.links):
+                    clone.node_tree.links.remove(link)
+                try:
+                    tint_socket.default_value = (rgb[0], rgb[1], rgb[2], 1.0)
+                except Exception:
+                    pass
+        return clone
 
     def _ensure_mesh_decal_host_variant(
         self,
@@ -1953,6 +2018,17 @@ class BuildersMixin:
     _DECAL_OFFSET_GROUP_NAME = "starbreaker_decal_offset"
     _DECAL_OFFSET_MODIFIER_NAME = "StarBreaker Decal Offset"
     _DECAL_OFFSET_STRENGTH = 0.005
+    _LOADOUT_DECAL_OFFSET_STRENGTH = 0.001
+
+    def _decal_offset_strength_for_object(self, obj: bpy.types.Object) -> float:
+        material_sidecar = (_string_prop(obj, PROP_MATERIAL_SIDECAR) or "").lower()
+        if not material_sidecar:
+            return self._DECAL_OFFSET_STRENGTH
+        if "/interior/" in material_sidecar or "_int_master" in material_sidecar:
+            return self._DECAL_OFFSET_STRENGTH
+        if "/ships/" in material_sidecar:
+            return self._DECAL_OFFSET_STRENGTH
+        return self._LOADOUT_DECAL_OFFSET_STRENGTH
 
     def _apply_decal_offset_modifier(self, obj: bpy.types.Object) -> bool:
         """Ensure a single ``starbreaker_decal_offset`` vertex group
@@ -1970,7 +2046,14 @@ class BuildersMixin:
             mat = slot.material if slot is not None else None
             if mat is None:
                 continue
-            if mat.get("starbreaker_shader_family") == "MeshDecal":
+            shader_family = mat.get("starbreaker_shader_family")
+            is_mesh_decal = shader_family == "MeshDecal"
+            is_illum_pom_decal = (
+                shader_family == "Illum"
+                and bool(mat.get(PROP_HAS_POM, False))
+                and mat.get(PROP_TEMPLATE_KEY) == "decal_stencil"
+            )
+            if is_mesh_decal or is_illum_pom_decal:
                 decal_slot_indices.add(idx)
         if not decal_slot_indices:
             return False
@@ -1995,7 +2078,7 @@ class BuildersMixin:
             if mod is not None:
                 obj.modifiers.remove(mod)
             mod = obj.modifiers.new(name=self._DECAL_OFFSET_MODIFIER_NAME, type="DISPLACE")
-        mod.strength = self._DECAL_OFFSET_STRENGTH
+        mod.strength = self._decal_offset_strength_for_object(obj)
         mod.mid_level = 0.0
         mod.direction = "NORMAL"
         mod.space = "LOCAL"
@@ -2020,30 +2103,34 @@ class BuildersMixin:
           wires Host Tint to the dominant host paint's authored tint
           when no palette channel can be identified.
         """
-        if palette is None:
+        channel = (
+            self._mesh_decal_host_channel_for_object(obj)
+            if palette is not None
+            else None
+        )
+        fallback_rgb = self._mesh_decal_host_rgb_for_object(obj)
+        if channel is None and fallback_rgb is None:
             return 0
-        channel = self._mesh_decal_host_channel_for_object(obj)
-        fallback_rgb: tuple[float, float, float] | None = None
-        if channel is None:
-            fallback_rgb = self._mesh_decal_host_rgb_for_object(obj)
-            if fallback_rgb is None:
-                return 0
         rebound = 0
         for slot in getattr(obj, "material_slots", []):
             mat = slot.material if slot is not None else None
             if mat is None:
                 continue
-            if mat.get("starbreaker_shader_family") != "MeshDecal":
+            shader_family = mat.get("starbreaker_shader_family")
+            is_mesh_decal = shader_family == "MeshDecal"
+            is_illum_pom_decal = (
+                shader_family == "Illum"
+                and bool(mat.get(PROP_HAS_POM, False))
+                and mat.get(PROP_TEMPLATE_KEY) == "decal_stencil"
+            )
+            if not is_mesh_decal and not is_illum_pom_decal:
                 continue
-            # Phases 10 + 11: host-tint is only meaningful for POM-
-            # family MeshDecals (``Decal_POM``, ``Decal_POM_transparent``,
-            # etc.) which are meant to mask/replace the host paint with
-            # the ship's palette colour. Non-POM MeshDecals (branding
-            # stencils, emblems, text) author their own colour and must
-            # not be re-tinted by the host.
+            # Host-tint rebinding is only meaningful for POM-family decal
+            # overlays. Non-POM branding/text decals author their own
+            # colour and must not be retinted by the host.
             if not bool(mat.get(PROP_HAS_POM, False)):
                 continue
-            if channel is not None:
+            if is_mesh_decal and channel is not None:
                 if mat.get("starbreaker_decal_host_channel") == channel:
                     continue
                 variant = self._ensure_mesh_decal_host_variant(mat, channel, palette)
@@ -2053,7 +2140,10 @@ class BuildersMixin:
                 rgb_key = self._rgb_variant_key(fallback_rgb)
                 if key == rgb_key:
                     continue
-                variant = self._ensure_mesh_decal_host_rgb_variant(mat, fallback_rgb)
+                if is_mesh_decal:
+                    variant = self._ensure_mesh_decal_host_rgb_variant(mat, fallback_rgb)
+                else:
+                    variant = self._ensure_illum_pom_host_rgb_variant(mat, fallback_rgb)
             if variant is not mat:
                 slot.material = variant
                 rebound += 1
