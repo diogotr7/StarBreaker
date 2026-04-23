@@ -135,20 +135,23 @@ bpy.ops.preferences.addon_enable(module="starbreaker_addon")
 Without the `sys.modules` purge, `importlib.reload` is not enough —
 sub-modules keep serving stale code.
 
-### Purge orphaned shader / material data between imports
+### Purge orphaned data between imports
 
-When re-importing the same ship to test a change, leftover
-`SB_*` / `POM_*` / `StarBreaker*` node groups and `__host_*`
-materials can silently poison the new import:
+**Always reset the scene before importing a ship** — even if it looks
+empty. Leftover `SB_*` / `POM_*` / `StarBreaker*` node groups and
+`__host_*` materials can silently poison the new import, and the only
+reliable way to drop them is the scene reset:
 
 ```python
-for ng in [n for n in bpy.data.node_groups
-           if n.name.startswith(("SB_", "POM_", "StarBreaker"))]:
-    bpy.data.node_groups.remove(ng)
-for m in [x for x in bpy.data.materials
-          if x.users == 0 or "__host_" in x.name]:
-    bpy.data.materials.remove(m)
+import bpy
+bpy.ops.wm.read_homefile(app_template="")
 ```
+
+Do NOT write by-hand cleanup loops (`bpy.data.node_groups.remove`,
+`bpy.data.materials.remove`, selection-based deletes, etc.) — they
+miss hidden users, leave orphaned drivers, and get out of sync with
+new datablock categories. `read_homefile(app_template="")` is the
+single source of truth for "start from a clean slate".
 
 ### Import a ship
 
