@@ -162,6 +162,37 @@ class OrchestrationMixin:
             inherited_palette_id or self.package.scene.root_entity.palette_id,
         )
 
+    # Material sidecar path fragments that identify an "interior
+    # subsystem" entity (seats, dashboards, cabin trim). Child
+    # entities with palette_id=None whose material path contains one
+    # of these markers should inherit the package's interior palette
+    # rather than the root exterior palette — this mirrors the
+    # in-game behaviour where interior geometry picks up the cabin
+    # palette regardless of where the entity lives in the scene tree.
+    _INTERIOR_MATERIAL_PATTERNS = ("_int_master", "/interior/", "/Interior/")
+
+    def _interior_palette_id(self) -> str | None:
+        for interior in self.package.scene.interiors:
+            pid = getattr(interior, "palette_id", None)
+            if pid:
+                return pid
+        return None
+
+    def _palette_id_for_instance(self, record: SceneInstanceRecord) -> str | None:
+        """Return the effective palette_id request for a
+        ``SceneInstanceRecord``, preferring the explicit per-instance
+        ``palette_id`` and otherwise routing interior-subsystem
+        children to the package's interior palette.
+        """
+        if record.palette_id:
+            return record.palette_id
+        material_path = record.material_path or record.material_sidecar or ""
+        if any(marker in material_path for marker in self._INTERIOR_MATERIAL_PATTERNS):
+            interior_pid = self._interior_palette_id()
+            if interior_pid:
+                return interior_pid
+        return record.palette_id
+
     def import_scene(self, prefer_cycles: bool = True, palette_id: str | None = None) -> bpy.types.Object:
         if prefer_cycles and hasattr(self.context.scene.render, "engine"):
             self.context.scene.render.engine = "CYCLES"
@@ -340,7 +371,7 @@ class OrchestrationMixin:
         parent: bpy.types.Object,
         parent_node: bpy.types.Object | None = None,
     ) -> tuple[bpy.types.Object, list[bpy.types.Object]]:
-        effective_palette_id = self._effective_palette_id(record.palette_id)
+        effective_palette_id = self._effective_palette_id(self._palette_id_for_instance(record))
         anchor = bpy.data.objects.new(record.entity_name, None)
         anchor.empty_display_type = "PLAIN_AXES"
         self.collection.objects.link(anchor)
