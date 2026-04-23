@@ -161,11 +161,27 @@ bpy.ops.starbreaker.import_decomposed_package(
 )
 ```
 
-Decomposed exports put the ship `scene.json` under a nested
-`Packages/<name>/Packages/<name>/scene.json` layout — point the
-operator at the deepest `scene.json`, not the outer package folder.
-Concrete ship paths for this workspace are in the workspace-root
-`AGENTS.md`.
+Decomposed exports put the ship `scene.json` under a
+`<output>/Packages/<name>/scene.json` layout. The CLI's `<output>`
+argument is the **shared export root** (the parent that holds
+`Packages/` and the deduplicated `Data/` tree), **not** the package
+folder itself.
+
+Canonical target for this workspace: pass `ships` as the output so
+Aurora lands at `ships/Packages/RSI Aurora Mk2/scene.json` and all
+shared meshes/textures/materials land in `ships/Data/...` for reuse
+across ships. Do **not** pass `ships/Packages/RSI Aurora Mk2` — that
+produces a double-nested `ships/Packages/RSI Aurora Mk2/Packages/RSI
+Aurora Mk2/scene.json`.
+
+```bash
+SC_DATA_P4K="…/Data.p4k" \
+  StarBreaker/target/release/starbreaker entity export "aurora_mk2" \
+  "ships" --kind decomposed --lod 0 --mip 0 --materials all
+```
+
+Point the Blender import operator at the resulting `scene.json`, not
+the outer folder.
 
 ### MCP output size
 
