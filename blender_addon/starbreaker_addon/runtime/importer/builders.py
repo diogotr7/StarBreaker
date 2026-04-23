@@ -33,6 +33,7 @@ from ..constants import (
     PROP_SUBMATERIAL_JSON,
     PROP_SURFACE_SHADER_MODE,
     PROP_TEMPLATE_KEY,
+    PROP_HAS_POM,
     SURFACE_SHADER_MODE_GLASS,
     SURFACE_SHADER_MODE_PRINCIPLED,
 )
@@ -285,6 +286,9 @@ class BuildersMixin:
         material[PROP_MATERIAL_IDENTITY] = material_identity
         material[PROP_SUBMATERIAL_JSON] = json.dumps(submaterial.raw, sort_keys=True)
         material[PROP_SURFACE_SHADER_MODE] = surface_mode
+        material[PROP_HAS_POM] = bool(
+            submaterial.decoded_feature_flags.has_parallax_occlusion_mapping
+        )
 
     def _palette_scope(self) -> str:
         package_root = self.package_root
@@ -1745,6 +1749,14 @@ class BuildersMixin:
             if mat is None:
                 continue
             if mat.get("starbreaker_shader_family") != "MeshDecal":
+                continue
+            # Phases 10 + 11: host-tint is only meaningful for POM-
+            # family MeshDecals (``Decal_POM``, ``Decal_POM_transparent``,
+            # etc.) which are meant to mask/replace the host paint with
+            # the ship's palette colour. Non-POM MeshDecals (branding
+            # stencils, emblems, text) author their own colour and must
+            # not be re-tinted by the host.
+            if not bool(mat.get(PROP_HAS_POM, False)):
                 continue
             if mat.get("starbreaker_decal_host_channel") == channel:
                 continue
