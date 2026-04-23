@@ -48,6 +48,28 @@ Orchestration owns `create_light`, interior placement, and the
 top-level import loop. When adding a new per-entity behaviour, add it
 as its own mixin rather than bloating orchestration.
 
+## Coding Practices
+
+See the project-wide `Coding Practices` section in
+[../AGENTS.md](../AGENTS.md). Addon-specific reinforcements:
+
+- **Keep module files small.** The addon already splits imports into
+  mixins and runtime helpers; when a file passes ~500 lines, extract
+  a sibling module (`runtime/<thing>_utils.py`) or a new mixin
+  instead of letting it grow.
+- **Prefer the runtime helpers.** `runtime/node_utils.py`,
+  `palette_utils.py`, and `record_utils.py` exist so operators and
+  mixins stay focused on orchestration. Reach for them before
+  inlining ad-hoc node or palette code.
+- **Tune via `runtime/constants.py`.** Visible knobs
+  (`LIGHT_VISUAL_GAIN`, `LIGHT_CANDELA_TO_WATT`, shadow-radius
+  floors, custom-property names) live there. Never hard-code a
+  magic number inside a mixin.
+- **Never leave the scene dirty for the next test.** If an operator
+  mutates `bpy.data` in a way that another test might observe,
+  unwind it or use `bpy.ops.wm.read_homefile(app_template="")`
+  between fixtures.
+
 ## Deploy (rsync)
 
 The installed copy must stay in lockstep with the source tree or the

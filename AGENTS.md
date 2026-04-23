@@ -27,6 +27,37 @@ Debug profile is `[optimized + debuginfo]` in this workspace — fast
 enough for testing. Release builds take much longer and are only
 needed for deployment (MCP server, final binaries, CLI re-exports).
 
+## Coding Practices
+
+Shared across every language in the repo:
+
+- **Keep files small.** A source file that grows past ~500 lines is a
+  strong signal it wants to be split. Monolithic modules make diffs
+  noisier, searches slower, and tests harder to target.
+- **Split by responsibility, not by arbitrary line count.** Prefer
+  cohesive modules (one type of concern per file) over sprawling
+  "grab-bag" modules. Examples already in the tree:
+  - Rust: each CryEngine format lives in its own crate under
+    `crates/starbreaker-*`.
+  - Python: `runtime/importer/` is split into mixins
+    (`palette.py`, `decals.py`, `layers.py`, `materials.py`,
+    `builders.py`, `groups.py`, `orchestration.py`) rather than one
+    giant `importer.py`.
+- **Fix the root cause, not the symptom.** Do not add `.max(small
+  number)` style floors, fallback defaults, or try/except-pass around
+  broken data. If the exporter is wrong, fix the exporter.
+- **Match existing conventions.** Read the neighbours before
+  inventing a new pattern. Dataclass style in `manifest.py`, naming
+  in `blender-material-contract-naming-rules.md`, error taxonomy in
+  `starbreaker-common` — all of these exist so new code doesn't have
+  to make them up again.
+- **Don't over-engineer.** Only make changes that are directly
+  requested or clearly necessary. Avoid speculative abstractions,
+  "just in case" helpers, and refactors bundled into feature work.
+- **Tests track behaviour, not lines.** Add or update tests when a
+  behaviour changes; don't add tests just to bump coverage on
+  trivial getters.
+
 ## Python
 
 Always use `uv run python` instead of `python`, `python3`, or `py`
@@ -56,12 +87,11 @@ and the `SC_DATA_P4K` location are in the workspace-root AGENTS.md.
 ## Git
 
 The StarBreaker repo is self-contained (root = `StarBreaker/`); the
-parent workspace is not a git repo. Commit with an explicit author (the default user identity is not
-configured):
-
-```bash
-git -c user.name=scorg -c user.email=scorg@local commit -m "..."
-```
+parent workspace is not a git repo. Commit with whatever author identity is already configured in your
+environment. If git complains that `user.name` / `user.email` are
+unset, configure them via `git config` rather than inlining `-c
+user.name=... -c user.email=...` on every commit — doing that leaks
+whatever placeholder you happen to use into the repo history.
 
 Current work branch: `starbreaker-exporter`. Commits are local only —
 do not push unless explicitly asked.
