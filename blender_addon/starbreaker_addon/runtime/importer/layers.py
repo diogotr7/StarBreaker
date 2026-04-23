@@ -66,6 +66,7 @@ class LayersMixin:
         y: int,
         label: str,
         detail_slots: tuple[str, ...],
+        wire_diffuse_alpha: bool = False,
     ) -> Any:
         if layer is None:
             return LayerSurfaceSockets()
@@ -107,7 +108,11 @@ class LayersMixin:
             nodes,
             links,
             base_color_socket=base_node.outputs[0] if base_node is not None else None,
-            base_alpha_socket=_output_socket(base_node, "Alpha") if base_node is not None else None,
+            base_alpha_socket=(
+                _output_socket(base_node, "Alpha")
+                if (base_node is not None and wire_diffuse_alpha)
+                else None
+            ),
             normal_color_socket=normal_node.outputs[0] if normal_node is not None else None,
             roughness_socket=roughness,
             roughness_source_is_smoothness=roughness_is_smoothness,

@@ -920,9 +920,26 @@ class MaterialsMixin:
 
     def _configure_material(self, material: bpy.types.Material, *, blend_method: str, shadow_method: str) -> None:
         if hasattr(material, "blend_method"):
-            material.blend_method = blend_method
+            try:
+                material.blend_method = blend_method
+            except (AttributeError, TypeError):
+                # Blender 4.2+ made ``blend_method`` read-only; the
+                # modern property is ``surface_render_method`` below.
+                pass
+        if hasattr(material, "surface_render_method"):
+            # Blender 5.x unified mapping:
+            #   OPAQUE / CLIP / HASHED -> DITHERED
+            #   BLEND                  -> BLENDED
+            method = "BLENDED" if blend_method == "BLEND" else "DITHERED"
+            try:
+                material.surface_render_method = method
+            except (AttributeError, TypeError):
+                pass
         if hasattr(material, "shadow_method"):
-            material.shadow_method = shadow_method
+            try:
+                material.shadow_method = shadow_method
+            except (AttributeError, TypeError):
+                pass
         material.use_backface_culling = False
 
 

@@ -623,7 +623,15 @@ class BuildersMixin:
         top_base = _submaterial_texture_reference(submaterial, slots=("TexSlot1",), roles=("base_color", "diffuse"))
         top_base_node = self._image_node(nodes, top_base.export_path if top_base is not None else None, x=-720, y=520, is_color=True)
         top_base_color = top_base_node.outputs[0] if top_base_node is not None else None
-        top_base_alpha = _output_socket(top_base_node, "Alpha") if top_base_node is not None else None
+        # Diffuse-texture alpha channels in CryEngine are frequently
+        # repurposed (gloss, detail mask, height) rather than opacity.
+        # Only wire them to the shader's alpha inputs when the
+        # material template explicitly opts into alpha handling.
+        top_base_alpha = (
+            _output_socket(top_base_node, "Alpha")
+            if (top_base_node is not None and plan.uses_alpha)
+            else None
+        )
         material_channel = submaterial.palette_routing.material_channel.name if submaterial.palette_routing.material_channel is not None else None
         angle_shift_enabled = _hard_surface_angle_shift_enabled(submaterial) or (
             material_channel == "tertiary" and _palette_has_iridescence(palette)
@@ -641,6 +649,7 @@ class BuildersMixin:
             y=240,
             label="Primary Layer",
             detail_slots=("TexSlot7", "TexSlot13", "TexSlot6"),
+            wire_diffuse_alpha=plan.uses_alpha,
         )
         secondary = self._connect_manifest_layer_surface_group(
             nodes,
@@ -652,6 +661,7 @@ class BuildersMixin:
             y=-120,
             label="Secondary Layer",
             detail_slots=("TexSlot7", "TexSlot13", "TexSlot6"),
+            wire_diffuse_alpha=plan.uses_alpha,
         )
         wear_factor = self._layered_wear_factor_socket(nodes, links, submaterial, x=-720, y=-120)
         damage_factor = self._layered_damage_factor_socket(nodes, links, submaterial, x=-720, y=-240)
@@ -979,7 +989,11 @@ class BuildersMixin:
             nodes,
             links,
             base_color_socket=decal_palette.color if decal_palette.color is not None else (primary_color_node.outputs[0] if primary_color_node is not None else None),
-            base_alpha_socket=decal_palette.alpha if decal_palette.alpha is not None else (_output_socket(primary_color_node, "Alpha") if primary_color_node is not None else None),
+            base_alpha_socket=(
+                (decal_palette.alpha if decal_palette.alpha is not None else (_output_socket(primary_color_node, "Alpha") if primary_color_node is not None else None))
+                if plan.uses_alpha
+                else None
+            ),
             normal_color_socket=primary_normal_node.outputs[0] if primary_normal_node is not None else None,
             roughness_socket=primary_roughness,
             roughness_source_is_smoothness=primary_roughness_is_smoothness,
@@ -1024,7 +1038,11 @@ class BuildersMixin:
             nodes,
             links,
             base_color_socket=secondary_color_node.outputs[0] if secondary_color_node is not None else None,
-            base_alpha_socket=_output_socket(secondary_color_node, "Alpha") if secondary_color_node is not None else None,
+            base_alpha_socket=(
+                _output_socket(secondary_color_node, "Alpha")
+                if (secondary_color_node is not None and plan.uses_alpha)
+                else None
+            ),
             normal_color_socket=secondary_normal_node.outputs[0] if secondary_normal_node is not None else None,
             roughness_socket=secondary_roughness,
             roughness_source_is_smoothness=secondary_roughness_is_smoothness,

@@ -46,6 +46,12 @@ Shared across every language in the repo:
 - **Fix the root cause, not the symptom.** Do not add `.max(small
   number)` style floors, fallback defaults, or try/except-pass around
   broken data. If the exporter is wrong, fix the exporter.
+- **Never hard-code workarounds for specific assets.** Do not gate
+  logic on a particular material name, ship name, texture path,
+  socpak, or item ID. If one asset misbehaves, find the generic
+  property of its category (shader family, blend mode flag, alpha
+  usage, etc.) and fix the rule for the whole category. Named-asset
+  branches rot the moment upstream renames or adds siblings.
 - **Match existing conventions.** Read the neighbours before
   inventing a new pattern. Dataclass style in `manifest.py`, naming
   in `blender-material-contract-naming-rules.md`, error taxonomy in
