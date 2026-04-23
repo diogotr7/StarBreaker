@@ -79,6 +79,28 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(light.light_type, "Projector")
         self.assertEqual(light.outer_angle, 24.0)
 
+    def test_light_record_parses_projector_texture(self) -> None:
+        light = LightRecord.from_value(
+            {
+                "name": "Light-Gobo",
+                "color": [1.0, 1.0, 1.0],
+                "light_type": "Spot",
+                "intensity": 10.0,
+                "projector_texture": "Data/Textures/lights/generic/spot_075.dds",
+            }
+        )
+        self.assertEqual(light.projector_texture, "Data/Textures/lights/generic/spot_075.dds")
+
+        light_none = LightRecord.from_value(
+            {
+                "name": "Light-Plain",
+                "color": [1.0, 1.0, 1.0],
+                "light_type": "Point",
+                "intensity": 10.0,
+            }
+        )
+        self.assertIsNone(light_none.projector_texture)
+
     def test_texture_reference_preserves_ddna_smoothness_markers(self) -> None:
         texture = TextureReference.from_value(
             {

@@ -703,6 +703,27 @@ pub(crate) fn write_decomposed_export(
                 .lights
                 .iter()
                 .map(|light| {
+                    // Extract the projector (gobo) DDS from P4k into the
+                    // decomposed package so it is self-contained. We keep the
+                    // original block format (BC6H / BC7 / DXT) by re-emitting
+                    // the raw DDS — gobo textures are frequently HDR BC6H,
+                    // which our RGBA decoder does not support today.
+                    let projector_texture_export = light
+                        .projector_texture
+                        .as_deref()
+                        .and_then(|src| {
+                            let normalized = normalize_source_path(p4k, src);
+                            let relative = replace_extension(&normalized, ".dds");
+                            let lookup_key = relative.to_ascii_lowercase();
+                            if existing_asset_paths
+                                .is_some_and(|paths| paths.contains(&lookup_key))
+                                || files.contains_key(&relative)
+                            {
+                                return Some(relative);
+                            }
+                            let bytes = crate::pipeline::load_raw_dds_file(p4k, src)?;
+                            Some(insert_binary_file(&mut files, relative, bytes))
+                        });
                     serde_json::json!({
                         "name": light.name,
                         "position": light.position,
@@ -713,6 +734,7 @@ pub(crate) fn write_decomposed_export(
                         "radius": light.radius,
                         "inner_angle": light.inner_angle,
                         "outer_angle": light.outer_angle,
+                        "projector_texture": projector_texture_export,
                     })
                 })
                 .collect(),

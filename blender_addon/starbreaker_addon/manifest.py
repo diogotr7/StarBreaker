@@ -434,6 +434,7 @@ class LightRecord:
     rotation: Vec4
     inner_angle: float
     outer_angle: float
+    projector_texture: str | None
     raw: JsonDict
 
     @classmethod
@@ -449,6 +450,7 @@ class LightRecord:
             rotation=_float_tuple(data.get("rotation"), 4),  # type: ignore[arg-type]
             inner_angle=_as_float(data.get("inner_angle")),
             outer_angle=_as_float(data.get("outer_angle")),
+            projector_texture=_as_str(data.get("projector_texture")),
             raw=data,
         )
 

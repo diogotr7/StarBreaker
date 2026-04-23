@@ -405,6 +405,9 @@ pub struct LightInfo {
     pub inner_angle: Option<f32>,
     /// For spot lights: outer cone angle in degrees.
     pub outer_angle: Option<f32>,
+    /// For projector / spot lights: P4k-relative DDS path of the gobo
+    /// projector texture (authored under `<projectorParams texture="...">`).
+    pub projector_texture: Option<String>,
 }
 
 /// A geometry placement from a .soc interior container.

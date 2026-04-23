@@ -430,6 +430,8 @@ class OrchestrationMixin:
             inner_ratio = min(max(inner_angle / outer_angle, 0.0), 1.0)
             light_data.spot_blend = 1.0 - inner_ratio
 
+        self._wire_light_gobo(light_data, light)
+
         light_object = bpy.data.objects.new(light.name or "StarBreaker Light", light_data)
         light_object.parent = parent
         light_object.location = _scene_position_to_blender(light.position)
@@ -437,6 +439,51 @@ class OrchestrationMixin:
         light_object.rotation_quaternion = _scene_light_quaternion_to_blender(light.rotation)
         self.collection.objects.link(light_object)
         return light_object
+
+    def _wire_light_gobo(self, light_data: bpy.types.Light, light: Any) -> None:
+        """Enable and author a gobo shader graph on ``light_data`` if ``light``
+        references a projector texture path.
+
+        No-op when ``light.projector_texture`` is empty or the texture cannot
+        be resolved under the current package. Uses the shared
+        ``StarBreaker Runtime Gobo`` group so the light's top-level graph
+        stays minimal (TexCoord -> Mapping -> Image -> Gobo -> Output).
+        """
+        projector_texture = getattr(light, "projector_texture", None)
+        if not projector_texture:
+            return
+        resolved = self.package.resolve_path(projector_texture)
+        if resolved is None or not resolved.is_file():
+            return
+
+        gobo_group = self._ensure_runtime_gobo_group()
+
+        light_data.use_nodes = True
+        node_tree = light_data.node_tree
+        if node_tree is None:
+            return
+        nodes = node_tree.nodes
+        links = node_tree.links
+        nodes.clear()
+
+        tex_coord = nodes.new("ShaderNodeTexCoord")
+        tex_coord.location = (-800, 0)
+        mapping = nodes.new("ShaderNodeMapping")
+        mapping.location = (-600, 0)
+        tex_image = nodes.new("ShaderNodeTexImage")
+        tex_image.location = (-400, 0)
+        tex_image.image = bpy.data.images.load(str(resolved), check_existing=True)
+        gobo = nodes.new("ShaderNodeGroup")
+        gobo.node_tree = gobo_group
+        gobo.location = (-100, 0)
+        gobo.inputs["Strength"].default_value = 1.0
+        output = nodes.new("ShaderNodeOutputLight")
+        output.location = (100, 0)
+
+        links.new(tex_coord.outputs["Normal"], mapping.inputs["Vector"])
+        links.new(mapping.outputs["Vector"], tex_image.inputs["Vector"])
+        links.new(tex_image.outputs["Color"], gobo.inputs["Gobo Image"])
+        links.new(gobo.outputs["Shader"], output.inputs["Surface"])
 
     def ensure_template(self, mesh_asset: str | None) -> ImportedTemplate:
         if not mesh_asset:

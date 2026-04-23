@@ -1896,3 +1896,50 @@ class GroupsMixin:
             g.use_fake_user = False
 
         return pom_vector_new
+
+    def _ensure_runtime_gobo_group(self) -> bpy.types.ShaderNodeTree:
+        """Shared shader group for spot-light gobo (projector) textures.
+
+        Exposes two inputs:
+
+        - ``Gobo Image`` (NodeSocketColor): sampled texture colour.
+        - ``Strength`` (NodeSocketFloat): emission strength multiplier.
+
+        Output ``Shader`` is a ``ShaderNodeEmission`` driven by the gobo
+        image colour. Intended to live inside a light's node tree; the
+        caller (``create_light``) feeds the image via a
+        ``ShaderNodeTexImage`` that samples ``Texture Coordinate > Normal``.
+
+        See ``docs/StarBreaker/lights-research.md``.
+        """
+        self._invalidate_runtime_group_if_unexpected(
+            "StarBreaker Runtime Gobo",
+            "gobo_v1",
+            {
+                "NodeGroupInput": 1,
+                "NodeGroupOutput": 1,
+                "ShaderNodeEmission": 1,
+            },
+        )
+        group_tree, group_input, group_output = self._begin_runtime_shared_group(
+            "StarBreaker Runtime Gobo",
+            signature="gobo_v1",
+            inputs=[
+                ("Gobo Image", "NodeSocketColor"),
+                ("Strength", "NodeSocketFloat"),
+            ],
+            outputs=[("Shader", "NodeSocketShader")],
+        )
+        if group_tree.get("starbreaker_runtime_built_signature") == "gobo_v1":
+            return group_tree
+        _set_group_input_default(group_input, "Gobo Image", (1.0, 1.0, 1.0, 1.0))
+        _set_group_input_default(group_input, "Strength", 1.0)
+        nodes = group_tree.nodes
+        links = group_tree.links
+        emission = nodes.new("ShaderNodeEmission")
+        emission.location = (0, 0)
+        links.new(group_input.outputs["Gobo Image"], emission.inputs["Color"])
+        links.new(group_input.outputs["Strength"], emission.inputs["Strength"])
+        links.new(emission.outputs[0], group_output.inputs["Shader"])
+        group_tree["starbreaker_runtime_built_signature"] = "gobo_v1"
+        return group_tree

@@ -539,6 +539,7 @@ fn parse_light_entities(
         radius,
         inner_angle: None,
         outer_angle: None,
+        projector_texture: None,
     }]
 }
 
@@ -645,6 +646,7 @@ fn parse_light_group(
             radius: 5.0,
             inner_angle: None,
             outer_angle: None,
+            projector_texture: None,
         });
     }
     lights
@@ -723,6 +725,13 @@ fn build_light_info_from_component(
         (None, None)
     };
 
+    // Projector / gobo texture path (only meaningful on Projector lights, but we
+    // capture the attribute regardless of type in case an Omni carries one).
+    let projector_texture = all_attrs
+        .get("texture")
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty());
+
     // CryEngine intensity to glTF candela:
     // CryEngine intensity values are typically 1-20 for interior lights.
     // glTF KHR_lights_punctual expects candela.
@@ -743,6 +752,7 @@ fn build_light_info_from_component(
         radius,
         inner_angle,
         outer_angle,
+        projector_texture,
     })
 }
 
