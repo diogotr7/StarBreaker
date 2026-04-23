@@ -21,12 +21,19 @@ ARGO_EXTERIOR = ARGO_SIDECAR_DIR / "argo_mole_exterior.materials.json"
 ARGO_INTERIOR = ARGO_SIDECAR_DIR / "argo_mole_interior.materials.json"
 
 
+_requires_argo_sidecars = unittest.skipUnless(
+    ARGO_EXTERIOR.is_file() and ARGO_INTERIOR.is_file(),
+    "ARGO MOLE sidecar fixtures not present; skipping contract seed test",
+)
+
+
 class ContractSeedTests(unittest.TestCase):
     def test_group_name_uses_stable_shader_family_prefix(self) -> None:
         self.assertEqual(group_name_for_shader_family("HardSurface"), "SB_HardSurface_v1")
         self.assertEqual(group_name_for_shader_family("LayerBlend_V2"), "SB_LayerBlend_V2_v1")
         self.assertEqual(group_name_for_shader_family("UI Plane"), "SB_UI_Plane_v1")
 
+    @_requires_argo_sidecars
     def test_seed_contract_uses_inventory_metadata_without_guessing_inputs(self) -> None:
         inventory = ShaderInventory.from_sidecar_paths(
             [ARGO_EXTERIOR, ARGO_INTERIOR],
@@ -46,6 +53,7 @@ class ContractSeedTests(unittest.TestCase):
         self.assertIn("primary", hard_surface.metadata.get("palette_channels", []))
         self.assertIn("Palette_Primary", hard_surface.metadata.get("proposed_palette_inputs", []))
 
+    @_requires_argo_sidecars
     def test_seed_contract_includes_documented_slots_not_present_in_fixture_inventory(self) -> None:
         inventory = ShaderInventory.from_sidecar_paths(
             [ARGO_EXTERIOR, ARGO_INTERIOR],

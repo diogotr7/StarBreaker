@@ -30,6 +30,10 @@ from starbreaker_addon.palette import (
 ARGO_SCENE = REPO_ROOT / "ships/Packages/ARGO MOLE/scene.json"
 
 
+@unittest.skipUnless(
+    ARGO_SCENE.is_file(),
+    f"ARGO MOLE fixture not present at {ARGO_SCENE}; skipping palette tests",
+)
 class PaletteTests(unittest.TestCase):
     def test_available_ids_are_loaded_from_fixture_manifests(self) -> None:
         package = PackageBundle.load(ARGO_SCENE)

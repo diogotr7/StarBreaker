@@ -20,12 +20,20 @@ ARGO_EXTERIOR = ARGO_SIDECARE_DIR / "argo_mole_exterior.materials.json"
 ARGO_INTERIOR = ARGO_SIDECARE_DIR / "argo_mole_interior.materials.json"
 
 
+_requires_argo_sidecars = unittest.skipUnless(
+    ARGO_EXTERIOR.is_file() and ARGO_INTERIOR.is_file(),
+    "ARGO MOLE sidecar fixtures not present; skipping shader inventory test",
+)
+
+
 class ShaderInventoryTests(unittest.TestCase):
+    @_requires_argo_sidecars
     def test_material_sidecar_paths_discovers_fixture_sidecars(self) -> None:
         paths = material_sidecar_paths(ARGO_SIDECARE_DIR)
         self.assertIn(ARGO_EXTERIOR, paths)
         self.assertIn(ARGO_INTERIOR, paths)
 
+    @_requires_argo_sidecars
     def test_inventory_summarizes_fixture_shader_families(self) -> None:
         inventory = ShaderInventory.from_sidecar_paths(
             [ARGO_EXTERIOR, ARGO_INTERIOR],
@@ -44,12 +52,14 @@ class ShaderInventoryTests(unittest.TestCase):
         self.assertIn("secondary", hard_surface.palette_channels)
         self.assertGreaterEqual(hard_surface.submaterial_count, 1)
 
+    @_requires_argo_sidecars
     def test_inventory_to_dict_is_json_ready(self) -> None:
         inventory = ShaderInventory.from_sidecar_paths([ARGO_EXTERIOR], export_root=REPO_ROOT / "ships")
         payload = inventory.to_dict()
         self.assertEqual(payload["sidecar_count"], 1)
         self.assertTrue(any(entry["shader_family"] == "HardSurface" for entry in payload["families"]))
 
+    @_requires_argo_sidecars
     def test_inventory_preserves_screen_families_from_fixture_sidecar(self) -> None:
         inventory = ShaderInventory.from_sidecar_paths([ARGO_INTERIOR], export_root=REPO_ROOT / "ships")
         monitor = inventory.family("DisplayScreen")

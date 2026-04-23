@@ -19,11 +19,18 @@ ARGO_INTERIOR = REPO_ROOT / "ships/Data/Objects/Spaceships/Ships/ARGO/MOLE/argo_
 COMPONENT_MASTER = REPO_ROOT / "ships/Data/Materials/vehicles/components/component_master_01.materials.json"
 
 
+_requires_argo_fixture = unittest.skipUnless(
+    ARGO_SCENE.is_file() and ARGO_INTERIOR.is_file() and COMPONENT_MASTER.is_file(),
+    "ARGO MOLE fixtures not present; skipping manifest test",
+)
+
+
 class ManifestTests(unittest.TestCase):
     def test_export_root_inference_matches_fixture_layout(self) -> None:
         export_root = infer_export_root(ARGO_SCENE, "Packages/ARGO MOLE")
         self.assertEqual(export_root, REPO_ROOT / "ships")
 
+    @_requires_argo_fixture
     def test_package_bundle_loads_real_fixture_manifests(self) -> None:
         package = PackageBundle.load(ARGO_SCENE)
         self.assertEqual(package.package_name, "ARGO MOLE")
@@ -32,6 +39,7 @@ class ManifestTests(unittest.TestCase):
         self.assertIn("palette/argo_mole", package.palettes)
         self.assertIn("palette/default", package.liveries)
 
+    @_requires_argo_fixture
     def test_package_bundle_resolves_and_caches_material_sidecars(self) -> None:
         package = PackageBundle.load(ARGO_SCENE)
         sidecar = package.load_material_sidecar("Data/objects/spaceships/ships/argo/mole/argo_mole_interior.materials.json")
@@ -43,6 +51,7 @@ class ManifestTests(unittest.TestCase):
         self.assertIsNotNone(cargo_pod)
         self.assertTrue(cargo_pod.is_file())
 
+    @_requires_argo_fixture
     def test_material_sidecar_preserves_layer_and_virtual_input_contract(self) -> None:
         interior = MaterialSidecar.from_file(ARGO_INTERIOR)
         self.assertIsNotNone(interior.source_material_path)
@@ -129,7 +138,10 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(smoothness_texture.texture_identity, "ddna_normal")
 
     def test_layer_manifest_preserves_resolved_layer_details(self) -> None:
-        exterior = MaterialSidecar.from_file(REPO_ROOT / "ships/Data/Objects/Spaceships/Ships/ARGO/MOLE/argo_mole_exterior.materials.json")
+        exterior_path = REPO_ROOT / "ships/Data/Objects/Spaceships/Ships/ARGO/MOLE/argo_mole_exterior.materials.json"
+        if not exterior_path.is_file():
+            self.skipTest(f"ARGO MOLE exterior fixture not present at {exterior_path}")
+        exterior = MaterialSidecar.from_file(exterior_path)
         layered = next(
             submaterial
             for submaterial in exterior.submaterials

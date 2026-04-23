@@ -57,6 +57,10 @@ def synthetic_submaterial(shader_family: str, *, tokens: list[str] | None = None
 
 
 class TemplateTests(unittest.TestCase):
+    @unittest.skipUnless(
+        ARGO_EXTERIOR.is_file() and ARGO_INTERIOR.is_file() and COMPONENT_MASTER.is_file(),
+        "ARGO MOLE fixtures not present; skipping fixture-dependent template test",
+    )
     def test_fixture_submaterials_map_to_expected_template_families(self) -> None:
         exterior = MaterialSidecar.from_file(ARGO_EXTERIOR)
         pom = next(submaterial for submaterial in exterior.submaterials if submaterial.submaterial_name == "pom_decals")
