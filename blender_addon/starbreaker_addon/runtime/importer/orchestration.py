@@ -377,7 +377,8 @@ class OrchestrationMixin:
         anchor.empty_display_type = "CUBE"
         anchor.parent = package_root
         anchor.matrix_local = _scene_matrix_to_blender(interior.container_transform)
-        self.collection.objects.link(anchor)
+        interior_collection = self._ensure_interior_collection()
+        interior_collection.objects.link(anchor)
 
         for placement in interior.placements:
             instance = SceneInstanceRecord(
@@ -393,7 +394,7 @@ class OrchestrationMixin:
             placement_anchor = bpy.data.objects.new(instance.entity_name, None)
             placement_anchor.parent = anchor
             placement_anchor.matrix_local = _scene_matrix_to_blender(placement.transform)
-            self.collection.objects.link(placement_anchor)
+            interior_collection.objects.link(placement_anchor)
 
             try:
                 template = self.ensure_template(instance.mesh_asset)
@@ -409,6 +410,7 @@ class OrchestrationMixin:
                 placement_anchor,
                 neutralize_axis_root=True,
                 force_neutralize_axis_root=True,
+                target_collection=interior_collection,
             )
             self._apply_instance_metadata([placement_anchor, *clones], instance, effective_palette_id)
             for clone in clones:
@@ -549,10 +551,12 @@ class OrchestrationMixin:
         anchor: bpy.types.Object,
         neutralize_axis_root: bool = False,
         force_neutralize_axis_root: bool = False,
+        target_collection: bpy.types.Collection | None = None,
     ) -> list[bpy.types.Object]:
         clones: list[bpy.types.Object] = []
         mapping: dict[str, bpy.types.Object] = {}
         needs_view_layer_update = False
+        link_collection = target_collection or self.collection
         for root_name in template.root_names:
             source = bpy.data.objects.get(root_name)
             if source is None:
@@ -560,7 +564,7 @@ class OrchestrationMixin:
             neutralize_root = neutralize_axis_root and (
                 force_neutralize_axis_root or _should_neutralize_axis_root(source, template.mesh_asset)
             )
-            clone = self._duplicate_object_tree(source, template.mesh_asset, mapping)
+            clone = self._duplicate_object_tree(source, template.mesh_asset, mapping, link_collection)
             clone.parent = anchor
             if neutralize_root:
                 clone.matrix_local = Matrix.Identity(4)
@@ -575,6 +579,7 @@ class OrchestrationMixin:
         source: bpy.types.Object,
         mesh_asset: str,
         mapping: dict[str, bpy.types.Object],
+        link_collection: bpy.types.Collection | None = None,
     ) -> bpy.types.Object:
         clone = source.copy()
         if source.data is not None:
@@ -584,14 +589,14 @@ class OrchestrationMixin:
         clone.hide_render = False
         clone[PROP_TEMPLATE_PATH] = mesh_asset
         clone[PROP_SOURCE_NODE_NAME] = source.get(PROP_SOURCE_NODE_NAME, source.name)
-        self.collection.objects.link(clone)
+        (link_collection or self.collection).objects.link(clone)
         clone.matrix_basis = source.matrix_basis.copy()
         mapping[source.name] = clone
 
         for child in source.children:
             if child.get(PROP_TEMPLATE_PATH) != mesh_asset:
                 continue
-            child_clone = self._duplicate_object_tree(child, mesh_asset, mapping)
+            child_clone = self._duplicate_object_tree(child, mesh_asset, mapping, link_collection)
             child_clone.parent = clone
             child_clone.matrix_parent_inverse = child.matrix_parent_inverse.copy()
         return clone
@@ -656,6 +661,30 @@ class OrchestrationMixin:
             collection = bpy.data.collections.new(collection_name)
             self.context.scene.collection.children.link(collection)
         return collection
+
+    def _ensure_interior_collection(self) -> bpy.types.Collection:
+        """Return (and lazily create) a per-package Interior sub-collection.
+
+        Interior geometry (cabin glass panes, cockpit shells, etc.)
+        is stacked behind the exterior canopy. Rendering every
+        layer together compounds Beer–Lambert transmission and
+        makes the canopy read near-opaque. Putting interior
+        placements in a dedicated sub-collection that is disabled
+        for render by default lets exterior shots render a clean
+        canopy while still allowing the user to flip the
+        collection back on for interior shots.
+        """
+        package_collection = self.collection
+        interior_name = f"{package_collection.name} Interior"
+        interior_collection = bpy.data.collections.get(interior_name)
+        if interior_collection is None:
+            interior_collection = bpy.data.collections.new(interior_name)
+            package_collection.children.link(interior_collection)
+            # Hide from render by default so exterior canopy/glass
+            # reads correctly; viewport stays visible so the user
+            # can still inspect/move the interior.
+            interior_collection.hide_render = True
+        return interior_collection
 
     def _ensure_template_collection(self) -> bpy.types.Collection:
         collection = bpy.data.collections.get(TEMPLATE_COLLECTION_NAME)
