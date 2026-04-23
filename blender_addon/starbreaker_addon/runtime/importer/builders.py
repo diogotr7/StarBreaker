@@ -68,17 +68,6 @@ from ...templates import has_virtual_input, material_palette_channels, represent
 from ..palette_utils import _palette_has_iridescence
 
 
-def __getattr__(name: str):
-    # Lazy fallback for module-level helpers that still live in ``_legacy.py``.
-    # At call time (not import time) ``_legacy`` is fully loaded, so this avoids
-    # the circular import that would otherwise arise if we pulled them eagerly.
-    from .. import _legacy
-    try:
-        return getattr(_legacy, name)
-    except AttributeError as exc:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
-
-
 def _canonical_material_sidecar_path(sidecar_path: str, sidecar: MaterialSidecar) -> str:
     return sidecar.normalized_export_relative_path or sidecar_path or sidecar.source_material_path or "material"
 

@@ -46,19 +46,8 @@ from ..palette_utils import (
     _palette_group_signature,
     _palette_has_iridescence,
 )
-
-
-def _legacy_attr(name: str) -> Any:
-    """Lazy fallback for module-level helpers still in ``_legacy.py``.
-
-    At call time (not import time) ``_legacy`` is fully loaded, so this
-    avoids a circular import while keeping references like
-    ``_palette_group_name`` and the ``LayerSurfaceSockets`` dataclass
-    accessible from this mixin.
-    """
-    from .. import _legacy
-
-    return getattr(_legacy, name)
+from .types import LayerSurfaceSockets
+from .utils import _palette_group_name, _safe_identifier
 
 
 class PaletteMixin:
@@ -356,7 +345,6 @@ class PaletteMixin:
         return group
 
     def _ensure_palette_group(self, palette: PaletteRecord) -> bpy.types.ShaderNodeTree:
-        _palette_group_name = _legacy_attr("_palette_group_name")
         group_name = _palette_group_name(self.package.package_name, self._palette_scope())
         group_signature = _palette_group_signature(palette)
         group = bpy.data.node_groups.get(group_name)
@@ -513,8 +501,6 @@ class PaletteMixin:
         x: int,
         y: int,
     ) -> bpy.types.Node:
-        _safe_identifier = _legacy_attr("_safe_identifier")
-        _palette_group_name = _legacy_attr("_palette_group_name")
         expected_name = f"STARBREAKER_PALETTE_{_safe_identifier(self._palette_scope()).upper()}"
         existing = next(
             (
@@ -597,7 +583,6 @@ class PaletteMixin:
         x: int,
         y: int,
     ) -> Any:
-        LayerSurfaceSockets = _legacy_attr("LayerSurfaceSockets")
         if palette is None:
             return LayerSurfaceSockets()
         group_node = self._palette_group_node(nodes, links, palette, x=x, y=y)

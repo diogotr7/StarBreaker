@@ -56,12 +56,15 @@ from ..record_utils import (
     _submaterial_texture_reference,
     _suppresses_virtual_tint_palette_stencil_input,
 )
-
-
-def _legacy_attr(name: str) -> Any:
-    from .. import _legacy
-
-    return getattr(_legacy, name)
+from .types import MATERIAL_NODE_LAYOUT
+from .utils import (
+    _contract_input_uses_color,
+    _derived_material_name,
+    _imported_slot_mapping_from_materials,
+    _material_identity,
+    _material_is_compatible,
+    _material_name,
+)
 
 
 class MaterialsMixin:
@@ -75,8 +78,6 @@ class MaterialsMixin:
         palette: PaletteRecord | None,
     ) -> bpy.types.Material:
         palette_scope = self._palette_scope()
-        _material_identity = _legacy_attr("_material_identity")
-        _material_name = _legacy_attr("_material_name")
         cache_key = _material_identity(sidecar_path, sidecar, submaterial, palette, palette_scope)
         cached = self.material_cache.get(cache_key)
         if cached is not None:
@@ -112,9 +113,8 @@ class MaterialsMixin:
         palette_scope: str,
         material_identity: str,
     ) -> bpy.types.Material | None:
-        preferred_name = submaterial.blender_material_name or _legacy_attr("_derived_material_name")(sidecar_path, sidecar, submaterial)
+        preferred_name = submaterial.blender_material_name or _derived_material_name(sidecar_path, sidecar, submaterial)
         preferred = bpy.data.materials.get(preferred_name)
-        _material_is_compatible = _legacy_attr("_material_is_compatible")
         if preferred is not None and _material_is_compatible(
             preferred,
             self.package,
@@ -567,7 +567,7 @@ class MaterialsMixin:
             )
 
         image_path = texture.export_path if texture is not None else self._texture_path_for_contract_input(submaterial, contract_input)
-        if _legacy_attr("_contract_input_uses_color")(contract_input):
+        if _contract_input_uses_color(contract_input):
             if any(item.name.startswith("Palette_") for item in group_contract.inputs):
                 image_node = self._image_node(nodes, image_path, x=x, y=y, is_color=True)
                 if image_node is None:
@@ -856,7 +856,7 @@ class MaterialsMixin:
 
         nodes = node_tree.nodes
         links = node_tree.links
-        layout = _legacy_attr("MATERIAL_NODE_LAYOUT")
+        layout = MATERIAL_NODE_LAYOUT
 
         output = next((node for node in nodes if node.bl_idname == "ShaderNodeOutputMaterial"), None)
         if output is not None:
@@ -939,7 +939,7 @@ class MaterialsMixin:
             materials = getattr(obj.data, "materials", None)
             if materials is None:
                 continue
-            slot_mapping = _legacy_attr("_imported_slot_mapping_from_materials")(materials)
+            slot_mapping = _imported_slot_mapping_from_materials(materials)
             if slot_mapping is not None:
                 obj.data[PROP_IMPORTED_SLOT_MAP] = json.dumps(slot_mapping)
             for index in range(len(materials)):

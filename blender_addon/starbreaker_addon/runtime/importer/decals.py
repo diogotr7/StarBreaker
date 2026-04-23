@@ -30,12 +30,7 @@ from ..record_utils import (
     _public_param_triplet,
     _resolved_submaterial_palette_color,
 )
-
-
-def _legacy_attr(name: str) -> Any:
-    from .. import _legacy
-
-    return getattr(_legacy, name)
+from .types import LayerSurfaceSockets
 
 
 class DecalsMixin:
@@ -53,7 +48,6 @@ class DecalsMixin:
         x: int,
         y: int,
     ) -> Any:
-        LayerSurfaceSockets = _legacy_attr("LayerSurfaceSockets")
         fallback_color, alpha = self._virtual_tint_palette_decal_defaults(submaterial, palette)
         if (
             palette is not None

@@ -37,7 +37,7 @@ def import_package(
     prefer_cycles: bool = True,
     palette_id: str | None = None,
 ) -> bpy.types.Object:
-    from ._legacy import PackageImporter
+    from .importer import PackageImporter
 
     package = PackageBundle.load(scene_path)
     importer = PackageImporter(context, package)
@@ -177,7 +177,7 @@ def dump_selected_metadata(context: bpy.types.Context) -> list[str]:
 
 
 def apply_palette_to_package_root(context: bpy.types.Context, package_root: bpy.types.Object, palette_id: str) -> int:
-    from ._legacy import PackageImporter
+    from .importer import PackageImporter
 
     package = _load_package_from_root(package_root)
     importer = PackageImporter(context, package, package_root=package_root)
@@ -193,7 +193,7 @@ def apply_paint_to_package_root(context: bpy.types.Context, package_root: bpy.ty
     Falls back to a fast palette-only update when no matching paint variant is
     found or when the variant does not carry a different material sidecar.
     """
-    from ._legacy import PackageImporter
+    from .importer import PackageImporter
 
     package = _load_package_from_root(package_root)
     variant = package.paints.get(palette_id)
@@ -232,7 +232,7 @@ def apply_paint_to_package_root(context: bpy.types.Context, package_root: bpy.ty
 
 
 def apply_livery_to_package_root(context: bpy.types.Context, package_root: bpy.types.Object, livery_id: str) -> int:
-    from ._legacy import PackageImporter
+    from .importer import PackageImporter
 
     package = _load_package_from_root(package_root)
     importer = PackageImporter(context, package, package_root=package_root)

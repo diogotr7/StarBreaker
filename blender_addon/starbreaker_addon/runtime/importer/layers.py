@@ -45,12 +45,7 @@ from ..record_utils import (
     _resolved_submaterial_palette_color,
     _submaterial_texture_reference,
 )
-
-
-def _legacy_attr(name: str) -> Any:
-    from .. import _legacy
-
-    return getattr(_legacy, name)
+from .types import LayerSurfaceSockets, SocketRef, StencilOverlaySockets
 
 
 class LayersMixin:
@@ -72,7 +67,6 @@ class LayersMixin:
         label: str,
         detail_slots: tuple[str, ...],
     ) -> Any:
-        LayerSurfaceSockets = _legacy_attr("LayerSurfaceSockets")
         if layer is None:
             return LayerSurfaceSockets()
 
@@ -169,8 +163,6 @@ class LayersMixin:
         y: int,
         label: str,
     ) -> Any:
-        LayerSurfaceSockets = _legacy_attr("LayerSurfaceSockets")
-        SocketRef = _legacy_attr("SocketRef")
         group_node = nodes.new("ShaderNodeGroup")
         group_node.node_tree = self._ensure_runtime_layer_surface_group()
         _refresh_group_node_sockets(group_node)
@@ -278,7 +270,6 @@ class LayersMixin:
         group_node: bpy.types.Node,
         socket_name: str,
     ) -> None:
-        SocketRef = _legacy_attr("SocketRef")
         if source_socket is None:
             return
         if isinstance(source_socket, SocketRef):
@@ -408,7 +399,6 @@ class LayersMixin:
         x: int,
         y: int,
     ) -> Any:
-        StencilOverlaySockets = _legacy_attr("StencilOverlaySockets")
         if not submaterial.decoded_feature_flags.has_stencil_map:
             return StencilOverlaySockets()
 
