@@ -669,55 +669,111 @@ fn build_light_info_from_component(
     pos: &[f64; 3],
     rot: &[f64; 4],
 ) -> Option<LightInfo> {
-    // Collect all attributes recursively from the component subtree.
-    // CryEngine light data is spread across nested children with varying depth.
-    let all_attrs = collect_all_attrs_recursive(xml, component);
+    // The EntityComponentLight carries top-level fields (lightType,
+    // useTemperature, etc.) directly. State-specific values (intensity,
+    // temperature, and the <color r g b> child element) live on dedicated
+    // state children: offState / defaultState / auxiliaryState /
+    // emergencyState / cinematicState. Star Citizen renders the "default"
+    // state for baked-in lights, so we read from <defaultState> only.
+    let component_attrs: HashMap<&str, &str> = xml
+        .node_attributes(component)
+        .filter(|(k, _)| *k != "__type")
+        .collect();
 
-    log::debug!("  Light '{name}' all_attrs: {:?}", all_attrs);
-
-    let af = |key: &str| -> f32 {
-        all_attrs
-            .get(key)
-            .and_then(|s| s.parse::<f32>().ok())
-            .unwrap_or(0.0)
-    };
-
-    // Intensity
-    let intensity = af("intensity").max(0.001);
-
-    // Radius: lightRadius is the attenuation radius
-    let radius = {
-        let r = af("lightRadius");
-        if r > 0.0 { r } else { 5.0 }
-    };
-
-    // Color: separate r, g, b channels (0-1 range in CryEngine)
-    let use_temperature = all_attrs
+    let bool_truthy = |s: &str| matches!(s, "1" | "true" | "True" | "TRUE");
+    let use_temperature = component_attrs
         .get("useTemperature")
-        .map(|s| *s == "1")
+        .map(|s| bool_truthy(s))
         .unwrap_or(false);
+    let light_type = component_attrs
+        .get("lightType")
+        .copied()
+        .unwrap_or("Omni")
+        .to_string();
+
+    // Locate <defaultState>.
+    let default_state = xml
+        .node_children(component)
+        .find(|c| xml.node_tag(c) == "defaultState");
+    let default_state_attrs: HashMap<&str, &str> = default_state
+        .map(|n| {
+            xml.node_attributes(n)
+                .filter(|(k, _)| *k != "__type")
+                .collect()
+        })
+        .unwrap_or_default();
+    let intensity = default_state_attrs
+        .get("intensity")
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(0.0)
+        .max(0.001);
+    let temperature = default_state_attrs
+        .get("temperature")
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(6500.0);
+
+    // Color: child of <defaultState>.
+    let (color_r, color_g, color_b) = default_state
+        .and_then(|ds| {
+            xml.node_children(ds)
+                .find(|c| xml.node_tag(c) == "color")
+                .map(|c| {
+                    let a: HashMap<&str, &str> = xml
+                        .node_attributes(c)
+                        .filter(|(k, _)| *k != "__type")
+                        .collect();
+                    let f = |k: &str| {
+                        a.get(k)
+                            .and_then(|s| s.parse::<f32>().ok())
+                            .unwrap_or(1.0)
+                            .clamp(0.0, 1.0)
+                    };
+                    (f("r"), f("g"), f("b"))
+                })
+        })
+        .unwrap_or((1.0, 1.0, 1.0));
+
     let color = if use_temperature {
-        // Convert color temperature (Kelvin) to RGB using Tanner Helland's algorithm
-        let temp = af("temperature").max(1000.0).min(40000.0);
-        kelvin_to_rgb(temp)
+        kelvin_to_rgb(temperature.clamp(1000.0, 40000.0))
     } else {
-        let r = af("r").max(0.0).min(1.0);
-        let g = af("g").max(0.0).min(1.0);
-        let b = af("b").max(0.0).min(1.0);
-        if r == 0.0 && g == 0.0 && b == 0.0 {
-            [1.0, 0.95, 0.9] // fallback warm white
-        } else {
-            [r, g, b]
-        }
+        [color_r, color_g, color_b]
     };
 
-    // Light type
-    let light_type = all_attrs.get("lightType").copied().unwrap_or("Omni");
+    // sizeParams > lightRadius (attenuation radius).
+    let radius = xml
+        .node_children(component)
+        .find(|c| xml.node_tag(c) == "sizeParams")
+        .and_then(|sp| {
+            xml.node_attributes(sp)
+                .find(|(k, _)| *k == "lightRadius")
+                .and_then(|(_, v)| v.parse::<f32>().ok())
+        })
+        .filter(|r| *r > 0.0)
+        .unwrap_or(5.0);
 
-    // Spot light parameters
-    let (inner_angle, outer_angle) = if light_type == "Projector" {
-        let fov = af("FOV").max(1.0);
-        // CryEngine FOV is full cone angle; glTF uses half-angles
+    // projectorParams > texture, FOV
+    let (projector_texture, fov) = xml
+        .node_children(component)
+        .find(|c| xml.node_tag(c) == "projectorParams")
+        .map(|pp| {
+            let a: HashMap<&str, &str> = xml
+                .node_attributes(pp)
+                .filter(|(k, _)| *k != "__type")
+                .collect();
+            let tex = a
+                .get("texture")
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty());
+            let fov = a
+                .get("FOV")
+                .and_then(|s| s.parse::<f32>().ok())
+                .unwrap_or(0.0);
+            (tex, fov)
+        })
+        .unwrap_or((None, 0.0));
+
+    // Spot light half-angles
+    let (inner_angle, outer_angle) = if light_type == "Projector" && fov > 0.0 {
         let outer = fov * 0.5;
         let inner = outer * 0.8;
         (Some(inner), Some(outer))
@@ -725,21 +781,12 @@ fn build_light_info_from_component(
         (None, None)
     };
 
-    // Projector / gobo texture path (only meaningful on Projector lights, but we
-    // capture the attribute regardless of type in case an Omni carries one).
-    let projector_texture = all_attrs
-        .get("texture")
-        .map(|s| s.to_string())
-        .filter(|s| !s.is_empty());
-
-    // CryEngine intensity to glTF candela:
-    // CryEngine intensity values are typically 1-20 for interior lights.
-    // glTF KHR_lights_punctual expects candela.
-    // Empirical mapping: candela ≈ intensity * 200 gives reasonable results.
+    // CryEngine intensity → glTF candela.
     let candela = intensity * 200.0;
 
     log::debug!(
-        "  → type={light_type}, intensity={intensity}, candela={candela}, radius={radius}, color={color:?}"
+        "  Light '{name}' type={light_type} useTemp={use_temperature} \
+         temperature={temperature} intensity={intensity} radius={radius} color={color:?}"
     );
 
     Some(LightInfo {
@@ -747,7 +794,7 @@ fn build_light_info_from_component(
         position: *pos,
         rotation: *rot,
         color,
-        light_type: light_type.to_string(),
+        light_type,
         intensity: candela,
         radius,
         inner_angle,
@@ -812,28 +859,6 @@ fn extract_relative_xform(
         );
     }
     ([0.0; 3], [1.0, 0.0, 0.0, 0.0])
-}
-
-/// Recursively collect all attributes from a CryXML node and its descendants.
-/// Skips `__type` attributes. Later values overwrite earlier ones on key collision.
-fn collect_all_attrs_recursive<'a>(
-    xml: &'a CryXml,
-    node: &'a starbreaker_cryxml::CryXmlNode,
-) -> HashMap<&'a str, &'a str> {
-    let mut attrs = HashMap::new();
-    for (k, v) in xml.node_attributes(node) {
-        if k != "__type" {
-            attrs.insert(k, v);
-        }
-    }
-    for child in xml.node_children(node) {
-        for (k, v) in collect_all_attrs_recursive(xml, child) {
-            if k != "__type" {
-                attrs.insert(k, v);
-            }
-        }
-    }
-    attrs
 }
 
 // ── Math helpers ────────────────────────────────────────────────────────────
