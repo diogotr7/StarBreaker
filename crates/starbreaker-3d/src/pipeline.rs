@@ -1396,8 +1396,12 @@ pub struct InteriorContainerData {
     pub name: String,
     /// 4×4 column-major transform positioning this container relative to the hull.
     pub container_transform: [[f32; 4]; 4],
-    /// Each entry: (index into unique_cgfs, per-object local transform).
-    pub placements: Vec<(usize, [[f32; 4]; 4])>,
+    /// Each entry: (index into unique_cgfs, per-object local transform,
+    /// optional per-placement tint palette override that takes precedence over
+    /// the container's palette). Loadout-attached children resolve their own
+    /// palette from the child entity's SGeometryResourceParams so each gadget
+    /// tints independently of the parent socpak's tint palette.
+    pub placements: Vec<(usize, [[f32; 4]; 4], Option<mtl::TintPalette>)>,
     pub lights: Vec<crate::types::LightInfo>,
     /// Tint palette resolved from the socpak's IncludedObjects tint_palette_paths.
     pub palette: Option<mtl::TintPalette>,
@@ -1510,7 +1514,7 @@ fn build_interiors_from_payloads(
             });
 
             if let Some(idx) = mesh_idx {
-                placements.push((idx, im.transform));
+                placements.push((idx, im.transform, None));
 
                 // Expand entity loadout attachments. Many interior entities
                 // (e.g. fire-extinguisher cabinets, kit lockers) carry their
@@ -1529,6 +1533,7 @@ fn build_interiors_from_payloads(
                             );
                             if !tree.root.children.is_empty() {
                                 expand_loadout_into_placements(
+                                    db,
                                     p4k,
                                     &tree.root.children,
                                     mat4_from_array(&im.transform),
@@ -1783,6 +1788,7 @@ fn compose_helper_transform(
 /// still placed using the parent's world transform plus any port offset, so
 /// missing geometry is never silently dropped.
 fn expand_loadout_into_placements(
+    db: &Database,
     p4k: &MappedP4k,
     children: &[starbreaker_datacore::loadout::LoadoutNode],
     parent_world: glam::Mat4,
@@ -1790,7 +1796,7 @@ fn expand_loadout_into_placements(
     nmc_cache: &mut std::collections::HashMap<String, Option<crate::nmc::NodeMeshCombo>>,
     cgf_cache: &mut std::collections::HashMap<String, Option<usize>>,
     unique_cgfs: &mut Vec<InteriorCgfEntry>,
-    placements: &mut Vec<(usize, [[f32; 4]; 4])>,
+    placements: &mut Vec<(usize, [[f32; 4]; 4], Option<mtl::TintPalette>)>,
 ) {
     if children.is_empty() {
         return;
@@ -1813,6 +1819,7 @@ fn expand_loadout_into_placements(
             // using the parent's transform and CGF as the attachment frame.
             if !child.children.is_empty() {
                 expand_loadout_into_placements(
+                    db,
                     p4k,
                     &child.children,
                     parent_world,
@@ -1834,6 +1841,13 @@ fn expand_loadout_into_placements(
         );
         let child_world = parent_world * helper_xform;
 
+        // Each loadout child resolves its own tint palette from the child
+        // entity's SGeometryResourceParams (falling back to a name-matched
+        // TintPaletteTree record). Gadgets like fire-extinguisher cabinets
+        // need their own red/black palette regardless of the parent socpak's
+        // palette.
+        let child_palette = query_tint_palette(db, &child.record);
+
         let geom_owned = child_geom.to_string();
         let mtl_owned = child.material_path.clone();
         let child_idx = *cgf_cache.entry(geom_owned.clone()).or_insert_with(|| {
@@ -1853,11 +1867,12 @@ fn expand_loadout_into_placements(
             Some(idx)
         });
         if let Some(idx) = child_idx {
-            placements.push((idx, mat4_to_array(child_world)));
+            placements.push((idx, mat4_to_array(child_world), child_palette));
         }
 
         if !child.children.is_empty() {
             expand_loadout_into_placements(
+                db,
                 p4k,
                 &child.children,
                 child_world,
@@ -2009,7 +2024,7 @@ fn preload_interior_meshes(
         .collect()
 }
 
-fn tint_palette_hash(palette: Option<&mtl::TintPalette>) -> u64 {
+pub(crate) fn tint_palette_hash(palette: Option<&mtl::TintPalette>) -> u64 {
     use std::hash::{Hash, Hasher};
 
     let Some(palette) = palette else {
@@ -2037,6 +2052,17 @@ fn collect_interior_palettes(
         let palette_hash = tint_palette_hash(palette.as_ref());
         if seen.insert(palette_hash) {
             palettes.push((palette_hash, palette));
+        }
+
+        // Per-placement palette overrides (e.g. loadout-attached gadgets that
+        // carry their own tint palette via SGeometryResourceParams).
+        for (_, _, placement_palette) in &container.placements {
+            if let Some(pal) = placement_palette {
+                let h = tint_palette_hash(Some(pal));
+                if seen.insert(h) {
+                    palettes.push((h, Some(pal.clone())));
+                }
+            }
         }
     }
 
@@ -4857,8 +4883,8 @@ pub fn dump_hierarchy(
             "    {{\n      \"container\": {:?},\n      \"meshes\": [\n",
             container.name
         );
-        for &(cgf_idx, ref transform) in &container.placements {
-            let entry = &interiors.unique_cgfs[cgf_idx];
+        for (cgf_idx, transform, _placement_palette) in &container.placements {
+            let entry = &interiors.unique_cgfs[*cgf_idx];
             let tx = transform[3][0];
             let ty = transform[3][1];
             let tz = transform[3][2];

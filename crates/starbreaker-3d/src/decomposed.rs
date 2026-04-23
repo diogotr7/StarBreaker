@@ -98,6 +98,10 @@ struct InteriorPlacementRecord {
     material_sidecar: Option<String>,
     entity_class_guid: Option<String>,
     transform: [[f32; 4]; 4],
+    /// Per-placement tint palette id that overrides the container's palette.
+    /// Populated for loadout-attached children that carry their own palette
+    /// (e.g. `kegr_red_black` on a fire-extinguisher tank).
+    palette_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -600,8 +604,21 @@ pub(crate) fn write_decomposed_export(
             .as_ref()
             .map(|palette| register_palette(&mut palette_records, palette));
         let mut placements = Vec::with_capacity(container.placements.len());
-        for (cgf_idx, transform) in &container.placements {
+        for (cgf_idx, transform, placement_palette) in &container.placements {
             let entry = &input.interiors.unique_cgfs[*cgf_idx];
+            // Per-placement palette override (loadout-attached children like
+            // fire-extinguisher tanks with their own `kegr_red_black` palette)
+            // takes precedence over the container's palette. Register it in
+            // the manifest so the addon can look it up by id.
+            let placement_palette_id = placement_palette
+                .as_ref()
+                .map(|palette| register_palette(&mut palette_records, palette));
+            let effective_palette_id = placement_palette_id
+                .clone()
+                .or_else(|| palette_id.clone());
+            let effective_palette_ref = placement_palette
+                .as_ref()
+                .or(container.palette.as_ref());
             let cache_key = format!(
                 "{}|{}",
                 entry.cgf_path.to_lowercase(),
@@ -683,8 +700,8 @@ pub(crate) fn write_decomposed_export(
 
             register_livery_usage(
                 &mut livery_usage,
-                palette_id.as_deref(),
-                container.palette.as_ref(),
+                effective_palette_id.as_deref(),
+                effective_palette_ref,
                 &entry.name,
                 material_sidecar.as_deref(),
             );
@@ -699,6 +716,7 @@ pub(crate) fn write_decomposed_export(
                 material_sidecar,
                 entity_class_guid: None,
                 transform: *transform,
+                palette_id: placement_palette_id,
             });
         }
 
@@ -1011,6 +1029,7 @@ fn interior_container_json(container: &InteriorContainerRecord) -> serde_json::V
                 "material_sidecar": placement.material_sidecar,
                 "entity_class_guid": placement.entity_class_guid,
                 "transform": placement.transform,
+                "palette_id": placement.palette_id,
             })
         }).collect::<Vec<_>>(),
         "lights": container.lights,
@@ -2911,6 +2930,7 @@ mod tests {
                     [0.0, 0.0, 1.0, 0.0],
                     [4.0, 5.0, 6.0, 1.0],
                 ],
+                palette_id: None,
             }],
             lights: vec![serde_json::json!({ "name": "light_a" })],
         };

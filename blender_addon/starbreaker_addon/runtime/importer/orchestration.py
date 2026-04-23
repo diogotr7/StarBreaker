@@ -418,13 +418,23 @@ class OrchestrationMixin:
         interior_collection.objects.link(anchor)
 
         for placement in interior.placements:
+            # A placement may carry its own `palette_id` (loadout-attached
+            # gadgets such as the fire-extinguisher tank whose own entity
+            # references a tint palette like `kegr_red_black`). When present
+            # it overrides the container's palette so each gadget tints from
+            # its own palette record.
+            placement_palette_id = None
+            if isinstance(placement.raw, dict):
+                placement_palette_id = placement.raw.get("palette_id")
+            effective_placement_palette = placement_palette_id or interior.palette_id
+
             instance = SceneInstanceRecord(
                 entity_name=placement.entity_class_guid or Path(placement.cgf_path or "interior").stem,
                 geometry_path=placement.cgf_path,
                 material_path=placement.material_path,
                 material_sidecar=placement.material_sidecar,
                 mesh_asset=placement.mesh_asset,
-                palette_id=interior.palette_id,
+                palette_id=effective_placement_palette,
                 raw=placement.raw,
             )
             effective_palette_id = self._effective_palette_id(instance.palette_id)

@@ -12,6 +12,7 @@ use json::validation::Checked;
 
 use crate::error::Error;
 use crate::nmc::NodeMeshCombo;
+use crate::pipeline::tint_palette_hash;
 use crate::types::{MaterialTextures, Mesh, SubMesh, TextureTransformInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -772,17 +773,6 @@ impl GlbBuilder {
 
         for container in &interiors.containers {
             let palette = container.palette.as_ref().or(fallback_palette);
-            let palette_key = palette.map(|p| {
-                // Hash palette colors for cache key
-                use std::hash::{Hash, Hasher};
-                let mut h = std::hash::DefaultHasher::new();
-                for c in &[p.primary, p.secondary, p.tertiary, p.glass] {
-                    c[0].to_bits().hash(&mut h);
-                    c[1].to_bits().hash(&mut h);
-                    c[2].to_bits().hash(&mut h);
-                }
-                h.finish()
-            }).unwrap_or(0);
 
             let container_node_idx = self.nodes_json.len() as u32;
             self.nodes_json.push(json::Node {
@@ -793,7 +783,16 @@ impl GlbBuilder {
 
             let mut container_children = Vec::new();
 
-            for &(mesh_array_idx, ref transform) in &container.placements {
+            for (mesh_array_idx, transform, placement_palette) in container
+                .placements
+                .iter()
+                .map(|(i, t, p)| (*i, t, p.as_ref()))
+            {
+                // Per-placement palette override (loadout-attached gadgets)
+                // takes precedence over the container's palette; fall back to
+                // the container palette otherwise.
+                let effective_palette = placement_palette.or(palette);
+                let palette_key = tint_palette_hash(effective_palette);
                 // Get or pack the mesh for this (cgf, palette) pair.
                 let cache_key = PackedInteriorMeshKey {
                     cgf_index: mesh_array_idx,
@@ -811,12 +810,12 @@ impl GlbBuilder {
                         packed_cache.insert(cache_key, u32::MAX);
                         continue;
                     };
-                    let textures = load_textures(mtl.as_ref(), palette);
+                    let textures = load_textures(mtl.as_ref(), effective_palette);
                     let packed = self.pack_mesh(
                         mesh,
                         mtl.as_ref(),
                         textures.as_ref(),
-                        palette,
+                        effective_palette,
                         Some(&interiors.unique_cgfs[mesh_array_idx].name),
                         material_mode,
                         false,
