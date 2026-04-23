@@ -1878,6 +1878,76 @@ class GroupsMixin:
                 if n.bl_idname == "ShaderNodeTexImage":
                     n.image = height_image
 
+        # Phase 17 — share samplerless, reference-less helpers across
+        # every POM instance. Blender shader groups cannot accept an
+        # ImageTexture datablock as a socket input, so groups that
+        # contain a sampler (``POM_disp``) — and any group that
+        # references them transitively (``POM_parallax``,
+        # ``POM_10x_Layer_Steps``, ``POM_Vector``) — must remain
+        # per-image. Pure-math helpers like ``tangent_space`` and
+        # ``Clamp`` hold no sampler and reference no other groups, so
+        # we can collapse every copy back onto a canonical shared
+        # version, dropping ~one node group per POM-using material.
+        _CANONICAL_SHARED = {"tangent_space", "Clamp"}
+        canonical_by_base: dict[str, bpy.types.ShaderNodeTree] = {}
+        for existing in bpy.data.node_groups:
+            base = existing.name.rsplit(".", 1)[0]
+            if (
+                base in _CANONICAL_SHARED
+                and existing not in added
+                and not any(n.bl_idname == "ShaderNodeTexImage" for n in existing.nodes)
+                and not any(
+                    n.bl_idname == "ShaderNodeGroup" and n.node_tree is not None
+                    for n in existing.nodes
+                )
+            ):
+                canonical_by_base.setdefault(base, existing)
+
+        redundant: list[bpy.types.ShaderNodeTree] = []
+        promoted: list[bpy.types.ShaderNodeTree] = []
+        for new_group in list(added):
+            base = new_group.name.rsplit(".", 1)[0]
+            if base not in _CANONICAL_SHARED:
+                continue
+            if any(n.bl_idname == "ShaderNodeTexImage" for n in new_group.nodes):
+                continue
+            if any(
+                n.bl_idname == "ShaderNodeGroup" and n.node_tree is not None
+                for n in new_group.nodes
+            ):
+                continue
+            canonical = canonical_by_base.get(base)
+            if canonical is None:
+                # First time we've seen this helper — promote the
+                # newly-appended copy to the canonical and keep it
+                # under its bare name (no ``StarBreaker POM [...]``
+                # prefix) so subsequent imports find it on sight.
+                new_group.name = base
+                new_group.use_fake_user = True
+                canonical_by_base[base] = new_group
+                promoted.append(new_group)
+                continue
+            # Rewire every reference from the redundant copy to the
+            # canonical, then mark it for removal.
+            for g in added:
+                for n in g.nodes:
+                    if (
+                        n.bl_idname == "ShaderNodeGroup"
+                        and n.node_tree is new_group
+                    ):
+                        n.node_tree = canonical
+            redundant.append(new_group)
+
+        for new_group in redundant:
+            added.remove(new_group)
+            if new_group.users == 0:
+                bpy.data.node_groups.remove(new_group, do_unlink=True)
+        # Promoted canonicals keep their bare base name and must not be
+        # rewritten by the prefix rename below.
+        for new_group in promoted:
+            if new_group in added:
+                added.remove(new_group)
+
         # Rename the root (and keep the internal chain under a prefix
         # so it's obvious in the node-group browser which copies belong
         # to which image).
