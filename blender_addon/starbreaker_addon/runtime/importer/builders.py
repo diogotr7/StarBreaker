@@ -1680,9 +1680,9 @@ class BuildersMixin:
         """Scan ``obj``'s material slots for a non-decal paint material
         with a palette channel assignment. Returns the canonical channel
         name ("primary" / "secondary" / "tertiary" / "glass") of the
-        first paint slot we can read, or None if no host paint material
-        is found. Prefers explicit palette_routing metadata on the
-        submaterial JSON; falls back to a material name heuristic
+        dominant paint coverage on the object, or None if no host paint
+        material is found. Prefers explicit palette_routing metadata on
+        the submaterial JSON; falls back to a material name heuristic
         ("_Paint_Primary" etc.). Falls through to the parent object's
         material slots when ``obj`` itself carries only decal
         materials (typical of ``dec_*`` children split off their host
@@ -1698,8 +1698,20 @@ class BuildersMixin:
 
     def _scan_slots_for_host_channel(self, obj: bpy.types.Object) -> str | None:
         priorities = ("primary", "secondary", "tertiary", "glass")
-        best: str | None = None
-        for slot in getattr(obj, "material_slots", []):
+        slots = list(getattr(obj, "material_slots", []) or [])
+        if not slots:
+            return None
+
+        counts: dict[int, int] = {}
+        mesh = getattr(obj, "data", None)
+        polygons = getattr(mesh, "polygons", None) if mesh is not None else None
+        if polygons is not None:
+            for poly in polygons:
+                idx = int(getattr(poly, "material_index", 0))
+                counts[idx] = counts.get(idx, 0) + 1
+
+        channel_counts: dict[str, int] = {}
+        for index, slot in enumerate(slots):
             mat = slot.material if slot is not None else None
             if mat is None:
                 continue
@@ -1734,11 +1746,15 @@ class BuildersMixin:
                         break
             if channel is None:
                 continue
-            if best is None or priorities.index(channel) < priorities.index(best):
-                best = channel
-                if best == priorities[0]:
-                    break
-        return best
+            channel_counts[channel] = channel_counts.get(channel, 0) + max(1, counts.get(index, 0))
+
+        if not channel_counts:
+            return None
+
+        return min(
+            channel_counts,
+            key=lambda channel: (-channel_counts[channel], priorities.index(channel)),
+        )
 
     def _mesh_decal_host_rgb_for_object(
         self, obj: bpy.types.Object

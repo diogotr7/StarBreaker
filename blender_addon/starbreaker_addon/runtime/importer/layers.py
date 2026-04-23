@@ -104,6 +104,15 @@ class LayersMixin:
         layer_channel_name = (
             layer.palette_channel.name if layer.palette_channel is not None else None
         )
+        metallic_value = _layer_snapshot_float(layer, "metallic")
+        specular_color = _layer_snapshot_triplet(layer, "specular")
+        # Palette-routed dielectric layers should source their F0 from the palette
+        # finish, not from authored layer sentinels like (1,1,1).
+        specular_value = (
+            0.0
+            if layer_channel_name is not None and metallic_value < 0.5
+            else (_mean_triplet(specular_color) or 0.0)
+        )
         return self._connect_layer_surface_group(
             nodes,
             links,
@@ -129,13 +138,13 @@ class LayersMixin:
             palette_channel_name=layer_channel_name,
             palette_finish_channel_name=layer_channel_name,
             palette_glossiness=palette_finish_glossiness(palette, layer_channel_name),
-            specular_value=_mean_triplet(_layer_snapshot_triplet(layer, "specular")) or 0.0,
+            specular_value=specular_value,
             palette_specular_value=_mean_triplet(
                 palette_finish_specular(palette, layer_channel_name)
             )
             or 0.0,
-            metallic_value=_layer_snapshot_float(layer, "metallic"),
-            specular_color=_layer_snapshot_triplet(layer, "specular"),
+            metallic_value=metallic_value,
+            specular_color=specular_color,
             x=x + 420,
             y=y - 120,
             label=label,

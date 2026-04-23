@@ -4071,6 +4071,12 @@ fn load_layer_details(
         material.surface_type.as_str()
     };
 
+    let specular_texture_mean = if material.public_param_f32(&["TintMode"]).unwrap_or(0.0) > 0.0 {
+        load_layer_specular_texture_mean(p4k, material)
+    } else {
+        None
+    };
+
     Some((
         mtl::MatLayerSnapshot {
             shader: material.shader.clone(),
@@ -4084,10 +4090,42 @@ fn load_layer_details(
             } else {
                 Some(effective_surface_type.to_string())
             },
-            metallic: mtl::layer_metallic(&material.name, &layer.path, effective_surface_type),
+            metallic: mtl::layer_metallic(
+                material.diffuse,
+                material.specular,
+                specular_texture_mean,
+            ),
         },
         material.resolved_layer_material(),
     ))
+}
+
+fn load_layer_specular_texture_mean(p4k: &MappedP4k, material: &mtl::SubMaterial) -> Option<f32> {
+    if material.shader_family() != mtl::ShaderFamily::Layer {
+        return None;
+    }
+
+    // Layer sub-materials conventionally place their authored F0 texture in
+    // TexSlot6. Sampling a lower mip is sufficient for classification and much
+    // cheaper than decoding the full-resolution DDS.
+    let spec_path = material
+        .texture_slots
+        .iter()
+        .find(|binding| !binding.is_virtual && binding.slot.eq_ignore_ascii_case("TexSlot6"))
+        .map(|binding| binding.path.as_str())?;
+
+    let png = load_diffuse_texture(p4k, spec_path, 5)?;
+    let image = decode_png(&png)?;
+    let pixel_count = (image.width() as u64).saturating_mul(image.height() as u64);
+    if pixel_count == 0 {
+        return None;
+    }
+
+    let rgb_sum: u64 = image
+        .pixels()
+        .map(|pixel| u64::from(pixel[0]) + u64::from(pixel[1]) + u64::from(pixel[2]))
+        .sum();
+    Some(rgb_sum as f32 / (pixel_count as f32 * 255.0 * 3.0))
 }
 
 /// Convert a DataCore file path to P4k format.

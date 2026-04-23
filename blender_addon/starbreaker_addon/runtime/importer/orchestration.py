@@ -15,7 +15,7 @@ import json
 import math
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import bpy
 from mathutils import Euler, Matrix
@@ -79,6 +79,7 @@ class OrchestrationMixin:
         context: bpy.types.Context,
         package: PackageBundle,
         package_root: bpy.types.Object | None = None,
+        progress_callback: Callable[[float, str], None] | None = None,
     ) -> None:
         self.context = context
         self.package = package
@@ -98,6 +99,27 @@ class OrchestrationMixin:
         self.sidecar_submaterials_by_index: dict[str, dict[int, SubmaterialRecord]] = {}
         self.sidecar_submaterials_by_name: dict[str, dict[str, SubmaterialRecord]] = {}
         self.slot_mapping_cache: dict[int, list[int | None] | None] = {}
+        self.progress_callback = progress_callback
+        self._progress_total_steps = 1
+        self._progress_completed_steps = 0
+
+    def _start_progress(self, total_steps: int, description: str) -> None:
+        self._progress_total_steps = max(int(total_steps), 1)
+        self._progress_completed_steps = 0
+        self._emit_progress(description)
+
+    def _advance_progress(self, description: str) -> None:
+        self._progress_completed_steps = min(
+            self._progress_completed_steps + 1,
+            self._progress_total_steps,
+        )
+        self._emit_progress(description)
+
+    def _emit_progress(self, description: str) -> None:
+        if self.progress_callback is None:
+            return
+        fraction = self._progress_completed_steps / max(self._progress_total_steps, 1)
+        self.progress_callback(fraction, description)
 
     def _ensure_runtime_shared_groups(self) -> None:
         if self.runtime_shared_groups_ready:
@@ -196,6 +218,13 @@ class OrchestrationMixin:
         return record.palette_id
 
     def import_scene(self, prefer_cycles: bool = True, palette_id: str | None = None) -> bpy.types.Object:
+        total_steps = (
+            2
+            + len(self.package.scene.children)
+            + len(self.package.scene.interiors)
+            + sum(len(interior.placements) for interior in self.package.scene.interiors)
+        )
+        self._start_progress(total_steps, f"Preparing {self.package.package_name}")
         if prefer_cycles and hasattr(self.context.scene.render, "engine"):
             self.context.scene.render.engine = "CYCLES"
             self._ensure_cycles_denoising_support()
@@ -221,12 +250,14 @@ class OrchestrationMixin:
         if self.import_paint_variant_sidecar is not None:
             package_root[PROP_PAINT_VARIANT_SIDECAR] = self.import_paint_variant_sidecar
 
+        self._advance_progress(f"Importing {self.package.scene.root_entity.entity_name}")
         root_anchor, root_nodes = self.instantiate_scene_instance(self.package.scene.root_entity, parent=package_root)
         self.node_index_by_entity_name[self.package.scene.root_entity.entity_name] = self._index_nodes(root_nodes)
         root_anchor.parent = package_root
         scene_root_parent = self._scene_root_parent(root_nodes) or package_root
 
         for child in self.package.scene.children:
+            self._advance_progress(f"Importing {child.entity_name}")
             parent_node = None
             if child.parent_entity_name:
                 parent_node = self.node_index_by_entity_name.get(child.parent_entity_name, {}).get(child.parent_node_name or "")
@@ -234,8 +265,10 @@ class OrchestrationMixin:
             self.node_index_by_entity_name.setdefault(child.entity_name, {}).update(self._index_nodes(child_nodes))
 
         for interior in self.package.scene.interiors:
+            self._advance_progress(f"Preparing {interior.name}")
             self.import_interior_container(interior, scene_root_parent)
 
+        self._emit_progress(f"Finalizing {self.package.package_name}")
         return package_root
 
     def _effective_import_material_sidecar(self, sidecar_path: str | None) -> str | None:
@@ -438,6 +471,7 @@ class OrchestrationMixin:
                 raw=placement.raw,
             )
             effective_palette_id = self._effective_palette_id(instance.palette_id)
+            self._advance_progress(f"Importing {instance.entity_name}")
             placement_anchor = bpy.data.objects.new(instance.entity_name, None)
             placement_anchor.parent = anchor
             placement_anchor.matrix_local = _scene_matrix_to_blender(placement.transform)

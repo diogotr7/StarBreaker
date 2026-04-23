@@ -578,27 +578,13 @@ impl SubMaterial {
             || s == "glasspbr"
     }
 
-    /// glTF metallic factor derived from material name.
+    /// glTF metallic factor derived from authored response data.
     ///
-    /// CryEngine uses a specular workflow where the Specular color parameter serves
-    /// multiple purposes depending on the shader: it can be actual F0 reflectance
-    /// (Illum), a blend/multiply factor (HardSurface, LayerBlend_V2), or a default
-    /// value of [1,1,1]. There is no reliable way to convert specular color to the
-    /// PBR metallic/dielectric distinction without the full shader graph.
-    ///
-    /// Conservative heuristic: only classify as metallic when the material name
-    /// unambiguously indicates bare/unpainted metal. Everything else is dielectric.
+    /// This uses the same bounded authored-data classifier as layer materials, but
+    /// without optional sentinel `_spec` sampling because generic submaterials do
+    /// not carry the resolved layer texture context here.
     pub fn metallic(&self) -> f32 {
-        let name = self.name.to_lowercase();
-        if name.contains("chrome")
-            || name.contains("raw_metal")
-            || name.contains("raw_iron")
-            || name == "tile_metal_bare"
-        {
-            1.0
-        } else {
-            0.0
-        }
+        layer_metallic(self.diffuse, self.specular, None)
     }
 
     /// For metallic materials, the base color should come from the specular color
@@ -633,64 +619,31 @@ impl SubMaterial {
     }
 }
 
-/// Classify a layer material as metallic based on its name, source path, and
-/// CryEngine ``SurfaceType`` tag.
+/// Classify a layer material as metallic from authored response data alone.
 ///
-/// More comprehensive than `SubMaterial::metallic()` — also checks common layer
-/// material path patterns (e.g. `metal/ship_mf_raw_steel.mtl`,
-/// `panels/RSI_panel_primary_a_metal.mtl`).
-///
-/// NOTE on SurfaceType: CryEngine's `SurfaceType` (metal_dense, metal_thin,
-/// rubber_dense, …) is primarily a physics/audio classification, not a PBR
-/// class. Painted steel hulls carry `metal_dense` because that's what a bullet
-/// impact or footstep should sound/feel like, but the shader renders them as
-/// dielectric paint. Using SurfaceType to drive `Metallic=1.0` therefore
-/// mis-classifies all painted panels as bare metal. We accept `surface_type`
-/// as an input for completeness (and to be available for future, narrower
-/// heuristics such as combining it with name cues) but do not classify on it
-/// by itself.
-pub fn layer_metallic(material_name: &str, source_path: &str, _surface_type: &str) -> f32 {
-    let name = material_name.to_lowercase();
-    let path = source_path.to_lowercase();
+/// The first rule uses explicit authored PBR scalars: dark diffuse + high
+/// specular means conductor. For the common authored sentinel case
+/// (`Diffuse=[1,1,1]`, `Specular=[1,1,1]`) the real F0 response lives in the
+/// linked `_spec` texture, so an optional mean-RGB sample can be supplied.
+pub fn layer_metallic(
+    diffuse: [f32; 3],
+    specular: [f32; 3],
+    specular_texture_mean: Option<f32>,
+) -> f32 {
+    let max_diffuse = diffuse.into_iter().fold(f32::MIN, f32::max);
+    let max_specular = specular.into_iter().fold(f32::MIN, f32::max);
 
-    // Name-based patterns (superset of SubMaterial::metallic())
-    if name.contains("chrome")
-        || name.contains("raw_metal")
-        || name.contains("raw_iron")
-        || name.contains("raw_steel")
-        || name.contains("raw_aluminum")
-        || name.contains("raw_aluminium")
-        || name.contains("brushed_metal")
-        || name.contains("iron_polished")
-        || name.contains("iron_brushed")
-        || name.contains("metal_bare")
-        || name.contains("weapon_bare")
-    {
+    if max_diffuse < 0.10 && max_specular > 0.25 {
         return 1.0;
     }
 
-    // Path-based: files under a `metal/` directory with "raw" or "bare" in the
-    // filename are bare conductors.
-    let segments: Vec<&str> = path.split(&['/', '\\'][..]).collect();
-    if let Some(dir_idx) = segments.iter().position(|s| *s == "metal") {
-        if let Some(filename) = segments.get(dir_idx + 1) {
-            if filename.contains("raw_") || filename.contains("bare") || filename.contains("chrome") {
-                return 1.0;
-            }
-        }
-    }
-
-    // Path-based: layer files whose basename ends in `_metal.mtl` or contains
-    // `_metal_` (e.g. `RSI_panel_primary_a_metal.mtl`,
-    // `ship_mf_panel_bare_metal_a.mtl`) are the bare-metal base layers used
-    // under paint/wear stacks. The paint layer (`*_white.mtl`,
-    // `*_primary.mtl`, etc.) sits on top and is dielectric; only this
-    // exposed bare-metal variant is classified metallic here.
-    if let Some(filename) = segments.last() {
-        let stem = filename.trim_end_matches(".mtl");
-        if stem.ends_with("_metal") || stem.contains("_metal_") {
-            return 1.0;
-        }
+    let is_authored_sentinel = max_diffuse >= 0.95 && max_specular >= 0.95;
+    if is_authored_sentinel
+        && let Some(mean) = specular_texture_mean
+        && mean > 0.25
+        && mean < 0.95
+    {
+        return 1.0;
     }
 
     0.0
@@ -1369,6 +1322,75 @@ mod tests {
         assert_eq!(resolved.authored_attributes[0].name, "MatTemplate");
         assert_eq!(resolved.public_params[0].name, "WearGlossiness");
         assert_eq!(resolved.authored_child_blocks[0].tag, "VertexDeform");
+    }
+
+    #[test]
+    fn layer_metallic_marks_dark_diffuse_colored_spec_as_metal() {
+        assert_eq!(
+            layer_metallic([0.004, 0.004, 0.004], [0.53, 0.49, 0.44], None),
+            1.0
+        );
+    }
+
+    #[test]
+    fn layer_metallic_marks_dark_diffuse_grey_spec_as_metal() {
+        assert_eq!(
+            layer_metallic([0.0, 0.0, 0.0], [0.35, 0.35, 0.35], None),
+            1.0
+        );
+    }
+
+    #[test]
+    fn layer_metallic_marks_sentinel_spec_mean_panel_metal_as_metal() {
+        assert_eq!(
+            layer_metallic([1.0, 1.0, 1.0], [1.0, 1.0, 1.0], Some(0.67)),
+            1.0
+        );
+    }
+
+    #[test]
+    fn layer_metallic_marks_sentinel_full_white_spec_as_dielectric() {
+        assert_eq!(
+            layer_metallic([1.0, 1.0, 1.0], [1.0, 1.0, 1.0], Some(1.0)),
+            0.0
+        );
+    }
+
+    #[test]
+    fn layer_metallic_marks_sentinel_low_spec_mean_as_dielectric() {
+        assert_eq!(
+            layer_metallic([1.0, 1.0, 1.0], [1.0, 1.0, 1.0], Some(0.24)),
+            0.0
+        );
+    }
+
+    #[test]
+    fn submaterial_metallic_uses_authored_data_not_name() {
+        let material = SubMaterial {
+            name: "chrome".to_string(),
+            shader: String::new(),
+            diffuse: [1.0, 1.0, 1.0],
+            opacity: 1.0,
+            alpha_test: 0.0,
+            string_gen_mask: String::new(),
+            is_nodraw: false,
+            specular: [1.0, 1.0, 1.0],
+            shininess: 0.0,
+            emissive: [0.0, 0.0, 0.0],
+            glow: 0.0,
+            surface_type: String::new(),
+            diffuse_tex: None,
+            normal_tex: None,
+            layers: Vec::new(),
+            palette_tint: 0,
+            texture_slots: Vec::new(),
+            public_params: Vec::new(),
+            authored_attributes: Vec::new(),
+            authored_textures: Vec::new(),
+            authored_child_blocks: Vec::new(),
+        };
+
+        assert_eq!(material.metallic(), 0.0);
     }
 
     #[test]

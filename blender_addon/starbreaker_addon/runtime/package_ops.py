@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import bpy
 
@@ -38,11 +38,12 @@ def import_package(
     scene_path: str | Path,
     prefer_cycles: bool = True,
     palette_id: str | None = None,
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> bpy.types.Object:
     from .importer import PackageImporter
 
     package = PackageBundle.load(scene_path)
-    importer = PackageImporter(context, package)
+    importer = PackageImporter(context, package, progress_callback=progress_callback)
     with _suspend_heavy_viewports(context):
         root = importer.import_scene(prefer_cycles=prefer_cycles, palette_id=palette_id)
     _purge_orphaned_runtime_groups()
