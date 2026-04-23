@@ -349,6 +349,39 @@ def _iter_starbreaker_lights() -> list[bpy.types.Light]:
     return result
 
 
+def _kelvin_to_linear_rgb(kelvin: float) -> tuple[float, float, float]:
+    """Convert a colour temperature in Kelvin to a linear sRGB triple.
+
+    Mirrors the Tanner Helland approximation used by the Rust exporter
+    (``starbreaker_3d::socpak::kelvin_to_rgb``) so per-state colours in the
+    addon match the exporter's top-level ``LightInfo.color`` and the
+    in-game blackbody appearance when ``useTemperature`` is set. Values
+    outside 1000-40000 K are clamped.
+    """
+    import math as _math
+
+    kelvin = max(1000.0, min(40000.0, float(kelvin)))
+    temp = kelvin / 100.0
+    if temp <= 66.0:
+        r = 1.0
+    else:
+        x = temp - 60.0
+        r = max(0.0, min(1.0, 329.698727446 * (x ** -0.1332047592) / 255.0))
+    if temp <= 66.0:
+        g = max(0.0, min(255.0, 99.4708025861 * _math.log(temp) - 161.1195681661)) / 255.0
+    else:
+        x = temp - 60.0
+        g = max(0.0, min(1.0, 288.1221695283 * (x ** -0.0755148492) / 255.0))
+    if temp >= 66.0:
+        b = 1.0
+    elif temp <= 19.0:
+        b = 0.0
+    else:
+        x = temp - 10.0
+        b = max(0.0, min(255.0, 138.5177312231 * _math.log(x) - 305.0447927307)) / 255.0
+    return (r, g, b)
+
+
 def available_light_state_names() -> list[str]:
     """Return the union of all state names authored across every
     StarBreaker light in the current .blend, ordered with the canonical
@@ -405,10 +438,14 @@ def _apply_state_to_light(light: bpy.types.Light, state_name: str) -> bool:
         light.energy = intensity_cd * LIGHT_CANDELA_TO_WATT * LIGHT_VISUAL_GAIN
 
     if use_temperature:
-        # Blender has no built-in Kelvin → RGB for a Light datablock. Keep the
-        # authored fallback colour; the exporter writes a RGB triple derived
-        # from the temperature when ``useTemperature="1"``.
-        pass
+        # CryEngine's ``useTemperature`` flag tells the engine to discard the
+        # authored RGB and render the blackbody colour at ``temperature``
+        # (same as the exporter's kelvin_to_rgb). Compute the blackbody RGB
+        # here so state switching matches the in-game appearance — without
+        # this, Blender was keeping the authored fallback colour (often
+        # warm-orange or saturated blue) while the engine renders the
+        # temperature-derived colour.
+        color = _kelvin_to_linear_rgb(temperature)
     light.color = (float(color[0]), float(color[1]), float(color[2]))
     light[PROP_LIGHT_ACTIVE_STATE] = state_name
     # Preserve temperature as a custom prop for round-tripping.
