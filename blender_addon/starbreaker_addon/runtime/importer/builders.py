@@ -1665,8 +1665,20 @@ class BuildersMixin:
         first paint slot we can read, or None if no host paint material
         is found. Prefers explicit palette_routing metadata on the
         submaterial JSON; falls back to a material name heuristic
-        ("_Paint_Primary" etc.).
+        ("_Paint_Primary" etc.). Falls through to the parent object's
+        material slots when ``obj`` itself carries only decal
+        materials (typical of ``dec_*`` children split off their host
+        ``geo_*`` geometry).
         """
+        channel = self._scan_slots_for_host_channel(obj)
+        if channel is not None:
+            return channel
+        parent = getattr(obj, "parent", None)
+        if parent is not None:
+            channel = self._scan_slots_for_host_channel(parent)
+        return channel
+
+    def _scan_slots_for_host_channel(self, obj: bpy.types.Object) -> str | None:
         priorities = ("primary", "secondary", "tertiary", "glass")
         best: str | None = None
         for slot in getattr(obj, "material_slots", []):
@@ -1709,6 +1721,87 @@ class BuildersMixin:
                 if best == priorities[0]:
                     break
         return best
+
+    def _mesh_decal_host_rgb_for_object(
+        self, obj: bpy.types.Object
+    ) -> tuple[float, float, float] | None:
+        """Fallback for Phase 29: when an object carries only decal
+        materials and neither it nor its parent exposes a palette
+        channel, read the dominant non-decal paint material's authored
+        tint and return it as an RGB triple. Picks the material that
+        covers the most polygons on the source mesh (self → parent) to
+        favour the main panel colour over structural accents. Returns
+        None if no usable host colour can be read.
+        """
+        for candidate in (obj, getattr(obj, "parent", None)):
+            if candidate is None:
+                continue
+            rgb = self._dominant_paint_tint_for_object(candidate)
+            if rgb is not None:
+                return rgb
+        return None
+
+    def _dominant_paint_tint_for_object(
+        self, obj: bpy.types.Object
+    ) -> tuple[float, float, float] | None:
+        slots = list(getattr(obj, "material_slots", []) or [])
+        if not slots:
+            return None
+        # Tally polygons per slot where possible.
+        counts: dict[int, int] = {}
+        mesh = getattr(obj, "data", None)
+        polygons = getattr(mesh, "polygons", None) if mesh is not None else None
+        if polygons is not None:
+            for poly in polygons:
+                idx = int(getattr(poly, "material_index", 0))
+                counts[idx] = counts.get(idx, 0) + 1
+        order = sorted(
+            range(len(slots)),
+            key=lambda i: counts.get(i, 0),
+            reverse=True,
+        )
+        for i in order:
+            mat = slots[i].material
+            if mat is None or mat.node_tree is None:
+                continue
+            if mat.get("starbreaker_shader_family") == "MeshDecal":
+                continue
+            rgb = self._read_paint_tint_rgb(mat)
+            if rgb is not None:
+                return rgb
+        return None
+
+    @staticmethod
+    def _read_paint_tint_rgb(
+        material: bpy.types.Material,
+    ) -> tuple[float, float, float] | None:
+        """Read a paint material's authored tint from its runtime group
+        nodes. Tries ``Tint Color`` first (LayerSurface / HardSurface
+        carry the baked-in per-layer tint there) then ``Primary
+        Color`` / ``Base Color``. Returns None if the material has no
+        recognisable runtime group or all candidate inputs are still
+        at their default white.
+        """
+        preferred = ("Tint Color", "Primary Color", "Base Color")
+        fallback: tuple[float, float, float] | None = None
+        for node in material.node_tree.nodes:
+            if node.bl_idname != "ShaderNodeGroup":
+                continue
+            tree = getattr(node, "node_tree", None)
+            if tree is None or not tree.name.startswith("StarBreaker Runtime"):
+                continue
+            for name in preferred:
+                sock = node.inputs.get(name)
+                if sock is None or not hasattr(sock, "default_value"):
+                    continue
+                try:
+                    r, g, b, *_ = tuple(sock.default_value)
+                except Exception:
+                    continue
+                if (r, g, b) == (1.0, 1.0, 1.0):
+                    continue
+                return (float(r), float(g), float(b))
+        return fallback
 
     def _ensure_mesh_decal_host_variant(
         self,
@@ -1829,12 +1922,23 @@ class BuildersMixin:
         assigned. For each slot carrying a MeshDecal material, detect
         the object's nearest paint channel and swap the slot to a
         channel-keyed clone. Returns the number of slots rebinded.
+
+        Phase 29 extensions:
+        - Walks up to ``obj.parent`` when ``obj`` has no paint of its
+          own (covers ``dec_*`` children split off their ``geo_*``
+          host).
+        - Falls back to an RGB variant (``__host_rgb_<hex>``) that
+          wires Host Tint to the dominant host paint's authored tint
+          when no palette channel can be identified.
         """
         if palette is None:
             return 0
         channel = self._mesh_decal_host_channel_for_object(obj)
+        fallback_rgb: tuple[float, float, float] | None = None
         if channel is None:
-            return 0
+            fallback_rgb = self._mesh_decal_host_rgb_for_object(obj)
+            if fallback_rgb is None:
+                return 0
         rebound = 0
         for slot in getattr(obj, "material_slots", []):
             mat = slot.material if slot is not None else None
@@ -1850,11 +1954,72 @@ class BuildersMixin:
             # not be re-tinted by the host.
             if not bool(mat.get(PROP_HAS_POM, False)):
                 continue
-            if mat.get("starbreaker_decal_host_channel") == channel:
-                continue
-            variant = self._ensure_mesh_decal_host_variant(mat, channel, palette)
+            if channel is not None:
+                if mat.get("starbreaker_decal_host_channel") == channel:
+                    continue
+                variant = self._ensure_mesh_decal_host_variant(mat, channel, palette)
+            else:
+                assert fallback_rgb is not None
+                key = mat.get("starbreaker_decal_host_rgb_key")
+                rgb_key = self._rgb_variant_key(fallback_rgb)
+                if key == rgb_key:
+                    continue
+                variant = self._ensure_mesh_decal_host_rgb_variant(mat, fallback_rgb)
             if variant is not mat:
                 slot.material = variant
                 rebound += 1
         return rebound
+
+    @staticmethod
+    def _rgb_variant_key(rgb: tuple[float, float, float]) -> str:
+        r, g, b = rgb
+        return f"{int(round(r * 255)):02x}{int(round(g * 255)):02x}{int(round(b * 255)):02x}"
+
+    def _ensure_mesh_decal_host_rgb_variant(
+        self,
+        material: bpy.types.Material,
+        rgb: tuple[float, float, float],
+    ) -> bpy.types.Material:
+        """Clone a decal material and set its ``Host Tint`` input to a
+        fixed RGB (no palette link). Used as a Phase 29 fallback when
+        the host uses fixed-colour paint that isn't routed through any
+        palette channel. Clones are cached in ``bpy.data.materials``
+        under ``<name>__host_rgb_<hex>`` so repeat import calls reuse
+        them.
+        """
+        if material is None or material.node_tree is None:
+            return material
+        rgb_key = self._rgb_variant_key(rgb)
+        clone_name = f"{material.name}__host_rgb_{rgb_key}"
+        clone = bpy.data.materials.get(clone_name)
+        if clone is not None and clone.get("starbreaker_decal_host_rgb_key") == rgb_key:
+            return clone
+        if clone is None:
+            clone = material.copy()
+            clone.name = clone_name
+        clone["starbreaker_decal_host_rgb_key"] = rgb_key
+        nodes = clone.node_tree.nodes
+        links = clone.node_tree.links
+        decal_group_node = next(
+            (
+                n
+                for n in nodes
+                if n.bl_idname == "ShaderNodeGroup"
+                and getattr(n, "node_tree", None) is not None
+                and n.node_tree.name.startswith("SB_MeshDecal")
+            ),
+            None,
+        )
+        if decal_group_node is None:
+            return clone
+        host_tint = decal_group_node.inputs.get("Host Tint")
+        if host_tint is None:
+            return clone
+        for link in list(host_tint.links):
+            links.remove(link)
+        try:
+            host_tint.default_value = (rgb[0], rgb[1], rgb[2], 1.0)
+        except Exception:
+            pass
+        return clone
 
