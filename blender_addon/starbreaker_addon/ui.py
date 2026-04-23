@@ -19,9 +19,11 @@ from .runtime import (
     PROP_SURFACE_SHADER_MODE,
     PROP_TEMPLATE_KEY,
     SCENE_WEAR_STRENGTH_PROP,
+    apply_light_state,
     apply_livery_to_selected_package,
     apply_paint_to_selected_package,
     apply_palette_to_selected_package,
+    available_light_state_names,
     dump_selected_metadata,
     exterior_palette_ids,
     find_package_root,
@@ -285,6 +287,29 @@ class STARBREAKER_OT_apply_livery(Operator):
         return context.window_manager.invoke_props_dialog(self)
 
 
+class STARBREAKER_OT_switch_light_state(Operator):
+    bl_idname = "starbreaker.switch_light_state"
+    bl_label = "Switch Light State"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = (
+        "Switch every imported StarBreaker light to the named CryEngine "
+        "authored state (defaultState, auxiliaryState, emergencyState, "
+        "cinematicState). Lights that lack the requested state keep their "
+        "current values."
+    )
+
+    state_name: StringProperty(name="State")  # type: ignore[assignment]
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        name = (self.state_name or "").strip()
+        if not name:
+            self.report({"ERROR"}, "No state name provided")
+            return {"CANCELLED"}
+        count = apply_light_state(name)
+        self.report({"INFO"}, f"Applied '{name}' to {count} light(s)")
+        return {"FINISHED"}
+
+
 class STARBREAKER_OT_dump_metadata(Operator):
     bl_idname = "starbreaker.dump_metadata"
     bl_label = "Dump Metadata"
@@ -353,12 +378,34 @@ class STARBREAKER_PT_tools(Panel):
             material_box.label(text=f"Template: {material.get(PROP_TEMPLATE_KEY, '')}")
             material_box.label(text=f"Surface: {material.get(PROP_SURFACE_SHADER_MODE, '')}")
 
+        # Phase 28: light state switcher. Show a row of buttons when the
+        # current .blend has any imported lights with authored states.
+        state_names = available_light_state_names()
+        if state_names:
+            light_box = layout.box()
+            light_box.label(text="Light States")
+            row = light_box.row(align=True)
+            _SHORT = {
+                "defaultState": "Default",
+                "auxiliaryState": "Auxiliary",
+                "emergencyState": "Emergency",
+                "cinematicState": "Cinematic",
+                "offState": "Off",
+            }
+            for name in state_names:
+                op = row.operator(
+                    STARBREAKER_OT_switch_light_state.bl_idname,
+                    text=_SHORT.get(name, name),
+                )
+                op.state_name = name
+
 
 CLASSES = [
     STARBREAKER_OT_import_decomposed_package,
     STARBREAKER_OT_apply_paint,
     STARBREAKER_OT_apply_palette,
     STARBREAKER_OT_apply_livery,
+    STARBREAKER_OT_switch_light_state,
     STARBREAKER_OT_dump_metadata,
     STARBREAKER_PT_tools,
 ]

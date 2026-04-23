@@ -21,6 +21,8 @@ from ..manifest import PackageBundle, SceneInstanceRecord
 from ..palette import palette_id_for_livery_instance, resolved_palette_id
 from .constants import (
     PROP_INSTANCE_JSON,
+    PROP_LIGHT_ACTIVE_STATE,
+    PROP_LIGHT_STATES_JSON,
     PROP_MATERIAL_SIDECAR,
     PROP_PACKAGE_ROOT,
     PROP_PAINT_VARIANT_SIDECAR,
@@ -325,3 +327,101 @@ def _string_prop(obj: bpy.types.ID, name: str) -> str | None:
     if isinstance(value, str) and value:
         return value
     return None
+
+
+_LIGHT_STATE_PRIORITY = (
+    "defaultState",
+    "auxiliaryState",
+    "emergencyState",
+    "cinematicState",
+    "offState",
+)
+
+
+def _iter_starbreaker_lights() -> list[bpy.types.Light]:
+    """Yield every ``bpy.types.Light`` datablock that carries a Phase 28
+    ``PROP_LIGHT_STATES_JSON`` custom property (i.e. was imported with the
+    multi-state manifest from the StarBreaker exporter)."""
+    result: list[bpy.types.Light] = []
+    for light in bpy.data.lights:
+        if _string_prop(light, PROP_LIGHT_STATES_JSON):
+            result.append(light)
+    return result
+
+
+def available_light_state_names() -> list[str]:
+    """Return the union of all state names authored across every
+    StarBreaker light in the current .blend, ordered with the canonical
+    CryEngine priority first."""
+    import json as _json
+
+    seen: set[str] = set()
+    for light in _iter_starbreaker_lights():
+        raw = _string_prop(light, PROP_LIGHT_STATES_JSON) or "{}"
+        try:
+            payload = _json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            seen.update(payload.keys())
+    ordered: list[str] = [name for name in _LIGHT_STATE_PRIORITY if name in seen]
+    ordered.extend(sorted(name for name in seen if name not in _LIGHT_STATE_PRIORITY))
+    return ordered
+
+
+def _apply_state_to_light(light: bpy.types.Light, state_name: str) -> bool:
+    """Apply the ``state_name`` snapshot to ``light`` in-place. Returns True
+    if the light had the named state and was updated, False otherwise."""
+    import json as _json
+    from ..constants import (
+        GLTF_PBR_WATTS_TO_LUMENS,
+        LIGHT_CANDELA_TO_WATT,
+        LIGHT_VISUAL_GAIN,
+    )
+
+    raw = _string_prop(light, PROP_LIGHT_STATES_JSON)
+    if not raw:
+        return False
+    try:
+        payload = _json.loads(raw)
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    state = payload.get(state_name)
+    if not isinstance(state, dict):
+        return False
+
+    intensity_cd = float(state.get("intensity_cd") or 0.0)
+    temperature = float(state.get("temperature") or 6500.0)
+    use_temperature = bool(state.get("use_temperature"))
+    color = state.get("color") or [1.0, 1.0, 1.0]
+    if not (isinstance(color, (list, tuple)) and len(color) >= 3):
+        color = [1.0, 1.0, 1.0]
+
+    if light.type == "SUN":
+        light.energy = intensity_cd / GLTF_PBR_WATTS_TO_LUMENS
+    else:
+        light.energy = intensity_cd * LIGHT_CANDELA_TO_WATT * LIGHT_VISUAL_GAIN
+
+    if use_temperature:
+        # Blender has no built-in Kelvin → RGB for a Light datablock. Keep the
+        # authored fallback colour; the exporter writes a RGB triple derived
+        # from the temperature when ``useTemperature="1"``.
+        pass
+    light.color = (float(color[0]), float(color[1]), float(color[2]))
+    light[PROP_LIGHT_ACTIVE_STATE] = state_name
+    # Preserve temperature as a custom prop for round-tripping.
+    light["starbreaker_light_temperature"] = temperature
+    return True
+
+
+def apply_light_state(state_name: str) -> int:
+    """Switch every StarBreaker light in the current .blend to the named
+    state. Lights that lack the requested state keep their current values.
+    Returns the number of lights that were updated."""
+    updated = 0
+    for light in _iter_starbreaker_lights():
+        if _apply_state_to_light(light, state_name):
+            updated += 1
+    return updated

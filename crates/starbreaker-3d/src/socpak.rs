@@ -13,7 +13,7 @@ use starbreaker_datacore::query::value::Value;
 use starbreaker_p4k::{MappedP4k, P4kArchive};
 
 use crate::error::Error;
-use crate::types::{InteriorMesh, InteriorPayload, LightInfo};
+use crate::types::{InteriorMesh, InteriorPayload, LightInfo, LightStateInfo};
 
 // ── DataCore query ──────────────────────────────────────────────────────────
 
@@ -540,6 +540,8 @@ fn parse_light_entities(
         inner_angle: None,
         outer_angle: None,
         projector_texture: None,
+        active_state: String::new(),
+        states: std::collections::BTreeMap::new(),
     }]
 }
 
@@ -647,6 +649,8 @@ fn parse_light_group(
             inner_angle: None,
             outer_angle: None,
             projector_texture: None,
+            active_state: String::new(),
+            states: std::collections::BTreeMap::new(),
         });
     }
     lights
@@ -691,65 +695,93 @@ fn build_light_info_from_component(
         .unwrap_or("Omni")
         .to_string();
 
-    // Locate the state to import. CryEngine light components expose several
-    // runtime states (off / default / auxiliary / emergency / cinematic). The
-    // default state is often authored with intensity=0 (the light is "off by
-    // default" and the game enables auxiliary at runtime — e.g. the Aurora
-    // cabin fills have warm-white auxiliary on a blue default). Pick the
-    // first state with a non-zero intensity, in the order the engine would
-    // fall back through: default -> auxiliary -> emergency -> cinematic.
-    const STATE_ORDER: &[&str] = &[
+    // CryEngine light components expose several runtime states
+    // (`offState` / `defaultState` / `auxiliaryState` / `emergencyState` /
+    // `cinematicState`). Each carries its own intensity, temperature, and
+    // <color r g b> child. Collect every authored state so downstream
+    // tools can switch between them; then pick the first with
+    // intensity > 0 (in fallback order) as the active state to expose on
+    // the flat `color` / `intensity` fields.
+    const ALL_STATES: &[&str] = &[
+        "offState",
         "defaultState",
         "auxiliaryState",
         "emergencyState",
         "cinematicState",
     ];
-    let state_node = STATE_ORDER.iter().find_map(|tag| {
-        xml.node_children(component)
-            .find(|c| xml.node_tag(c) == *tag)
-            .filter(|n| {
-                xml.node_attributes(n)
-                    .find(|(k, _)| *k == "intensity")
-                    .and_then(|(_, v)| v.parse::<f32>().ok())
-                    .map(|i| i > 0.0)
-                    .unwrap_or(false)
-            })
-    });
-    let state_attrs: HashMap<&str, &str> = state_node
-        .map(|n| {
-            xml.node_attributes(n)
-                .filter(|(k, _)| *k != "__type")
-                .collect()
-        })
-        .unwrap_or_default();
-    let intensity = state_attrs
-        .get("intensity")
-        .and_then(|s| s.parse::<f32>().ok())
-        .unwrap_or(0.0);
-    let temperature = state_attrs
-        .get("temperature")
-        .and_then(|s| s.parse::<f32>().ok())
-        .unwrap_or(6500.0);
+    const STATE_PRIORITY: &[&str] = &[
+        "defaultState",
+        "auxiliaryState",
+        "emergencyState",
+        "cinematicState",
+    ];
 
-    // Color: child of the chosen state.
-    let (color_r, color_g, color_b) = state_node
-        .and_then(|ds| {
-            xml.node_children(ds)
-                .find(|c| xml.node_tag(c) == "color")
-                .map(|c| {
-                    let a: HashMap<&str, &str> = xml
-                        .node_attributes(c)
-                        .filter(|(k, _)| *k != "__type")
-                        .collect();
-                    let f = |k: &str| {
-                        a.get(k)
-                            .and_then(|s| s.parse::<f32>().ok())
-                            .unwrap_or(1.0)
-                            .clamp(0.0, 1.0)
-                    };
-                    (f("r"), f("g"), f("b"))
-                })
+    let read_state = |tag: &str| -> Option<LightStateInfo> {
+        let node = xml
+            .node_children(component)
+            .find(|c| xml.node_tag(c) == tag)?;
+        let a: HashMap<&str, &str> = xml
+            .node_attributes(node)
+            .filter(|(k, _)| *k != "__type")
+            .collect();
+        let intensity_raw = a
+            .get("intensity")
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(0.0);
+        let temperature = a
+            .get("temperature")
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(6500.0);
+        let (cr, cg, cb) = xml
+            .node_children(node)
+            .find(|c| xml.node_tag(c) == "color")
+            .map(|c| {
+                let ca: HashMap<&str, &str> = xml
+                    .node_attributes(c)
+                    .filter(|(k, _)| *k != "__type")
+                    .collect();
+                let f = |k: &str| {
+                    ca.get(k)
+                        .and_then(|s| s.parse::<f32>().ok())
+                        .unwrap_or(1.0)
+                        .clamp(0.0, 1.0)
+                };
+                (f("r"), f("g"), f("b"))
+            })
+            .unwrap_or((1.0, 1.0, 1.0));
+        Some(LightStateInfo {
+            intensity_raw,
+            intensity_cd: intensity_raw * 200.0,
+            temperature,
+            use_temperature,
+            color: [cr, cg, cb],
         })
+    };
+
+    let mut states: std::collections::BTreeMap<String, LightStateInfo> =
+        std::collections::BTreeMap::new();
+    for tag in ALL_STATES {
+        if let Some(s) = read_state(tag) {
+            states.insert((*tag).to_string(), s);
+        }
+    }
+
+    // Pick the active state via priority order.
+    let active_state_name = STATE_PRIORITY
+        .iter()
+        .find(|tag| {
+            states
+                .get(**tag)
+                .map(|s| s.intensity_raw > 0.0)
+                .unwrap_or(false)
+        })
+        .copied()
+        .unwrap_or("");
+    let active = states.get(active_state_name);
+    let intensity = active.map(|s| s.intensity_raw).unwrap_or(0.0);
+    let temperature = active.map(|s| s.temperature).unwrap_or(6500.0);
+    let (color_r, color_g, color_b) = active
+        .map(|s| (s.color[0], s.color[1], s.color[2]))
         .unwrap_or((1.0, 1.0, 1.0));
 
     let color = if use_temperature {
@@ -819,6 +851,8 @@ fn build_light_info_from_component(
         inner_angle,
         outer_angle,
         projector_texture,
+        active_state: active_state_name.to_string(),
+        states,
     })
 }
 

@@ -41,6 +41,13 @@ PROP_SURFACE_SHADER_MODE = "starbreaker_surface_shader_mode"
 # ``has_parallax_occlusion_mapping``. Used by the MeshDecal host-tint
 # rebinder to keep host tint on POM decals only (phases 10+11).
 PROP_HAS_POM = "starbreaker_has_pom"
+# Phase 28: per-light state switching. Lights imported from Star Citizen
+# carry the full set of authored `<defaultState|auxiliaryState|emergencyState
+# |cinematicState>` snapshots. The runtime switcher stores the JSON-encoded
+# map on the Light datablock and the currently-applied state name on the
+# same datablock so we can restore values when the user toggles states.
+PROP_LIGHT_STATES_JSON = "starbreaker_light_states"
+PROP_LIGHT_ACTIVE_STATE = "starbreaker_light_active_state"
 SCENE_WEAR_STRENGTH_PROP = "starbreaker_wear_strength"
 SURFACE_SHADER_MODE_PRINCIPLED = "principled_first"
 SURFACE_SHADER_MODE_GLASS = "glass_bsdf"

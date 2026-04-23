@@ -424,6 +424,32 @@ class LiveryRecord:
 
 
 @dataclass(frozen=True)
+class LightState:
+    """A single CryEngine `<defaultState|auxiliaryState|...>` snapshot.
+
+    See ``docs/StarBreaker/lights-research.md``. Values are copied verbatim
+    from the exporter's ``states`` map and are used both to populate the
+    light datablock at import time and to switch between states at runtime.
+    """
+    intensity_raw: float
+    intensity_cd: float
+    temperature: float
+    use_temperature: bool
+    color: Color3
+
+    @classmethod
+    def from_value(cls, value: Any) -> LightState:
+        data = _as_dict(value)
+        return cls(
+            intensity_raw=_as_float(data.get("intensity_raw")),
+            intensity_cd=_as_float(data.get("intensity_cd")),
+            temperature=_as_float(data.get("temperature")),
+            use_temperature=bool(data.get("use_temperature", False)),
+            color=_float_tuple(data.get("color"), 3),  # type: ignore[arg-type]
+        )
+
+
+@dataclass(frozen=True)
 class LightRecord:
     name: str
     color: Color3
@@ -435,11 +461,18 @@ class LightRecord:
     inner_angle: float
     outer_angle: float
     projector_texture: str | None
+    active_state: str | None
+    states: dict[str, LightState]
     raw: JsonDict
 
     @classmethod
     def from_value(cls, value: Any) -> LightRecord:
         data = _as_dict(value)
+        states_raw = _as_dict(data.get("states")) or {}
+        states = {
+            str(name): LightState.from_value(payload)
+            for name, payload in states_raw.items()
+        }
         return cls(
             name=str(data.get("name", "")),
             color=_float_tuple(data.get("color"), 3),  # type: ignore[arg-type]
@@ -451,6 +484,8 @@ class LightRecord:
             inner_angle=_as_float(data.get("inner_angle")),
             outer_angle=_as_float(data.get("outer_angle")),
             projector_texture=_as_str(data.get("projector_texture")),
+            active_state=_as_str(data.get("active_state")),
+            states=states,
             raw=data,
         )
 

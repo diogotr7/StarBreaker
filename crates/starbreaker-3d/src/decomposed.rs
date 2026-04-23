@@ -735,6 +735,23 @@ pub(crate) fn write_decomposed_export(
                         "inner_angle": light.inner_angle,
                         "outer_angle": light.outer_angle,
                         "projector_texture": projector_texture_export,
+                        "active_state": light.active_state,
+                        "states": light
+                            .states
+                            .iter()
+                            .map(|(name, s)| {
+                                (
+                                    name.clone(),
+                                    serde_json::json!({
+                                        "intensity_raw": s.intensity_raw,
+                                        "intensity_cd": s.intensity_cd,
+                                        "temperature": s.temperature,
+                                        "use_temperature": s.use_temperature,
+                                        "color": s.color,
+                                    }),
+                                )
+                            })
+                            .collect::<serde_json::Map<_, _>>(),
                     })
                 })
                 .collect(),

@@ -408,6 +408,41 @@ pub struct LightInfo {
     /// For projector / spot lights: P4k-relative DDS path of the gobo
     /// projector texture (authored under `<projectorParams texture="...">`).
     pub projector_texture: Option<String>,
+    /// Name of the authored state whose values currently populate
+    /// `color` / `intensity` (first-non-zero of default → auxiliary →
+    /// emergency → cinematic). Empty if the component had no usable state.
+    pub active_state: String,
+    /// All authored CryEngine light states keyed by state name
+    /// (`offState`, `defaultState`, `auxiliaryState`, `emergencyState`,
+    /// `cinematicState`). Missing states are absent from the map. Lets
+    /// downstream tools (Blender addon) switch live between authored
+    /// states without re-reading the source `.socpak`.
+    pub states: std::collections::BTreeMap<String, LightStateInfo>,
+}
+
+/// One authored CryEngine light state.
+///
+/// CryEngine `<EntityComponentLight>` carries up to five child state nodes
+/// (`offState`, `defaultState`, `auxiliaryState`, `emergencyState`,
+/// `cinematicState`). Each carries its own `intensity`, `temperature`, and
+/// `<color r g b>` child. We preserve all of them so downstream consumers
+/// can switch between them at runtime.
+#[derive(Debug, Clone)]
+pub struct LightStateInfo {
+    /// Raw CryEngine intensity (pre-candela multiplier). Zero means the
+    /// light is authored off in this state.
+    pub intensity_raw: f32,
+    /// Same value scaled by the glTF candela multiplier (× 200).
+    pub intensity_cd: f32,
+    /// Authored colour temperature in Kelvin.
+    pub temperature: f32,
+    /// Mirrors the `useTemperature` flag on the parent component.
+    /// When true, consumers should derive RGB from `temperature` instead
+    /// of reading `color` directly.
+    pub use_temperature: bool,
+    /// Authored linear RGB triple (0..1) from the `<color>` child. When
+    /// `use_temperature` is true this is usually `[1,1,1]`.
+    pub color: [f32; 3],
 }
 
 /// A geometry placement from a .soc interior container.

@@ -25,6 +25,8 @@ from ..constants import (
     PROP_ENTITY_NAME,
     PROP_EXPORT_ROOT,
     PROP_INSTANCE_JSON,
+    PROP_LIGHT_ACTIVE_STATE,
+    PROP_LIGHT_STATES_JSON,
     PROP_MATERIAL_IDENTITY,
     PROP_MATERIAL_SIDECAR,
     PROP_MESH_ASSET,
@@ -476,6 +478,25 @@ class OrchestrationMixin:
             light_data.shadow_soft_size = max(float(getattr(light_data, "shadow_soft_size", 0.0) or 0.0), 0.02)
 
         self._wire_light_gobo(light_data, light)
+
+        # Phase 28: stash the full state map + active state name on the Light
+        # datablock so the runtime state switcher can swap between
+        # defaultState/auxiliaryState/emergencyState/cinematicState.
+        states = getattr(light, "states", None) or {}
+        if states:
+            import json as _json
+            light_data[PROP_LIGHT_STATES_JSON] = _json.dumps(
+                {
+                    name: {
+                        "intensity_cd": s.intensity_cd,
+                        "temperature": s.temperature,
+                        "use_temperature": s.use_temperature,
+                        "color": list(s.color),
+                    }
+                    for name, s in states.items()
+                }
+            )
+            light_data[PROP_LIGHT_ACTIVE_STATE] = str(getattr(light, "active_state", "") or "")
 
         light_object = bpy.data.objects.new(light.name or "StarBreaker Light", light_data)
         light_object.parent = parent

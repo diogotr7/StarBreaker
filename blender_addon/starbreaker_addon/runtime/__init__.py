@@ -36,6 +36,8 @@ from .constants import (
     PROP_TEMPLATE_KEY,
     PROP_TEMPLATE_PATH,
     PROP_HAS_POM,
+    PROP_LIGHT_ACTIVE_STATE,
+    PROP_LIGHT_STATES_JSON,
     SCENE_AXIS_CONVERSION,
     SCENE_AXIS_CONVERSION_INV,
     SCENE_WEAR_STRENGTH_PROP,
@@ -45,12 +47,14 @@ from .constants import (
 )
 from .importer import PackageImporter
 from .package_ops import (
+    apply_light_state,
     apply_livery_to_package_root,
     apply_livery_to_selected_package,
     apply_paint_to_package_root,
     apply_paint_to_selected_package,
     apply_palette_to_package_root,
     apply_palette_to_selected_package,
+    available_light_state_names,
     dump_selected_metadata,
     exterior_palette_ids,
     find_package_root,
