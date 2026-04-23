@@ -1430,17 +1430,20 @@ fn load_interiors(
         }
     }
 
-    build_interiors_from_payloads(db, &payloads, opts.include_lights)
+    build_interiors_from_payloads(db, p4k, &payloads, opts.include_lights)
 }
 
 /// Shared interior building: dedup CGFs, resolve GUIDs, collect placements and lights.
 /// Used by both `load_interiors` (from DataCore) and `socpaks_to_glb` (from explicit paths).
 fn build_interiors_from_payloads(
     db: &Database,
+    p4k: &MappedP4k,
     payloads: &[crate::types::InteriorPayload],
     include_lights: bool,
 ) -> LoadedInteriors {
     use std::collections::HashMap;
+    use starbreaker_common::CigGuid;
+    use std::str::FromStr;
 
     let guid_geom_compiled = db.compile_rooted::<String>(
         "EntityClassDefinition.Components[SGeometryResourceParams].Geometry.Geometry.Geometry.path",
@@ -1452,6 +1455,12 @@ fn build_interiors_from_payloads(
     let mut cgf_cache: HashMap<String, Option<usize>> = HashMap::new();
     let mut unique_cgfs = Vec::new();
     let mut container_data = Vec::new();
+    // Cache of parent CGF NMC node tables for helper-bone resolution during
+    // loadout expansion. Keyed by lowercase CGF path. Value of None means we
+    // tried to load it and failed.
+    let mut nmc_cache: HashMap<String, Option<crate::nmc::NodeMeshCombo>> = HashMap::new();
+    // Built lazily — only entities that resolve via GUID trigger loadout walks.
+    let mut entity_index: Option<starbreaker_datacore::loadout::EntityIndex> = None;
 
     for payload in payloads {
         log::debug!(
@@ -1502,6 +1511,37 @@ fn build_interiors_from_payloads(
 
             if let Some(idx) = mesh_idx {
                 placements.push((idx, im.transform));
+
+                // Expand entity loadout attachments. Many interior entities
+                // (e.g. fire-extinguisher cabinets, kit lockers) carry their
+                // visible body in a child loadout entry attached at a named
+                // CryNode helper bone on the parent CGF, rather than on their
+                // own SGeometryResourceParams.
+                if let Some(guid_str) = &im.entity_class_guid {
+                    if let Ok(guid) = CigGuid::from_str(guid_str) {
+                        if let Some(parent_record) = db.record_by_id(&guid) {
+                            let idx_ref = entity_index.get_or_insert_with(|| {
+                                starbreaker_datacore::loadout::EntityIndex::new(db)
+                            });
+                            let tree = starbreaker_datacore::loadout::resolve_loadout_indexed(
+                                idx_ref,
+                                parent_record,
+                            );
+                            if !tree.root.children.is_empty() {
+                                expand_loadout_into_placements(
+                                    p4k,
+                                    &tree.root.children,
+                                    mat4_from_array(&im.transform),
+                                    &cgf_path,
+                                    &mut nmc_cache,
+                                    &mut cgf_cache,
+                                    &mut unique_cgfs,
+                                    &mut placements,
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -1650,6 +1690,185 @@ fn compute_nmc_world_transforms(nmc: &crate::nmc::NodeMeshCombo) -> Vec<glam::Ma
     }
 
     world.into_iter().flatten().collect()
+}
+
+/// Convert a column-major 4x4 array into a glam::Mat4.
+fn mat4_from_array(m: &[[f32; 4]; 4]) -> glam::Mat4 {
+    glam::Mat4::from_cols_array_2d(m)
+}
+
+/// Convert a glam::Mat4 back to the column-major array form used in placements.
+fn mat4_to_array(m: glam::Mat4) -> [[f32; 4]; 4] {
+    m.to_cols_array_2d()
+}
+
+/// Load NMC node table for a CGF/CGA file. The metadata is bundled with the
+/// .cgf itself in Ivo-format files; for split files (.cgf + .cgfm) the table
+/// lives in the .cgfm sidecar.
+fn load_nmc_for_cgf(p4k: &MappedP4k, cgf_path: &str) -> Option<crate::nmc::NodeMeshCombo> {
+    let try_path = |path: &str| -> Option<crate::nmc::NodeMeshCombo> {
+        let p4k_path = datacore_path_to_p4k(path);
+        let bytes = p4k.entry_case_insensitive(&p4k_path).and_then(|e| p4k.read(e).ok())?;
+        let (nodes, material_indices) = crate::nmc::parse_nmc_full(&bytes)?;
+        Some(crate::nmc::NodeMeshCombo { nodes, material_indices })
+    };
+    if let Some(nmc) = try_path(cgf_path) {
+        return Some(nmc);
+    }
+    let lower = cgf_path.to_lowercase();
+    if lower.ends_with(".cgf") || lower.ends_with(".cga") {
+        let sidecar = format!("{cgf_path}m");
+        if let Some(nmc) = try_path(&sidecar) {
+            return Some(nmc);
+        }
+    }
+    None
+}
+
+/// Compose a child-attachment transform from a parent's NMC + named helper bone
+/// + per-port `Offset` (Position + Euler-degree Rotation, CryEngine X,Y,Z order).
+///
+/// Returns identity if the parent NMC is unavailable, or if the helper bone
+/// cannot be located. Callers should still emit the placement so the geometry
+/// is not silently dropped.
+fn compose_helper_transform(
+    parent_nmc: Option<&crate::nmc::NodeMeshCombo>,
+    helper_name: Option<&str>,
+    offset_pos: [f32; 3],
+    offset_rot_deg: [f32; 3],
+) -> glam::Mat4 {
+    let helper_local = if let (Some(nmc), Some(name)) = (parent_nmc, helper_name) {
+        let world = compute_nmc_world_transforms(nmc);
+        let lower_name = name.to_ascii_lowercase();
+        match nmc
+            .nodes
+            .iter()
+            .position(|n| n.name.eq_ignore_ascii_case(&lower_name))
+        {
+            Some(i) if i < world.len() => world[i],
+            _ => {
+                log::debug!(
+                    "  loadout helper bone '{name}' not found in parent NMC ({} nodes)",
+                    nmc.nodes.len()
+                );
+                glam::Mat4::IDENTITY
+            }
+        }
+    } else {
+        glam::Mat4::IDENTITY
+    };
+
+    let offset = if offset_pos == [0.0; 3] && offset_rot_deg == [0.0; 3] {
+        glam::Mat4::IDENTITY
+    } else {
+        let r = glam::Mat4::from_euler(
+            glam::EulerRot::XYZ,
+            offset_rot_deg[0].to_radians(),
+            offset_rot_deg[1].to_radians(),
+            offset_rot_deg[2].to_radians(),
+        );
+        let t = glam::Mat4::from_translation(glam::Vec3::from(offset_pos));
+        t * r
+    };
+
+    helper_local * offset
+}
+
+/// Walk a loadout subtree, emitting additional `(cgf_idx, transform)` placements
+/// for each child entity that has a resolvable geometry path.
+///
+/// The transform for each child is composed as
+/// `parent_world × helper_local_on_parent_cgf × port_offset`.
+/// If the parent NMC is missing or the helper bone is not found, the child is
+/// still placed using the parent's world transform plus any port offset, so
+/// missing geometry is never silently dropped.
+fn expand_loadout_into_placements(
+    p4k: &MappedP4k,
+    children: &[starbreaker_datacore::loadout::LoadoutNode],
+    parent_world: glam::Mat4,
+    parent_cgf_path: &str,
+    nmc_cache: &mut std::collections::HashMap<String, Option<crate::nmc::NodeMeshCombo>>,
+    cgf_cache: &mut std::collections::HashMap<String, Option<usize>>,
+    unique_cgfs: &mut Vec<InteriorCgfEntry>,
+    placements: &mut Vec<(usize, [[f32; 4]; 4])>,
+) {
+    if children.is_empty() {
+        return;
+    }
+    // Look up parent NMC once for all children at this level.
+    let parent_key = parent_cgf_path.to_ascii_lowercase();
+    if !nmc_cache.contains_key(&parent_key) {
+        let nmc = load_nmc_for_cgf(p4k, parent_cgf_path);
+        nmc_cache.insert(parent_key.clone(), nmc);
+    }
+    // Clone the NMC out of the cache so we can release the borrow before
+    // recursing (children resolve a different parent NMC).
+    let parent_nmc: Option<crate::nmc::NodeMeshCombo> =
+        nmc_cache.get(&parent_key).and_then(|v| v.clone());
+
+    for child in children {
+        let Some(child_geom) = child.geometry_path.as_deref() else {
+            // No geometry on this node — but its grandchildren may still have
+            // some (e.g. an empty container item that holds tools). Recurse
+            // using the parent's transform and CGF as the attachment frame.
+            if !child.children.is_empty() {
+                expand_loadout_into_placements(
+                    p4k,
+                    &child.children,
+                    parent_world,
+                    parent_cgf_path,
+                    nmc_cache,
+                    cgf_cache,
+                    unique_cgfs,
+                    placements,
+                );
+            }
+            continue;
+        };
+
+        let helper_xform = compose_helper_transform(
+            parent_nmc.as_ref(),
+            child.helper_bone_name.as_deref(),
+            child.offset_position,
+            child.offset_rotation,
+        );
+        let child_world = parent_world * helper_xform;
+
+        let geom_owned = child_geom.to_string();
+        let mtl_owned = child.material_path.clone();
+        let child_idx = *cgf_cache.entry(geom_owned.clone()).or_insert_with(|| {
+            let idx = unique_cgfs.len();
+            let name = geom_owned
+                .rsplit('/')
+                .next()
+                .unwrap_or(&geom_owned)
+                .rsplit_once('.')
+                .map(|(stem, _)| stem.to_string())
+                .unwrap_or_else(|| geom_owned.clone());
+            unique_cgfs.push(InteriorCgfEntry {
+                cgf_path: geom_owned.clone(),
+                material_path: mtl_owned.clone(),
+                name,
+            });
+            Some(idx)
+        });
+        if let Some(idx) = child_idx {
+            placements.push((idx, mat4_to_array(child_world)));
+        }
+
+        if !child.children.is_empty() {
+            expand_loadout_into_placements(
+                p4k,
+                &child.children,
+                child_world,
+                &geom_owned,
+                nmc_cache,
+                cgf_cache,
+                unique_cgfs,
+                placements,
+            );
+        }
+    }
 }
 
 /// Bake NMC node transforms into mesh vertex positions.
@@ -4416,7 +4635,7 @@ pub fn socpaks_to_glb(
         }
     }
 
-    let interiors = build_interiors_from_payloads(db, &payloads, opts.include_lights);
+    let interiors = build_interiors_from_payloads(db, p4k, &payloads, opts.include_lights);
 
     let no_tex_opts = ExportOptions {
         material_mode: MaterialMode::Colors,
