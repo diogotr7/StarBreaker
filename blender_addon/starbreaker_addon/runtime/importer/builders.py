@@ -29,6 +29,7 @@ from ..constants import (
     PROP_MATERIAL_SIDECAR,
     PROP_PALETTE_ID,
     PROP_PALETTE_SCOPE,
+    PROP_PALETTE_SCOPE_MAP,
     PROP_SHADER_FAMILY,
     PROP_SUBMATERIAL_JSON,
     PROP_SURFACE_SHADER_MODE,
@@ -281,7 +282,7 @@ class BuildersMixin:
         material[PROP_SHADER_FAMILY] = submaterial.shader_family
         material[PROP_TEMPLATE_KEY] = plan.template_key
         material[PROP_PALETTE_ID] = palette_key
-        material[PROP_PALETTE_SCOPE] = self._palette_scope()
+        material[PROP_PALETTE_SCOPE] = self._palette_scope(palette)
         material[PROP_MATERIAL_SIDECAR] = _canonical_material_sidecar_path(sidecar_path, sidecar)
         material[PROP_MATERIAL_IDENTITY] = material_identity
         material[PROP_SUBMATERIAL_JSON] = json.dumps(submaterial.raw, sort_keys=True)
@@ -290,10 +291,42 @@ class BuildersMixin:
             submaterial.decoded_feature_flags.has_parallax_occlusion_mapping
         )
 
-    def _palette_scope(self) -> str:
+    def _palette_scope(self, palette: PaletteRecord | None = None) -> str:
+        """Return a stable per-``palette.id`` scope UUID for this package.
+
+        Each distinct ``palette_id`` within a package gets its own UUID,
+        persisted on the package root as a JSON map under
+        ``PROP_PALETTE_SCOPE_MAP``. This is what lets the importer emit
+        one ``StarBreaker Palette`` node group per palette scope (for
+        example one for the exterior `palette/rsi_aurora_mk2` and one
+        for the interior `palette/rsi_interior_default`).
+
+        ``palette=None`` falls back to the legacy per-package scope
+        stored under ``PROP_PALETTE_SCOPE``; callers that operate
+        without a palette (glass, nodraw, etc.) keep working
+        unchanged.
+        """
         package_root = self.package_root
         if package_root is None:
             return _safe_identifier(self.package.package_name)
+
+        palette_id = palette.id if palette is not None else None
+        if palette_id:
+            scope_map_json = _string_prop(package_root, PROP_PALETTE_SCOPE_MAP) or "{}"
+            try:
+                scope_map: dict[str, str] = json.loads(scope_map_json)
+                if not isinstance(scope_map, dict):
+                    scope_map = {}
+            except (ValueError, TypeError):
+                scope_map = {}
+            scope = scope_map.get(palette_id)
+            if not scope:
+                scope = uuid.uuid4().hex
+                scope_map[palette_id] = scope
+                package_root[PROP_PALETTE_SCOPE_MAP] = json.dumps(scope_map, sort_keys=True)
+            return scope
+
+        # Fallback: single legacy scope for palette-less materials.
         palette_scope = _string_prop(package_root, PROP_PALETTE_SCOPE)
         if palette_scope:
             return palette_scope

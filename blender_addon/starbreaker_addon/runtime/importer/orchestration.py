@@ -149,9 +149,16 @@ class OrchestrationMixin:
         inherited_palette_id = None
         if self.package_root is not None:
             inherited_palette_id = _string_prop(self.package_root, PROP_PALETTE_ID)
+        # A per-instance palette_id (e.g. interiors/cabins using
+        # `palette/rsi_interior_default`) must win over the
+        # exterior-wide paint override — the override represents the
+        # user's choice of *exterior* livery, not a blanket palette
+        # swap across every subsystem of the package. Only fall back
+        # to the override when the instance is palette-agnostic.
+        effective_request = palette_id or self.import_palette_override
         return resolved_palette_id(
             self.package,
-            self.import_palette_override or palette_id,
+            effective_request,
             inherited_palette_id or self.package.scene.root_entity.palette_id,
         )
 

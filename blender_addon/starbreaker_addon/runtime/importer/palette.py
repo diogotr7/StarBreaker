@@ -345,7 +345,7 @@ class PaletteMixin:
         return group
 
     def _ensure_palette_group(self, palette: PaletteRecord) -> bpy.types.ShaderNodeTree:
-        group_name = _palette_group_name(self.package.package_name, self._palette_scope())
+        group_name = _palette_group_name(self.package.package_name, self._palette_scope(palette))
         group_signature = _palette_group_signature(palette)
         group = bpy.data.node_groups.get(group_name)
         if group is None:
@@ -517,7 +517,7 @@ class PaletteMixin:
         x: int,
         y: int,
     ) -> bpy.types.Node:
-        expected_name = f"STARBREAKER_PALETTE_{_safe_identifier(self._palette_scope()).upper()}"
+        expected_name = f"STARBREAKER_PALETTE_{_safe_identifier(self._palette_scope(palette)).upper()}"
         existing = next(
             (
                 node
@@ -525,7 +525,7 @@ class PaletteMixin:
                 if node.bl_idname == "ShaderNodeGroup"
                 and getattr(node, "name", "") == expected_name
                 and getattr(getattr(node, "node_tree", None), "name", "")
-                == _palette_group_name(self.package.package_name, self._palette_scope())
+                == _palette_group_name(self.package.package_name, self._palette_scope(palette))
             ),
             None,
         )
