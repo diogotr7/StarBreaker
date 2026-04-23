@@ -419,8 +419,22 @@ class BuildersMixin:
                 # data (``Decal Color`` output socket unlinked inside the
                 # palette group), to avoid blackening decals on packages
                 # without a decal palette layer.
+                #
+                # POM decals are the exception: they are projected onto a
+                # host paint surface (primary/secondary/tertiary) and the
+                # ``_rebind_mesh_decal_for_host`` pass produces cloned
+                # ``__host_<channel>`` materials that wire ``Host Tint``
+                # directly to the host channel colour. If we pre-wire the
+                # base POM-decal material to ``Decal Color`` here, any
+                # mesh the rebinder fails to pair with a host channel
+                # still ends up tinted by the palette decal texture
+                # rather than falling back to white. Skip the default
+                # wiring for POM decals so unmatched hosts stay neutral.
                 source_socket = None
-                if palette is not None and hasattr(self, "_palette_group_node"):
+                is_pom_decal = bool(
+                    submaterial.decoded_feature_flags.has_parallax_occlusion_mapping
+                )
+                if palette is not None and hasattr(self, "_palette_group_node") and not is_pom_decal:
                     try:
                         palette_node = self._palette_group_node(nodes, links, palette, x=-420, y=y)
                     except Exception:
