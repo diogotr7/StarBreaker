@@ -955,15 +955,14 @@ class BuildersMixin:
             y=520,
             is_color=True,
         )
-        # POM trims/details (parallax_pom plans) are hardsurface art with
-        # their own authored diffuse maps. Routing the palette's
-        # ship-UV-space ``Decal Color`` lookup into the host's Primary
-        # base colour washes them out with whatever the livery decal
-        # layer happens to sample, which is never the artist's intent.
-        # Skip the decal-palette source here so POM materials always use
-        # their authored primary texture (or the channel-matched palette
-        # finish colour if there is no texture).
-        if plan.template_key == "parallax_pom":
+        # Only Illum materials that explicitly declare a virtual tint-palette
+        # decal source should read the palette's ship-UV-space decal color.
+        # Generic Illum materials like BEHR_marksman_S1:dull_metal_01 have a
+        # real TexSlot1 authored diffuse and no decal source; routing Decal
+        # Color there leaks unrelated livery/decal imagery into the base coat.
+        # POM trims/details are also authored-texture driven and should bypass
+        # the palette decal source entirely.
+        if plan.template_key == "parallax_pom" or not _uses_virtual_tint_palette_decal(submaterial):
             decal_palette = type("_NoDecal", (), {"color": None, "alpha": None})()
         else:
             decal_palette = self._palette_decal_sockets(

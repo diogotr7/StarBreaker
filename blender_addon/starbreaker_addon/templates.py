@@ -40,7 +40,7 @@ def template_plan_for_submaterial(submaterial: SubmaterialRecord) -> MaterialTem
     if family in {"Layer", "LayerBlend_V2"}:
         return MaterialTemplatePlan("layered_wear", "Layered Wear", "OPAQUE", "OPAQUE", True, True, True, False, False, False)
     if family == "MeshDecal" or flags.has_decal or (flags.has_stencil_map and family != "HardSurface"):
-        return MaterialTemplatePlan("decal_stencil", "Decal Or Stencil", "BLEND", "NONE", True, True, False, False, False, True)
+        return MaterialTemplatePlan("decal_stencil", "Decal Or Stencil", "CLIP", "NONE", True, True, False, False, False, True)
     if flags.has_parallax_occlusion_mapping:
         return MaterialTemplatePlan("parallax_pom", "Parallax Or POM", "BLEND", "NONE", True, True, False, False, True, True)
     if family in {"DisplayScreen", "Monitor", "UIPlane"}:

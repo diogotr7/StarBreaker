@@ -184,7 +184,7 @@ def apply_palette_to_package_root(context: bpy.types.Context, package_root: bpy.
 
     package = _load_package_from_root(package_root)
     importer = PackageImporter(context, package, package_root=package_root)
-    with _suspend_heavy_viewports(context):
+    with _suspend_heavy_viewports(context), _temporary_object_mode(context):
         return importer.apply_palette_to_package_root(package_root, palette_id)
 
 
@@ -215,7 +215,7 @@ def apply_paint_to_package_root(context: bpy.types.Context, package_root: bpy.ty
 
     importer = PackageImporter(context, package, package_root=package_root)
     applied = 0
-    with _suspend_heavy_viewports(context):
+    with _suspend_heavy_viewports(context), _temporary_object_mode(context):
         for obj in _iter_package_objects(package_root):
             if obj.type != "MESH":
                 continue
@@ -240,7 +240,7 @@ def apply_livery_to_package_root(context: bpy.types.Context, package_root: bpy.t
     package = _load_package_from_root(package_root)
     importer = PackageImporter(context, package, package_root=package_root)
     applied = 0
-    with _suspend_heavy_viewports(context):
+    with _suspend_heavy_viewports(context), _temporary_object_mode(context):
         for obj in _iter_package_objects(package_root):
             instance = _scene_instance_from_object(obj)
             if instance is None:
@@ -300,6 +300,57 @@ def _suspend_heavy_viewports(context: bpy.types.Context):
                 shading.type = shading_type
             except Exception:
                 continue
+
+
+@contextmanager
+def _temporary_object_mode(context: bpy.types.Context):
+    view_layer = getattr(context, "view_layer", None)
+    active_object = getattr(view_layer.objects, "active", None) if view_layer is not None else None
+    original_mode = getattr(active_object, "mode", "OBJECT") if active_object is not None else "OBJECT"
+    switched = False
+
+    def _mode_set(mode: str) -> bool:
+        if active_object is None:
+            return False
+        window = getattr(context, "window", None)
+        screen = getattr(window, "screen", None) if window is not None else None
+        area = None
+        region = None
+        if screen is not None:
+            area = next((candidate for candidate in screen.areas if candidate.type == "VIEW_3D"), None)
+            if area is not None:
+                region = next((candidate for candidate in area.regions if candidate.type == "WINDOW"), None)
+        override = {
+            "active_object": active_object,
+            "object": active_object,
+            "selected_objects": [active_object],
+            "selected_editable_objects": [active_object],
+        }
+        if window is not None:
+            override["window"] = window
+        if screen is not None:
+            override["screen"] = screen
+        if area is not None:
+            override["area"] = area
+        if region is not None:
+            override["region"] = region
+        with context.temp_override(**override):
+            bpy.ops.object.mode_set(mode=mode)
+        return True
+
+    try:
+        if active_object is not None and original_mode != "OBJECT":
+            switched = _mode_set("OBJECT")
+        yield
+    finally:
+        if not switched or active_object is None or view_layer is None:
+            return
+        try:
+            if view_layer.objects.active is not active_object:
+                view_layer.objects.active = active_object
+            _mode_set(original_mode)
+        except Exception:
+            pass
 
 
 def _load_package_from_root(package_root: bpy.types.Object) -> PackageBundle:
