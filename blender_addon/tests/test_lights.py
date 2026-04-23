@@ -118,14 +118,14 @@ class LightMappingTests(unittest.TestCase):
     def test_energy_lumens_to_watts_point(self):
         self.assertAlmostEqual(
             self.utils._light_energy_to_blender(200.0, "POINT"),
-            200.0 / self.constants.LUMENS_PER_WATT_WHITE,
+            200.0 * self.constants.LIGHT_CANDELA_TO_WATT * self.constants.LIGHT_VISUAL_GAIN,
             places=6,
         )
 
     def test_energy_lumens_to_watts_spot(self):
         self.assertAlmostEqual(
             self.utils._light_energy_to_blender(400.0, "SPOT"),
-            400.0 / self.constants.LUMENS_PER_WATT_WHITE,
+            400.0 * self.constants.LIGHT_CANDELA_TO_WATT * self.constants.LIGHT_VISUAL_GAIN,
             places=6,
         )
 
@@ -139,9 +139,14 @@ class LightMappingTests(unittest.TestCase):
     def test_negative_intensity_clamps_to_zero(self):
         self.assertEqual(self.utils._light_energy_to_blender(-42.0, "POINT"), 0.0)
 
-    def test_efficacy_constant_sane(self):
-        self.assertGreaterEqual(self.constants.LUMENS_PER_WATT_WHITE, 80.0)
-        self.assertLessEqual(self.constants.LUMENS_PER_WATT_WHITE, 200.0)
+    def test_candela_to_watt_constant_sane(self):
+        # KHR_lights_punctual: candela -> luminous flux (4π) -> Watts (/683)
+        import math
+        expected = (4.0 * math.pi) / 683.0
+        self.assertAlmostEqual(self.constants.LIGHT_CANDELA_TO_WATT, expected, places=6)
+
+    def test_visual_gain_is_positive(self):
+        self.assertGreaterEqual(self.constants.LIGHT_VISUAL_GAIN, 1.0)
 
 
 if __name__ == "__main__":  # pragma: no cover

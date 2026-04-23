@@ -43,11 +43,19 @@ SURFACE_SHADER_MODE_GLASS = "glass_bsdf"
 PACKAGE_ROOT_PREFIX = "StarBreaker"
 TEMPLATE_COLLECTION_NAME = "StarBreaker Template Cache"
 GLTF_PBR_WATTS_TO_LUMENS = 683.0
-# Luminous efficacy of a broadband white LED (~100-160 lm/W). Used to convert
-# Star Citizen light intensity values (authored in lumens) into Blender's
-# radiant-flux Watts for Point/Spot/Area lights. See
-# ``docs/StarBreaker/lights-research.md``.
-LUMENS_PER_WATT_WHITE = 120.0
+# Conversion from Star Citizen light intensity to Blender Point/Spot/Area
+# radiant-flux Watts. SC intensities are treated as KHR_lights_punctual-style
+# candela values (matching Blender's own glTF importer behaviour): total
+# luminous flux = intensity * 4π, which divided by 683 lm/W gives Watts.
+# See ``docs/StarBreaker/lights-research.md``.
+import math as _math
+
+LIGHT_CANDELA_TO_WATT = (4.0 * _math.pi) / GLTF_PBR_WATTS_TO_LUMENS
+# Empirical visual-brightness multiplier. Star Citizen's in-engine light
+# response is much brighter than a bare KHR conversion suggests; without this
+# multiplier Aurora interiors render nearly black. Tuned against Aurora Mk2
+# cabin default lighting to give a usable (but not over-exposed) first pass.
+LIGHT_VISUAL_GAIN = 20.0
 SCENE_AXIS_CONVERSION = Matrix(
     (
         (1.0, 0.0, 0.0, 0.0),

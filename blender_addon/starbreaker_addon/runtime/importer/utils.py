@@ -17,7 +17,8 @@ from mathutils import Matrix, Quaternion
 from ..constants import (
     GLTF_LIGHT_BASIS_CORRECTION,
     GLTF_PBR_WATTS_TO_LUMENS,
-    LUMENS_PER_WATT_WHITE,
+    LIGHT_CANDELA_TO_WATT,
+    LIGHT_VISUAL_GAIN,
     MATERIAL_IDENTITY_SCHEMA,
     NON_COLOR_INPUT_KEYWORDS,
     PROP_IMPORTED_SLOT_MAP,
@@ -201,19 +202,21 @@ def _blender_light_type(light: Any) -> str:
 
 
 def _light_energy_to_blender(intensity: float, blender_light_type: str) -> float:
-    """Convert a Star Citizen light intensity (lumens) to Blender light energy.
+    """Convert a Star Citizen light intensity to Blender light energy.
 
     Blender Point/Spot/Area lights take Watts of radiant flux; Sun lights take
-    W/m^2 (irradiance). SC authors light flux in lumens directly, so for
-    Point/Spot/Area we divide by a broadband white-LED luminous efficacy
-    (``LUMENS_PER_WATT_WHITE``). For Sun we keep the legacy lux→W/m^2 ratio.
+    W/m^2 (irradiance). SC intensities are treated as KHR_lights_punctual-style
+    candela values: luminous flux = ``intensity * 4π``, radiant flux =
+    flux / 683 lm/W. An empirical ``LIGHT_VISUAL_GAIN`` multiplier compensates
+    for the engine's much brighter in-game response so Aurora interiors
+    actually illuminate. Sun retains the legacy lux→W/m^2 ratio.
 
     See ``docs/StarBreaker/lights-research.md``.
     """
     intensity = max(float(intensity), 0.0)
     if blender_light_type == "SUN":
         return intensity / GLTF_PBR_WATTS_TO_LUMENS
-    return intensity / LUMENS_PER_WATT_WHITE
+    return intensity * LIGHT_CANDELA_TO_WATT * LIGHT_VISUAL_GAIN
 
 
 def _is_axis_conversion_root(obj: bpy.types.Object) -> bool:
