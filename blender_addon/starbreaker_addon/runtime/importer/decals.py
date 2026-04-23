@@ -214,9 +214,32 @@ class DecalsMixin:
     def _plan_casts_no_shadows(
         self, plan: Any, submaterial: SubmaterialRecord | None = None
     ) -> bool:
-        if getattr(plan, "template_key", "") in {"decal_stencil", "parallax_pom"}:
+        template_key = getattr(plan, "template_key", "")
+        # ``decal_stencil`` is always a thin overlay — never cast shadows.
+        if template_key == "decal_stencil":
             return True
-        return submaterial is not None and submaterial.shader_family == "MeshDecal"
+        if submaterial is not None and submaterial.shader_family == "MeshDecal":
+            return True
+        # ``parallax_pom`` is used both for genuine POM decals (thin
+        # overlays that should let host shadows through) and for opaque
+        # HardSurface panels that happen to use POM for surface detail.
+        # Only the former should be shadowless; opaque POM panels that
+        # self-shadow properly render much darker and closer to the
+        # in-game look (otherwise shadow rays pass through and Cycles
+        # GI lifts the surface to a uniform mid-grey even when the
+        # palette tint is near-black).
+        if template_key == "parallax_pom" and submaterial is not None:
+            flags = submaterial.decoded_feature_flags
+            if flags.has_decal or flags.has_stencil_map:
+                return True
+            if submaterial.shader_family == "MeshDecal":
+                return True
+            return False
+        # Legacy behaviour for callers that invoke without a submaterial
+        # (early bring-up paths) — preserve the historical default.
+        if template_key == "parallax_pom":
+            return True
+        return False
 
     def _wire_surface_shader_to_output(
         self,
