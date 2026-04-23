@@ -1913,6 +1913,62 @@ class BuildersMixin:
                 links.new(inv.outputs[0], rough_input)
         return clone
 
+    # ------------------------------------------------------------------
+    # Phase 30: per-object vertex group + Displace modifier to lift decal
+    # faces slightly off their host geometry (avoids Z-fighting at
+    # intersections).
+    _DECAL_OFFSET_GROUP_NAME = "starbreaker_decal_offset"
+    _DECAL_OFFSET_MODIFIER_NAME = "StarBreaker Decal Offset"
+    _DECAL_OFFSET_STRENGTH = 0.005
+
+    def _apply_decal_offset_modifier(self, obj: bpy.types.Object) -> bool:
+        """Ensure a single ``starbreaker_decal_offset`` vertex group
+        and matching Displace modifier exist on ``obj`` if and only if
+        ``obj`` carries at least one MeshDecal (including POM) material
+        slot. Returns True if the modifier is present after this call.
+        Idempotent: safe to call multiple times or on objects that
+        already have the group/modifier from a previous import.
+        """
+        mesh = getattr(obj, "data", None)
+        if mesh is None or not hasattr(mesh, "polygons"):
+            return False
+        decal_slot_indices: set[int] = set()
+        for idx, slot in enumerate(obj.material_slots):
+            mat = slot.material if slot is not None else None
+            if mat is None:
+                continue
+            if mat.get("starbreaker_shader_family") == "MeshDecal":
+                decal_slot_indices.add(idx)
+        if not decal_slot_indices:
+            return False
+        vertex_ids: set[int] = set()
+        for poly in mesh.polygons:
+            if int(getattr(poly, "material_index", 0)) in decal_slot_indices:
+                for v in poly.vertices:
+                    vertex_ids.add(int(v))
+        if not vertex_ids:
+            return False
+        group = obj.vertex_groups.get(self._DECAL_OFFSET_GROUP_NAME)
+        if group is None:
+            group = obj.vertex_groups.new(name=self._DECAL_OFFSET_GROUP_NAME)
+        else:
+            # Clear previous membership so a reimport with different
+            # slot assignments doesn't leave stale vertices.
+            group.remove([v.index for v in mesh.vertices])
+        group.add(list(vertex_ids), 1.0, "REPLACE")
+
+        mod = obj.modifiers.get(self._DECAL_OFFSET_MODIFIER_NAME)
+        if mod is None or mod.type != "DISPLACE":
+            if mod is not None:
+                obj.modifiers.remove(mod)
+            mod = obj.modifiers.new(name=self._DECAL_OFFSET_MODIFIER_NAME, type="DISPLACE")
+        mod.strength = self._DECAL_OFFSET_STRENGTH
+        mod.mid_level = 0.0
+        mod.direction = "NORMAL"
+        mod.space = "LOCAL"
+        mod.vertex_group = group.name
+        return True
+
     def _rebind_mesh_decal_for_host(
         self,
         obj: bpy.types.Object,

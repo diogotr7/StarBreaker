@@ -310,6 +310,8 @@ class OrchestrationMixin:
             # slots to per-host-channel clones so each decal picks up the
             # palette colour of the nearest paint material on the mesh.
             self._rebind_mesh_decal_for_host(obj, palette)
+            # Phase 30: lift decal faces off the host geometry.
+            self._apply_decal_offset_modifier(obj)
             return applied
         for submaterial in sorted(sidecar.submaterials, key=lambda item: item.index):
             if mesh_materials is not None:
@@ -331,6 +333,8 @@ class OrchestrationMixin:
         # slots to per-host-channel clones so each decal picks up the
         # palette colour of the nearest paint material on the mesh.
         self._rebind_mesh_decal_for_host(obj, palette)
+        # Phase 30: lift decal faces off the host geometry.
+        self._apply_decal_offset_modifier(obj)
         return applied
 
     def apply_palette_to_package_root(self, package_root: bpy.types.Object, palette_id: str | None) -> int:
