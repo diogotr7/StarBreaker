@@ -153,8 +153,13 @@ fn clean_export_label(name: &str) -> String {
     }
 }
 
-fn package_directory_name(entity_name: &str) -> String {
-    clean_export_label(export_entity_basename(entity_name))
+fn package_directory_name(entity_name: &str, lod: u32, mip: u32) -> String {
+    format!(
+        "{}_LOD{}_TEX{}",
+        clean_export_label(export_entity_basename(entity_name)),
+        lod,
+        mip,
+    )
 }
 
 fn package_relative_path(package_name: &str, file_name: &str) -> String {
@@ -415,7 +420,7 @@ pub(crate) fn write_decomposed_export(
     let mut png_cache = PngCache::new();
     let mut palette_records = BTreeMap::new();
     let mut livery_usage = BTreeMap::new();
-    let package_name = package_directory_name(&input.entity_name);
+    let package_name = package_directory_name(&input.entity_name, opts.lod_level, opts.texture_mip);
     let scene_manifest_path = package_relative_path(&package_name, "scene.json");
     let palettes_manifest_path = package_relative_path(&package_name, "palettes.json");
     let liveries_manifest_path = package_relative_path(&package_name, "liveries.json");
@@ -441,6 +446,7 @@ pub(crate) fn write_decomposed_export(
         root_material_view.glb_materials.as_ref(),
         root_material_view.glb_nmc.as_ref(),
         &input.root_bones,
+        opts.lod_level,
         existing_asset_paths,
     )?;
     let root_material_sidecar = root_material_view.sidecar_materials.as_ref().map(|materials| {
@@ -532,6 +538,7 @@ pub(crate) fn write_decomposed_export(
             child_material_view.glb_materials.as_ref(),
             child_material_view.glb_nmc.as_ref(),
             &child.bones,
+            opts.lod_level,
             existing_asset_paths,
         )?;
         let material_sidecar = child_material_view.sidecar_materials.as_ref().map(|materials| {
@@ -614,7 +621,7 @@ pub(crate) fn write_decomposed_export(
                     opts.include_nodraw,
                     opts.include_shields,
                 );
-                let requested_mesh_asset = mesh_asset_relative_path(p4k, &entry.cgf_path, &entry.name);
+                let requested_mesh_asset = mesh_asset_relative_path(p4k, &entry.cgf_path, &entry.name, opts.lod_level);
                 let requested_material_sidecar = interior_material_view.sidecar_materials.as_ref().map(|materials| {
                     let source_material_path = material_source_path(
                         p4k,
@@ -622,7 +629,7 @@ pub(crate) fn write_decomposed_export(
                         entry.material_path.as_deref().unwrap_or(""),
                         &entry.cgf_path,
                     );
-                    material_sidecar_relative_path(&source_material_path, &entry.name)
+                    material_sidecar_relative_path(&source_material_path, &entry.name, opts.texture_mip)
                 });
                 let material_sidecar = interior_material_view.sidecar_materials.as_ref().map(|materials| {
                     if let Some(requested_path) = requested_material_sidecar.as_ref() {
@@ -666,6 +673,7 @@ pub(crate) fn write_decomposed_export(
                         // diverge from the reference import and can double-apply placement transforms.
                         interior_material_view.glb_nmc.as_ref(),
                         &[],
+                        opts.lod_level,
                         existing_asset_paths,
                     )?
                 };
@@ -1018,6 +1026,7 @@ fn write_mesh_asset(
     materials: Option<&MtlFile>,
     nmc: Option<&NodeMeshCombo>,
     bones: &[Bone],
+    lod_level: u32,
     existing_asset_paths: Option<&HashSet<String>>,
 ) -> Result<String, Error> {
     fn no_textures(
@@ -1035,7 +1044,7 @@ fn write_mesh_asset(
 
     let mut no_textures_fn = no_textures;
     let mut no_interiors_fn = no_interiors;
-    let requested_path = mesh_asset_relative_path(p4k, geometry_path, fallback_name);
+    let requested_path = mesh_asset_relative_path(p4k, geometry_path, fallback_name, lod_level);
     if existing_asset_paths
         .is_some_and(|paths| paths.contains(&requested_path.to_ascii_lowercase()))
     {
@@ -1093,7 +1102,7 @@ fn write_material_sidecar(
     existing_asset_paths: Option<&HashSet<String>>,
 ) -> String {
     let source_material_path = material_source_path(p4k, materials, material_path, geometry_path);
-    let relative_path = material_sidecar_relative_path(&source_material_path, fallback_name);
+    let relative_path = material_sidecar_relative_path(&source_material_path, fallback_name, texture_mip);
     let extracted = materials
         .materials
         .iter()
@@ -1524,7 +1533,7 @@ fn export_texture_asset(
         return Some(existing.clone());
     }
 
-    let requested_path = texture_relative_path(p4k, source_path, flavor);
+    let requested_path = texture_relative_path(p4k, source_path, flavor, texture_mip);
     if existing_asset_paths
         .is_some_and(|paths| paths.contains(&requested_path.to_ascii_lowercase()))
     {
@@ -1640,28 +1649,49 @@ fn material_source_request(materials: &MtlFile, material_path: &str, geometry_pa
     }
 }
 
-fn mesh_asset_relative_path(p4k: &MappedP4k, geometry_path: &str, fallback_name: &str) -> String {
-    if geometry_path.is_empty() {
+fn mesh_asset_relative_path(p4k: &MappedP4k, geometry_path: &str, fallback_name: &str, lod: u32) -> String {
+    let base = if geometry_path.is_empty() {
         format!("Data/generated/{}.glb", sanitize_identifier(fallback_name))
     } else {
         replace_extension(&normalize_source_path(p4k, geometry_path), ".glb")
-    }
+    };
+    insert_stem_suffix(&base, &format!("_LOD{lod}"))
 }
 
-fn material_sidecar_relative_path(source_material_path: &str, fallback_name: &str) -> String {
-    if source_material_path.is_empty() {
+fn material_sidecar_relative_path(source_material_path: &str, fallback_name: &str, mip: u32) -> String {
+    let base = if source_material_path.is_empty() {
         format!("Data/generated/{}.materials.json", sanitize_identifier(fallback_name))
     } else {
         replace_extension(source_material_path, ".materials.json")
-    }
+    };
+    insert_stem_suffix(&base, &format!("_TEX{mip}"))
 }
 
-fn texture_relative_path(p4k: &MappedP4k, source_path: &str, flavor: TextureFlavor) -> String {
+fn texture_relative_path(p4k: &MappedP4k, source_path: &str, flavor: TextureFlavor, mip: u32) -> String {
     let normalized = normalize_source_path(p4k, source_path);
-    match flavor {
+    let base = match flavor {
         TextureFlavor::Generic => replace_extension(&normalized, ".png"),
         TextureFlavor::Normal => replace_extension(&normalized, ".png"),
-    }
+    };
+    insert_stem_suffix(&base, &format!("_TEX{mip}"))
+}
+
+/// Insert `suffix` immediately before the file extension. For compound
+/// extensions like `.materials.json` the suffix lands before the first
+/// trailing extension segment so the full compound extension survives.
+fn insert_stem_suffix(path: &str, suffix: &str) -> String {
+    // Split off the filename from any directory prefix so suffixes never
+    // inject into intermediate path components.
+    let (dir, file) = match path.rsplit_once('/') {
+        Some((d, f)) => (format!("{d}/"), f.to_string()),
+        None => (String::new(), path.to_string()),
+    };
+    // Handle compound extensions by finding the first '.' in the filename.
+    let (stem, ext) = match file.find('.') {
+        Some(idx) => (&file[..idx], &file[idx..]),
+        None => (file.as_str(), ""),
+    };
+    format!("{dir}{stem}{suffix}{ext}")
 }
 
 fn normalize_requested_source_path(path: &str) -> String {
@@ -2181,6 +2211,42 @@ mod tests {
         assert_eq!(
             replace_extension(&normalize_requested_source_path("Objects/Ships/Test/hull_ddna.dds"), ".png"),
             "Data/Objects/Ships/Test/hull_ddna.png"
+        );
+    }
+
+    #[test]
+    fn insert_stem_suffix_handles_simple_and_compound_extensions() {
+        // Simple extension: suffix lands before the dot.
+        assert_eq!(
+            insert_stem_suffix("Data/Objects/Test/hull.glb", "_LOD0"),
+            "Data/Objects/Test/hull_LOD0.glb"
+        );
+        assert_eq!(
+            insert_stem_suffix("Data/Textures/Test/hull_diff.png", "_TEX2"),
+            "Data/Textures/Test/hull_diff_TEX2.png"
+        );
+        // Compound extension: suffix lands before the FIRST dot so the full
+        // .materials.json suffix is preserved.
+        assert_eq!(
+            insert_stem_suffix("Data/Materials/Test/hull.materials.json", "_TEX1"),
+            "Data/Materials/Test/hull_TEX1.materials.json"
+        );
+        // Directory segments with dots must not be disturbed.
+        assert_eq!(
+            insert_stem_suffix("Data/foo.bar/hull.glb", "_LOD3"),
+            "Data/foo.bar/hull_LOD3.glb"
+        );
+    }
+
+    #[test]
+    fn package_directory_name_encodes_lod_and_tex() {
+        assert_eq!(
+            package_directory_name("EntityClassDefinition.RSI_Aurora_Mk2", 0, 0),
+            "RSI Aurora Mk2_LOD0_TEX0"
+        );
+        assert_eq!(
+            package_directory_name("EntityClassDefinition.RSI_Aurora_Mk2", 2, 1),
+            "RSI Aurora Mk2_LOD2_TEX1"
         );
     }
 

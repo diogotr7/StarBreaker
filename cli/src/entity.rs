@@ -303,7 +303,14 @@ fn export(
                 CliError::InvalidInput("entity export returned no decomposed files".into())
             })?;
             eprintln!("Decomposed export file count: {}", decomposed.files.len());
-            prepare_decomposed_output_root(&output, &export_name)?;
+            // The decomposed exporter names its package folder with a
+            // `_LOD<n>_TEX<n>` suffix. Use that exact name here so we clean
+            // the right directory and don't leave an empty sibling folder.
+            let package_name = format!(
+                "{export_name}_LOD{}_TEX{}",
+                export_opts.lod_level, export_opts.texture_mip
+            );
+            prepare_decomposed_output_root(&output, &package_name)?;
             for file in &decomposed.files {
                 let output_path = output.join(&file.relative_path);
                 if let Some(parent) = output_path.parent() {
