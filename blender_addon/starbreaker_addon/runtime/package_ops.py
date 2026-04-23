@@ -373,7 +373,7 @@ def _apply_state_to_light(light: bpy.types.Light, state_name: str) -> bool:
     """Apply the ``state_name`` snapshot to ``light`` in-place. Returns True
     if the light had the named state and was updated, False otherwise."""
     import json as _json
-    from ..constants import (
+    from .constants import (
         GLTF_PBR_WATTS_TO_LUMENS,
         LIGHT_CANDELA_TO_WATT,
         LIGHT_VISUAL_GAIN,
