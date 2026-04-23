@@ -1190,6 +1190,7 @@ class BuildersMixin:
         active_channel = submaterial.palette_routing.material_channel or (
             channels[0] if channels else None
         )
+        base_palette_linked = False
         if active_channel is not None and palette is not None:
             base_palette_socket = self._palette_color_socket(
                 nodes, palette, active_channel.name, x=-280, y=40
@@ -1198,6 +1199,54 @@ class BuildersMixin:
                 target = _input_socket(layered_group, "Base Palette")
                 if target is not None:
                     self._link_color_output(base_palette_socket, target)
+                    base_palette_linked = True
+
+        # Base layer tint / diffuse fallback. LayerBlend_V2 materials
+        # encode the actual base paint colour in
+        # ``layer_manifest[0].tint_color`` and the base art on
+        # ``layer_manifest[0].diffuse_export_path``. When the parent
+        # submaterial does not expose its own base_color texture (e.g.
+        # KLWE weapon paints, whose only top-level slot is a wear mask)
+        # the LayeredInputs group is left with white Base Image and
+        # white Base Palette defaults and renders pure white. Source
+        # the missing data from the base layer:
+        #   - If no parent Base Image link exists, wire the base
+        #     layer's diffuse texture into Base Image.
+        #   - If no real palette channel routes into Base Palette,
+        #     hijack that socket's default with the base layer's
+        #     tint_color (Base Palette is multiplied with Base Image
+        #     internally, so this works out as a base tint multiply).
+        base_layer = (
+            submaterial.layer_manifest[0]
+            if len(submaterial.layer_manifest) > 1
+            else None
+        )
+        if base_layer is not None:
+            if base_image_node is None and base_layer.diffuse_export_path:
+                fallback_image_node = self._image_node(
+                    nodes,
+                    base_layer.diffuse_export_path,
+                    x=-280,
+                    y=220,
+                    is_color=True,
+                )
+                if fallback_image_node is not None:
+                    fallback_target = _input_socket(layered_group, "Base Image")
+                    if fallback_target is not None:
+                        links.new(fallback_image_node.outputs[0], fallback_target)
+            if (
+                not base_palette_linked
+                and base_layer.tint_color is not None
+                and any(abs(c - 1.0) > 1e-6 for c in base_layer.tint_color)
+            ):
+                base_palette_target = _input_socket(layered_group, "Base Palette")
+                if base_palette_target is not None and hasattr(
+                    base_palette_target, "default_value"
+                ):
+                    base_palette_target.default_value = (
+                        *base_layer.tint_color,
+                        1.0,
+                    )
 
         # Wear layer (tint + palette + diffuse).
         wear_layer = self._layered_wear_layer(submaterial)
