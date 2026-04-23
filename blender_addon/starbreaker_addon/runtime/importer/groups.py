@@ -815,20 +815,35 @@ class GroupsMixin:
             Use Normal      float   (0 to ignore normal map; 1 to apply)
         Outputs:
             Shader          shader
+
+        Implementation notes. Aurora-class ships stack 10+ interior cabin
+        glass panes behind the exterior canopy. With plain BsdfGlass on
+        every pane the canopy refraction ray transmits through each
+        interior pane in turn, multiplying the Base Color tint on every
+        hop so the cockpit reads near-black. To avoid Beer-Lambert
+        compounding without hiding interior geometry, the group mixes
+        BsdfGlass with a pure Transparent BSDF via ``Is Camera Ray``:
+        primary camera rays see proper glass (refraction, tint,
+        roughness); transmission / shadow / diffuse / glossy rays see
+        the pane as a clear window so light and refracted views pass
+        through unattenuated.
         """
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime Glass",
-            "glass_v1",
+            "glass_v2",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
                 "ShaderNodeBsdfGlass": 1,
+                "ShaderNodeBsdfTransparent": 1,
+                "ShaderNodeLightPath": 1,
+                "ShaderNodeMixShader": 1,
                 "ShaderNodeNormalMap": 1,
             },
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime Glass",
-            signature="glass_v1",
+            signature="glass_v2",
             inputs=[
                 ("Base Color", "NodeSocketColor"),
                 ("Roughness", "NodeSocketFloat"),
@@ -839,7 +854,7 @@ class GroupsMixin:
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "glass_v1":
+        if group_tree.get("starbreaker_runtime_built_signature") == "glass_v2":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -868,8 +883,25 @@ class GroupsMixin:
         links.new(_output_socket(group_input, "IOR"), _input_socket(glass, "IOR"))
         links.new(normal_mix.outputs[1], _input_socket(glass, "Normal"))
 
-        links.new(glass.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "glass_v1"
+        transparent = nodes.new("ShaderNodeBsdfTransparent")
+        transparent.location = (120, -180)
+        transparent.label = "StarBreaker Glass Non-Camera Passthrough"
+        # Pure white so refracted / transmitted views through stacked
+        # interior glass panes aren't darkened by Beer-Lambert tint.
+        transparent.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+
+        light_path = nodes.new("ShaderNodeLightPath")
+        light_path.location = (120, 220)
+
+        mix_shader = nodes.new("ShaderNodeMixShader")
+        mix_shader.location = (340, 60)
+        # fac=0 -> Transparent (non-camera rays), fac=1 -> Glass (camera rays)
+        links.new(_output_socket(light_path, "Is Camera Ray"), mix_shader.inputs[0])
+        links.new(transparent.outputs[0], mix_shader.inputs[1])
+        links.new(glass.outputs[0], mix_shader.inputs[2])
+
+        links.new(mix_shader.outputs[0], group_output.inputs["Shader"])
+        group_tree["starbreaker_runtime_built_signature"] = "glass_v2"
         return group_tree
 
     def _ensure_runtime_screen_group(self) -> bpy.types.ShaderNodeTree:

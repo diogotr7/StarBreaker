@@ -446,7 +446,6 @@ class OrchestrationMixin:
             self._apply_instance_metadata([placement_anchor, *clones], instance, effective_palette_id)
             for clone in clones:
                 self.rebuild_object_materials(clone, effective_palette_id)
-                self._hide_mesh_from_camera(clone)
 
         for light in interior.lights:
             self.create_light(light, anchor)
@@ -720,16 +719,9 @@ class OrchestrationMixin:
     def _ensure_interior_collection(self) -> bpy.types.Collection:
         """Return (and lazily create) a per-package Interior sub-collection.
 
-        Interior geometry (cabin glass panes, cockpit shells, etc.)
-        is stacked behind the exterior canopy. To prevent the
-        interior from poking through exterior hull/glass on the
-        primary camera ray while still letting the canopy refract
-        light through to the interior, interior mesh clones are
-        hidden from camera rays only (see ``_hide_mesh_from_camera``)
-        rather than the whole collection being disabled for render.
-        This keeps ``hide_render`` off on the collection so
-        transmission/diffuse/glossy rays continue to see the
-        interior through the glass.
+        The interior collection is kept fully render-visible (camera,
+        transmission, diffuse, glossy, shadow) so interior geometry
+        appears both directly and through exterior canopy glass.
         """
         package_collection = self.collection
         interior_name = f"{package_collection.name} Interior"
@@ -737,22 +729,9 @@ class OrchestrationMixin:
         if interior_collection is None:
             interior_collection = bpy.data.collections.new(interior_name)
             package_collection.children.link(interior_collection)
-        # Always reset in case a previous import (before this fix)
-        # left it disabled for render.
+        # Always reset in case a previous import left it disabled for render.
         interior_collection.hide_render = False
         return interior_collection
-
-    @staticmethod
-    def _hide_mesh_from_camera(obj: bpy.types.Object) -> None:
-        """Hide a mesh from primary camera rays but keep it visible
-        to transmission/diffuse/glossy/shadow rays. Used for interior
-        clones so exterior glass refraction still sees the interior
-        while the camera itself does not clip through the hull.
-        """
-        if getattr(obj, "type", None) != "MESH":
-            return
-        if hasattr(obj, "visible_camera"):
-            obj.visible_camera = False
 
     def _ensure_template_collection(self) -> bpy.types.Collection:
         collection = bpy.data.collections.get(TEMPLATE_COLLECTION_NAME)

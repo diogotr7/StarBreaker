@@ -344,16 +344,61 @@ class BuildersMixin:
 
     def _ensure_contract_group(self, group_contract: ShaderGroupContract) -> bpy.types.ShaderNodeTree | None:
         group = bpy.data.node_groups.get(group_contract.name)
-        if group is not None:
-            return group
-        library_path = bundled_template_library_path()
-        if not library_path.is_file():
-            return None
-        with bpy.data.libraries.load(str(library_path), link=False) as (data_from, data_to):
-            if group_contract.name not in data_from.node_groups:
+        if group is None:
+            library_path = bundled_template_library_path()
+            if not library_path.is_file():
                 return None
-            data_to.node_groups = [group_contract.name]
-        return bpy.data.node_groups.get(group_contract.name)
+            with bpy.data.libraries.load(str(library_path), link=False) as (data_from, data_to):
+                if group_contract.name not in data_from.node_groups:
+                    return None
+                data_to.node_groups = [group_contract.name]
+            group = bpy.data.node_groups.get(group_contract.name)
+        if group is not None and group_contract.name == "SB_GlassPBR_v1":
+            self._patch_glass_template_lightpath(group)
+        return group
+
+    @staticmethod
+    def _patch_glass_template_lightpath(group: bpy.types.ShaderNodeTree) -> None:
+        """Insert a Light Path / Transparent mix so only camera rays see glass.
+
+        Aurora (and other cockpits) stack many interior panes behind the
+        canopy; with plain Glass BSDF the Beer-Lambert tinting compounds on
+        transmission/shadow/diffuse/glossy rays and reads near-black. For
+        non-camera rays we swap the Glass BSDF for a white Transparent BSDF
+        so the interior is lit and visible, while camera rays still show the
+        real glass shading. Idempotent via a property marker.
+        """
+        if group.get("starbreaker_glass_lightpath_patched"):
+            return
+        nodes = group.nodes
+        links = group.links
+        out_node = next((n for n in nodes if n.bl_idname == "NodeGroupOutput"), None)
+        glass = nodes.get("Glass BSDF")
+        if out_node is None or glass is None:
+            return
+        shader_input = out_node.inputs.get("Shader") or (out_node.inputs[0] if out_node.inputs else None)
+        if shader_input is None:
+            return
+        # Remove any existing links into the output shader socket.
+        for link in list(shader_input.links):
+            links.remove(link)
+        transparent = nodes.new("ShaderNodeBsdfTransparent")
+        transparent.name = "SB Glass Transparent"
+        transparent.label = "Glass Transparent (non-camera)"
+        transparent.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+        transparent.location = (glass.location.x, glass.location.y - 220)
+        light_path = nodes.new("ShaderNodeLightPath")
+        light_path.name = "SB Glass LightPath"
+        light_path.location = (glass.location.x - 200, glass.location.y + 250)
+        mix = nodes.new("ShaderNodeMixShader")
+        mix.name = "SB Glass Camera Mix"
+        mix.label = "Camera Ray Mix"
+        mix.location = (glass.location.x + 260, glass.location.y)
+        links.new(light_path.outputs["Is Camera Ray"], mix.inputs["Fac"])
+        links.new(transparent.outputs["BSDF"], mix.inputs[1])
+        links.new(glass.outputs["BSDF"], mix.inputs[2])
+        links.new(mix.outputs["Shader"], shader_input)
+        group["starbreaker_glass_lightpath_patched"] = 1
 
     def _build_contract_group_material(
         self,
