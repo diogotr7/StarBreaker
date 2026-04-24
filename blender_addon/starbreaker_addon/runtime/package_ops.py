@@ -43,6 +43,7 @@ def import_package(
     from .importer import PackageImporter
 
     package = PackageBundle.load(scene_path)
+    _remove_existing_package_instances(package.scene_path)
     importer = PackageImporter(context, package, progress_callback=progress_callback)
     with _suspend_heavy_viewports(context):
         root = importer.import_scene(prefer_cycles=prefer_cycles, palette_id=palette_id)
@@ -58,6 +59,33 @@ def find_package_root(obj: bpy.types.Object | None) -> bpy.types.Object | None:
             return current
         current = current.parent
     return None
+
+
+def _normalized_scene_path(scene_path: str | Path) -> str:
+    return str(Path(scene_path).expanduser().resolve())
+
+
+def _existing_package_roots(scene_path: str | Path) -> list[bpy.types.Object]:
+    normalized_scene_path = _normalized_scene_path(scene_path)
+    roots: list[bpy.types.Object] = []
+    for obj in bpy.data.objects:
+        if not bool(obj.get(PROP_PACKAGE_ROOT)):
+            continue
+        existing_scene_path = _string_prop(obj, PROP_SCENE_PATH)
+        if existing_scene_path is None:
+            continue
+        if _normalized_scene_path(existing_scene_path) == normalized_scene_path:
+            roots.append(obj)
+    return roots
+
+
+def _remove_existing_package_instances(scene_path: str | Path) -> int:
+    removed = 0
+    for package_root in _existing_package_roots(scene_path):
+        for obj in reversed(_iter_package_objects(package_root)):
+            bpy.data.objects.remove(obj, do_unlink=True)
+            removed += 1
+    return removed
 
 
 def _exterior_material_sidecars(package: PackageBundle) -> set[str] | None:

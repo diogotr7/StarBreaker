@@ -25,14 +25,14 @@ def _load_orchestration() -> types.ModuleType:
     bpy = sys.modules.get("bpy")
     if bpy is None:
         bpy = types.ModuleType("bpy")
-        bpy.types = types.SimpleNamespace(Context=object, Object=object)
-
-        class _Objects:
-            def new(self, name: str, data: object | None):
-                return _FakeObject(name, data)
-
-        bpy.data = types.SimpleNamespace(objects=_Objects())
         sys.modules["bpy"] = bpy
+    bpy.types = types.SimpleNamespace(Context=object, Object=object)
+
+    class _Objects:
+        def new(self, name: str, data: object | None):
+            return _FakeObject(name, data)
+
+    bpy.data = types.SimpleNamespace(objects=_Objects())
 
     mathutils = sys.modules.get("mathutils")
     if mathutils is None:
