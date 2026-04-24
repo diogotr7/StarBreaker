@@ -17,6 +17,7 @@ from mathutils import Matrix, Quaternion
 from ..constants import (
     GLTF_LIGHT_BASIS_CORRECTION,
     GLTF_PBR_WATTS_TO_LUMENS,
+    HEADLIGHT_GOBO_THROW_GAIN,
     LIGHT_CANDELA_TO_WATT,
     LIGHT_VISUAL_GAIN,
     LUMENS_PER_WATT_WHITE,
@@ -254,7 +255,7 @@ def _light_gobo_strength(projector_texture: str | None, *, mean_luminance: float
     mean = max(float(mean_luminance), 0.0)
     if mean <= 0.0:
         return 1.0
-    return min(1.0 / mean, 64.0)
+    return min(HEADLIGHT_GOBO_THROW_GAIN / mean, 640.0)
 
 
 def _light_energy_to_blender(

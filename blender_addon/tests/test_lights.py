@@ -128,7 +128,7 @@ class LightMappingTests(unittest.TestCase):
                 'Data/Textures/lights/headlight_single_1.dds',
                 mean_luminance=0.0495023181392753,
             ),
-            1.0 / 0.0495023181392753,
+            self.constants.HEADLIGHT_GOBO_THROW_GAIN / 0.0495023181392753,
             places=6,
         )
 

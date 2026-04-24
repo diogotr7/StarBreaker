@@ -65,6 +65,7 @@ import math as _math
 
 SC_LIGHT_CANDELA_SCALE = 200.0
 LIGHT_CANDELA_TO_WATT = (4.0 * _math.pi) / GLTF_PBR_WATTS_TO_LUMENS
+HEADLIGHT_GOBO_THROW_GAIN = 10.0
 # Empirical visual-brightness multiplier. Star Citizen's in-engine light
 # response is much brighter than a bare KHR conversion suggests; without this
 # multiplier Aurora interiors render nearly black. Tuned against Aurora Mk2
