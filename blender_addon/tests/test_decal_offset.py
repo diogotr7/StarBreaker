@@ -76,7 +76,11 @@ from starbreaker_addon.manifest import MaterialSidecar, SubmaterialRecord
 from starbreaker_addon.runtime.importer.builders import BuildersMixin
 from starbreaker_addon.runtime.importer.decals import DecalsMixin
 from starbreaker_addon.runtime.importer.materials import MaterialsMixin
-from starbreaker_addon.runtime.importer.utils import _canonical_material_sidecar_path, _material_identity
+from starbreaker_addon.runtime.importer.utils import (
+    _canonical_material_sidecar_path,
+    _material_identity,
+    _scene_attachment_offset_to_blender,
+)
 from starbreaker_addon.templates import template_plan_for_submaterial
 
 
@@ -102,6 +106,19 @@ class FakeMaterialsCollection(dict):
         material = FakeMaterial(name)
         self[name] = material
         return material
+
+
+class FakeMatrixWorld:
+    def __init__(self, translation: tuple[float, float, float]):
+        self._rows = (
+            (1.0, 0.0, 0.0, translation[0]),
+            (0.0, 1.0, 0.0, translation[1]),
+            (0.0, 0.0, 1.0, translation[2]),
+            (0.0, 0.0, 0.0, 1.0),
+        )
+
+    def __getitem__(self, index: int):
+        return self._rows[index]
 
 
 class FakeSlot:
@@ -506,6 +523,38 @@ class MaterialReuseTests(unittest.TestCase):
 
         self.assertEqual(importer.build_calls, ["nodraw"])
         self.assertEqual(material[PROP_TEMPLATE_KEY], "nodraw")
+
+
+class SceneAttachmentOffsetTests(unittest.TestCase):
+    def test_duplicate_no_rotation_helper_offset_is_suppressed(self) -> None:
+        location = _scene_attachment_offset_to_blender(
+            (0.0, -1.2599999904632568, 3.371000051498413),
+            (0.0, 0.0, 0.0),
+            no_rotation=True,
+            parent_world_matrix=(
+                (1.0000001192092896, 4.76837158203125e-7, 1.7484583736404602e-7, 0.0002016690996242687),
+                (-1.7484549630353285e-7, -7.085781135174329e-7, 0.9999999403953552, -1.2602757215499878),
+                (4.768372150465439e-7, -1.0000001192092896, -9.088388424061122e-7, 3.3709583282470703),
+                (0.0, 0.0, 0.0, 1.0),
+            ),
+        )
+
+        self.assertEqual(location, (0.0, 0.0, 0.0))
+
+    def test_nonzero_rotation_no_rotation_attachment_keeps_offset(self) -> None:
+        location = _scene_attachment_offset_to_blender(
+            (0.9120000004768372, -1.2000000476837158, 1.0),
+            (0.0, 0.0, 45.0),
+            no_rotation=True,
+            parent_world_matrix=(
+                (1.0, 0.0, 0.0, 0.9120000004768372),
+                (0.0, 1.0, 0.0, -1.2000000476837158),
+                (0.0, 0.0, 1.0, 1.0),
+                (0.0, 0.0, 0.0, 1.0),
+            ),
+        )
+
+        self.assertEqual(location, (0.9120000004768372, -1.0, -1.2000000476837158))
 
 
 if __name__ == "__main__":
