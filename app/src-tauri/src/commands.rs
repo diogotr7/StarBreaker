@@ -400,6 +400,24 @@ fn prepare_decomposed_output_root(output_root: &Path, package_name: &str) -> Res
     Ok(())
 }
 
+fn decomposed_package_directory_name(
+    files: &[starbreaker_3d::ExportedFile],
+    fallback_name: &str,
+) -> String {
+    for file in files {
+        let Some(rest) = file.relative_path.strip_prefix("Packages/") else {
+            continue;
+        };
+        let Some((package_name, _)) = rest.split_once('/') else {
+            continue;
+        };
+        if !package_name.is_empty() {
+            return package_name.to_string();
+        }
+    }
+    fallback_name.to_string()
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct ExportRequest {
     pub record_ids: Vec<String>,
@@ -868,11 +886,11 @@ fn export_single(
             let decomposed = result.decomposed.as_ref().ok_or_else(|| {
                 AppError::Internal("export returned no decomposed files".into())
             })?;
-            prepare_decomposed_output_root(output_path, export_name)?;
+            let package_name = decomposed_package_directory_name(&decomposed.files, export_name);
+            prepare_decomposed_output_root(output_path, &package_name)?;
             let total_files = decomposed.files.len().max(1);
             for (index, file) in decomposed.files.iter().enumerate() {
-                let relative_path = rewrite_decomposed_relative_path(&file.relative_path, export_name);
-                let file_path = output_path.join(relative_path);
+                let file_path = output_path.join(&file.relative_path);
                 if let Some(parent) = file_path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
@@ -927,16 +945,6 @@ fn sanitize_export_name(name: &str) -> String {
     }
 }
 
-fn rewrite_decomposed_relative_path(relative_path: &str, package_name: &str) -> String {
-    let Some(rest) = relative_path.strip_prefix("Packages/") else {
-        return relative_path.to_string();
-    };
-    let Some((_, tail)) = rest.split_once('/') else {
-        return format!("Packages/{package_name}");
-    };
-    format!("Packages/{package_name}/{tail}")
-}
-
 /// Sanitize a filename by replacing invalid characters with underscores.
 fn sanitize_filename(name: &str) -> String {
     name.chars()
@@ -950,7 +958,7 @@ fn sanitize_filename(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        export_entity_name, rewrite_decomposed_relative_path, sanitize_export_name,
+        decomposed_package_directory_name, export_entity_name, sanitize_export_name,
         should_skip_existing_decomposed_asset,
     };
 
@@ -967,14 +975,37 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_decomposed_relative_path_swaps_package_directory_name() {
+    fn decomposed_package_directory_name_preserves_exporter_suffixes() {
+        let files = vec![
+            starbreaker_3d::ExportedFile {
+                relative_path: "Packages/ARGO MOLE_LOD0_TEX0/scene.json".into(),
+                bytes: Vec::new(),
+                kind: starbreaker_3d::ExportedFileKind::PackageManifest,
+            },
+            starbreaker_3d::ExportedFile {
+                relative_path: "Data/Objects/Test/root.glb".into(),
+                bytes: Vec::new(),
+                kind: starbreaker_3d::ExportedFileKind::MeshAsset,
+            },
+        ];
+
         assert_eq!(
-            rewrite_decomposed_relative_path("Packages/ARGO MOLE/scene.json", "Argo Mole"),
-            "Packages/Argo Mole/scene.json"
+            decomposed_package_directory_name(&files, "Argo Mole"),
+            "ARGO MOLE_LOD0_TEX0"
         );
+    }
+
+    #[test]
+    fn decomposed_package_directory_name_falls_back_when_packages_path_is_absent() {
+        let files = vec![starbreaker_3d::ExportedFile {
+            relative_path: "Data/Objects/Test/root.glb".into(),
+            bytes: Vec::new(),
+            kind: starbreaker_3d::ExportedFileKind::MeshAsset,
+        }];
+
         assert_eq!(
-            rewrite_decomposed_relative_path("Data/Objects/Ships/Test/root.glb", "Argo Mole"),
-            "Data/Objects/Ships/Test/root.glb"
+            decomposed_package_directory_name(&files, "Argo Mole"),
+            "Argo Mole"
         );
     }
 
