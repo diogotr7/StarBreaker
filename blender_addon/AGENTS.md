@@ -75,6 +75,10 @@ See the project-wide `Coding Practices` section in
 The installed copy must stay in lockstep with the source tree or the
 MCP bridge will execute stale code. After every change:
 
+- **Always sync the live Blender install before asking the user to test.**
+  Repo-only edits are not enough; Blender will keep running the installed
+  copy until the add-on directory below is updated.
+
 ```bash
 rsync -a --delete StarBreaker/blender_addon/starbreaker_addon/ \
   ~/.config/blender/5.1/scripts/addons/starbreaker_addon/
