@@ -172,6 +172,42 @@ def _scene_position_to_blender(position: tuple[float, float, float]) -> tuple[fl
     return (position[0], -position[2], position[1])
 
 
+def _scene_attachment_offset_to_blender(
+    offset_position: tuple[float, float, float],
+    offset_rotation: tuple[float, float, float],
+    *,
+    no_rotation: bool,
+    parent_world_matrix: tuple[tuple[float, float, float, float], ...] | None = None,
+) -> tuple[float, float, float]:
+    location = _scene_position_to_blender(offset_position)
+    if not no_rotation or parent_world_matrix is None:
+        return location
+    if any(abs(value) > 1e-6 for value in offset_rotation):
+        return location
+    parent_world_offset = (
+        parent_world_matrix[0][0] * location[0]
+        + parent_world_matrix[0][1] * location[1]
+        + parent_world_matrix[0][2] * location[2],
+        parent_world_matrix[1][0] * location[0]
+        + parent_world_matrix[1][1] * location[1]
+        + parent_world_matrix[1][2] * location[2],
+        parent_world_matrix[2][0] * location[0]
+        + parent_world_matrix[2][1] * location[1]
+        + parent_world_matrix[2][2] * location[2],
+    )
+    parent_world_translation = (
+        parent_world_matrix[0][3],
+        parent_world_matrix[1][3],
+        parent_world_matrix[2][3],
+    )
+    if all(
+        math.isclose(parent_world_offset[index], parent_world_translation[index], abs_tol=5e-4)
+        for index in range(3)
+    ):
+        return (0.0, 0.0, 0.0)
+    return location
+
+
 def _scene_matrix_to_blender(matrix_rows: Any) -> Matrix:
     matrix = Matrix(matrix_rows).transposed()
     return SCENE_AXIS_CONVERSION @ matrix @ SCENE_AXIS_CONVERSION_INV

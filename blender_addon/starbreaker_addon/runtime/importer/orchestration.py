@@ -63,6 +63,7 @@ from .utils import (
     _canonical_material_sidecar_path,
     _canonical_source_name,
     _remapped_submaterial_for_slot,
+    _scene_attachment_offset_to_blender,
     _scene_light_quaternion_to_blender,
     _scene_matrix_to_blender,
     _scene_position_to_blender,
@@ -423,7 +424,15 @@ class OrchestrationMixin:
         target_parent = parent_node or parent
         anchor.parent = target_parent
         anchor.rotation_mode = "QUATERNION"
-        anchor.location = _scene_position_to_blender(record.offset_position)
+        parent_world_matrix = None
+        if parent_node is not None:
+            parent_world_matrix = tuple(tuple(parent_node.matrix_world[index][column] for column in range(4)) for index in range(4))
+        anchor.location = _scene_attachment_offset_to_blender(
+            tuple(record.offset_position),
+            tuple(record.offset_rotation),
+            no_rotation=record.no_rotation,
+            parent_world_matrix=parent_world_matrix,
+        )
         desired_rotation = Euler(tuple(math.radians(value) for value in record.offset_rotation), "XYZ").to_quaternion()
         if parent_node is not None and record.no_rotation:
             anchor.rotation_quaternion = parent_node.matrix_world.to_quaternion().inverted() @ desired_rotation
