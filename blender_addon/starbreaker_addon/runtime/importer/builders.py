@@ -224,11 +224,12 @@ class BuildersMixin:
         parallax_node.location = (location[0], location[1])
         parallax_node.label = "StarBreaker POM"
 
-        # POM_Vector inputs: Layers (Int), Scale (Float), Bias (Float),
-        # Non-planar (Bool). Drive Scale from the authored PomDisplacement
+        # POM_Vector inputs: Scale (Float), Bias (Float), Non-planar
+        # (Bool). Layer count is controlled inside the runtime POM
+        # root group based on the active scene profile. Drive Scale from
+        # the authored PomDisplacement
         # (CryEngine-space ≈0.02–0.1) rescaled into POM-test's default
         # range (≈1.5 for 0.05 input) by multiplying by 30.
-        self._set_socket_default(_input_socket(parallax_node, "Layers"), 40)
         self._set_socket_default(_input_socket(parallax_node, "Scale"), max(0.3, min(3.0, scale_value * 30.0)))
         self._set_socket_default(_input_socket(parallax_node, "Bias"), max(0.0, min(1.0, bias_value)))
         self._set_socket_default(_input_socket(parallax_node, "Non-planar"), True)

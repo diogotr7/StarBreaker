@@ -42,8 +42,8 @@ _POM_DETAIL_GROUP_NAME = "StarBreaker Runtime POM Detail"
 _POM_DETAIL_GROUP_SIGNATURE = "pom_detail_v3"
 _POM_DETAIL_CONTROL_NODE_NAME = "StarBreaker POM Detail"
 _POM_DETAIL_SCALE_NODE_NAME = "StarBreaker POM Detail Scale"
-_POM_DETAIL_LAYERS_NODE_NAME = "Detail Layers"
-_POM_DETAIL_SCALE_MULTIPLIER_NODE_NAME = "Scale Multiplier"
+_POM_DETAIL_LAYERS_NODE_NAME = "StarBreaker Detail Layers"
+_POM_DETAIL_SCALE_MULTIPLIER_NODE_NAME = "StarBreaker Detail Scale Multiplier"
 
 
 def _ensure_runtime_pom_detail_group() -> bpy.types.ShaderNodeTree:
@@ -111,31 +111,34 @@ def _configure_runtime_pom_detail_group(mode: str) -> bpy.types.ShaderNodeTree:
 
 def _ensure_pom_detail_control_on_tree(
     group_tree: bpy.types.ShaderNodeTree,
-    detail_group: bpy.types.ShaderNodeTree,
+    mode: str,
 ) -> bool:
+    """Install direct internal Value/Math nodes inside a top-level POM root.
+
+    We do not rely on a shared helper node group because routing values
+    through a nested group + implicit socket conversions caused the
+    parallax to evaluate to zero (div-by-zero on Vector Math.002 input[1]
+    was also observed). Instead each top-level ``StarBreaker POM [...]``
+    root now owns two Value nodes (``Detail Layers`` and ``Scale
+    Multiplier``) plus an internal Multiply math node for the scale.
+    ``apply_pom_detail_mode`` only has to update the two Value defaults.
+    """
+
     if (
         group_tree is None
         or not group_tree.name.startswith("StarBreaker POM [")
         or " / " in group_tree.name
     ):
         return False
+
     nodes = group_tree.nodes
     links = group_tree.links
-    detail_node = nodes.get(_POM_DETAIL_CONTROL_NODE_NAME)
-    if detail_node is None or detail_node.bl_idname != "ShaderNodeGroup":
-        if detail_node is not None:
-            nodes.remove(detail_node)
-        detail_node = nodes.new("ShaderNodeGroup")
-        detail_node.name = _POM_DETAIL_CONTROL_NODE_NAME
-        detail_node.label = "POM Detail"
-        detail_node.location = (-320, 260)
-    detail_node.node_tree = detail_group
-    _refresh_group_node_sockets(detail_node)
+    layers, scale_multiplier = pom_detail_settings(mode)
 
-    source_input = next((node for node in nodes if node.bl_idname == "NodeGroupInput"), None)
-    if source_input is None:
-        return False
+    changed = False
 
+    # Remove legacy "Layers" interface input socket so external 40.0 default
+    # cannot override our internal value through Group Input.x nodes.
     legacy_layers_item = next(
         (
             item
@@ -146,7 +149,43 @@ def _ensure_pom_detail_control_on_tree(
     )
     if legacy_layers_item is not None:
         group_tree.interface.remove(legacy_layers_item)
+        changed = True
 
+    # Remove the old shared-helper control node if still present (deprecated).
+    stale_control = nodes.get(_POM_DETAIL_CONTROL_NODE_NAME)
+    if stale_control is not None and stale_control.bl_idname == "ShaderNodeGroup":
+        nodes.remove(stale_control)
+        changed = True
+
+    # Internal Value node: number of POM layers (num_layers / denominator).
+    layers_node = nodes.get(_POM_DETAIL_LAYERS_NODE_NAME)
+    if layers_node is None or layers_node.bl_idname != "ShaderNodeValue":
+        if layers_node is not None:
+            nodes.remove(layers_node)
+        layers_node = nodes.new("ShaderNodeValue")
+        layers_node.name = _POM_DETAIL_LAYERS_NODE_NAME
+        layers_node.label = "Detail Layers"
+        layers_node.location = (-420, 220)
+        changed = True
+    if float(layers_node.outputs[0].default_value) != float(layers):
+        layers_node.outputs[0].default_value = float(layers)
+        changed = True
+
+    # Internal Value node: scale multiplier (layers / 40) to keep perceived depth constant.
+    mult_node = nodes.get(_POM_DETAIL_SCALE_MULTIPLIER_NODE_NAME)
+    if mult_node is None or mult_node.bl_idname != "ShaderNodeValue":
+        if mult_node is not None:
+            nodes.remove(mult_node)
+        mult_node = nodes.new("ShaderNodeValue")
+        mult_node.name = _POM_DETAIL_SCALE_MULTIPLIER_NODE_NAME
+        mult_node.label = "Scale Multiplier"
+        mult_node.location = (-420, 80)
+        changed = True
+    if float(mult_node.outputs[0].default_value) != float(scale_multiplier):
+        mult_node.outputs[0].default_value = float(scale_multiplier)
+        changed = True
+
+    # Internal Multiply math: Scale * multiplier -> feeds Math.003 input[0].
     scale_math = nodes.get(_POM_DETAIL_SCALE_NODE_NAME)
     if scale_math is None or scale_math.bl_idname != "ShaderNodeMath":
         if scale_math is not None:
@@ -155,26 +194,21 @@ def _ensure_pom_detail_control_on_tree(
         scale_math.name = _POM_DETAIL_SCALE_NODE_NAME
         scale_math.label = "POM Detail Scale"
         scale_math.operation = "MULTIPLY"
-        scale_math.location = (-120, 160)
-
-    changed = legacy_layers_item is not None
-    source_scale_output = _output_socket(source_input, "Scale")
-    helper_scale_multiplier = _output_socket(detail_node, "Scale Multiplier")
-    if source_scale_output is not None:
-        for link in list(scale_math.inputs[0].links):
-            links.remove(link)
-        links.new(source_scale_output, scale_math.inputs[0])
-        changed = True
-    if helper_scale_multiplier is not None:
-        for link in list(scale_math.inputs[1].links):
-            links.remove(link)
-        links.new(helper_scale_multiplier, scale_math.inputs[1])
+        scale_math.location = (-200, 160)
         changed = True
 
-    helper_layers = _output_socket(detail_node, "Layers")
-    helper_layers_vector = _output_socket(detail_node, "Layers Vector")
+    # Find a Group Input node that exposes "Scale".
+    source_scale_output = None
+    for node in nodes:
+        if node.bl_idname == "NodeGroupInput":
+            out = _output_socket(node, "Scale")
+            if out is not None:
+                source_scale_output = out
+                break
+    if source_scale_output is None:
+        return changed
 
-    def _ensure_direct_link(output_socket: bpy.types.NodeSocket | None, input_socket: bpy.types.NodeSocket | None) -> None:
+    def _ensure_direct_link(output_socket, input_socket) -> None:
         nonlocal changed
         if output_socket is None or input_socket is None:
             return
@@ -189,26 +223,42 @@ def _ensure_pom_detail_control_on_tree(
         links.new(output_socket, input_socket)
         changed = True
 
-    vector_math = nodes.get("Vector Math.002")
-    if vector_math is not None and len(vector_math.inputs) > 0:
-        _ensure_direct_link(helper_layers_vector, vector_math.inputs[0])
+    # Wire scale_math inputs: [0]=source Scale, [1]=multiplier Value.
+    _ensure_direct_link(source_scale_output, scale_math.inputs[0])
+    _ensure_direct_link(mult_node.outputs[0], scale_math.inputs[1])
 
+    # Math.003 (DIVIDE): [0]=scale*multiplier, [1]=layers. (Unchanged from the
+    # previous approach — it was already correct.)
     layer_divide = nodes.get("Math.003")
     if layer_divide is not None and len(layer_divide.inputs) > 1:
         _ensure_direct_link(scale_math.outputs[0], layer_divide.inputs[0])
-        _ensure_direct_link(helper_layers, layer_divide.inputs[1])
+        _ensure_direct_link(layers_node.outputs[0], layer_divide.inputs[1])
 
+    # Vector Math.002 (DIVIDE): [0]=delta numerator (leave original link
+    # intact!), [1]=layers (float -> implicit vector). The previous code
+    # wrote layers to input[0], clobbering the numerator -> flat POM.
+    vector_math = nodes.get("Vector Math.002")
+    if vector_math is not None and len(vector_math.inputs) > 1:
+        _ensure_direct_link(layers_node.outputs[0], vector_math.inputs[1])
+
+    # Group.001 first POM_10x_Layer_Steps: num_layers=layers, Scale=raw Scale.
     pom_group = nodes.get("Group.001")
     if pom_group is not None:
-        _ensure_direct_link(helper_layers, _input_socket(pom_group, "num layers"))
+        _ensure_direct_link(layers_node.outputs[0], _input_socket(pom_group, "num layers"))
         _ensure_direct_link(source_scale_output, _input_socket(pom_group, "Scale"))
 
     return changed
 
 
 def apply_pom_detail_mode(mode: str) -> int:
+    # Keep the shared detail group datablock around for back-compat / deletion
+    # of its runtime signature, but do not wire it into any material.
     _configure_runtime_pom_detail_group(mode)
-    return 0
+    updated = 0
+    for group_tree in bpy.data.node_groups:
+        if _ensure_pom_detail_control_on_tree(group_tree, mode):
+            updated += 1
+    return updated
 
 
 class GroupsMixin:
@@ -2042,7 +2092,10 @@ class GroupsMixin:
         image_key = height_image.name
         cached_name = f"StarBreaker POM [{image_key}]"
         cached = bpy.data.node_groups.get(cached_name)
+        current_mode = self._current_pom_detail_mode()
+        _configure_runtime_pom_detail_group(current_mode)
         if cached is not None:
+            _ensure_pom_detail_control_on_tree(cached, current_mode)
             return cached
 
         library_path = _POM_LIBRARY_PATH
@@ -2173,6 +2226,8 @@ class GroupsMixin:
             # been excluded by the ``before`` snapshot above.
             g.name = f"{prefix}{base}"
             g.use_fake_user = False
+
+        _ensure_pom_detail_control_on_tree(pom_vector_new, current_mode)
 
         return pom_vector_new
 

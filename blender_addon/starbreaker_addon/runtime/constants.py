@@ -67,9 +67,20 @@ _POM_DETAIL_LAYERS = {
 
 
 def pom_detail_settings(mode: str) -> tuple[int, float]:
+    """Resolve a POM detail mode into ``(num_layers, scale_multiplier)``.
+
+    The per-step delta entering ``Group.001`` inside each top-level POM
+    root is ``parallax_dir * Scale / Layers**2`` (because ``Math.003``
+    divides Scale by Layers, then ``Vector Math.002`` divides the result
+    vector by Layers a second time). To keep the total march distance
+    visually constant as ``Layers`` varies we scale ``Scale`` by
+    ``Layers**2 / 40**2`` (40 is the original default layer count and
+    the effective cap on the fixed 4-block iteration chain).
+    """
+
     normalized = str(mode or POM_DETAIL_DEFAULT).upper()
     layers = _POM_DETAIL_LAYERS.get(normalized, _POM_DETAIL_LAYERS[POM_DETAIL_DEFAULT])
-    scale_multiplier = layers / 40.0
+    scale_multiplier = (layers * layers) / (40.0 * 40.0)
     return int(layers), float(scale_multiplier)
 
 PACKAGE_ROOT_PREFIX = "StarBreaker"

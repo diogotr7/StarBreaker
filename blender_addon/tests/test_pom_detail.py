@@ -50,12 +50,14 @@ class PomDetailTests(unittest.TestCase):
         self.assertEqual([item[0] for item in POM_DETAIL_ITEMS], ["LOW", "MEDIUM", "HIGH"])
 
     def test_profile_settings_map_to_expected_layers_and_scale_multiplier(self) -> None:
-        self.assertEqual(pom_detail_settings("LOW"), (20, 0.5))
-        self.assertEqual(pom_detail_settings("MEDIUM"), (50, 1.25))
-        self.assertEqual(pom_detail_settings("HIGH"), (100, 2.5))
+        # multiplier = layers**2 / 40**2 to compensate for delta =
+        # parallax_dir * Scale / Layers**2 inside each POM root.
+        self.assertEqual(pom_detail_settings("LOW"), (20, 0.25))
+        self.assertEqual(pom_detail_settings("MEDIUM"), (50, 1.5625))
+        self.assertEqual(pom_detail_settings("HIGH"), (100, 6.25))
 
     def test_unknown_mode_falls_back_to_medium(self) -> None:
-        self.assertEqual(pom_detail_settings("unexpected"), (50, 1.25))
+        self.assertEqual(pom_detail_settings("unexpected"), (50, 1.5625))
 
 
 if __name__ == "__main__":
