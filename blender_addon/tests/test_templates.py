@@ -25,6 +25,9 @@ from starbreaker_addon.templates import (
 ARGO_EXTERIOR = REPO_ROOT / "ships/Data/Objects/Spaceships/Ships/ARGO/MOLE/argo_mole_exterior.materials.json"
 ARGO_INTERIOR = REPO_ROOT / "ships/Data/Objects/Spaceships/Ships/ARGO/MOLE/argo_mole_interior.materials.json"
 COMPONENT_MASTER = REPO_ROOT / "ships/Data/Materials/vehicles/components/component_master_01.materials.json"
+VULTURE_BASE = REPO_ROOT / "ships/Data/Objects/Spaceships/Ships/DRAK/Vulture/DRAK_Vulture_TEX0.materials.json"
+VULTURE_ALT_A = REPO_ROOT / "ships/Data/Objects/Spaceships/Ships/DRAK/Vulture/drak_vulture_alt_a_TEX0.materials.json"
+VULTURE_PIRATE_SKULL = REPO_ROOT / "ships/Data/Objects/Spaceships/Ships/DRAK/Vulture/DRAK_Vulture_Pirate_Skull_TEX0.materials.json"
 
 
 def synthetic_submaterial(shader_family: str, *, tokens: list[str] | None = None, active: bool = True) -> SubmaterialRecord:
@@ -90,6 +93,66 @@ class TemplateTests(unittest.TestCase):
     def test_hard_surface_stencil_material_stays_on_hard_surface_path(self) -> None:
         hard_surface_stencil = synthetic_submaterial("HardSurface", tokens=["STENCIL_MAP", "STENCIL_AS_STICKER"])
         self.assertEqual(template_plan_for_submaterial(hard_surface_stencil).template_key, "physical_surface")
+
+    @unittest.skipUnless(
+        VULTURE_BASE.is_file() and VULTURE_ALT_A.is_file() and VULTURE_PIRATE_SKULL.is_file(),
+        "Vulture fixtures not present; skipping livery_decal template tests",
+    )
+    def test_empty_vulture_livery_decal_downgrades_to_nodraw(self) -> None:
+        sidecar = MaterialSidecar.from_file(VULTURE_ALT_A)
+        livery_decal = next(
+            submaterial
+            for submaterial in sidecar.submaterials
+            if submaterial.submaterial_name == "livery_decal"
+        )
+
+        self.assertEqual(template_plan_for_submaterial(livery_decal).template_key, "nodraw")
+
+    @unittest.skipUnless(
+        VULTURE_BASE.is_file() and VULTURE_ALT_A.is_file() and VULTURE_PIRATE_SKULL.is_file(),
+        "Vulture fixtures not present; skipping livery_decal template tests",
+    )
+    def test_base_vulture_livery_decal_without_authored_inputs_stays_nodraw(self) -> None:
+        sidecar = MaterialSidecar.from_file(VULTURE_BASE)
+        livery_decal = next(
+            submaterial
+            for submaterial in sidecar.submaterials
+            if submaterial.submaterial_name == "livery_decal"
+        )
+
+        self.assertEqual(template_plan_for_submaterial(livery_decal).template_key, "nodraw")
+
+    @unittest.skipUnless(
+        VULTURE_BASE.is_file() and VULTURE_ALT_A.is_file() and VULTURE_PIRATE_SKULL.is_file(),
+        "Vulture fixtures not present; skipping livery_decal template tests",
+    )
+    def test_textured_vulture_livery_decal_stays_on_decal_path(self) -> None:
+        sidecar = MaterialSidecar.from_file(VULTURE_PIRATE_SKULL)
+        livery_decal = next(
+            submaterial
+            for submaterial in sidecar.submaterials
+            if submaterial.submaterial_name == "livery_decal"
+        )
+
+        self.assertEqual(template_plan_for_submaterial(livery_decal).template_key, "decal_stencil")
+
+    @unittest.skipUnless(
+        VULTURE_BASE.is_file() and VULTURE_ALT_A.is_file() and VULTURE_PIRATE_SKULL.is_file(),
+        "Vulture fixtures not present; skipping livery_decal template tests",
+    )
+    def test_inactive_vulture_ext_livery_logo_stays_on_decal_path(self) -> None:
+        sidecar = MaterialSidecar.from_file(VULTURE_ALT_A)
+        ext_livery = next(
+            submaterial
+            for submaterial in sidecar.submaterials
+            if submaterial.submaterial_name == "Ext_livery_01"
+        )
+
+        self.assertEqual(ext_livery.activation_state, "inactive")
+        self.assertEqual(template_plan_for_submaterial(ext_livery).template_key, "decal_stencil")
+
+    def test_inactive_non_decal_material_stays_nodraw(self) -> None:
+        self.assertEqual(template_plan_for_submaterial(synthetic_submaterial("Illum", active=False)).template_key, "nodraw")
 
     def test_representative_textures_pick_exportable_maps(self) -> None:
         component = MaterialSidecar.from_file(COMPONENT_MASTER)

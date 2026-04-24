@@ -255,7 +255,9 @@ class BuildersMixin:
         material.use_nodes = True
         plan = template_plan_for_submaterial(submaterial)
         surface_mode = SURFACE_SHADER_MODE_PRINCIPLED
-        if submaterial.shader_family == "HardSurface":
+        if plan.template_key == "nodraw":
+            self._build_nodraw_material(material)
+        elif submaterial.shader_family == "HardSurface":
             self._build_hard_surface_material(material, submaterial, palette, plan)
         elif submaterial.shader_family == "Illum":
             self._build_illum_material(material, submaterial, palette, plan)
@@ -267,8 +269,6 @@ class BuildersMixin:
             elif submaterial.shader_family == "GlassPBR":
                 self._build_glass_material(material, submaterial, palette, plan)
                 surface_mode = SURFACE_SHADER_MODE_GLASS
-            elif plan.template_key == "nodraw":
-                self._build_nodraw_material(material)
             elif plan.template_key == "screen_hud":
                 self._build_screen_material(material, submaterial, palette, plan)
             elif plan.template_key == "effects":

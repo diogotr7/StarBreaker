@@ -40,11 +40,17 @@ from ...manifest import (
     TextureReference,
 )
 from ...material_contract import ContractInput, ShaderGroupContract
-from ...templates import material_palette_channels, representative_textures, smoothness_texture_reference
+from ...templates import (
+    material_palette_channels,
+    representative_textures,
+    smoothness_texture_reference,
+    template_plan_for_submaterial,
+)
 from ..constants import (
     NON_COLOR_INPUT_KEYWORDS,
     PROP_IMPORTED_SLOT_MAP,
     PROP_MATERIAL_IDENTITY,
+    PROP_TEMPLATE_KEY,
 )
 from ..node_utils import _input_socket, _output_socket, _refresh_group_node_sockets
 from ..record_utils import (
@@ -79,6 +85,7 @@ class MaterialsMixin:
     ) -> bpy.types.Material:
         palette_scope = self._palette_scope(palette)
         cache_key = _material_identity(sidecar_path, sidecar, submaterial, palette, palette_scope)
+        expected_template_key = template_plan_for_submaterial(submaterial).template_key
         cached = self.material_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -86,7 +93,12 @@ class MaterialsMixin:
         reusable = self._reusable_material(sidecar_path, sidecar, submaterial, palette, palette_scope, cache_key)
         if reusable is not None:
             existing_identity = reusable.get(PROP_MATERIAL_IDENTITY)
-            if isinstance(existing_identity, str) and existing_identity == cache_key:
+            existing_template_key = reusable.get(PROP_TEMPLATE_KEY)
+            if (
+                isinstance(existing_identity, str)
+                and existing_identity == cache_key
+                and existing_template_key == expected_template_key
+            ):
                 self.material_cache[cache_key] = reusable
                 self.material_identity_index[cache_key] = reusable
                 return reusable

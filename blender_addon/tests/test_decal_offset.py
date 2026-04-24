@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 import types
@@ -7,6 +8,10 @@ import unittest
 
 
 ADDON_ROOT = Path(__file__).resolve().parents[1]
+STARBREAKER_ROOT = ADDON_ROOT.parent
+REPO_ROOT = STARBREAKER_ROOT.parent
+VULTURE_ALT_A = REPO_ROOT / "ships/Data/Objects/Spaceships/Ships/DRAK/Vulture/drak_vulture_alt_a_TEX0.materials.json"
+
 sys.path.insert(0, str(ADDON_ROOT))
 
 
@@ -59,16 +64,44 @@ if "bpy" not in sys.modules:
     sys.modules["bpy"] = bpy
 
 
-from starbreaker_addon.runtime.constants import PROP_HAS_POM, PROP_TEMPLATE_KEY
-from starbreaker_addon.manifest import SubmaterialRecord
+from starbreaker_addon.runtime.constants import (
+    PROP_HAS_POM,
+    PROP_MATERIAL_IDENTITY,
+    PROP_MATERIAL_SIDECAR,
+    PROP_PALETTE_SCOPE,
+    PROP_SUBMATERIAL_JSON,
+    PROP_TEMPLATE_KEY,
+)
+from starbreaker_addon.manifest import MaterialSidecar, SubmaterialRecord
 from starbreaker_addon.runtime.importer.builders import BuildersMixin
 from starbreaker_addon.runtime.importer.decals import DecalsMixin
+from starbreaker_addon.runtime.importer.materials import MaterialsMixin
+from starbreaker_addon.runtime.importer.utils import _canonical_material_sidecar_path, _material_identity
+from starbreaker_addon.templates import template_plan_for_submaterial
+
+
+class FakeNodeTree:
+    def __init__(self):
+        self.nodes = []
+        self.links = []
 
 
 class FakeMaterial(dict):
     def __init__(self, name: str, **props):
         super().__init__(props)
         self.name = name
+        self.node_tree = FakeNodeTree()
+        self.use_nodes = True
+
+
+class FakeMaterialsCollection(dict):
+    def get(self, name: str, default=None):
+        return super().get(name, default)
+
+    def new(self, name: str):
+        material = FakeMaterial(name)
+        self[name] = material
+        return material
 
 
 class FakeSlot:
@@ -191,6 +224,79 @@ class FakePackage:
 class DecalDefaultsImporterUnderTest(DecalsMixin):
     def __init__(self, has_decal_texture: bool):
         self.package = FakePackage(has_decal_texture)
+
+
+class MaterialReuseImporterUnderTest(MaterialsMixin):
+    def __init__(self):
+        self.material_cache = {}
+        self.material_identity_index = {}
+        self.material_identity_index_ready = False
+        self.package = None
+        self.package_root = None
+        self.rebuild_calls: list[str] = []
+
+    def _palette_scope(self, palette=None) -> str:
+        return "test-scope"
+
+    def _ensure_material_identity_index(self) -> None:
+        self.material_identity_index_ready = True
+
+    def _build_managed_material(
+        self,
+        material,
+        sidecar_path,
+        sidecar,
+        submaterial,
+        palette,
+        material_identity,
+    ) -> None:
+        self.rebuild_calls.append(material.name)
+        material[PROP_TEMPLATE_KEY] = template_plan_for_submaterial(submaterial).template_key
+        material[PROP_MATERIAL_IDENTITY] = material_identity
+        material[PROP_MATERIAL_SIDECAR] = _canonical_material_sidecar_path(sidecar_path, sidecar)
+        material[PROP_SUBMATERIAL_JSON] = json.dumps(submaterial.raw, sort_keys=True)
+        material[PROP_PALETTE_SCOPE] = self._palette_scope(palette)
+
+
+class ManagedMaterialBuildImporterUnderTest(BuildersMixin):
+    def __init__(self):
+        self.build_calls: list[str] = []
+
+    def _build_nodraw_material(self, material) -> None:
+        self.build_calls.append("nodraw")
+
+    def _build_illum_material(self, material, submaterial, palette, plan) -> None:
+        self.build_calls.append("illum")
+
+    def _build_hard_surface_material(self, material, submaterial, palette, plan) -> None:
+        self.build_calls.append("hard_surface")
+
+    def _group_contract_for_submaterial(self, submaterial):
+        return None
+
+    def _build_contract_group_material(self, material, submaterial, palette, plan, group_contract) -> bool:
+        return False
+
+    def _build_glass_material(self, material, submaterial, palette, plan) -> None:
+        self.build_calls.append("glass")
+
+    def _build_screen_material(self, material, submaterial, palette, plan) -> None:
+        self.build_calls.append("screen")
+
+    def _build_effect_material(self, material, submaterial, palette, plan) -> None:
+        self.build_calls.append("effects")
+
+    def _build_principled_material(self, material, submaterial, palette, plan) -> None:
+        self.build_calls.append("principled")
+
+    def _apply_material_node_layout(self, material) -> None:
+        return None
+
+    def _sweep_unreachable_nodes(self, material) -> None:
+        return None
+
+    def _palette_scope(self, palette=None) -> str:
+        return "test-scope"
 
 
 class DecalOffsetTests(unittest.TestCase):
@@ -330,6 +436,76 @@ class DecalOffsetTests(unittest.TestCase):
         )
 
         self.assertEqual(alpha, 0.85)
+
+
+class MaterialReuseTests(unittest.TestCase):
+    @unittest.skipUnless(
+        VULTURE_ALT_A.is_file(),
+        "Vulture fixtures not present; skipping material reuse regression test",
+    )
+    def test_stale_template_key_forces_managed_material_rebuild(self) -> None:
+        sidecar = MaterialSidecar.from_file(VULTURE_ALT_A)
+        submaterial = next(
+            candidate
+            for candidate in sidecar.submaterials
+            if candidate.submaterial_name == "livery_decal"
+        )
+        self.assertEqual(template_plan_for_submaterial(submaterial).template_key, "nodraw")
+
+        bpy = sys.modules["bpy"]
+        original_materials = getattr(bpy.data, "materials", None)
+        materials = FakeMaterialsCollection()
+        bpy.data.materials = materials
+        try:
+            sidecar_path = _canonical_material_sidecar_path("", sidecar)
+            palette_scope = "test-scope"
+            material_identity = _material_identity(sidecar_path, sidecar, submaterial, None, palette_scope)
+            stale = FakeMaterial(
+                submaterial.blender_material_name or "DRAK_Vulture:livery_decal",
+                **{
+                    PROP_TEMPLATE_KEY: "physical_surface",
+                    PROP_MATERIAL_IDENTITY: material_identity,
+                    PROP_MATERIAL_SIDECAR: sidecar_path,
+                    PROP_SUBMATERIAL_JSON: json.dumps(submaterial.raw, sort_keys=True),
+                    PROP_PALETTE_SCOPE: palette_scope,
+                },
+            )
+            materials[stale.name] = stale
+
+            importer = MaterialReuseImporterUnderTest()
+            material = importer.material_for_submaterial(sidecar_path, sidecar, submaterial, None)
+
+            self.assertIs(material, stale)
+            self.assertEqual(importer.rebuild_calls, [stale.name])
+            self.assertEqual(material[PROP_TEMPLATE_KEY], "nodraw")
+        finally:
+            bpy.data.materials = original_materials
+
+    @unittest.skipUnless(
+        VULTURE_ALT_A.is_file(),
+        "Vulture fixtures not present; skipping managed material dispatch regression test",
+    )
+    def test_illum_nodraw_submaterial_uses_nodraw_builder(self) -> None:
+        sidecar = MaterialSidecar.from_file(VULTURE_ALT_A)
+        submaterial = next(
+            candidate
+            for candidate in sidecar.submaterials
+            if candidate.submaterial_name == "livery_decal"
+        )
+        importer = ManagedMaterialBuildImporterUnderTest()
+        material = FakeMaterial(submaterial.blender_material_name or "DRAK_Vulture:livery_decal")
+
+        importer._build_managed_material(
+            material,
+            _canonical_material_sidecar_path("", sidecar),
+            sidecar,
+            submaterial,
+            None,
+            "identity",
+        )
+
+        self.assertEqual(importer.build_calls, ["nodraw"])
+        self.assertEqual(material[PROP_TEMPLATE_KEY], "nodraw")
 
 
 if __name__ == "__main__":

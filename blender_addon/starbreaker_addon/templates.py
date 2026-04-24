@@ -31,15 +31,36 @@ def active_submaterials(submaterials: list[SubmaterialRecord]) -> list[Submateri
     return [submaterial for submaterial in submaterials if submaterial.activation_state == "active"]
 
 
+def _is_empty_livery_decal(submaterial: SubmaterialRecord) -> bool:
+    if submaterial.submaterial_name != "livery_decal":
+        return False
+    return not [
+        *submaterial.texture_slots,
+        *submaterial.direct_textures,
+        *submaterial.derived_textures,
+        *submaterial.virtual_inputs,
+    ]
+
+
+def _uses_decal_or_stencil_template(submaterial: SubmaterialRecord) -> bool:
+    family = submaterial.shader_family
+    flags = submaterial.decoded_feature_flags
+    return family == "MeshDecal" or flags.has_decal or (flags.has_stencil_map and family != "HardSurface")
+
+
 def template_plan_for_submaterial(submaterial: SubmaterialRecord) -> MaterialTemplatePlan:
     family = submaterial.shader_family
     flags = submaterial.decoded_feature_flags
 
-    if family == "NoDraw" or submaterial.activation_state != "active":
+    if family == "NoDraw":
+        return MaterialTemplatePlan("nodraw", "NoDraw", "CLIP", "NONE", False, False, False, False, False, True)
+    if _is_empty_livery_decal(submaterial):
+        return MaterialTemplatePlan("nodraw", "NoDraw", "CLIP", "NONE", False, False, False, False, False, True)
+    if submaterial.activation_state != "active" and not _uses_decal_or_stencil_template(submaterial):
         return MaterialTemplatePlan("nodraw", "NoDraw", "CLIP", "NONE", False, False, False, False, False, True)
     if family in {"Layer", "LayerBlend_V2"}:
         return MaterialTemplatePlan("layered_wear", "Layered Wear", "OPAQUE", "OPAQUE", True, True, True, False, False, False)
-    if family == "MeshDecal" or flags.has_decal or (flags.has_stencil_map and family != "HardSurface"):
+    if _uses_decal_or_stencil_template(submaterial):
         return MaterialTemplatePlan("decal_stencil", "Decal Or Stencil", "CLIP", "NONE", True, True, False, False, False, True)
     if flags.has_parallax_occlusion_mapping:
         return MaterialTemplatePlan("parallax_pom", "Parallax Or POM", "BLEND", "NONE", True, True, False, False, True, True)
