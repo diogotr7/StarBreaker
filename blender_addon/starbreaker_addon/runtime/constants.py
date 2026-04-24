@@ -55,6 +55,7 @@ SURFACE_SHADER_MODE_GLASS = "glass_bsdf"
 PACKAGE_ROOT_PREFIX = "StarBreaker"
 TEMPLATE_COLLECTION_NAME = "StarBreaker Template Cache"
 GLTF_PBR_WATTS_TO_LUMENS = 683.0
+LUMENS_PER_WATT_WHITE = 120.0
 # Conversion from Star Citizen light intensity to Blender Point/Spot/Area
 # radiant-flux Watts. SC intensities are treated as KHR_lights_punctual-style
 # candela values (matching Blender's own glTF importer behaviour): total
@@ -62,6 +63,7 @@ GLTF_PBR_WATTS_TO_LUMENS = 683.0
 # See ``docs/StarBreaker/lights-research.md``.
 import math as _math
 
+SC_LIGHT_CANDELA_SCALE = 200.0
 LIGHT_CANDELA_TO_WATT = (4.0 * _math.pi) / GLTF_PBR_WATTS_TO_LUMENS
 # Empirical visual-brightness multiplier. Star Citizen's in-engine light
 # response is much brighter than a bare KHR conversion suggests; without this

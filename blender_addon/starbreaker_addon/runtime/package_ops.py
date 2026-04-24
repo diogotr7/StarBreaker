@@ -458,11 +458,7 @@ def _apply_state_to_light(light: bpy.types.Light, state_name: str) -> bool:
     """Apply the ``state_name`` snapshot to ``light`` in-place. Returns True
     if the light had the named state and was updated, False otherwise."""
     import json as _json
-    from .constants import (
-        GLTF_PBR_WATTS_TO_LUMENS,
-        LIGHT_CANDELA_TO_WATT,
-        LIGHT_VISUAL_GAIN,
-    )
+    from .importer.utils import _light_energy_to_blender
 
     raw = _string_prop(light, PROP_LIGHT_STATES_JSON)
     if not raw:
@@ -478,16 +474,18 @@ def _apply_state_to_light(light: bpy.types.Light, state_name: str) -> bool:
         return False
 
     intensity_cd = float(state.get("intensity_cd") or 0.0)
+    intensity_raw = state.get("intensity_raw")
     temperature = float(state.get("temperature") or 6500.0)
     use_temperature = bool(state.get("use_temperature"))
     color = state.get("color") or [1.0, 1.0, 1.0]
     if not (isinstance(color, (list, tuple)) and len(color) >= 3):
         color = [1.0, 1.0, 1.0]
 
-    if light.type == "SUN":
-        light.energy = intensity_cd / GLTF_PBR_WATTS_TO_LUMENS
-    else:
-        light.energy = intensity_cd * LIGHT_CANDELA_TO_WATT * LIGHT_VISUAL_GAIN
+    light.energy = _light_energy_to_blender(
+        intensity_cd,
+        light.type,
+        intensity_raw=float(intensity_raw) if intensity_raw is not None else None,
+    )
 
     if use_temperature:
         # CryEngine's ``useTemperature`` flag tells the engine to discard the

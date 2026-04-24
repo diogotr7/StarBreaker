@@ -607,12 +607,14 @@ fn parse_light_group(
                 // per-light translation/rotation offsets relative to the group.
                 let (rel_translation, rel_rotation) =
                     extract_relative_xform(xml, light_node);
+                let rel_translation_world =
+                    quat_rotate_vec(base_rot, &rel_translation);
 
                 // Combine group position with per-light offset
                 let light_pos = [
-                    base_pos[0] + rel_translation[0],
-                    base_pos[1] + rel_translation[1],
-                    base_pos[2] + rel_translation[2],
+                    base_pos[0] + rel_translation_world[0],
+                    base_pos[1] + rel_translation_world[1],
+                    base_pos[2] + rel_translation_world[2],
                 ];
                 let light_rot = quat_mul(base_rot, &rel_rotation);
 
@@ -928,6 +930,12 @@ fn quat_mul(a: &[f64; 4], b: &[f64; 4]) -> [f64; 4] {
     ]
 }
 
+fn quat_rotate_vec(rotation: &[f64; 4], vector: &[f64; 3]) -> [f64; 3] {
+    let quat = glam::DQuat::from_xyzw(rotation[1], rotation[2], rotation[3], rotation[0]);
+    let rotated = quat * glam::DVec3::new(vector[0], vector[1], vector[2]);
+    [rotated.x, rotated.y, rotated.z]
+}
+
 fn parse_csv_f64(s: &str) -> Vec<f64> {
     s.split(',')
         .filter_map(|v| v.trim().parse::<f64>().ok())
@@ -972,4 +980,43 @@ pub fn build_container_transform(pos: [f32; 3], rot_deg: [f32; 3]) -> [[f32; 4];
         [cx * sy * cz + sx * sz, cx * sy * sz - sx * cz, cx * cy, 0.0],
         [pos[0], pos[1], pos[2], 1.0],
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{quat_mul, quat_rotate_vec};
+
+    fn approx_eq3(left: [f64; 3], right: [f64; 3]) {
+        for index in 0..3 {
+            assert!(
+                (left[index] - right[index]).abs() < 1e-9,
+                "component {} mismatch: left={} right={}",
+                index,
+                left[index],
+                right[index]
+            );
+        }
+    }
+
+    #[test]
+    fn light_group_relative_translation_respects_group_rotation() {
+        let half_turn = std::f64::consts::FRAC_1_SQRT_2;
+        let base_rotation = [half_turn, 0.0, 0.0, half_turn];
+        let rel_translation = [5.0, 0.0, 0.0];
+        let rotated = quat_rotate_vec(&base_rotation, &rel_translation);
+
+        approx_eq3(rotated, [0.0, 5.0, 0.0]);
+    }
+
+    #[test]
+    fn light_group_relative_rotation_still_composes_after_translation_fix() {
+        let half_turn = std::f64::consts::FRAC_1_SQRT_2;
+        let base_rotation = [half_turn, 0.0, 0.0, half_turn];
+        let rel_rotation = [half_turn, half_turn, 0.0, 0.0];
+
+        let combined = quat_mul(&base_rotation, &rel_rotation);
+
+        approx_eq3([combined[1], combined[2], combined[3]], [0.5, 0.5, 0.5]);
+        assert!((combined[0] - 0.5).abs() < 1e-9);
+    }
 }

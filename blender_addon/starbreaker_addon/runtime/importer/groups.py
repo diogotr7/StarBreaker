@@ -2010,7 +2010,7 @@ class GroupsMixin:
         Output ``Shader`` is a ``ShaderNodeEmission`` driven by the gobo
         image colour. Intended to live inside a light's node tree; the
         caller (``create_light``) feeds the image via a
-        ``ShaderNodeTexImage`` that samples ``Texture Coordinate > Normal``.
+        ``ShaderNodeTexImage`` that samples ``Texture Coordinate > UV``.
 
         See ``docs/StarBreaker/lights-research.md``.
         """

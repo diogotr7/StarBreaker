@@ -107,6 +107,10 @@ class LightMappingTests(unittest.TestCase):
         light = SimpleNamespace(light_type="Projector", inner_angle=30.0, outer_angle=45.0)
         self.assertEqual(self.utils._blender_light_type(light), "SPOT")
 
+    def test_type_planar_is_area(self):
+        light = SimpleNamespace(light_type="Planar", inner_angle=None, outer_angle=None)
+        self.assertEqual(self.utils._blender_light_type(light), "AREA")
+
     def test_type_directional_is_sun(self):
         light = SimpleNamespace(light_type="Directional", inner_angle=None, outer_angle=None)
         self.assertEqual(self.utils._blender_light_type(light), "SUN")
@@ -114,6 +118,37 @@ class LightMappingTests(unittest.TestCase):
     def test_type_falls_back_to_spot_when_angles_present(self):
         light = SimpleNamespace(light_type="", inner_angle=0.0, outer_angle=30.0)
         self.assertEqual(self.utils._blender_light_type(light), "SPOT")
+
+    def test_gobo_uses_uv_texcoord_output(self):
+        self.assertEqual(self.utils._light_gobo_texcoord_output_name(), "UV")
+
+    def test_headlight_gobo_strength_uses_inverse_mean_luminance(self):
+        self.assertAlmostEqual(
+            self.utils._light_gobo_strength(
+                'Data/Textures/lights/headlight_single_1.dds',
+                mean_luminance=0.0495023181392753,
+            ),
+            1.0 / 0.0495023181392753,
+            places=6,
+        )
+
+    def test_non_headlight_gobo_strength_stays_unity(self):
+        self.assertEqual(
+            self.utils._light_gobo_strength(
+                'Data/Textures/lights/light_ies_5.dds',
+                mean_luminance=0.16049035499622732,
+            ),
+            1.0,
+        )
+
+    def test_headlight_gobo_strength_handles_zero_luminance(self):
+        self.assertEqual(
+            self.utils._light_gobo_strength(
+                'Data/Textures/lights/headlight_single_1.dds',
+                mean_luminance=0.0,
+            ),
+            1.0,
+        )
 
     def test_energy_lumens_to_watts_point(self):
         self.assertAlmostEqual(
@@ -133,6 +168,20 @@ class LightMappingTests(unittest.TestCase):
         self.assertAlmostEqual(
             self.utils._light_energy_to_blender(683.0, "SUN"),
             683.0 / self.constants.GLTF_PBR_WATTS_TO_LUMENS,
+            places=6,
+        )
+
+    def test_energy_area_uses_raw_lumens_without_visual_gain(self):
+        self.assertAlmostEqual(
+            self.utils._light_energy_to_blender(2_000_000.0, "AREA", intensity_raw=10_000.0),
+            10_000.0 / self.constants.LUMENS_PER_WATT_WHITE,
+            places=6,
+        )
+
+    def test_energy_area_falls_back_to_export_scale_when_raw_missing(self):
+        self.assertAlmostEqual(
+            self.utils._light_energy_to_blender(2_000_000.0, "AREA"),
+            (2_000_000.0 / self.constants.SC_LIGHT_CANDELA_SCALE) / self.constants.LUMENS_PER_WATT_WHITE,
             places=6,
         )
 

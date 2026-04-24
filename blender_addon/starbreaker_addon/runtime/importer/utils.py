@@ -19,6 +19,7 @@ from ..constants import (
     GLTF_PBR_WATTS_TO_LUMENS,
     LIGHT_CANDELA_TO_WATT,
     LIGHT_VISUAL_GAIN,
+    LUMENS_PER_WATT_WHITE,
     MATERIAL_IDENTITY_SCHEMA,
     NON_COLOR_INPUT_KEYWORDS,
     PROP_IMPORTED_SLOT_MAP,
@@ -27,6 +28,7 @@ from ..constants import (
     PROP_PALETTE_SCOPE,
     PROP_SOURCE_NODE_NAME,
     PROP_SUBMATERIAL_JSON,
+    SC_LIGHT_CANDELA_SCALE,
     SCENE_AXIS_CONVERSION,
     SCENE_AXIS_CONVERSION_INV,
 )
@@ -228,6 +230,8 @@ def _blender_light_type(light: Any) -> str:
     light_type = str(getattr(light, "light_type", "") or "").strip().lower()
     if light_type in {"directional", "sun"}:
         return "SUN"
+    if light_type in {"planar", "area"}:
+        return "AREA"
     if light_type in {"projector", "spot"}:
         return "SPOT"
     if light_type in {"omni", "point"}:
@@ -237,7 +241,28 @@ def _blender_light_type(light: Any) -> str:
     return "POINT"
 
 
-def _light_energy_to_blender(intensity: float, blender_light_type: str) -> float:
+def _light_gobo_texcoord_output_name() -> str:
+    return "UV"
+
+
+def _light_gobo_strength(projector_texture: str | None, *, mean_luminance: float | None = None) -> float:
+    normalized_path = str(projector_texture or "").replace("\\", "/").lower()
+    if "headlight_" not in normalized_path:
+        return 1.0
+    if mean_luminance is None:
+        return 1.0
+    mean = max(float(mean_luminance), 0.0)
+    if mean <= 0.0:
+        return 1.0
+    return min(1.0 / mean, 64.0)
+
+
+def _light_energy_to_blender(
+    intensity: float,
+    blender_light_type: str,
+    *,
+    intensity_raw: float | None = None,
+) -> float:
     """Convert a Star Citizen light intensity to Blender light energy.
 
     Blender Point/Spot/Area lights take Watts of radiant flux; Sun lights take
@@ -252,6 +277,9 @@ def _light_energy_to_blender(intensity: float, blender_light_type: str) -> float
     intensity = max(float(intensity), 0.0)
     if blender_light_type == "SUN":
         return intensity / GLTF_PBR_WATTS_TO_LUMENS
+    if blender_light_type == "AREA":
+        lumens = float(intensity_raw) if intensity_raw is not None else intensity / SC_LIGHT_CANDELA_SCALE
+        return max(lumens, 0.0) / LUMENS_PER_WATT_WHITE
     return intensity * LIGHT_CANDELA_TO_WATT * LIGHT_VISUAL_GAIN
 
 

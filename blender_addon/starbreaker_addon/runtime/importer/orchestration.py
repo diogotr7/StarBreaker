@@ -520,11 +520,26 @@ class OrchestrationMixin:
         from .utils import _blender_light_type, _light_energy_to_blender
 
         blender_light_type = _blender_light_type(light)
+        active_state = None
+        state_name = getattr(light, "active_state", None)
+        state_map = getattr(light, "states", None)
+        if state_name and isinstance(state_map, dict):
+            active_state = state_map.get(state_name)
+        active_intensity_raw = getattr(active_state, "intensity_raw", None) if active_state is not None else None
         light_data = bpy.data.lights.new(name=light.name or "StarBreaker Light", type=blender_light_type)
-        light_data.energy = _light_energy_to_blender(light.intensity, blender_light_type)
+        light_data.energy = _light_energy_to_blender(
+            light.intensity,
+            blender_light_type,
+            intensity_raw=active_intensity_raw,
+        )
         light_data.color = light.color
         if blender_light_type != "SUN" and hasattr(light_data, "cutoff_distance"):
             light_data.cutoff_distance = light.radius
+        if blender_light_type == "AREA":
+            light_data.shape = "RECTANGLE"
+            light_data.size = max(float(light.radius or 0.0), 0.05)
+            if hasattr(light_data, "size_y"):
+                light_data.size_y = max(float(light.radius or 0.0), 0.05)
         if blender_light_type == "SPOT" and hasattr(light_data, "spot_size"):
             outer_angle = max(light.outer_angle or 45.0, 0.01)
             light_data.spot_size = math.radians(outer_angle) * 2.0
@@ -577,6 +592,8 @@ class OrchestrationMixin:
         ``StarBreaker Runtime Gobo`` group so the light's top-level graph
         stays minimal (TexCoord -> Mapping -> Image -> Gobo -> Output).
         """
+        from .utils import _light_gobo_strength, _light_gobo_texcoord_output_name
+
         projector_texture = getattr(light, "projector_texture", None)
         if not projector_texture:
             return
@@ -604,11 +621,27 @@ class OrchestrationMixin:
         gobo = nodes.new("ShaderNodeGroup")
         gobo.node_tree = gobo_group
         gobo.location = (-100, 0)
-        gobo.inputs["Strength"].default_value = 1.0
+        image = tex_image.image
+        mean_luminance = image.get("starbreaker_gobo_mean_luminance") if image is not None else None
+        if image is not None and mean_luminance is None:
+            pixels = image.pixels[:]
+            luminance_total = 0.0
+            sample_count = 0
+            for index in range(0, len(pixels), 4):
+                luminance_total += (pixels[index] + pixels[index + 1] + pixels[index + 2]) / 3.0
+                sample_count += 1
+            mean_luminance = (luminance_total / sample_count) if sample_count else 0.0
+            image["starbreaker_gobo_mean_luminance"] = mean_luminance
+        # Headlight cookies are sparse masks; normalize them so the cookie
+        # shape does not erase most of the authored projector energy.
+        gobo.inputs["Strength"].default_value = _light_gobo_strength(
+            projector_texture,
+            mean_luminance=float(mean_luminance) if mean_luminance is not None else None,
+        )
         output = nodes.new("ShaderNodeOutputLight")
         output.location = (100, 0)
 
-        links.new(tex_coord.outputs["Normal"], mapping.inputs["Vector"])
+        links.new(tex_coord.outputs[_light_gobo_texcoord_output_name()], mapping.inputs["Vector"])
         links.new(mapping.outputs["Vector"], tex_image.inputs["Vector"])
         links.new(tex_image.outputs["Color"], gobo.inputs["Gobo Image"])
         links.new(gobo.outputs["Shader"], output.inputs["Surface"])
