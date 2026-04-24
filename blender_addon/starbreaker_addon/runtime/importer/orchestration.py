@@ -180,6 +180,11 @@ class OrchestrationMixin:
         # swap across every subsystem of the package. Only fall back
         # to the override when the instance is palette-agnostic.
         effective_request = palette_id or self.import_palette_override
+        if (
+            self.import_palette_override is not None
+            and palette_id == self.package.scene.root_entity.palette_id
+        ):
+            effective_request = self.import_palette_override
         return resolved_palette_id(
             self.package,
             effective_request,

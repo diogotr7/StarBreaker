@@ -67,7 +67,7 @@ from ...material_contract import (
 )
 from ...palette import palette_color, palette_finish_glossiness, palette_finish_specular
 from ...templates import has_virtual_input, material_palette_channels, representative_textures, template_plan_for_submaterial
-from ..palette_utils import _palette_has_iridescence
+from ..palette_utils import _palette_channel_has_iridescence, _palette_has_iridescence
 
 
 def _canonical_material_sidecar_path(sidecar_path: str, sidecar: MaterialSidecar) -> str:
@@ -633,9 +633,18 @@ class BuildersMixin:
             else None
         )
         material_channel = submaterial.palette_routing.material_channel.name if submaterial.palette_routing.material_channel is not None else None
+        palette_angle_shift_channel = None
+        if palette is not None:
+            if material_channel in {"primary", "secondary", "tertiary"} and _palette_channel_has_iridescence(
+                palette, material_channel
+            ):
+                palette_angle_shift_channel = material_channel
+            elif _palette_channel_has_iridescence(palette, "tertiary"):
+                palette_angle_shift_channel = "tertiary"
         angle_shift_enabled = _hard_surface_angle_shift_enabled(submaterial) or (
-            material_channel == "tertiary" and _palette_has_iridescence(palette)
+            palette_angle_shift_channel is not None
         )
+        iridescence_channel = palette_angle_shift_channel or "tertiary"
 
         primary_layer = submaterial.layer_manifest[0] if submaterial.layer_manifest else None
         secondary_layer = submaterial.layer_manifest[1] if len(submaterial.layer_manifest) > 1 else None
@@ -732,8 +741,12 @@ class BuildersMixin:
             # the facing hit reading green and the grazing falloff reading
             # purple, so we feed the specular slot into Facing and the
             # color slot into Grazing.
-            facing_socket = self._palette_specular_socket(nodes, palette, "tertiary", x=-720, y=-1320)
-            grazing_socket = self._palette_color_socket(nodes, palette, "tertiary", x=-720, y=-1320)
+            facing_socket = self._palette_specular_socket(
+                nodes, palette, iridescence_channel, x=-720, y=-1320
+            )
+            grazing_socket = self._palette_color_socket(
+                nodes, palette, iridescence_channel, x=-720, y=-1320
+            )
             self._link_group_input(links, facing_socket, shader_group, "Iridescence Facing Color")
             self._link_group_input(links, grazing_socket, shader_group, "Iridescence Grazing Color")
         else:
@@ -742,7 +755,11 @@ class BuildersMixin:
         self._set_socket_default(_input_socket(shader_group, "Iridescence Ramp Color"), (0.0, 0.0, 0.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Iridescence Ramp Weight"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Iridescence Strength"), 1.0)
-        iridescence_active = angle_shift_enabled and (submaterial.decoded_feature_flags.has_iridescence or _palette_has_iridescence(palette))
+        iridescence_active = angle_shift_enabled and (
+            submaterial.decoded_feature_flags.has_iridescence
+            or palette_angle_shift_channel is not None
+            or _palette_has_iridescence(palette)
+        )
         self._set_socket_default(_input_socket(shader_group, "Iridescence Factor"), 1.0 if iridescence_active else 0.0)
         self._set_socket_default(_input_socket(shader_group, "Stencil Color"), (1.0, 1.0, 1.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Stencil Color Factor"), 0.0)
@@ -872,6 +889,7 @@ class BuildersMixin:
         self._set_socket_default(_input_socket(shader_group, "Emission Color"), (0.0, 0.0, 0.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Emission Strength"), 0.0)
         shader_group["starbreaker_angle_shift_enabled"] = angle_shift_enabled
+        shader_group["starbreaker_angle_shift_channel"] = iridescence_channel if angle_shift_enabled else ""
 
         self._link_group_input(links, top_base_color, shader_group, "Top Base Color")
         self._link_group_input(links, top_base_alpha, shader_group, "Top Alpha")

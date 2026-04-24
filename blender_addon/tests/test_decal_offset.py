@@ -60,7 +60,9 @@ if "bpy" not in sys.modules:
 
 
 from starbreaker_addon.runtime.constants import PROP_HAS_POM, PROP_TEMPLATE_KEY
+from starbreaker_addon.manifest import SubmaterialRecord
 from starbreaker_addon.runtime.importer.builders import BuildersMixin
+from starbreaker_addon.runtime.importer.decals import DecalsMixin
 
 
 class FakeMaterial(dict):
@@ -176,6 +178,21 @@ class ImporterUnderTest(BuildersMixin):
         return FakeMaterial(f"{material.name}__host_rgb", **dict(material))
 
 
+class FakePackage:
+    def __init__(self, has_decal_texture: bool):
+        self.has_decal_texture = has_decal_texture
+
+    def resolve_path(self, relative_path):
+        if self.has_decal_texture and relative_path:
+            return Path("/tmp") / Path(relative_path).name
+        return None
+
+
+class DecalDefaultsImporterUnderTest(DecalsMixin):
+    def __init__(self, has_decal_texture: bool):
+        self.package = FakePackage(has_decal_texture)
+
+
 class DecalOffsetTests(unittest.TestCase):
     def test_illum_pom_loadout_decal_uses_smaller_offset_strength(self) -> None:
         decal = FakeMaterial(
@@ -269,6 +286,50 @@ class DecalOffsetTests(unittest.TestCase):
         self.assertEqual(rebound, 1)
         self.assertEqual(importer.illum_rgb_calls, [palette.primary])
         self.assertEqual(obj.material_slots[0].material.name, "drak_vulture:pom_decals__host_rgb")
+
+    def test_missing_mesh_decal_texture_defaults_alpha_to_zero(self) -> None:
+        submaterial = SubmaterialRecord.from_value({"shader_family": "MeshDecal"})
+        palette = types.SimpleNamespace(decal_texture=None)
+        importer = DecalDefaultsImporterUnderTest(has_decal_texture=False)
+
+        _, alpha = importer._virtual_tint_palette_decal_defaults(
+            submaterial,
+            palette,
+            has_decal_texture=importer._has_palette_decal_texture(palette),
+        )
+
+        self.assertEqual(alpha, 0.0)
+
+    def test_missing_stencil_map_texture_defaults_alpha_to_zero(self) -> None:
+        submaterial = SubmaterialRecord.from_value(
+            {
+                "shader_family": "LayerBlend_V2",
+                "decoded_feature_flags": {"has_stencil_map": True},
+            }
+        )
+        palette = types.SimpleNamespace(decal_texture=None)
+        importer = DecalDefaultsImporterUnderTest(has_decal_texture=False)
+
+        _, alpha = importer._virtual_tint_palette_decal_defaults(
+            submaterial,
+            palette,
+            has_decal_texture=importer._has_palette_decal_texture(palette),
+        )
+
+        self.assertEqual(alpha, 0.0)
+
+    def test_mesh_decal_with_texture_keeps_existing_default_alpha(self) -> None:
+        submaterial = SubmaterialRecord.from_value({"shader_family": "MeshDecal"})
+        palette = types.SimpleNamespace(decal_texture="Data/Textures/paint/decal.png")
+        importer = DecalDefaultsImporterUnderTest(has_decal_texture=True)
+
+        _, alpha = importer._virtual_tint_palette_decal_defaults(
+            submaterial,
+            palette,
+            has_decal_texture=importer._has_palette_decal_texture(palette),
+        )
+
+        self.assertEqual(alpha, 0.85)
 
 
 if __name__ == "__main__":

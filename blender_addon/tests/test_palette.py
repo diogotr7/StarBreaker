@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import types
 import unittest
 
 
@@ -11,12 +12,55 @@ REPO_ROOT = STARBREAKER_ROOT.parent
 
 sys.path.insert(0, str(ADDON_ROOT))
 
+
+if "starbreaker_addon" not in sys.modules:
+    package = types.ModuleType("starbreaker_addon")
+    package.__path__ = [str(ADDON_ROOT / "starbreaker_addon")]
+    sys.modules["starbreaker_addon"] = package
+
+if "starbreaker_addon.runtime" not in sys.modules:
+    runtime_package = types.ModuleType("starbreaker_addon.runtime")
+    runtime_package.__path__ = [str(ADDON_ROOT / "starbreaker_addon" / "runtime")]
+    sys.modules["starbreaker_addon.runtime"] = runtime_package
+
+
+if "mathutils" not in sys.modules:
+    mathutils = types.ModuleType("mathutils")
+
+    class Matrix(tuple):
+        def __new__(cls, rows):
+            return tuple.__new__(cls, rows)
+
+        def inverted(self):
+            return self
+
+    class Quaternion(tuple):
+        def __new__(cls, values):
+            return tuple.__new__(cls, values)
+
+    class Euler(tuple):
+        def __new__(cls, values, order='XYZ'):
+            return tuple.__new__(cls, values)
+
+    mathutils.Matrix = Matrix
+    mathutils.Quaternion = Quaternion
+    mathutils.Euler = Euler
+    sys.modules["mathutils"] = mathutils
+
+
+if "bpy" not in sys.modules:
+    bpy = types.ModuleType("bpy")
+    bpy.types = types.SimpleNamespace(Material=object, Node=object, ShaderNodeTree=object)
+    bpy.data = types.SimpleNamespace(node_groups=[], images=[])
+    sys.modules["bpy"] = bpy
+
 from starbreaker_addon.manifest import PackageBundle
 from starbreaker_addon.palette import (
     available_livery_ids,
     available_palette_ids,
     default_palette_id,
     livery_applies_to_instance,
+    paint_list_canonical_id,
     palette_color,
     palette_finish_glossiness,
     palette_finish_specular,
@@ -25,9 +69,30 @@ from starbreaker_addon.palette import (
     palette_signature_for_submaterial,
     resolved_palette_id,
 )
+from starbreaker_addon.runtime.constants import PROP_PALETTE_ID
+from starbreaker_addon.runtime.importer.orchestration import OrchestrationMixin
+from starbreaker_addon.runtime.palette_utils import (
+    _palette_channel_has_iridescence,
+    _palette_has_iridescence,
+)
 
 
-ARGO_SCENE = REPO_ROOT / "ships/Packages/ARGO MOLE/scene.json"
+def _existing_scene(*relative_paths: str) -> Path:
+    candidates = [REPO_ROOT / relative_path for relative_path in relative_paths]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[0]
+
+
+ARGO_SCENE = _existing_scene(
+    "ships/Packages/ARGO MOLE/scene.json",
+    "ships/Packages/ARGO MOLE_LOD0_TEX0/scene.json",
+)
+VULTURE_SCENE = _existing_scene(
+    "ships/Packages/Drake Vulture/scene.json",
+    "ships/Packages/DRAK Vulture_LOD0_TEX0/scene.json",
+)
 
 
 @unittest.skipUnless(
@@ -58,6 +123,14 @@ class PaletteTests(unittest.TestCase):
 
         palette_id = palette_id_for_livery_instance(package, "palette/argo_mole", child, child.material_sidecar)
         self.assertEqual(palette_id, "palette/argo_mole")
+
+    def test_resolved_palette_id_maps_mole_paint_variant_alias(self) -> None:
+        package = PackageBundle.load(ARGO_SCENE)
+
+        self.assertEqual(
+            resolved_palette_id(package, "palette/mole_bronze_black_brown"),
+            "palette/argo_mole_july_bronze_black_brown",
+        )
 
     def test_palette_color_returns_named_channels(self) -> None:
         package = PackageBundle.load(ARGO_SCENE)
@@ -119,6 +192,87 @@ class PaletteTests(unittest.TestCase):
         self.assertNotEqual(
             palette_signature_for_submaterial(paint, default_palette),
             palette_signature_for_submaterial(paint, argo_palette),
+        )
+
+
+@unittest.skipUnless(
+    VULTURE_SCENE.is_file(),
+    f"Drake Vulture fixture not present at {VULTURE_SCENE}; skipping Vulture palette tests",
+)
+class VulturePaletteTests(unittest.TestCase):
+    def test_resolved_palette_id_preserves_existing_vulture_paint_variant(self) -> None:
+        package = PackageBundle.load(VULTURE_SCENE)
+
+        self.assertEqual(
+            resolved_palette_id(package, "palette/vulture_carnival_pink_black"),
+            "palette/vulture_carnival_pink_black",
+        )
+
+    def test_iridescence_detects_tertiary_specular_highlight(self) -> None:
+        package = PackageBundle.load(VULTURE_SCENE)
+        palette = palette_for_id(package, "palette/drak_vulture_carnival_pink_black")
+
+        self.assertIsNotNone(palette)
+        self.assertTrue(_palette_has_iridescence(palette))
+
+    def test_iridescence_ignores_grayscale_tertiary_specular(self) -> None:
+        package = PackageBundle.load(VULTURE_SCENE)
+        palette = palette_for_id(package, "palette/drak_vulture_assembly_red_white")
+
+        self.assertIsNotNone(palette)
+        self.assertFalse(_palette_has_iridescence(palette))
+
+    def test_iridescence_detects_primary_specular_highlight(self) -> None:
+        package = PackageBundle.load(VULTURE_SCENE)
+        palette = palette_for_id(package, "palette/vulture_ghoulish_green")
+
+        self.assertIsNotNone(palette)
+        self.assertTrue(_palette_channel_has_iridescence(palette, "primary"))
+
+    def test_paint_list_keeps_unresolved_hidden_paint_distinct(self) -> None:
+        package = PackageBundle.load(VULTURE_SCENE)
+
+        self.assertEqual(
+            paint_list_canonical_id(package, "palette/vulture_ghoulish_green"),
+            "palette/vulture_ghoulish_green",
+        )
+
+    def test_paint_list_prefers_vulture_paint_id_over_duplicate_palette_aliases(self) -> None:
+        package = PackageBundle.load(VULTURE_SCENE)
+
+        self.assertEqual(
+            paint_list_canonical_id(package, "palette/drak_vulture_carnival_pink_black"),
+            "palette/vulture_carnival_pink_black",
+        )
+        self.assertEqual(
+            paint_list_canonical_id(package, "palette/drak_vulture_assembly_red_white"),
+            "palette/vulture_assembly_red_white",
+        )
+
+
+class PaletteOverrideImporterUnderTest(OrchestrationMixin):
+    def __init__(self, package: PackageBundle, *, package_root=None, import_palette_override: str | None = None):
+        self.package = package
+        self.package_root = package_root
+        self.import_palette_override = import_palette_override
+
+
+@unittest.skipUnless(
+    VULTURE_SCENE.is_file(),
+    f"Drake Vulture fixture not present at {VULTURE_SCENE}; skipping palette override tests",
+)
+class PaletteOverrideRoutingTests(unittest.TestCase):
+    def test_exterior_override_replaces_root_default_palette(self) -> None:
+        package = PackageBundle.load(VULTURE_SCENE)
+        importer = PaletteOverrideImporterUnderTest(
+            package,
+            package_root={PROP_PALETTE_ID: "palette/drak_vulture_carnival_pink_black"},
+            import_palette_override="palette/drak_vulture_carnival_pink_black",
+        )
+
+        self.assertEqual(
+            importer._effective_palette_id(package.scene.root_entity.palette_id),
+            "palette/drak_vulture_carnival_pink_black",
         )
 
 

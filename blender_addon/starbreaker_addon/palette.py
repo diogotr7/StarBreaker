@@ -17,6 +17,102 @@ def _palette_id_candidates(palette_id: str | None) -> tuple[str, ...]:
     return tuple(dict.fromkeys(candidates))
 
 
+def _palette_identifier_tokens(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return ()
+    return tuple(token for token in value.split("/", 1)[-1].lower().split("_") if token)
+
+
+def _is_ordered_subsequence(needle: tuple[str, ...], haystack: tuple[str, ...]) -> bool:
+    if not needle:
+        return False
+    haystack_index = 0
+    for token in needle:
+        while haystack_index < len(haystack) and haystack[haystack_index] != token:
+            haystack_index += 1
+        if haystack_index >= len(haystack):
+            return False
+        haystack_index += 1
+    return True
+
+
+def _palette_alias_match_score(candidate: str, palette: PaletteRecord) -> tuple[int, int, int, str] | None:
+    candidate_tokens = _palette_identifier_tokens(candidate)
+    if len(candidate_tokens) < 2:
+        return None
+
+    best_score: tuple[int, int, int, str] | None = None
+    for value in (palette.id, palette.source_name):
+        target_tokens = _palette_identifier_tokens(value)
+        if not target_tokens:
+            continue
+        smaller, larger = (
+            (candidate_tokens, target_tokens)
+            if len(candidate_tokens) <= len(target_tokens)
+            else (target_tokens, candidate_tokens)
+        )
+        if not _is_ordered_subsequence(smaller, larger):
+            continue
+        score = (
+            len(smaller),
+            -abs(len(candidate_tokens) - len(target_tokens)),
+            -len(target_tokens),
+            palette.id,
+        )
+        if best_score is None or score > best_score:
+            best_score = score
+    return best_score
+
+
+def _paint_list_preferred_id(package: PackageBundle, palette_id: str | None) -> str | None:
+    if not palette_id:
+        return None
+    if palette_id in package.paints:
+        return palette_id
+
+    candidate_tokens = _palette_identifier_tokens(palette_id)
+    if len(candidate_tokens) < 2:
+        return None
+
+    matches: list[tuple[tuple[int, int, int, str], str]] = []
+    for paint_id in package.paints:
+        paint_tokens = _palette_identifier_tokens(paint_id)
+        if len(paint_tokens) < 2:
+            continue
+        smaller, larger = (
+            (candidate_tokens, paint_tokens)
+            if len(candidate_tokens) <= len(paint_tokens)
+            else (paint_tokens, candidate_tokens)
+        )
+        if not _is_ordered_subsequence(smaller, larger):
+            continue
+        score = (
+            len(smaller),
+            -abs(len(candidate_tokens) - len(paint_tokens)),
+            -len(paint_tokens),
+            paint_id,
+        )
+        matches.append((score, paint_id))
+    if not matches:
+        return None
+    matches.sort(reverse=True)
+    return matches[0][1]
+
+
+def _resolve_palette_alias(package: PackageBundle, candidate: str | None) -> str | None:
+    if not candidate:
+        return None
+    matches: list[tuple[tuple[int, int, int, str], str]] = []
+    for palette in package.palettes.values():
+        score = _palette_alias_match_score(candidate, palette)
+        if score is not None:
+            matches.append((score, palette.id))
+    if not matches:
+        return None
+    matches.sort(reverse=True)
+    return matches[0][1]
+
+
 def available_palette_ids(package: PackageBundle) -> list[str]:
     return sorted(package.palettes.keys())
 
@@ -41,9 +137,15 @@ def resolved_palette_id(
     for candidate in _palette_id_candidates(palette_id):
         if candidate in package.palettes:
             return candidate
+        alias = _resolve_palette_alias(package, candidate)
+        if alias is not None:
+            return alias
     for candidate in _palette_id_candidates(inherited_palette_id):
         if candidate in package.palettes:
             return candidate
+        alias = _resolve_palette_alias(package, candidate)
+        if alias is not None:
+            return alias
     return default_palette_id(package)
 
 
@@ -56,6 +158,33 @@ def palette_for_id(
     if resolved is None:
         return None
     return package.palettes.get(resolved)
+
+
+def paint_list_canonical_id(
+    package: PackageBundle,
+    palette_id: str | None,
+    inherited_palette_id: str | None = None,
+) -> str | None:
+    preferred = _paint_list_preferred_id(package, palette_id)
+    if preferred is not None:
+        return preferred
+
+    resolved = resolved_palette_id(package, palette_id, inherited_palette_id)
+    if resolved is None:
+        return palette_id
+
+    preferred = _paint_list_preferred_id(package, resolved)
+    if preferred is not None:
+        return preferred
+
+    if (
+        palette_id
+        and palette_id in package.paints
+        and palette_id not in package.palettes
+        and resolved == default_palette_id(package)
+    ):
+        return palette_id
+    return resolved
 
 
 def palette_color(palette: PaletteRecord | None, channel_name: str | None) -> tuple[float, float, float]:

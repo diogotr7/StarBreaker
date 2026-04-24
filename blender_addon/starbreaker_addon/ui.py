@@ -13,6 +13,7 @@ from gpu_extras.batch import batch_for_shader
 
 from .manifest import PackageBundle
 from .palette import resolved_palette_id
+from .palette import paint_list_canonical_id
 from .runtime import (
     PROP_ENTITY_NAME,
     PROP_MATERIAL_SIDECAR,
@@ -268,7 +269,7 @@ def _paint_items(_: bpy.types.Operator, context: bpy.types.Context) -> list[tupl
             _palette_display_name(palette_id, source_name, display_name_str),
             description,
         )
-        canonical_id = resolved_palette_id(package, palette_id) or palette_id
+        canonical_id = paint_list_canonical_id(package, palette_id) or palette_id
         existing = deduped_items.get(canonical_id)
         if existing is not None and paint_variant is None:
             continue

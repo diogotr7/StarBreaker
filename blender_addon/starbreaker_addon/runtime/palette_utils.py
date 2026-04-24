@@ -26,27 +26,42 @@ def _palette_decal_or_fallback(
     return palette_decal_color(palette, decal_channel) or (1.0, 1.0, 1.0)
 
 
-def _palette_has_iridescence(palette: PaletteRecord | None) -> bool:
-    """Return True when a palette's finish specular produces visible angle-shift iridescence.
-
-    Requires significant chroma (saturation) on both the facing (secondary) and
-    grazing (tertiary) specular channels, plus a measurable color distance
-    between them.
-    """
+def _palette_channel_has_iridescence(
+    palette: PaletteRecord | None,
+    channel_name: str,
+) -> bool:
     if palette is None:
         return False
-    facing = palette_finish_specular(palette, "secondary") or palette_color(palette, "secondary")
-    grazing = palette_finish_specular(palette, "tertiary") or palette_color(palette, "tertiary")
-    facing_chroma = max(facing) - min(facing)
-    grazing_chroma = max(grazing) - min(grazing)
-    if min(facing_chroma, grazing_chroma) < 0.10:
+    channel = channel_name.lower()
+    if channel not in {"primary", "secondary", "tertiary"}:
+        return False
+    facing = palette_finish_specular(palette, channel)
+    if facing is None:
+        return False
+    grazing = palette_color(palette, channel)
+    specular_chroma = max(facing) - min(facing)
+    if specular_chroma < 0.10:
         return False
     color_distance = math.sqrt(
         (facing[0] - grazing[0]) ** 2
         + (facing[1] - grazing[1]) ** 2
         + (facing[2] - grazing[2]) ** 2
     )
-    return color_distance >= 0.25
+    return color_distance >= 0.12
+
+
+def _palette_has_iridescence(palette: PaletteRecord | None) -> bool:
+    """Return True when a palette's tertiary finish encodes visible angle-shift iridescence.
+
+    Runtime hard-surface iridescence uses the tertiary finish specular as the
+    facing endpoint and the tertiary base color as the grazing endpoint. Treat a
+    palette as iridescent when that tertiary specular is visibly chromatic and
+    meaningfully separated from the tertiary base color.
+    """
+    return any(
+        _palette_channel_has_iridescence(palette, channel_name)
+        for channel_name in ("primary", "secondary", "tertiary")
+    )
 
 
 def _palette_group_signature(palette: PaletteRecord) -> str:

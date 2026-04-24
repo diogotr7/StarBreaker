@@ -36,6 +36,12 @@ from .types import LayerSurfaceSockets
 class DecalsMixin:
     """Decal/stencil sources and shadow-wrapper wiring for ``PackageImporter``."""
 
+    def _has_palette_decal_texture(self, palette: PaletteRecord | None) -> bool:
+        return (
+            palette is not None
+            and self.package.resolve_path(palette_decal_texture(palette)) is not None
+        )
+
     # ------------------------------------------------------------------
     # Virtual-tint palette decal sources
     # ------------------------------------------------------------------
@@ -48,11 +54,13 @@ class DecalsMixin:
         x: int,
         y: int,
     ) -> Any:
-        fallback_color, alpha = self._virtual_tint_palette_decal_defaults(submaterial, palette)
-        if (
-            palette is not None
-            and self.package.resolve_path(palette_decal_texture(palette)) is not None
-        ):
+        has_decal_texture = self._has_palette_decal_texture(palette)
+        fallback_color, alpha = self._virtual_tint_palette_decal_defaults(
+            submaterial,
+            palette,
+            has_decal_texture=has_decal_texture,
+        )
+        if has_decal_texture:
             group_node = self._palette_group_node(nodes, nodes.id_data.links, palette, x=x, y=y)
             color_socket = _output_socket(group_node, "Decal Color")
             alpha_socket = _output_socket(group_node, "Decal Alpha")
@@ -137,6 +145,8 @@ class DecalsMixin:
         self,
         submaterial: SubmaterialRecord,
         palette: PaletteRecord | None,
+        *,
+        has_decal_texture: bool = True,
     ) -> tuple[tuple[float, float, float], float]:
         color = (
             _public_param_triplet(
@@ -155,7 +165,16 @@ class DecalsMixin:
             submaterial, "StencilOpacity", "DecalDiffuseOpacity", "DecalAlphaMult"
         )
         if alpha is None:
-            alpha = 0.85 if submaterial.shader_family == "MeshDecal" else 0.5
+            flags = submaterial.decoded_feature_flags
+            is_decal_surface = (
+                submaterial.shader_family == "MeshDecal"
+                or flags.has_decal
+                or flags.has_stencil_map
+            )
+            if is_decal_surface and not has_decal_texture:
+                alpha = 0.0
+            else:
+                alpha = 0.85 if submaterial.shader_family == "MeshDecal" else 0.5
         return color, max(0.0, min(1.0, alpha))
 
     # ------------------------------------------------------------------

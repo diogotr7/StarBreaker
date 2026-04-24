@@ -42,6 +42,7 @@ from ...palette import (
 from ..constants import PROP_PALETTE_ID, PROP_SUBMATERIAL_JSON
 from ..node_utils import _input_socket, _output_socket, _refresh_group_node_sockets
 from ..palette_utils import (
+    _palette_channel_has_iridescence,
     _palette_decal_or_fallback,
     _palette_group_signature,
     _palette_has_iridescence,
@@ -179,7 +180,11 @@ class PaletteMixin:
     ) -> None:
         if not bool(group_node.get("starbreaker_angle_shift_enabled", False)):
             return
-        iridescence_active = _palette_has_iridescence(palette)
+        channel_name = group_node.get("starbreaker_angle_shift_channel")
+        if isinstance(channel_name, str) and channel_name:
+            iridescence_active = _palette_channel_has_iridescence(palette, channel_name)
+        else:
+            iridescence_active = _palette_has_iridescence(palette)
         factor_socket = _input_socket(group_node, "Iridescence Factor")
         if factor_socket is not None and hasattr(factor_socket, "default_value"):
             factor_socket.default_value = 1.0 if iridescence_active else 0.0
@@ -222,7 +227,11 @@ class PaletteMixin:
         except Exception:
             return
 
-        color, alpha = self._virtual_tint_palette_decal_defaults(submaterial, palette)
+        color, alpha = self._virtual_tint_palette_decal_defaults(
+            submaterial,
+            palette,
+            has_decal_texture=self._has_palette_decal_texture(palette),
+        )
         if color_node is not None:
             color_node.outputs[0].default_value = (*color, 1.0)
         if alpha_node is not None:
