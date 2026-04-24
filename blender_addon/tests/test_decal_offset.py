@@ -410,6 +410,49 @@ class DecalOffsetTests(unittest.TestCase):
         self.assertEqual(importer.illum_rgb_calls, [palette.primary])
         self.assertEqual(obj.material_slots[0].material.name, "drak_vulture:pom_decals__host_rgb")
 
+    def test_illum_pom_rebind_prefers_palette_channel_rgb_over_fallback_rgb(self) -> None:
+        decal = FakeMaterial(
+            "drak_vulture:pom_decals",
+            starbreaker_shader_family="Illum",
+            **{
+                PROP_HAS_POM: True,
+                PROP_TEMPLATE_KEY: "decal_stencil",
+            },
+        )
+        obj = FakeObject(
+            material_slots=[FakeSlot(decal)],
+            mesh=FakeMesh(polygons=[], vertex_count=0),
+        )
+        palette = types.SimpleNamespace(
+            primary=(0.85, 0.72, 0.12),
+            secondary=(0.5, 0.6, 0.7),
+            tertiary=(0.8, 0.1, 0.2),
+            glass=(0.9, 0.9, 0.95),
+        )
+        importer = ImporterUnderTest(
+            channel="primary",
+            fallback_rgb=(0.0627, 0.0627, 0.0627),
+        )
+
+        rebound = importer._rebind_mesh_decal_for_host(obj, palette)
+
+        self.assertEqual(rebound, 1)
+        self.assertEqual(importer.illum_rgb_calls, [palette.primary])
+        self.assertEqual(obj.material_slots[0].material.name, "drak_vulture:pom_decals__host_rgb")
+
+    def test_parallax_bias_value_prefers_authored_height_bias(self) -> None:
+        importer = ImporterUnderTest()
+        submaterial = SubmaterialRecord.from_value(
+            {
+                "public_params": {
+                    "HeightBias": 0.75,
+                    "PomDisplacement": 0.04,
+                }
+            }
+        )
+
+        self.assertAlmostEqual(importer._parallax_bias_value(submaterial), 0.75)
+
     def test_missing_mesh_decal_texture_defaults_alpha_to_zero(self) -> None:
         submaterial = SubmaterialRecord.from_value({"shader_family": "MeshDecal"})
         palette = types.SimpleNamespace(decal_texture=None)

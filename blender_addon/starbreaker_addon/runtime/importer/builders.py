@@ -171,6 +171,7 @@ class BuildersMixin:
         height_node: bpy.types.Node,
         target_image_nodes: list[bpy.types.Node],
         scale_value: float,
+        bias_value: float = 0.5,
         location: tuple[float, float] = (-1280, 720),
     ) -> bpy.types.Node | None:
         """Insert the bundled ``POM_Vector`` production POM pipeline
@@ -199,8 +200,8 @@ class BuildersMixin:
         (typically 0.02–0.1 in CryEngine's units). It is scaled up to
         POM-test's ``Scale`` range (≈1.0–3.0) so a 0.05 PomDisplacement
         reads as ≈1.5 POM scale — the reference file's hand-tuned
-        default. ``Layers`` is fixed at 40 and ``Bias`` at 0.5 to match
-        the reference.
+        default. ``Layers`` is fixed at 40 and ``Bias`` defaults to 0.5,
+        but authored height-bias overrides are preserved when available.
         """
         node_tree = material.node_tree
         if node_tree is None or height_node is None:
@@ -226,7 +227,7 @@ class BuildersMixin:
         # range (≈1.5 for 0.05 input) by multiplying by 30.
         self._set_socket_default(_input_socket(parallax_node, "Layers"), 40)
         self._set_socket_default(_input_socket(parallax_node, "Scale"), max(0.3, min(3.0, scale_value * 30.0)))
-        self._set_socket_default(_input_socket(parallax_node, "Bias"), 0.5)
+        self._set_socket_default(_input_socket(parallax_node, "Bias"), max(0.0, min(1.0, bias_value)))
         self._set_socket_default(_input_socket(parallax_node, "Non-planar"), True)
 
         offset_vec = _output_socket(parallax_node, "Vector")
@@ -241,6 +242,22 @@ class BuildersMixin:
                 continue
             links.new(offset_vec, vector_input)
         return parallax_node
+
+    @staticmethod
+    def _parallax_bias_value(submaterial: SubmaterialRecord) -> float:
+        return max(
+            0.0,
+            min(
+                1.0,
+                _float_public_param(
+                    submaterial,
+                    "HeightBias",
+                    "POMHeightBias",
+                    "POM_HeightBias",
+                )
+                or 0.5,
+            ),
+        )
 
     def _build_managed_material(
         self,
@@ -588,6 +605,7 @@ class BuildersMixin:
                     height_node=height_node,
                     target_image_nodes=targets,
                     scale_value=pom_scale,
+                    bias_value=self._parallax_bias_value(submaterial),
                     location=(-760, 320),
                 )
 
@@ -820,6 +838,7 @@ class BuildersMixin:
                 height_node=displacement_node,
                 target_image_nodes=[top_base_node],
                 scale_value=pom_displacement,
+                bias_value=self._parallax_bias_value(submaterial),
             )
         # Phase 12 (POM follow-up): some HardSurface materials have no
         # top-level TexSlot6 displacement but DO carry a height map inside
@@ -885,6 +904,7 @@ class BuildersMixin:
                             height_node=layer_height_node,
                             target_image_nodes=layer_targets,
                             scale_value=pom_displacement,
+                            bias_value=self._parallax_bias_value(submaterial),
                         )
         self._set_socket_default(_input_socket(shader_group, "Emission Color"), (0.0, 0.0, 0.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Emission Strength"), 0.0)
@@ -1168,6 +1188,7 @@ class BuildersMixin:
                         height_node=height_image_node,
                         target_image_nodes=illum_targets,
                         scale_value=illum_pom_scale,
+                        bias_value=self._parallax_bias_value(submaterial),
                     )
 
 
@@ -2153,9 +2174,11 @@ class BuildersMixin:
                     continue
                 variant = self._ensure_mesh_decal_host_variant(mat, channel, palette)
             else:
-                variant_rgb = fallback_rgb
-                if variant_rgb is None and channel is not None and palette is not None:
+                variant_rgb = None
+                if channel is not None and palette is not None:
                     variant_rgb = palette_color(palette, channel)
+                if variant_rgb is None:
+                    variant_rgb = fallback_rgb
                 if variant_rgb is None:
                     continue
                 key = mat.get("starbreaker_decal_host_rgb_key")
