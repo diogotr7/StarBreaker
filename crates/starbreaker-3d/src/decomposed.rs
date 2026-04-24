@@ -149,7 +149,7 @@ fn resolve_no_rotation_local_matrix(
     let desired_translation = glam::Vec3::from(offset_position);
     let rotated_offset = parent_world.transform_vector3(desired_translation);
     let parent_translation = parent_world.w_axis.truncate();
-    let duplicate_offset = offset_rotation == [0.0, 0.0, 0.0]
+    let duplicate_offset = offset_rotation.iter().all(|value| value.abs() <= 1e-6)
         && (rotated_offset - parent_translation).abs().max_element() <= 5e-4;
     let local_translation = if duplicate_offset {
         glam::Vec3::ZERO
@@ -3198,6 +3198,16 @@ mod tests {
     fn resolve_no_rotation_local_matrix_suppresses_duplicate_zero_rotation_offset() {
         let parent_world = glam::Mat4::from_translation(glam::Vec3::new(3.0, 0.0, 0.0)).to_cols_array();
         let resolved = resolve_no_rotation_local_matrix(parent_world, [3.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+
+        assert_eq!(resolved[12], 0.0);
+        assert_eq!(resolved[13], 0.0);
+        assert_eq!(resolved[14], 0.0);
+    }
+
+    #[test]
+    fn resolve_no_rotation_local_matrix_treats_tiny_rotation_as_zero() {
+        let parent_world = glam::Mat4::from_translation(glam::Vec3::new(3.0, 0.0, 0.0)).to_cols_array();
+        let resolved = resolve_no_rotation_local_matrix(parent_world, [3.0, 0.0, 0.0], [1e-7, 0.0, 0.0]);
 
         assert_eq!(resolved[12], 0.0);
         assert_eq!(resolved[13], 0.0);

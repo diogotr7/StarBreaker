@@ -421,7 +421,7 @@ class OrchestrationMixin:
         anchor.empty_display_type = "PLAIN_AXES"
         self.collection.objects.link(anchor)
 
-        target_parent = parent if record.resolved_no_rotation else (parent_node or parent)
+        target_parent = parent_node or parent
         anchor.parent = target_parent
         anchor.rotation_mode = "QUATERNION"
         if record.local_transform_sc is not None and record.source_transform_basis == "cryengine_z_up":
