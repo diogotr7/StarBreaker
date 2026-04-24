@@ -32,8 +32,13 @@ def active_submaterials(submaterials: list[SubmaterialRecord]) -> list[Submateri
 
 
 def _is_empty_livery_decal(submaterial: SubmaterialRecord) -> bool:
-    if submaterial.submaterial_name != "livery_decal":
+    if (submaterial.submaterial_name or "").lower() != "livery_decal":
         return False
+    if (
+        submaterial.activation_state != "active"
+        and submaterial.activation_reason == "missing_base_color_texture"
+    ):
+        return True
     return not [
         *submaterial.texture_slots,
         *submaterial.direct_textures,

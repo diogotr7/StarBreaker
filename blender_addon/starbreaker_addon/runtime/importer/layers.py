@@ -48,6 +48,12 @@ from ..record_utils import (
 from .types import LayerSurfaceSockets, SocketRef, StencilOverlaySockets
 
 
+def _detail_strength_or_zero(strength: float, mask_socket: Any) -> float:
+    """Return a detail strength only when the matching detail mask exists."""
+
+    return float(strength) if mask_socket is not None else 0.0
+
+
 class LayersMixin:
     """Layer/wear/detail/stencil/iridescence wiring for ``PackageImporter``."""
 
@@ -177,6 +183,10 @@ class LayersMixin:
         y: int,
         label: str,
     ) -> Any:
+        detail_color_socket = detail_channels.get("red") if detail_channels is not None else None
+        detail_height_socket = detail_channels.get("green") if detail_channels is not None else None
+        detail_gloss_socket = detail_channels.get("blue") if detail_channels is not None else None
+
         group_node = nodes.new("ShaderNodeGroup")
         group_node.node_tree = self._ensure_runtime_layer_surface_group()
         _refresh_group_node_sockets(group_node)
@@ -191,13 +201,16 @@ class LayersMixin:
             (*tint_color, 1.0) if tint_color is not None else (1.0, 1.0, 1.0, 1.0),
         )
         self._set_socket_default(
-            _input_socket(group_node, "Detail Diffuse Strength"), detail_diffuse_strength
+            _input_socket(group_node, "Detail Diffuse Strength"),
+            _detail_strength_or_zero(detail_diffuse_strength, detail_color_socket),
         )
         self._set_socket_default(
-            _input_socket(group_node, "Detail Gloss Strength"), detail_gloss_strength
+            _input_socket(group_node, "Detail Gloss Strength"),
+            _detail_strength_or_zero(detail_gloss_strength, detail_gloss_socket),
         )
         self._set_socket_default(
-            _input_socket(group_node, "Detail Bump Strength"), detail_bump_strength
+            _input_socket(group_node, "Detail Bump Strength"),
+            _detail_strength_or_zero(detail_bump_strength, detail_height_socket),
         )
         self._set_socket_default(_input_socket(group_node, "Normal Color"), (0.5, 0.5, 1.0, 1.0))
         self._set_socket_default(_input_socket(group_node, "Roughness Source"), 0.45)
@@ -252,16 +265,15 @@ class LayersMixin:
         self._link_group_input(links, palette_color_socket, group_node, "Palette Color")
         self._link_group_input(links, palette_gloss_socket, group_node, "Palette Glossiness")
         self._link_group_input(links, palette_specular_socket, group_node, "Palette Specular")
-        if detail_channels is not None:
-            self._link_group_input(
-                links, detail_channels.get("red"), group_node, "Detail Color Mask"
-            )
-            self._link_group_input(
-                links, detail_channels.get("green"), group_node, "Detail Height Mask"
-            )
-            self._link_group_input(
-                links, detail_channels.get("blue"), group_node, "Detail Gloss Mask"
-            )
+        self._link_group_input(
+            links, detail_color_socket, group_node, "Detail Color Mask"
+        )
+        self._link_group_input(
+            links, detail_height_socket, group_node, "Detail Height Mask"
+        )
+        self._link_group_input(
+            links, detail_gloss_socket, group_node, "Detail Gloss Mask"
+        )
 
         return LayerSurfaceSockets(
             color=SocketRef(group_node, "Color"),
@@ -328,6 +340,7 @@ class LayersMixin:
         group_node.location = (x + 180, y)
         group_node.node_tree = self._ensure_runtime_channel_split_group()
         group_node.label = "StarBreaker Channel Split"
+        _refresh_group_node_sockets(group_node)
         links = image_node.id_data.links
         links.new(image_node.outputs[0], group_node.inputs["Color"])
         alpha_socket = _output_socket(image_node, "Alpha")

@@ -111,6 +111,27 @@ def _managed_material_runtime_graph_is_sane(material: bpy.types.Material) -> boo
     if node_tree is None:
         return False
 
+    layer_surface_nodes = [
+        node
+        for node in node_tree.nodes
+        if node.bl_idname == "ShaderNodeGroup"
+        and getattr(getattr(node, "node_tree", None), "name", "").startswith(
+            "StarBreaker Runtime LayerSurface"
+        )
+    ]
+    for node in layer_surface_nodes:
+        for strength_name, mask_name in (
+            ("Detail Diffuse Strength", "Detail Color Mask"),
+            ("Detail Gloss Strength", "Detail Gloss Mask"),
+            ("Detail Bump Strength", "Detail Height Mask"),
+        ):
+            strength_input = node.inputs.get(strength_name)
+            mask_input = node.inputs.get(mask_name)
+            if strength_input is None or mask_input is None:
+                continue
+            if float(strength_input.default_value) > 0.0 and not mask_input.links:
+                return False
+
     hard_surface_nodes = [
         node
         for node in node_tree.nodes

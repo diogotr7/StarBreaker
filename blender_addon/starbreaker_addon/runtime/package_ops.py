@@ -163,6 +163,23 @@ def _paint_variant_for_palette_id(package: PackageBundle, palette_id: str | None
     return None
 
 
+def _restore_paint_object_sidecar(instance: SceneInstanceRecord | None, target_sidecar: str | None) -> str | None:
+    """Return the material sidecar an exterior object should use for a paint switch.
+
+    When a paint variant carries its own material sidecar, every exterior mesh
+    is rebuilt from that variant file. Switching back to a paint that does not
+    provide a variant sidecar must restore each object's original per-instance
+    sidecar from the scene record rather than taking the palette-only fast path.
+    """
+
+    if target_sidecar:
+        return target_sidecar
+    if instance is None:
+        return None
+    sidecar = getattr(instance, "material_sidecar", None)
+    return sidecar if isinstance(sidecar, str) and sidecar else None
+
+
 def apply_palette_to_selected_package(context: bpy.types.Context, palette_id: str) -> int:
     package_root = find_package_root(context.active_object)
     if package_root is None:
@@ -230,8 +247,9 @@ def apply_paint_to_package_root(context: bpy.types.Context, package_root: bpy.ty
     variant = package.paints.get(palette_id)
     target_sidecar = variant.exterior_material_sidecar if variant is not None else None
 
-    if target_sidecar is None:
-        # No paint-variant sidecar for this palette: fast palette-only path.
+    active_paint_sidecar = _string_prop(package_root, PROP_PAINT_VARIANT_SIDECAR)
+    if target_sidecar is None and active_paint_sidecar is None:
+        # No paint-variant sidecar is active or requested: fast palette-only path.
         return apply_palette_to_package_root(context, package_root, palette_id)
 
     # Determine which objects are currently exterior so we know what to rebuild.
@@ -250,12 +268,20 @@ def apply_paint_to_package_root(context: bpy.types.Context, package_root: bpy.ty
             obj_sidecar = _string_prop(obj, PROP_MATERIAL_SIDECAR)
             if check_sidecars is not None and (obj_sidecar is None or obj_sidecar not in check_sidecars):
                 continue
-            # Point the object at the new sidecar then rebuild.
-            obj[PROP_MATERIAL_SIDECAR] = target_sidecar
+            instance = _scene_instance_from_object(obj)
+            restored_sidecar = _restore_paint_object_sidecar(instance, target_sidecar)
+            if restored_sidecar is None:
+                continue
+            # Point the object at the target sidecar (or restore its original
+            # per-instance sidecar when leaving a variant paint), then rebuild.
+            obj[PROP_MATERIAL_SIDECAR] = restored_sidecar
             applied += importer.rebuild_object_materials(obj, palette_id)
 
     # Record the active paint variant sidecar so palette-only changes still work.
-    package_root[PROP_PAINT_VARIANT_SIDECAR] = target_sidecar
+    if target_sidecar is not None:
+        package_root[PROP_PAINT_VARIANT_SIDECAR] = target_sidecar
+    else:
+        package_root.pop(PROP_PAINT_VARIANT_SIDECAR, None)
     package_root[PROP_PALETTE_ID] = palette_id
     _purge_orphaned_runtime_groups()
     _purge_orphaned_file_backed_images()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import json
 from pathlib import Path
 import sys
 import types
@@ -195,6 +196,78 @@ class PackageOpsTests(unittest.TestCase):
             importer_stub.events,
             [("import", "/tmp/vulture/scene.json", False, "palette/test")],
         )
+
+    def test_apply_paint_to_package_root_restores_base_sidecar_when_leaving_variant(self) -> None:
+        @contextmanager
+        def _no_suspend(_context):
+            yield
+
+        @contextmanager
+        def _no_mode(_context):
+            yield
+
+        package_root = FakeObject(
+            "StarBreaker RSI Scorpius",
+            starbreaker_paint_variant_sidecar="variant.materials.json",
+            starbreaker_palette_id="palette/skull",
+        )
+        package_root.type = "EMPTY"
+        child = FakeObject(
+            "livery_decal_body",
+            starbreaker_material_sidecar="variant.materials.json",
+            starbreaker_instance_json=json.dumps({"material_sidecar": "base.materials.json"}),
+        )
+        child.type = "MESH"
+        child.parent = package_root
+        package_root.children.append(child)
+
+        fake_package = types.SimpleNamespace(
+            paints={},
+            liveries={"default": types.SimpleNamespace(material_sidecars=["base.materials.json"])},
+            scene=types.SimpleNamespace(root_entity=types.SimpleNamespace(material_sidecar="base.materials.json")),
+        )
+
+        rebuild_calls: list[tuple[str, str | None, str | None]] = []
+
+        class FakeImporter:
+            def __init__(self, context, package, package_root=None):
+                self.context = context
+                self.package = package
+                self.package_root = package_root
+
+            def rebuild_object_materials(self, obj, palette_id):
+                rebuild_calls.append((obj.name, obj.get("starbreaker_material_sidecar"), palette_id))
+                return 1
+
+        importer_stub = sys.modules["sb_pkg_test_runtime.importer"]
+        original_importer = importer_stub.PackageImporter
+        original_loader = self.package_ops._load_package_from_root
+        original_scene_instance = self.package_ops._scene_instance_from_object
+        original_suspend = self.package_ops._suspend_heavy_viewports
+        original_mode = self.package_ops._temporary_object_mode
+        try:
+            importer_stub.PackageImporter = FakeImporter
+            self.package_ops._load_package_from_root = lambda _root: fake_package
+            self.package_ops._scene_instance_from_object = lambda obj: types.SimpleNamespace(material_sidecar="base.materials.json")
+            self.package_ops._suspend_heavy_viewports = _no_suspend
+            self.package_ops._temporary_object_mode = _no_mode
+
+            applied = self.package_ops.apply_paint_to_package_root(
+                types.SimpleNamespace(),
+                package_root,
+                "palette/rsi_scorpius",
+            )
+        finally:
+            importer_stub.PackageImporter = original_importer
+            self.package_ops._load_package_from_root = original_loader
+            self.package_ops._scene_instance_from_object = original_scene_instance
+            self.package_ops._suspend_heavy_viewports = original_suspend
+            self.package_ops._temporary_object_mode = original_mode
+
+        self.assertEqual(applied, 1)
+        self.assertEqual(child.get("starbreaker_material_sidecar"), "base.materials.json")
+        self.assertNotIn("starbreaker_paint_variant_sidecar", package_root)
+        self.assertEqual(rebuild_calls, [("livery_decal_body", "base.materials.json", "palette/rsi_scorpius")])
 
 
 if __name__ == "__main__":  # pragma: no cover
