@@ -394,14 +394,23 @@ fn resolve_sub_geometry(idx: &EntityIndex, children: &mut [LoadoutNode]) {
             child.geometry_path = Some(m.geometry_path.clone());
             if !m.material_path.is_empty() { child.material_path = Some(m.material_path.clone()); }
         } else if variants.len() > 1 {
-            log::warn!(
-                "  SubGeometry: {} has {} variants but none matched port='{}' bone='{}' tags='{}'. Variants: [{}]",
-                child.entity_name, variants.len(), child.item_port_name,
-                child.helper_bone_name.as_deref().unwrap_or(""),
-                child.port_tags,
-                variants.iter().map(|v| format!("{}:{}", v.tag, v.geometry_path)).collect::<Vec<_>>().join(", ")
-            );
-            unmatched.push(i);
+            if has_multiple_geometry_variants(&variants) {
+                log::warn!(
+                    "  SubGeometry: {} has {} variants but none matched port='{}' bone='{}' tags='{}'. Variants: [{}]",
+                    child.entity_name, variants.len(), child.item_port_name,
+                    child.helper_bone_name.as_deref().unwrap_or(""),
+                    child.port_tags,
+                    variants.iter().map(|v| format!("{}:{}", v.tag, v.geometry_path)).collect::<Vec<_>>().join(", ")
+                );
+                unmatched.push(i);
+            } else {
+                log::debug!(
+                    "  SubGeometry: {} has {} material-only variants with no selector match; keeping default geometry {}",
+                    child.entity_name,
+                    variants.len(),
+                    child.geometry_path.as_deref().unwrap_or("")
+                );
+            }
         }
     }
 
@@ -426,6 +435,17 @@ fn resolve_sub_geometry(idx: &EntityIndex, children: &mut [LoadoutNode]) {
     for child in children.iter_mut() {
         resolve_sub_geometry(idx, &mut child.children);
     }
+}
+
+fn has_multiple_geometry_variants(variants: &[SubGeometryVariant]) -> bool {
+    let mut geometry_paths = HashSet::new();
+    for variant in variants {
+        geometry_paths.insert(variant.geometry_path.to_ascii_lowercase());
+        if geometry_paths.len() > 1 {
+            return true;
+        }
+    }
+    false
 }
 
 /// Match SubGeometry variants against port tags, helper bone name, or item port name.
@@ -779,6 +799,24 @@ mod tests {
             matched.geometry_path,
             "Objects/Ships/Vulture/Front_Right.cga"
         );
+    }
+
+    #[test]
+    fn has_multiple_geometry_variants_ignores_material_only_differences() {
+        let variants = vec![
+            SubGeometryVariant {
+                tag: "brown01".to_string(),
+                geometry_path: "Objects/fps_weapons/gadgets/grin/multitool/Cutter/gdgt_fps_grin_multitool_cutter.cgf".to_string(),
+                material_path: "Objects/fps_weapons/gadgets/grin/multitool/Cutter/gdgt_fps_grin_multitool_cutter_mirage_mat.mtl".to_string(),
+            },
+            SubGeometryVariant {
+                tag: "red01".to_string(),
+                geometry_path: "Objects/fps_weapons/gadgets/grin/multitool/Cutter/gdgt_fps_grin_multitool_cutter.cgf".to_string(),
+                material_path: "Objects/fps_weapons/gadgets/grin/multitool/Cutter/gdgt_fps_grin_multitool_cutter_bloodline_mat.mtl".to_string(),
+            },
+        ];
+
+        assert!(!has_multiple_geometry_variants(&variants));
     }
 }
 
