@@ -15,6 +15,8 @@ from .constants import (
     MATERIAL_IDENTITY_SCHEMA,
     NON_COLOR_INPUT_KEYWORDS,
     PACKAGE_ROOT_PREFIX,
+    POM_DETAIL_DEFAULT,
+    POM_DETAIL_ITEMS,
     PROP_ENTITY_NAME,
     PROP_EXPORT_ROOT,
     PROP_IMPORTED_SLOT_MAP,
@@ -38,14 +40,17 @@ from .constants import (
     PROP_HAS_POM,
     PROP_LIGHT_ACTIVE_STATE,
     PROP_LIGHT_STATES_JSON,
+    SCENE_POM_DETAIL_PROP,
     SCENE_AXIS_CONVERSION,
     SCENE_AXIS_CONVERSION_INV,
     SCENE_WEAR_STRENGTH_PROP,
     SURFACE_SHADER_MODE_GLASS,
     SURFACE_SHADER_MODE_PRINCIPLED,
     TEMPLATE_COLLECTION_NAME,
+    pom_detail_settings,
 )
 from .importer import PackageImporter
+from .importer.groups import apply_pom_detail_mode
 from .package_ops import (
     apply_light_state,
     apply_livery_to_package_root,

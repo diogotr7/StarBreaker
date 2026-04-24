@@ -48,9 +48,29 @@ PROP_HAS_POM = "starbreaker_has_pom"
 # same datablock so we can restore values when the user toggles states.
 PROP_LIGHT_STATES_JSON = "starbreaker_light_states"
 PROP_LIGHT_ACTIVE_STATE = "starbreaker_light_active_state"
+SCENE_POM_DETAIL_PROP = "starbreaker_pom_detail"
 SCENE_WEAR_STRENGTH_PROP = "starbreaker_wear_strength"
 SURFACE_SHADER_MODE_PRINCIPLED = "principled_first"
 SURFACE_SHADER_MODE_GLASS = "glass_bsdf"
+
+POM_DETAIL_DEFAULT = "MEDIUM"
+POM_DETAIL_ITEMS = (
+    ("LOW", "Low", "20 layers with reduced scale for faster viewport playback"),
+    ("MEDIUM", "Medium", "50 layers with balanced scale; default"),
+    ("HIGH", "High", "100 layers with extra scale for maximum detail"),
+)
+_POM_DETAIL_LAYERS = {
+    "LOW": 20.0,
+    "MEDIUM": 50.0,
+    "HIGH": 100.0,
+}
+
+
+def pom_detail_settings(mode: str) -> tuple[int, float]:
+    normalized = str(mode or POM_DETAIL_DEFAULT).upper()
+    layers = _POM_DETAIL_LAYERS.get(normalized, _POM_DETAIL_LAYERS[POM_DETAIL_DEFAULT])
+    scale_multiplier = layers / 40.0
+    return int(layers), float(scale_multiplier)
 
 PACKAGE_ROOT_PREFIX = "StarBreaker"
 TEMPLATE_COLLECTION_NAME = "StarBreaker Template Cache"

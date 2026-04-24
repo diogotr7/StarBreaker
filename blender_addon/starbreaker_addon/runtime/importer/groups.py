@@ -19,6 +19,8 @@ from typing import Any
 
 import bpy
 
+from ..constants import POM_DETAIL_DEFAULT, SCENE_POM_DETAIL_PROP, pom_detail_settings
+
 from ..node_utils import (
     _input_socket,
     _output_socket,
@@ -36,9 +38,184 @@ _POM_LIBRARY_ROOT_GROUPS = (
     "Clamp",
     "tangent_space",
 )
+_POM_DETAIL_GROUP_NAME = "StarBreaker Runtime POM Detail"
+_POM_DETAIL_GROUP_SIGNATURE = "pom_detail_v3"
+_POM_DETAIL_CONTROL_NODE_NAME = "StarBreaker POM Detail"
+_POM_DETAIL_SCALE_NODE_NAME = "StarBreaker POM Detail Scale"
+_POM_DETAIL_LAYERS_NODE_NAME = "Detail Layers"
+_POM_DETAIL_SCALE_MULTIPLIER_NODE_NAME = "Scale Multiplier"
+
+
+def _ensure_runtime_pom_detail_group() -> bpy.types.ShaderNodeTree:
+    group_tree = bpy.data.node_groups.get(_POM_DETAIL_GROUP_NAME)
+    if group_tree is None:
+        group_tree = bpy.data.node_groups.new(_POM_DETAIL_GROUP_NAME, "ShaderNodeTree")
+    if (
+        group_tree.get("starbreaker_runtime_signature") == _POM_DETAIL_GROUP_SIGNATURE
+        and group_tree.get("starbreaker_runtime_built_signature") == _POM_DETAIL_GROUP_SIGNATURE
+        and group_tree.nodes.get(_POM_DETAIL_LAYERS_NODE_NAME) is not None
+        and group_tree.nodes.get(_POM_DETAIL_SCALE_MULTIPLIER_NODE_NAME) is not None
+    ):
+        return group_tree
+
+    group_tree.use_fake_user = False
+    group_tree.nodes.clear()
+    for item in list(group_tree.interface.items_tree):
+        group_tree.interface.remove(item)
+    group_tree.interface.new_socket(name="Layers", in_out="OUTPUT", socket_type="NodeSocketFloat")
+    group_tree.interface.new_socket(name="Layers Vector", in_out="OUTPUT", socket_type="NodeSocketVector")
+    group_tree.interface.new_socket(name="Scale Multiplier", in_out="OUTPUT", socket_type="NodeSocketFloat")
+
+    nodes = group_tree.nodes
+    links = group_tree.links
+    group_output = nodes.new("NodeGroupOutput")
+    group_output.location = (240, 0)
+
+    detail_layers = nodes.new("ShaderNodeValue")
+    detail_layers.name = _POM_DETAIL_LAYERS_NODE_NAME
+    detail_layers.label = "Detail Layers"
+    detail_layers.location = (-320, 80)
+
+    scale_multiplier = nodes.new("ShaderNodeValue")
+    scale_multiplier.name = _POM_DETAIL_SCALE_MULTIPLIER_NODE_NAME
+    scale_multiplier.label = "Scale Multiplier"
+    scale_multiplier.location = (-320, -60)
+
+    layers_vector = nodes.new("ShaderNodeCombineXYZ")
+    layers_vector.location = (-40, 120)
+
+    links.new(detail_layers.outputs[0], layers_vector.inputs[0])
+    links.new(detail_layers.outputs[0], layers_vector.inputs[1])
+    links.new(detail_layers.outputs[0], layers_vector.inputs[2])
+    links.new(detail_layers.outputs[0], group_output.inputs["Layers"])
+    links.new(layers_vector.outputs[0], group_output.inputs["Layers Vector"])
+    links.new(scale_multiplier.outputs[0], group_output.inputs["Scale Multiplier"])
+
+    group_tree["starbreaker_runtime_signature"] = _POM_DETAIL_GROUP_SIGNATURE
+    group_tree["starbreaker_runtime_built_signature"] = _POM_DETAIL_GROUP_SIGNATURE
+    return group_tree
+
+
+def _configure_runtime_pom_detail_group(mode: str) -> bpy.types.ShaderNodeTree:
+    group_tree = _ensure_runtime_pom_detail_group()
+    layers, scale_multiplier = pom_detail_settings(mode)
+    detail_layers = group_tree.nodes.get(_POM_DETAIL_LAYERS_NODE_NAME)
+    if detail_layers is not None:
+        detail_layers.outputs[0].default_value = float(layers)
+    multiplier_node = group_tree.nodes.get(_POM_DETAIL_SCALE_MULTIPLIER_NODE_NAME)
+    if multiplier_node is not None:
+        multiplier_node.outputs[0].default_value = float(scale_multiplier)
+    group_tree["starbreaker_pom_detail_mode"] = str(mode or POM_DETAIL_DEFAULT).upper()
+    return group_tree
+
+
+def _ensure_pom_detail_control_on_tree(
+    group_tree: bpy.types.ShaderNodeTree,
+    detail_group: bpy.types.ShaderNodeTree,
+) -> bool:
+    if (
+        group_tree is None
+        or not group_tree.name.startswith("StarBreaker POM [")
+        or " / " in group_tree.name
+    ):
+        return False
+    nodes = group_tree.nodes
+    links = group_tree.links
+    detail_node = nodes.get(_POM_DETAIL_CONTROL_NODE_NAME)
+    if detail_node is None or detail_node.bl_idname != "ShaderNodeGroup":
+        if detail_node is not None:
+            nodes.remove(detail_node)
+        detail_node = nodes.new("ShaderNodeGroup")
+        detail_node.name = _POM_DETAIL_CONTROL_NODE_NAME
+        detail_node.label = "POM Detail"
+        detail_node.location = (-320, 260)
+    detail_node.node_tree = detail_group
+    _refresh_group_node_sockets(detail_node)
+
+    source_input = next((node for node in nodes if node.bl_idname == "NodeGroupInput"), None)
+    if source_input is None:
+        return False
+
+    legacy_layers_item = next(
+        (
+            item
+            for item in list(group_tree.interface.items_tree)
+            if getattr(item, "in_out", None) == "INPUT" and getattr(item, "name", None) == "Layers"
+        ),
+        None,
+    )
+    if legacy_layers_item is not None:
+        group_tree.interface.remove(legacy_layers_item)
+
+    scale_math = nodes.get(_POM_DETAIL_SCALE_NODE_NAME)
+    if scale_math is None or scale_math.bl_idname != "ShaderNodeMath":
+        if scale_math is not None:
+            nodes.remove(scale_math)
+        scale_math = nodes.new("ShaderNodeMath")
+        scale_math.name = _POM_DETAIL_SCALE_NODE_NAME
+        scale_math.label = "POM Detail Scale"
+        scale_math.operation = "MULTIPLY"
+        scale_math.location = (-120, 160)
+
+    changed = legacy_layers_item is not None
+    source_scale_output = _output_socket(source_input, "Scale")
+    helper_scale_multiplier = _output_socket(detail_node, "Scale Multiplier")
+    if source_scale_output is not None:
+        for link in list(scale_math.inputs[0].links):
+            links.remove(link)
+        links.new(source_scale_output, scale_math.inputs[0])
+        changed = True
+    if helper_scale_multiplier is not None:
+        for link in list(scale_math.inputs[1].links):
+            links.remove(link)
+        links.new(helper_scale_multiplier, scale_math.inputs[1])
+        changed = True
+
+    helper_layers = _output_socket(detail_node, "Layers")
+    helper_layers_vector = _output_socket(detail_node, "Layers Vector")
+
+    def _ensure_direct_link(output_socket: bpy.types.NodeSocket | None, input_socket: bpy.types.NodeSocket | None) -> None:
+        nonlocal changed
+        if output_socket is None or input_socket is None:
+            return
+        for link in list(input_socket.links):
+            if (
+                link.from_socket.as_pointer() == output_socket.as_pointer()
+                and link.to_socket.as_pointer() == input_socket.as_pointer()
+            ):
+                return
+            links.remove(link)
+            changed = True
+        links.new(output_socket, input_socket)
+        changed = True
+
+    vector_math = nodes.get("Vector Math.002")
+    if vector_math is not None and len(vector_math.inputs) > 0:
+        _ensure_direct_link(helper_layers_vector, vector_math.inputs[0])
+
+    layer_divide = nodes.get("Math.003")
+    if layer_divide is not None and len(layer_divide.inputs) > 1:
+        _ensure_direct_link(scale_math.outputs[0], layer_divide.inputs[0])
+        _ensure_direct_link(helper_layers, layer_divide.inputs[1])
+
+    pom_group = nodes.get("Group.001")
+    if pom_group is not None:
+        _ensure_direct_link(helper_layers, _input_socket(pom_group, "num layers"))
+        _ensure_direct_link(source_scale_output, _input_socket(pom_group, "Scale"))
+
+    return changed
+
+
+def apply_pom_detail_mode(mode: str) -> int:
+    _configure_runtime_pom_detail_group(mode)
+    return 0
 
 
 class GroupsMixin:
+    def _current_pom_detail_mode(self) -> str:
+        scene = getattr(getattr(self, "context", None), "scene", None)
+        return str(getattr(scene, SCENE_POM_DETAIL_PROP, POM_DETAIL_DEFAULT) or POM_DETAIL_DEFAULT)
+
     def _begin_runtime_shared_group(
         self,
         group_name: str,

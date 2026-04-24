@@ -25,18 +25,21 @@ import bpy
 from ..constants import (
     MATERIAL_IDENTITY_SCHEMA,
     NON_COLOR_INPUT_KEYWORDS,
+    POM_DETAIL_DEFAULT,
     PROP_MATERIAL_IDENTITY,
     PROP_MATERIAL_SIDECAR,
     PROP_PALETTE_ID,
     PROP_PALETTE_SCOPE,
     PROP_PALETTE_SCOPE_MAP,
     PROP_SHADER_FAMILY,
+    SCENE_POM_DETAIL_PROP,
     PROP_SUBMATERIAL_JSON,
     PROP_SURFACE_SHADER_MODE,
     PROP_TEMPLATE_KEY,
     PROP_HAS_POM,
     SURFACE_SHADER_MODE_GLASS,
     SURFACE_SHADER_MODE_PRINCIPLED,
+    pom_detail_settings,
 )
 from ..node_utils import _input_socket, _output_socket, _refresh_group_node_sockets, _set_group_input_default
 from ..package_ops import _string_prop

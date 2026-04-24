@@ -15,6 +15,8 @@ from .manifest import PackageBundle
 from .palette import resolved_palette_id
 from .palette import paint_list_canonical_id
 from .runtime import (
+    POM_DETAIL_DEFAULT,
+    POM_DETAIL_ITEMS,
     PROP_ENTITY_NAME,
     PROP_MATERIAL_SIDECAR,
     PROP_PACKAGE_NAME,
@@ -23,6 +25,8 @@ from .runtime import (
     PROP_SHADER_FAMILY,
     PROP_SURFACE_SHADER_MODE,
     PROP_TEMPLATE_KEY,
+    SCENE_POM_DETAIL_PROP,
+    apply_pom_detail_mode,
     SCENE_WEAR_STRENGTH_PROP,
     apply_light_state,
     apply_livery_to_selected_package,
@@ -58,6 +62,17 @@ def _tag_view3d_redraws(context: bpy.types.Context) -> None:
     for area in screen.areas:
         if area.type == "VIEW_3D":
             area.tag_redraw()
+
+
+def _update_pom_detail(_: bpy.types.ID, context: bpy.types.Context) -> None:
+    scene = getattr(context, "scene", None)
+    if scene is None:
+        return
+    try:
+        apply_pom_detail_mode(getattr(scene, SCENE_POM_DETAIL_PROP, POM_DETAIL_DEFAULT))
+    except Exception:
+        return
+    _tag_view3d_redraws(context)
 
 
 def _draw_import_progress_overlay() -> None:
@@ -628,6 +643,7 @@ class STARBREAKER_PT_tools(Panel):
         layout.operator(STARBREAKER_OT_dump_metadata.bl_idname, icon="TEXT")
 
         tuning = layout.box()
+        tuning.prop(context.scene, SCENE_POM_DETAIL_PROP, text="POM Detail")
         tuning.label(text="Layered Wear")
         tuning.prop(context.scene, SCENE_WEAR_STRENGTH_PROP, slider=True)
 
@@ -691,6 +707,21 @@ def register() -> None:
     )
     setattr(
         bpy.types.Scene,
+        SCENE_POM_DETAIL_PROP,
+        EnumProperty(
+            name="POM Detail",
+            description=(
+                "Global quality preset for StarBreaker parallax-occlusion materials. "
+                "Updates the shared runtime POM detail group so imported POM materials "
+                "change quality together without rewriting each material node tree."
+            ),
+            items=POM_DETAIL_ITEMS,
+            default=POM_DETAIL_DEFAULT,
+            update=_update_pom_detail,
+        ),
+    )
+    setattr(
+        bpy.types.Scene,
         SCENE_WEAR_STRENGTH_PROP,
         FloatProperty(
             name="Wear Strength",
@@ -727,5 +758,7 @@ def unregister() -> None:
     ):
         if hasattr(bpy.types.WindowManager, prop_name):
             delattr(bpy.types.WindowManager, prop_name)
+    if hasattr(bpy.types.Scene, SCENE_POM_DETAIL_PROP):
+        delattr(bpy.types.Scene, SCENE_POM_DETAIL_PROP)
     if hasattr(bpy.types.Scene, SCENE_WEAR_STRENGTH_PROP):
         delattr(bpy.types.Scene, SCENE_WEAR_STRENGTH_PROP)
