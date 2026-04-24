@@ -619,8 +619,14 @@ class SceneManifest:
 
 
 def infer_export_root(scene_path: Path, package_dir: str) -> Path:
-    export_root = scene_path.resolve().parent
     package_parts = Path(package_dir).parts
+    if package_parts:
+        package_root_name = package_parts[0].casefold()
+        for ancestor in scene_path.resolve().parent.parents:
+            if ancestor.name.casefold() == package_root_name:
+                return ancestor.parent
+
+    export_root = scene_path.resolve().parent
     if package_parts and export_root.name.casefold() != package_parts[-1].casefold():
         export_root = export_root.parent
     for _ in package_parts:

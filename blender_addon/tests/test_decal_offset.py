@@ -160,7 +160,20 @@ class FakeObject:
 
 
 class ImporterUnderTest(BuildersMixin):
-    pass
+    def __init__(self, *, channel: str | None = None, fallback_rgb: tuple[float, float, float] | None = None):
+        self.channel = channel
+        self.fallback_rgb = fallback_rgb
+        self.illum_rgb_calls: list[tuple[float, float, float]] = []
+
+    def _mesh_decal_host_channel_for_object(self, obj):
+        return self.channel
+
+    def _mesh_decal_host_rgb_for_object(self, obj):
+        return self.fallback_rgb
+
+    def _ensure_illum_pom_host_rgb_variant(self, material, rgb):
+        self.illum_rgb_calls.append(rgb)
+        return FakeMaterial(f"{material.name}__host_rgb", **dict(material))
 
 
 class DecalOffsetTests(unittest.TestCase):
@@ -229,6 +242,33 @@ class DecalOffsetTests(unittest.TestCase):
         modifier = obj.modifiers.get(importer._DECAL_OFFSET_MODIFIER_NAME)
         self.assertIsNotNone(modifier)
         self.assertAlmostEqual(modifier.strength, importer._DECAL_OFFSET_STRENGTH)
+
+    def test_illum_pom_rebind_uses_palette_channel_rgb_when_no_authored_fallback_exists(self) -> None:
+        decal = FakeMaterial(
+            "drak_vulture:pom_decals",
+            starbreaker_shader_family="Illum",
+            **{
+                PROP_HAS_POM: True,
+                PROP_TEMPLATE_KEY: "decal_stencil",
+            },
+        )
+        obj = FakeObject(
+            material_slots=[FakeSlot(decal)],
+            mesh=FakeMesh(polygons=[], vertex_count=0),
+        )
+        palette = types.SimpleNamespace(
+            primary=(0.2, 0.3, 0.4),
+            secondary=(0.5, 0.6, 0.7),
+            tertiary=(0.8, 0.1, 0.2),
+            glass=(0.9, 0.9, 0.95),
+        )
+        importer = ImporterUnderTest(channel="primary", fallback_rgb=None)
+
+        rebound = importer._rebind_mesh_decal_for_host(obj, palette)
+
+        self.assertEqual(rebound, 1)
+        self.assertEqual(importer.illum_rgb_calls, [palette.primary])
+        self.assertEqual(obj.material_slots[0].material.name, "drak_vulture:pom_decals__host_rgb")
 
 
 if __name__ == "__main__":

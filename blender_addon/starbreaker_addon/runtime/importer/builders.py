@@ -65,7 +65,7 @@ from ...material_contract import (
     bundled_template_library_path,
     load_bundled_template_contract,
 )
-from ...palette import palette_finish_glossiness, palette_finish_specular
+from ...palette import palette_color, palette_finish_glossiness, palette_finish_specular
 from ...templates import has_virtual_input, material_palette_channels, representative_textures, template_plan_for_submaterial
 from ..palette_utils import _palette_has_iridescence
 
@@ -2135,15 +2135,19 @@ class BuildersMixin:
                     continue
                 variant = self._ensure_mesh_decal_host_variant(mat, channel, palette)
             else:
-                assert fallback_rgb is not None
+                variant_rgb = fallback_rgb
+                if variant_rgb is None and channel is not None and palette is not None:
+                    variant_rgb = palette_color(palette, channel)
+                if variant_rgb is None:
+                    continue
                 key = mat.get("starbreaker_decal_host_rgb_key")
-                rgb_key = self._rgb_variant_key(fallback_rgb)
+                rgb_key = self._rgb_variant_key(variant_rgb)
                 if key == rgb_key:
                     continue
                 if is_mesh_decal:
-                    variant = self._ensure_mesh_decal_host_rgb_variant(mat, fallback_rgb)
+                    variant = self._ensure_mesh_decal_host_rgb_variant(mat, variant_rgb)
                 else:
-                    variant = self._ensure_illum_pom_host_rgb_variant(mat, fallback_rgb)
+                    variant = self._ensure_illum_pom_host_rgb_variant(mat, variant_rgb)
             if variant is not mat:
                 slot.material = variant
                 rebound += 1

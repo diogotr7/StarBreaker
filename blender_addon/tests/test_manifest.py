@@ -15,6 +15,7 @@ from starbreaker_addon.manifest import LightRecord, MaterialSidecar, PackageBund
 
 
 ARGO_SCENE = REPO_ROOT / "ships/Packages/ARGO MOLE/scene.json"
+VULTURE_SCENE = REPO_ROOT / "ships/Packages/Drake Vulture/scene.json"
 ARGO_INTERIOR = REPO_ROOT / "ships/Data/Objects/Spaceships/Ships/ARGO/MOLE/argo_mole_interior.materials.json"
 COMPONENT_MASTER = REPO_ROOT / "ships/Data/Materials/vehicles/components/component_master_01.materials.json"
 
@@ -28,6 +29,10 @@ _requires_argo_fixture = unittest.skipUnless(
 class ManifestTests(unittest.TestCase):
     def test_export_root_inference_matches_fixture_layout(self) -> None:
         export_root = infer_export_root(ARGO_SCENE, "Packages/ARGO MOLE")
+        self.assertEqual(export_root, REPO_ROOT / "ships")
+
+    def test_export_root_inference_tolerates_mismatched_package_basename(self) -> None:
+        export_root = infer_export_root(VULTURE_SCENE, "Packages/DRAK Vulture_LOD0_TEX0")
         self.assertEqual(export_root, REPO_ROOT / "ships")
 
     @_requires_argo_fixture
