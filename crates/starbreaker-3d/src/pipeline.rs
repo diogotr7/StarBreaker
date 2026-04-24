@@ -3437,51 +3437,9 @@ fn resolve_paint_override(
             }
             log::info!("  matched SubGeometry[{idx}] tag='{tag}'");
 
-            // Extract palette from this SubGeometry's Geometry.Palette.RootRecord.root
-            let palette = (|| -> Option<mtl::TintPalette> {
-                let geom_data = get_value_field(sub, "Geometry")?;
-                let palette_ref = get_value_field(geom_data, "Palette")?;
-                let root_record = get_value_field(palette_ref, "RootRecord")?;
-                let root = get_value_field(root_record, "root")?;
-
-                let read_entry = |entry_name: &str| -> [f32; 3] {
-                    let entry = get_value_field(root, entry_name);
-                    let tint = entry.and_then(|e| get_value_field(e, "tintColor"));
-                    let r = tint.and_then(|t| get_value_u8(t, "r")).unwrap_or(128);
-                    let g = tint.and_then(|t| get_value_u8(t, "g")).unwrap_or(128);
-                    let b = tint.and_then(|t| get_value_u8(t, "b")).unwrap_or(128);
-                    [
-                        srgb_to_linear(r as f32 / 255.0),
-                        srgb_to_linear(g as f32 / 255.0),
-                        srgb_to_linear(b as f32 / 255.0),
-                    ]
-                };
-                let read_finish = |entry_name: &str| -> mtl::TintPaletteFinishEntry {
-                    let entry = get_value_field(root, entry_name);
-                    mtl::TintPaletteFinishEntry {
-                        specular: entry.and_then(|value| read_rgb_value_field(value, "specColor")),
-                        glossiness: entry.and_then(|value| get_value_f32(value, "glossiness")),
-                    }
-                };
-                Some(mtl::TintPalette {
-                    source_name: Some(paint_node.entity_name.clone()),
-                    display_name: None,
-                    primary: read_entry("entryA"),
-                    secondary: read_entry("entryB"),
-                    tertiary: read_entry("entryC"),
-                    glass: read_entry("glassColor"),
-                    decal_color_r: read_rgb_value_field(root, "decalColorR"),
-                    decal_color_g: read_rgb_value_field(root, "decalColorG"),
-                    decal_color_b: read_rgb_value_field(root, "decalColorB"),
-                    decal_texture: get_value_string(root, "decalTexture").map(str::to_string),
-                    finish: mtl::TintPaletteFinish {
-                        primary: read_finish("entryA"),
-                        secondary: read_finish("entryB"),
-                        tertiary: read_finish("entryC"),
-                        glass: read_finish("glassColor"),
-                    },
-                })
-            })();
+            // Extract palette from this SubGeometry's Geometry.Palette.RootRecord.root.
+            let palette = get_value_field(sub, "Geometry")
+                .and_then(|geometry| extract_subgeometry_palette(geometry, Some(paint_node.entity_name.clone())));
 
             if let Some(ref p) = palette {
                 log::info!(
@@ -3602,6 +3560,14 @@ fn enumerate_paint_variants_for_entity(
             let palette_id = Some(format!("palette/{canonical_tag}"));
             // Try to look up a localized display name using the sanitized tag.
             let display_name = display_names.get(sanitized_tag.as_str()).cloned();
+            let palette = get_value_field(sub, "Geometry")
+                .and_then(|geometry| extract_subgeometry_palette(geometry, Some(canonical_tag.to_string())))
+                .map(|mut palette| {
+                    if palette.display_name.is_none() {
+                        palette.display_name = display_name.clone();
+                    }
+                    palette
+                });
 
             log::info!(
                 "  paint variant: tag={tag:?}, material={:?}, palette_id={:?}, display={:?}",
@@ -3613,6 +3579,7 @@ fn enumerate_paint_variants_for_entity(
             variants.push(mtl::PaintVariant {
                 subgeometry_tag: tag.to_string(),
                 palette_id,
+                palette,
                 display_name,
                 material_path,
                 materials,
@@ -3620,7 +3587,118 @@ fn enumerate_paint_variants_for_entity(
         }
     }
 
+    extend_with_palette_only_paint_variants(db, entity_record, display_names, &mut variants);
+
     variants
+}
+
+fn extend_with_palette_only_paint_variants(
+    db: &Database,
+    entity_record: &Record,
+    display_names: &HashMap<String, String>,
+    variants: &mut Vec<mtl::PaintVariant>,
+) {
+    use starbreaker_datacore::query::value::Value;
+    use starbreaker_datacore::QueryResultExt;
+
+    let family_keys = tint_palette_family_keys(db.resolve_string2(entity_record.name_offset));
+    if family_keys.is_empty() {
+        return;
+    }
+
+    let Ok(tags_compiled) = db
+        .compile_rooted::<String>("EntityClassDefinition.Components[SAttachableComponentParams].AttachDef.Tags")
+        .optional()
+    else {
+        return;
+    };
+    let Ok(geometry_compiled) = db
+        .compile_rooted::<Value>("EntityClassDefinition.Components[SGeometryResourceParams]")
+        .optional()
+    else {
+        return;
+    };
+
+    let mut seen_palette_ids: HashSet<String> = variants
+        .iter()
+        .filter_map(|variant| variant.palette_id.clone())
+        .collect();
+
+    for record in db.records_by_type_name("EntityClassDefinition") {
+        if !db.is_main_record(record) {
+            continue;
+        }
+        let file_path = db.resolve_string(record.file_name_offset).to_lowercase();
+        if !file_path.contains("entities/scitem/ships/paints/") {
+            continue;
+        }
+
+        let Some(tags) = tags_compiled
+            .as_ref()
+            .and_then(|compiled| db.query_single::<String>(compiled, record).ok().flatten())
+        else {
+            continue;
+        };
+        if !paint_attach_tags_match_family(&tags, &family_keys) {
+            continue;
+        }
+
+        let full_name = db.resolve_string2(record.name_offset);
+        let short_name = full_name.rsplit('.').next().unwrap_or(full_name).to_lowercase();
+        let canonical_tag = short_name
+            .strip_prefix("paint_")
+            .unwrap_or(short_name.as_str())
+            .to_string();
+        let palette_id = format!("palette/{canonical_tag}");
+        if !seen_palette_ids.insert(palette_id.clone()) {
+            continue;
+        }
+
+        let display_name = display_names
+            .get(&short_name)
+            .cloned()
+            .or_else(|| display_names.get(&canonical_tag).cloned());
+        let components = geometry_compiled
+            .as_ref()
+            .and_then(|compiled| db.query::<Value>(compiled, record).ok())
+            .unwrap_or_default();
+        let palette = components
+            .iter()
+            .filter_map(|component| get_value_field(component, "Geometry"))
+            .find_map(|geometry| extract_subgeometry_palette(geometry, Some(canonical_tag.clone())))
+            .map(|mut palette| {
+                if palette.display_name.is_none() {
+                    palette.display_name = display_name.clone();
+                }
+                palette
+            });
+
+        if palette.is_none() {
+            continue;
+        }
+
+        let subgeometry_tag = tags
+            .split_whitespace()
+            .find_map(|token| token.strip_prefix('@'))
+            .map(str::to_string);
+
+        variants.push(mtl::PaintVariant {
+            subgeometry_tag: subgeometry_tag.unwrap_or_else(|| short_name.clone()),
+            palette_id: Some(palette_id),
+            palette,
+            display_name,
+            material_path: None,
+            materials: None,
+        });
+    }
+}
+
+fn paint_attach_tags_match_family(tags: &str, family_keys: &[String]) -> bool {
+    let tokens: HashSet<String> = tags.split_whitespace().map(|token| token.to_lowercase()).collect();
+    family_keys
+        .iter()
+        .map(|key| format!("paint_{key}"))
+        .any(|candidate| tokens.contains(&candidate))
 }
 
 /// Helper: get an object field from a DataCore Value.
@@ -3691,6 +3769,54 @@ fn get_value_f32(val: &starbreaker_datacore::query::value::Value, name: &str) ->
         }
     }
     None
+}
+
+fn extract_subgeometry_palette(
+    geometry: &starbreaker_datacore::query::value::Value,
+    source_name: Option<String>,
+) -> Option<mtl::TintPalette> {
+    let palette_ref = get_value_field(geometry, "Palette")?;
+    let root_record = get_value_field(palette_ref, "RootRecord")?;
+    let root = get_value_field(root_record, "root")?;
+
+    let read_entry = |entry_name: &str| -> [f32; 3] {
+        let entry = get_value_field(root, entry_name);
+        let tint = entry.and_then(|value| get_value_field(value, "tintColor"));
+        let r = tint.and_then(|value| get_value_u8(value, "r")).unwrap_or(128);
+        let g = tint.and_then(|value| get_value_u8(value, "g")).unwrap_or(128);
+        let b = tint.and_then(|value| get_value_u8(value, "b")).unwrap_or(128);
+        [
+            srgb_to_linear(r as f32 / 255.0),
+            srgb_to_linear(g as f32 / 255.0),
+            srgb_to_linear(b as f32 / 255.0),
+        ]
+    };
+    let read_finish = |entry_name: &str| -> mtl::TintPaletteFinishEntry {
+        let entry = get_value_field(root, entry_name);
+        mtl::TintPaletteFinishEntry {
+            specular: entry.and_then(|value| read_rgb_value_field(value, "specColor")),
+            glossiness: entry.and_then(|value| get_value_f32(value, "glossiness")),
+        }
+    };
+
+    Some(mtl::TintPalette {
+        source_name,
+        display_name: None,
+        primary: read_entry("entryA"),
+        secondary: read_entry("entryB"),
+        tertiary: read_entry("entryC"),
+        glass: read_entry("glassColor"),
+        decal_color_r: read_rgb_value_field(root, "decalColorR"),
+        decal_color_g: read_rgb_value_field(root, "decalColorG"),
+        decal_color_b: read_rgb_value_field(root, "decalColorB"),
+        decal_texture: get_value_string(root, "decalTexture").map(str::to_string),
+        finish: mtl::TintPaletteFinish {
+            primary: read_finish("entryA"),
+            secondary: read_finish("entryB"),
+            tertiary: read_finish("entryC"),
+            glass: read_finish("glassColor"),
+        },
+    })
 }
 
 fn read_rgb_value_field(

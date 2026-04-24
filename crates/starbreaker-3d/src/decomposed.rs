@@ -483,25 +483,27 @@ pub(crate) fn write_decomposed_export(
     // Export material sidecars for each paint variant and build the paints.json manifest.
     let mut paint_variant_json: Vec<serde_json::Value> = Vec::new();
     for variant in &input.paint_variants {
-        let Some(materials) = variant.materials.as_ref() else { continue };
+        register_paint_variant_palette(&mut palette_records, variant);
         let Some(palette_id) = variant.palette_id.as_ref() else { continue };
-        let variant_material_path = variant
-            .material_path
-            .as_deref()
-            .unwrap_or(&input.material_path);
-        let sidecar_path = write_material_sidecar(
-            &mut files,
-            p4k,
-            &mut png_cache,
-            &mut texture_cache,
-            &palettes_manifest_path,
-            &input.entity_name,
-            &input.geometry_path,
-            variant_material_path,
-            materials,
-            opts.texture_mip,
-            existing_asset_paths,
-        );
+        let sidecar_path = variant.materials.as_ref().map(|materials| {
+            let variant_material_path = variant
+                .material_path
+                .as_deref()
+                .unwrap_or(&input.material_path);
+            write_material_sidecar(
+                &mut files,
+                p4k,
+                &mut png_cache,
+                &mut texture_cache,
+                &palettes_manifest_path,
+                &input.entity_name,
+                &input.geometry_path,
+                variant_material_path,
+                materials,
+                opts.texture_mip,
+                existing_asset_paths,
+            )
+        });
         paint_variant_json.push(serde_json::json!({
             "subgeometry_tag": variant.subgeometry_tag,
             "palette_id": palette_id,
@@ -1584,12 +1586,30 @@ fn export_texture_asset(
 
 fn register_palette(records: &mut BTreeMap<String, PaletteRecord>, palette: &TintPalette) -> String {
     let id = palette_id(palette);
+    register_palette_with_id(records, id.clone(), palette);
+    id
+}
+
+fn register_palette_with_id(
+    records: &mut BTreeMap<String, PaletteRecord>,
+    id: String,
+    palette: &TintPalette,
+) {
     records.entry(id.clone()).or_insert_with(|| PaletteRecord {
-        id: id.clone(),
+        id,
         palette: palette.clone(),
         decal_texture_export_path: None,
     });
-    id
+}
+
+fn register_paint_variant_palette(
+    records: &mut BTreeMap<String, PaletteRecord>,
+    variant: &crate::mtl::PaintVariant,
+) -> Option<String> {
+    let palette_id = variant.palette_id.as_ref()?;
+    let palette = variant.palette.as_ref()?;
+    register_palette_with_id(records, palette_id.clone(), palette);
+    Some(palette_id.clone())
 }
 
 fn finalize_palette_records(
@@ -2606,6 +2626,40 @@ mod tests {
             .as_f64()
             .expect("primary finish glossiness should be numeric");
         assert!((glossiness - 0.42).abs() < 1e-6);
+    }
+
+    #[test]
+    fn paint_variant_palette_manifest_uses_variant_palette_id() {
+        let mut records = BTreeMap::new();
+        let variant = crate::mtl::PaintVariant {
+            subgeometry_tag: "Paint_Vulture_coramor_2956_purple_pink_green_iridecence".into(),
+            palette_id: Some("palette/vulture_coramor_2956_purple_pink_green_iridecence".into()),
+            palette: Some(TintPalette {
+                source_name: Some("coramor_2956_purple_pink_green_iridecence".into()),
+                display_name: Some("Vulture Heartthrob Livery".into()),
+                primary: [0.1, 0.2, 0.3],
+                secondary: [0.3, 0.2, 0.1],
+                tertiary: [0.4, 0.5, 0.6],
+                glass: [0.6, 0.7, 0.8],
+                decal_color_r: None,
+                decal_color_g: None,
+                decal_color_b: None,
+                decal_texture: None,
+                finish: crate::mtl::TintPaletteFinish::default(),
+            }),
+            display_name: Some("Vulture Heartthrob Livery".into()),
+            material_path: None,
+            materials: None,
+        };
+
+        let palette_id = register_paint_variant_palette(&mut records, &variant)
+            .expect("paint variant palette should register");
+
+        let value = build_palette_manifest_value(&records);
+        assert_eq!(palette_id, "palette/vulture_coramor_2956_purple_pink_green_iridecence");
+        assert_eq!(value["palettes"][0]["id"], serde_json::json!("palette/vulture_coramor_2956_purple_pink_green_iridecence"));
+        assert_eq!(value["palettes"][0]["source_name"], serde_json::json!("coramor_2956_purple_pink_green_iridecence"));
+        assert_eq!(value["palettes"][0]["display_name"], serde_json::json!("Vulture Heartthrob Livery"));
     }
 
     #[test]

@@ -50,6 +50,8 @@ pub struct PaintVariant {
     /// Palette ID used in paints.json, derived from the SubGeometry tag
     /// (e.g., "palette/aurora_mk2_pink_green_purple").
     pub palette_id: Option<String>,
+    /// Resolved tint palette carried by the SubGeometry entry itself.
+    pub palette: Option<TintPalette>,
     /// Localized display name (e.g., "Shimmerscale").
     pub display_name: Option<String>,
     /// P4K-relative material file path for this variant
