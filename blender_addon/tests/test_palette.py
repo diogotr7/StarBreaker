@@ -72,6 +72,7 @@ from starbreaker_addon.palette import (
 from starbreaker_addon.runtime.constants import PROP_PALETTE_ID
 from starbreaker_addon.runtime.importer.orchestration import OrchestrationMixin
 from starbreaker_addon.runtime.palette_utils import (
+    _hard_surface_palette_iridescence_channel,
     _palette_channel_has_iridescence,
     _palette_has_iridescence,
 )
@@ -92,6 +93,10 @@ ARGO_SCENE = _existing_scene(
 VULTURE_SCENE = _existing_scene(
     "ships/Packages/Drake Vulture/scene.json",
     "ships/Packages/DRAK Vulture_LOD0_TEX0/scene.json",
+)
+AURORA_SCENE = _existing_scene(
+    "ships/Packages/RSI Aurora Mk2/scene.json",
+    "ships/Packages/RSI Aurora Mk2_LOD0_TEX0/scene.json",
 )
 
 
@@ -247,6 +252,41 @@ class VulturePaletteTests(unittest.TestCase):
         self.assertEqual(
             paint_list_canonical_id(package, "palette/drak_vulture_assembly_red_white"),
             "palette/vulture_assembly_red_white",
+        )
+
+
+@unittest.skipUnless(
+    AURORA_SCENE.is_file(),
+    f"RSI Aurora Mk2 fixture not present at {AURORA_SCENE}; skipping Aurora palette tests",
+)
+class AuroraPaletteTests(unittest.TestCase):
+    def test_hard_surface_iridescence_stays_off_for_primary_paint_when_only_tertiary_is_chromatic(self) -> None:
+        package = PackageBundle.load(AURORA_SCENE)
+        palette = palette_for_id(package, "palette/rsi_aurora_mk2")
+
+        self.assertIsNotNone(palette)
+        self.assertFalse(_palette_channel_has_iridescence(palette, "primary"))
+        self.assertTrue(_palette_channel_has_iridescence(palette, "tertiary"))
+        self.assertIsNone(
+            _hard_surface_palette_iridescence_channel(
+                palette,
+                "primary",
+                authored_angle_shift=False,
+            )
+        )
+
+    def test_hard_surface_authored_angle_shift_can_fall_back_to_tertiary_palette_channel(self) -> None:
+        package = PackageBundle.load(AURORA_SCENE)
+        palette = palette_for_id(package, "palette/rsi_aurora_mk2")
+
+        self.assertIsNotNone(palette)
+        self.assertEqual(
+            _hard_surface_palette_iridescence_channel(
+                palette,
+                "primary",
+                authored_angle_shift=True,
+            ),
+            "tertiary",
         )
 
 

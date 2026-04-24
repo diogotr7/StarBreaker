@@ -64,6 +64,30 @@ def _palette_has_iridescence(palette: PaletteRecord | None) -> bool:
     )
 
 
+def _hard_surface_palette_iridescence_channel(
+    palette: PaletteRecord | None,
+    material_channel: str | None,
+    *,
+    authored_angle_shift: bool,
+) -> str | None:
+    """Pick the palette channel that should enable HardSurface iridescence.
+
+    Ordinary palette-routed paints should only turn iridescence on when the
+    material's own routed palette channel is visibly angle-shift. A tertiary
+    fallback is reserved for explicitly authored angle-shift materials so a
+    neutral primary paint inside an iridescent-capable palette does not become
+    metallic by accident.
+    """
+
+    normalized_channel = str(material_channel or "").lower()
+    if normalized_channel in {"primary", "secondary", "tertiary"}:
+        if _palette_channel_has_iridescence(palette, normalized_channel):
+            return normalized_channel
+    if authored_angle_shift and _palette_channel_has_iridescence(palette, "tertiary"):
+        return "tertiary"
+    return None
+
+
 def _palette_group_signature(palette: PaletteRecord) -> str:
     payload = {
         'schema': 'palette_group_v5',

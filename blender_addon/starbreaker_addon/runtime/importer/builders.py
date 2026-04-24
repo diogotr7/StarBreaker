@@ -70,7 +70,7 @@ from ...material_contract import (
 )
 from ...palette import palette_color, palette_finish_glossiness, palette_finish_specular
 from ...templates import has_virtual_input, material_palette_channels, representative_textures, template_plan_for_submaterial
-from ..palette_utils import _palette_channel_has_iridescence, _palette_has_iridescence
+from ..palette_utils import _hard_surface_palette_iridescence_channel
 
 
 def _canonical_material_sidecar_path(sidecar_path: str, sidecar: MaterialSidecar) -> str:
@@ -655,17 +655,13 @@ class BuildersMixin:
             else None
         )
         material_channel = submaterial.palette_routing.material_channel.name if submaterial.palette_routing.material_channel is not None else None
-        palette_angle_shift_channel = None
-        if palette is not None:
-            if material_channel in {"primary", "secondary", "tertiary"} and _palette_channel_has_iridescence(
-                palette, material_channel
-            ):
-                palette_angle_shift_channel = material_channel
-            elif _palette_channel_has_iridescence(palette, "tertiary"):
-                palette_angle_shift_channel = "tertiary"
-        angle_shift_enabled = _hard_surface_angle_shift_enabled(submaterial) or (
-            palette_angle_shift_channel is not None
+        authored_angle_shift = _hard_surface_angle_shift_enabled(submaterial)
+        palette_angle_shift_channel = _hard_surface_palette_iridescence_channel(
+            palette,
+            material_channel,
+            authored_angle_shift=authored_angle_shift,
         )
+        angle_shift_enabled = authored_angle_shift or (palette_angle_shift_channel is not None)
         iridescence_channel = palette_angle_shift_channel or "tertiary"
 
         primary_layer = submaterial.layer_manifest[0] if submaterial.layer_manifest else None
@@ -777,11 +773,7 @@ class BuildersMixin:
         self._set_socket_default(_input_socket(shader_group, "Iridescence Ramp Color"), (0.0, 0.0, 0.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Iridescence Ramp Weight"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Iridescence Strength"), 1.0)
-        iridescence_active = angle_shift_enabled and (
-            submaterial.decoded_feature_flags.has_iridescence
-            or palette_angle_shift_channel is not None
-            or _palette_has_iridescence(palette)
-        )
+        iridescence_active = authored_angle_shift or (palette_angle_shift_channel is not None)
         self._set_socket_default(_input_socket(shader_group, "Iridescence Factor"), 1.0 if iridescence_active else 0.0)
         self._set_socket_default(_input_socket(shader_group, "Stencil Color"), (1.0, 1.0, 1.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Stencil Color Factor"), 0.0)
