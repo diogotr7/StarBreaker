@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
+use gltf_json as json;
 use starbreaker_common::progress::{report as report_progress, Progress};
 use starbreaker_p4k::MappedP4k;
 
 use crate::error::Error;
-use crate::gltf::{GlbInput, GlbLoaders, GlbMetadata, GlbOptions};
+use crate::gltf::{offset_to_gltf_matrix, GlbBuilder, GlbInput, GlbLoaders, GlbMetadata, GlbOptions, PackedMeshInfo};
 use crate::mtl::{MtlFile, SemanticTextureBinding, SubMaterial, TextureSemanticRole, TintPalette};
 use crate::nmc::NodeMeshCombo;
 use crate::pipeline::{
@@ -85,9 +86,169 @@ struct SceneInstanceRecord {
     palette_id: Option<String>,
     parent_node_name: Option<String>,
     parent_entity_name: Option<String>,
+    source_transform_basis: Option<String>,
+    local_transform_sc: Option<[[f32; 4]; 4]>,
+    resolved_no_rotation: bool,
     no_rotation: bool,
     offset_position: [f32; 3],
     offset_rotation: [f32; 3],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResolvedChildTransform {
+    local_transform_sc: [[f32; 4]; 4],
+    resolved_no_rotation: bool,
+}
+
+fn identity_flat_4x4() -> [f32; 16] {
+    [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+fn empty_scene_graph_mesh() -> Mesh {
+    Mesh {
+        positions: Vec::new(),
+        indices: Vec::new(),
+        uvs: None,
+        secondary_uvs: None,
+        normals: None,
+        tangents: None,
+        colors: None,
+        submeshes: Vec::new(),
+        model_min: [0.0; 3],
+        model_max: [0.0; 3],
+        scaling_min: [0.0; 3],
+        scaling_max: [0.0; 3],
+    }
+}
+
+fn flat_4x4_to_rows(flat: [f32; 16]) -> [[f32; 4]; 4] {
+    [
+        [flat[0], flat[1], flat[2], flat[3]],
+        [flat[4], flat[5], flat[6], flat[7]],
+        [flat[8], flat[9], flat[10], flat[11]],
+        [flat[12], flat[13], flat[14], flat[15]],
+    ]
+}
+
+fn resolve_no_rotation_local_matrix(
+    parent_world_matrix: [f32; 16],
+    offset_position: [f32; 3],
+    offset_rotation: [f32; 3],
+) -> [f32; 16] {
+    let parent_world = glam::Mat4::from_cols_array(&parent_world_matrix);
+    let parent_rotation = glam::Quat::from_mat4(&parent_world);
+    let desired_matrix = glam::Mat4::from_cols_array(
+        &offset_to_gltf_matrix(offset_position, offset_rotation).unwrap_or(identity_flat_4x4()),
+    );
+    let desired_rotation = glam::Quat::from_mat4(&desired_matrix);
+    let desired_translation = glam::Vec3::from(offset_position);
+    let rotated_offset = parent_world.transform_vector3(desired_translation);
+    let parent_translation = parent_world.w_axis.truncate();
+    let duplicate_offset = offset_rotation == [0.0, 0.0, 0.0]
+        && (rotated_offset - parent_translation).abs().max_element() <= 5e-4;
+    let local_translation = if duplicate_offset {
+        glam::Vec3::ZERO
+    } else {
+        desired_translation
+    };
+    glam::Mat4::from_rotation_translation(parent_rotation.inverse() * desired_rotation, local_translation)
+        .to_cols_array()
+}
+
+fn resolve_child_instance_transforms(input: &DecomposedInput) -> Vec<ResolvedChildTransform> {
+    let mut builder = GlbBuilder::new();
+    let dummy_packed = PackedMeshInfo {
+        mesh_idx: 0,
+        pos_accessor_idx: 0,
+        uv_accessor_idx: None,
+        secondary_uv_accessor_idx: None,
+        normal_accessor_idx: None,
+        color_accessor_idx: None,
+        tangent_accessor_idx: None,
+        submesh_mat_indices: Vec::new(),
+        submesh_idx_accessors: Vec::new(),
+    };
+
+    let scene_nodes = if let Some(root_nmc) = input.root_nmc.as_ref().filter(|nmc| !nmc.nodes.is_empty()) {
+        builder
+            .build_nmc_hierarchy(&dummy_packed, root_nmc, &input.root_mesh.submeshes, false)
+            .into_iter()
+            .map(json::Index::new)
+            .collect::<Vec<_>>()
+    } else {
+        builder.nodes_json.push(json::Node {
+            name: Some(input.entity_name.clone()),
+            ..Default::default()
+        });
+        vec![json::Index::new(0)]
+    };
+
+    builder.attach_skeleton_bones(&input.root_bones, &scene_nodes);
+
+    let mut load_textures = |_materials: Option<&crate::mtl::MtlFile>, _palette: Option<&crate::mtl::TintPalette>| {
+        None
+    };
+    let mut resolved = Vec::with_capacity(input.children.len());
+
+    for child in &input.children {
+        let resolved_local_matrix = if child.no_rotation {
+            let target_idx = builder
+                .node_name_to_idx
+                .get(&child.parent_node_name.to_lowercase())
+                .copied()
+                .or_else(|| builder.node_name_to_idx.get(&child.parent_entity_name.to_lowercase()).copied())
+                .or_else(|| scene_nodes.first().map(|node| node.value() as u32))
+                .unwrap_or(0);
+            Some(resolve_no_rotation_local_matrix(
+                builder.compute_node_world_matrix(target_idx as usize),
+                child.offset_position,
+                child.offset_rotation,
+            ))
+        } else {
+            None
+        };
+
+        let child_idx = builder.attach_child_entity(
+            crate::types::EntityPayload {
+                mesh: empty_scene_graph_mesh(),
+                materials: None,
+                textures: None,
+                nmc: child.nmc.clone(),
+                palette: None,
+                geometry_path: child.geometry_path.clone(),
+                material_path: child.material_path.clone(),
+                bones: child.bones.clone(),
+                entity_name: child.entity_name.clone(),
+                parent_node_name: child.parent_node_name.clone(),
+                parent_entity_name: child.parent_entity_name.clone(),
+                no_rotation: child.no_rotation,
+                offset_position: child.offset_position,
+                offset_rotation: child.offset_rotation,
+            },
+            &scene_nodes,
+            MaterialMode::None,
+            None,
+            &mut load_textures,
+            resolved_local_matrix,
+        );
+
+        let local_transform_sc = flat_4x4_to_rows(
+            builder.nodes_json[child_idx as usize]
+                .matrix
+                .unwrap_or_else(identity_flat_4x4),
+        );
+        resolved.push(ResolvedChildTransform {
+            local_transform_sc,
+            resolved_no_rotation: child.no_rotation,
+        });
+    }
+
+    resolved
 }
 
 #[derive(Debug, Clone)]
@@ -525,6 +686,7 @@ pub(crate) fn write_decomposed_export(
 
     report_progress(progress, 0.15, "Writing child assets");
 
+    let resolved_child_transforms = resolve_child_instance_transforms(&input);
     let mut child_instances = Vec::with_capacity(input.children.len());
     let child_count = input.children.len();
     for (index, child) in input.children.iter().enumerate() {
@@ -574,6 +736,7 @@ pub(crate) fn write_decomposed_export(
             material_sidecar.as_deref(),
         );
 
+        let resolved_transform = resolved_child_transforms[index];
         child_instances.push(SceneInstanceRecord {
             entity_name: child.entity_name.clone(),
             geometry_path: normalize_source_path(p4k, &child.geometry_path),
@@ -583,6 +746,9 @@ pub(crate) fn write_decomposed_export(
             palette_id,
             parent_node_name: Some(child.parent_node_name.clone()),
             parent_entity_name: Some(child.parent_entity_name.clone()),
+            source_transform_basis: Some("cryengine_z_up".to_string()),
+            local_transform_sc: Some(resolved_transform.local_transform_sc),
+            resolved_no_rotation: resolved_transform.resolved_no_rotation,
             no_rotation: child.no_rotation,
             offset_position: child.offset_position,
             offset_rotation: child.offset_rotation,
@@ -755,11 +921,18 @@ pub(crate) fn write_decomposed_export(
                     serde_json::json!({
                         "name": light.name,
                         "position": light.position,
+                        "transform_basis": light.transform_basis,
                         "rotation": light.rotation,
+                        "direction_sc": light.direction_sc,
                         "color": light.color,
                         "light_type": light.light_type,
+                        "semantic_light_kind": light.semantic_light_kind,
+                        "intensity_raw": light.intensity_raw,
+                        "intensity_unit": light.intensity_unit,
+                        "intensity_candela_proxy": light.intensity_candela_proxy,
                         "intensity": light.intensity,
                         "radius": light.radius,
+                        "radius_m": light.radius_m,
                         "inner_angle": light.inner_angle,
                         "outer_angle": light.outer_angle,
                         "projector_texture": projector_texture_export,
@@ -772,7 +945,9 @@ pub(crate) fn write_decomposed_export(
                                     name.clone(),
                                     serde_json::json!({
                                         "intensity_raw": s.intensity_raw,
+                                        "intensity_unit": s.intensity_unit,
                                         "intensity_cd": s.intensity_cd,
+                                        "intensity_candela_proxy": s.intensity_candela_proxy,
                                         "temperature": s.temperature,
                                         "use_temperature": s.use_temperature,
                                         "color": s.color,
@@ -1012,6 +1187,9 @@ fn scene_instance_json(instance: &SceneInstanceRecord) -> serde_json::Value {
         "palette_id": instance.palette_id,
         "parent_node_name": instance.parent_node_name,
         "parent_entity_name": instance.parent_entity_name,
+        "source_transform_basis": instance.source_transform_basis,
+        "local_transform_sc": instance.local_transform_sc,
+        "resolved_no_rotation": instance.resolved_no_rotation,
         "no_rotation": instance.no_rotation,
         "offset_position": instance.offset_position,
         "offset_rotation": instance.offset_rotation,
@@ -2959,6 +3137,9 @@ mod tests {
             palette_id: Some("palette/test".into()),
             parent_node_name: Some("hardpoint_weapon_left".into()),
             parent_entity_name: Some("root".into()),
+            source_transform_basis: Some("cryengine_z_up".into()),
+            local_transform_sc: Some(crate::socpak::build_container_transform([1.0, 2.0, 3.0], [0.0, 90.0, 0.0])),
+            resolved_no_rotation: false,
             no_rotation: false,
             offset_position: [1.0, 2.0, 3.0],
             offset_rotation: [0.0, 90.0, 0.0],
@@ -3005,9 +3186,22 @@ mod tests {
         assert_eq!(value["root_entity"]["mesh_asset"], serde_json::json!("Data/Objects/Ships/Test/root.glb"));
         assert_eq!(value["children"][0]["mesh_asset"], serde_json::json!("Data/Objects/Ships/Test/child.glb"));
         assert_eq!(value["children"][0]["parent_node_name"], serde_json::json!("hardpoint_weapon_left"));
+        assert_eq!(value["children"][0]["source_transform_basis"], serde_json::json!("cryengine_z_up"));
+        assert!(value["children"][0]["local_transform_sc"].is_array());
+        assert_eq!(value["children"][0]["resolved_no_rotation"], serde_json::json!(false));
         assert_eq!(value["interiors"][0]["placements"][0]["mesh_asset"], serde_json::json!("Data/Objects/Ships/Test/interior_panel.glb"));
         assert_eq!(value["package_rule"]["package_dir"], serde_json::json!("Packages/ARGO MOLE"));
         assert_eq!(value["package_rule"]["normalized_p4k_relative_paths"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn resolve_no_rotation_local_matrix_suppresses_duplicate_zero_rotation_offset() {
+        let parent_world = glam::Mat4::from_translation(glam::Vec3::new(3.0, 0.0, 0.0)).to_cols_array();
+        let resolved = resolve_no_rotation_local_matrix(parent_world, [3.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+
+        assert_eq!(resolved[12], 0.0);
+        assert_eq!(resolved[13], 0.0);
+        assert_eq!(resolved[14], 0.0);
     }
 
     #[test]

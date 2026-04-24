@@ -43,6 +43,95 @@ Each entry in a scene's `lights` list carries:
   without re-exporting. See `docs/StarBreaker/lights-research.md` for
   the full schema.
 
+### Planned Additive Cross-DCC Light Semantics
+
+The current light contract is enough for the Blender addon, but it still
+requires importer-side Star Citizen interpretation. The planned Rust-sidecar
+migration adds semantic fields rather than replacing the raw ones above.
+
+Recommended additive light fields:
+
+- `semantic_light_kind` — normalized reusable kind such as `point`, `spot`,
+  `area`, `sun`, or `ambient_proxy`, while preserving the raw source
+  `light_type` string.
+- `transform_basis` — explicit basis label for exported transform fields,
+  for example `cryengine_z_up`.
+- `direction_sc` — normalized SC-space forward direction for projector /
+  spotlight records so consumers do not have to reverse-engineer a spotlight
+  axis from the raw source quaternion.
+- `outer_angle_full_deg` / `inner_angle_full_deg` — explicit full-angle names
+  to remove half-angle ambiguity.
+- `intensity_raw` on the flattened active record and every exported state
+  snapshot, plus `intensity_unit` to state that the value is still the
+  authored CryEngine intensity scalar.
+- `intensity_candela_proxy` — explicit label for the exporter's current
+  candela-style scaled value, emitted on the flattened active record and on
+  each exported light state alongside the legacy `intensity_cd` alias.
+- `radius_m` — explicit metric label for attenuation distance.
+- `projector_texture_format_hint` — document that projector textures may be
+  DDS / block-compressed / HDR assets and should not be assumed to have a PNG
+  fallback.
+
+These semantic fields are intentionally DCC-agnostic. They must not encode
+Blender-only decisions such as final Watt conversion, Blender spotlight-axis
+corrections, or Blender gobo node-graph details.
+
+### Planned Additive Cross-DCC Transform Semantics
+
+The current contract preserves the raw transform inputs, but downstream
+importers still have to repeat Star Citizen-specific attachment resolution.
+The planned additive transform fields are:
+
+- `local_transform_sc` — fully resolved SC-space local matrix relative to the
+  exported parent.
+- `world_transform_sc` — optional fully resolved SC-space world matrix for
+  consumers that prefer direct placement over parent-relative reconstruction.
+- `source_transform_basis` — explicit basis label for those matrices.
+- `resolved_no_rotation` — note that `no_rotation` helper semantics have
+  already been baked into the emitted transform.
+
+Current incremental rollout note:
+
+- child scene instances now emit `source_transform_basis = cryengine_z_up`
+  plus `local_transform_sc` for the common child path and for `no_rotation`
+  records whose parent-relative local matrix has been resolved by the exporter.
+- `resolved_no_rotation = true` means the exporter has already baked the
+  legacy helper-suppression rule into `local_transform_sc`; importers should
+  consume that matrix directly rather than re-implementing the rule.
+- raw `offset_position`, `offset_rotation`, and `no_rotation` remain in the
+  sidecar for debugging and compatibility with older importers.
+
+The exporter should own Star Citizen-specific transform composition, helper
+resolution, and duplicate-offset suppression. Importers should own only the
+final mapping from SC basis into their host DCC's coordinate system.
+
+### Compatibility Rules
+
+The Rust migration is additive and must be backward-compatible while Blender
+and any external consumers migrate.
+
+- Older sidecars that lack the new semantic fields remain valid; importers
+  fall back to the existing raw `light_type`, `position`, `rotation`,
+  `intensity`, `radius`, and per-state payloads.
+- Newer sidecars should continue emitting the raw fields alongside the new
+  semantic fields until every known consumer has migrated.
+- Blender-specific behavior such as final Watt conversion, gobo UV wiring,
+  per-image gobo compensation, and shadow soft-size heuristics stays in the
+  importer even after the semantic fields exist.
+
+Current retained compatibility aliases and fallbacks:
+
+- `intensity` remains on the flattened light record as the legacy exporter
+  candela proxy field; importers should prefer `intensity_candela_proxy` when
+  present.
+- `intensity_cd` remains on state snapshots as a compatibility alias for older
+  runtime JSON payloads; importers should prefer `intensity_candela_proxy` and
+  fall back to `intensity_cd` only when needed.
+- raw `offset_position`, `offset_rotation`, and `no_rotation` remain part of
+  the public sidecar for debugging and older importer compatibility even though
+  migrated consumers should prefer `local_transform_sc` and
+  `resolved_no_rotation`.
+
 ## Material Sidecars
 
 Each `*.materials.json` sidecar preserves:

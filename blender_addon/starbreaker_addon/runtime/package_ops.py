@@ -473,7 +473,9 @@ def _apply_state_to_light(light: bpy.types.Light, state_name: str) -> bool:
     if not isinstance(state, dict):
         return False
 
-    intensity_cd = float(state.get("intensity_cd") or 0.0)
+    intensity_candela_proxy = state.get("intensity_candela_proxy")
+    if intensity_candela_proxy is None:
+        intensity_candela_proxy = state.get("intensity_cd")
     intensity_raw = state.get("intensity_raw")
     temperature = float(state.get("temperature") or 6500.0)
     use_temperature = bool(state.get("use_temperature"))
@@ -482,7 +484,7 @@ def _apply_state_to_light(light: bpy.types.Light, state_name: str) -> bool:
         color = [1.0, 1.0, 1.0]
 
     light.energy = _light_energy_to_blender(
-        intensity_cd,
+        float(intensity_candela_proxy) if intensity_candela_proxy is not None else 0.0,
         light.type,
         intensity_raw=float(intensity_raw) if intensity_raw is not None else None,
     )

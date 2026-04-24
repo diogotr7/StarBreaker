@@ -111,6 +111,10 @@ class LightMappingTests(unittest.TestCase):
         light = SimpleNamespace(light_type="Planar", inner_angle=None, outer_angle=None)
         self.assertEqual(self.utils._blender_light_type(light), "AREA")
 
+    def test_semantic_kind_overrides_raw_light_type(self):
+        light = SimpleNamespace(semantic_light_kind="area", light_type="Projector", inner_angle=None, outer_angle=None)
+        self.assertEqual(self.utils._blender_light_type(light), "AREA")
+
     def test_type_directional_is_sun(self):
         light = SimpleNamespace(light_type="Directional", inner_angle=None, outer_angle=None)
         self.assertEqual(self.utils._blender_light_type(light), "SUN")

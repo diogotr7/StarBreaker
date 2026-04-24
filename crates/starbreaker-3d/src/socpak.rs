@@ -532,11 +532,18 @@ fn parse_light_entities(
     vec![LightInfo {
         name: base_name,
         position: base_pos,
+        transform_basis: "cryengine_z_up".to_string(),
         rotation: base_rot,
+        direction_sc: [1.0, 0.0, 0.0],
         color: [1.0, 0.95, 0.9],
         light_type: "Omni".to_string(),
+        semantic_light_kind: "point".to_string(),
+        intensity_raw: 1.0,
+        intensity_unit: "cryengine_authored_intensity".to_string(),
+        intensity_candela_proxy: 200.0,
         intensity: 200.0,
         radius,
+        radius_m: radius,
         inner_angle: None,
         outer_angle: None,
         projector_texture: None,
@@ -643,11 +650,18 @@ fn parse_light_group(
         lights.push(LightInfo {
             name: base_name.to_string(),
             position: *base_pos,
+            transform_basis: "cryengine_z_up".to_string(),
             rotation: *base_rot,
+            direction_sc: quat_rotate_vec(base_rot, &[1.0, 0.0, 0.0]),
             color: [1.0, 0.95, 0.9],
             light_type: "Omni".to_string(),
+            semantic_light_kind: "point".to_string(),
+            intensity_raw: 1.0,
+            intensity_unit: "cryengine_authored_intensity".to_string(),
+            intensity_candela_proxy: 200.0,
             intensity: 200.0,
             radius: 5.0,
+            radius_m: 5.0,
             inner_angle: None,
             outer_angle: None,
             projector_texture: None,
@@ -753,7 +767,9 @@ fn build_light_info_from_component(
             .unwrap_or((1.0, 1.0, 1.0));
         Some(LightStateInfo {
             intensity_raw,
+            intensity_unit: "cryengine_authored_intensity".to_string(),
             intensity_cd: intensity_raw * 200.0,
+            intensity_candela_proxy: intensity_raw * 200.0,
             temperature,
             use_temperature,
             color: [cr, cg, cb],
@@ -780,7 +796,7 @@ fn build_light_info_from_component(
         .copied()
         .unwrap_or("");
     let active = states.get(active_state_name);
-    let intensity = active.map(|s| s.intensity_raw).unwrap_or(0.0);
+    let intensity_raw = active.map(|s| s.intensity_raw).unwrap_or(0.0);
     let temperature = active.map(|s| s.temperature).unwrap_or(6500.0);
     let (color_r, color_g, color_b) = active
         .map(|s| (s.color[0], s.color[1], s.color[2]))
@@ -835,27 +851,52 @@ fn build_light_info_from_component(
     };
 
     // CryEngine intensity → glTF candela.
-    let candela = intensity * 200.0;
+    let candela = intensity_raw * 200.0;
+    let semantic_light_kind = semantic_light_kind_for_light(&light_type, inner_angle, outer_angle);
+    let direction_sc = quat_rotate_vec(rot, &[1.0, 0.0, 0.0]);
 
     log::debug!(
         "  Light '{name}' type={light_type} useTemp={use_temperature} \
-         temperature={temperature} intensity={intensity} radius={radius} color={color:?}"
+         temperature={temperature} intensity={intensity_raw} radius={radius} color={color:?}"
     );
 
     Some(LightInfo {
         name: name.to_string(),
         position: *pos,
+        transform_basis: "cryengine_z_up".to_string(),
         rotation: *rot,
+        direction_sc,
         color,
         light_type,
+        semantic_light_kind: semantic_light_kind.to_string(),
+        intensity_raw,
+        intensity_unit: "cryengine_authored_intensity".to_string(),
+        intensity_candela_proxy: candela,
         intensity: candela,
         radius,
+        radius_m: radius,
         inner_angle,
         outer_angle,
         projector_texture,
         active_state: active_state_name.to_string(),
         states,
     })
+}
+
+fn semantic_light_kind_for_light(
+    light_type: &str,
+    inner_angle: Option<f32>,
+    outer_angle: Option<f32>,
+) -> &'static str {
+    match light_type.to_ascii_lowercase().as_str() {
+        "directional" | "sun" => "sun",
+        "planar" | "area" => "area",
+        "projector" | "spot" => "spot",
+        "ambient" => "ambient_proxy",
+        "omni" | "softomni" | "point" => "point",
+        _ if inner_angle.unwrap_or(0.0) > 0.0 || outer_angle.unwrap_or(0.0) > 0.0 => "spot",
+        _ => "point",
+    }
 }
 
 /// Convert color temperature in Kelvin to linear sRGB [r, g, b] (0-1).
@@ -984,7 +1025,7 @@ pub fn build_container_transform(pos: [f32; 3], rot_deg: [f32; 3]) -> [[f32; 4];
 
 #[cfg(test)]
 mod tests {
-    use super::{quat_mul, quat_rotate_vec};
+    use super::{quat_mul, quat_rotate_vec, semantic_light_kind_for_light};
 
     fn approx_eq3(left: [f64; 3], right: [f64; 3]) {
         for index in 0..3 {
@@ -1018,5 +1059,15 @@ mod tests {
 
         approx_eq3([combined[1], combined[2], combined[3]], [0.5, 0.5, 0.5]);
         assert!((combined[0] - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn semantic_light_kind_maps_planar_to_area() {
+        assert_eq!(semantic_light_kind_for_light("Planar", None, None), "area");
+    }
+
+    #[test]
+    fn semantic_light_kind_maps_unknown_angled_light_to_spot() {
+        assert_eq!(semantic_light_kind_for_light("Unknown", Some(1.0), Some(2.0)), "spot");
     }
 }

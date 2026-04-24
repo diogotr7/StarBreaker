@@ -228,6 +228,15 @@ def _scene_light_quaternion_to_blender(rotation: tuple[float, float, float, floa
 
 
 def _blender_light_type(light: Any) -> str:
+    semantic_kind = str(getattr(light, "semantic_light_kind", "") or "").strip().lower()
+    if semantic_kind == "sun":
+        return "SUN"
+    if semantic_kind == "area":
+        return "AREA"
+    if semantic_kind == "spot":
+        return "SPOT"
+    if semantic_kind in {"point", "ambient_proxy"}:
+        return "POINT"
     light_type = str(getattr(light, "light_type", "") or "").strip().lower()
     if light_type in {"directional", "sun"}:
         return "SUN"
@@ -259,7 +268,7 @@ def _light_gobo_strength(projector_texture: str | None, *, mean_luminance: float
 
 
 def _light_energy_to_blender(
-    intensity: float,
+    intensity_candela_proxy: float,
     blender_light_type: str,
     *,
     intensity_raw: float | None = None,
@@ -275,13 +284,13 @@ def _light_energy_to_blender(
 
     See ``docs/StarBreaker/lights-research.md``.
     """
-    intensity = max(float(intensity), 0.0)
+    intensity_candela_proxy = max(float(intensity_candela_proxy), 0.0)
     if blender_light_type == "SUN":
-        return intensity / GLTF_PBR_WATTS_TO_LUMENS
+        return intensity_candela_proxy / GLTF_PBR_WATTS_TO_LUMENS
     if blender_light_type == "AREA":
-        lumens = float(intensity_raw) if intensity_raw is not None else intensity / SC_LIGHT_CANDELA_SCALE
+        lumens = float(intensity_raw) if intensity_raw is not None else intensity_candela_proxy / SC_LIGHT_CANDELA_SCALE
         return max(lumens, 0.0) / LUMENS_PER_WATT_WHITE
-    return intensity * LIGHT_CANDELA_TO_WATT * LIGHT_VISUAL_GAIN
+    return intensity_candela_proxy * LIGHT_CANDELA_TO_WATT * LIGHT_VISUAL_GAIN
 
 
 def _is_axis_conversion_root(obj: bpy.types.Object) -> bool:

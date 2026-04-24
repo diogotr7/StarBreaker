@@ -392,15 +392,29 @@ pub struct LightInfo {
     pub name: String,
     /// Position in CryEngine coordinates (relative to container).
     pub position: [f64; 3],
+    /// Basis label for ``position`` / ``rotation`` / ``direction_sc``.
+    pub transform_basis: String,
     /// Rotation quaternion [w, x, y, z].
     pub rotation: [f64; 4],
+    /// Normalized forward direction in source SC space.
+    pub direction_sc: [f64; 3],
     /// Color [r, g, b] normalized 0..1.
     pub color: [f32; 3],
     /// Source light type (for example: Omni, Projector).
     pub light_type: String,
+    /// Normalized reusable light kind for downstream DCCs.
+    pub semantic_light_kind: String,
+    /// Raw CryEngine intensity on the flattened active record.
+    pub intensity_raw: f32,
+    /// Unit label for ``intensity_raw``.
+    pub intensity_unit: String,
+    /// Explicit label for the exporter's candela-style proxy value.
+    pub intensity_candela_proxy: f32,
     pub intensity: f32,
     /// Attenuation radius in meters.
     pub radius: f32,
+    /// Explicit metric label duplicate for downstream consumers.
+    pub radius_m: f32,
     /// For spot lights: inner cone angle in degrees.
     pub inner_angle: Option<f32>,
     /// For spot lights: outer cone angle in degrees.
@@ -432,8 +446,12 @@ pub struct LightStateInfo {
     /// Raw CryEngine intensity (pre-candela multiplier). Zero means the
     /// light is authored off in this state.
     pub intensity_raw: f32,
+    /// Explicit unit label for ``intensity_raw``.
+    pub intensity_unit: String,
     /// Same value scaled by the glTF candela multiplier (× 200).
     pub intensity_cd: f32,
+    /// Explicit alias for the exporter-scaled candela-style proxy.
+    pub intensity_candela_proxy: f32,
     /// Authored colour temperature in Kelvin.
     pub temperature: f32,
     /// Mirrors the `useTemperature` flag on the parent component.

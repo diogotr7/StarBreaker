@@ -432,7 +432,9 @@ class LightState:
     light datablock at import time and to switch between states at runtime.
     """
     intensity_raw: float
+    intensity_unit: str | None
     intensity_cd: float
+    intensity_candela_proxy: float
     temperature: float
     use_temperature: bool
     color: Color3
@@ -442,7 +444,9 @@ class LightState:
         data = _as_dict(value)
         return cls(
             intensity_raw=_as_float(data.get("intensity_raw")),
+            intensity_unit=_as_str(data.get("intensity_unit")),
             intensity_cd=_as_float(data.get("intensity_cd")),
+            intensity_candela_proxy=_as_float(data.get("intensity_candela_proxy") or data.get("intensity_cd")),
             temperature=_as_float(data.get("temperature")),
             use_temperature=bool(data.get("use_temperature", False)),
             color=_float_tuple(data.get("color"), 3),  # type: ignore[arg-type]
@@ -454,10 +458,17 @@ class LightRecord:
     name: str
     color: Color3
     light_type: str | None
+    semantic_light_kind: str | None
     intensity: float
+    intensity_raw: float
+    intensity_unit: str | None
+    intensity_candela_proxy: float
     radius: float
+    radius_m: float
     position: Vec3
+    transform_basis: str | None
     rotation: Vec4
+    direction_sc: Vec3 | None
     inner_angle: float
     outer_angle: float
     projector_texture: str | None
@@ -477,10 +488,17 @@ class LightRecord:
             name=str(data.get("name", "")),
             color=_float_tuple(data.get("color"), 3),  # type: ignore[arg-type]
             light_type=_as_str(data.get("light_type")),
+            semantic_light_kind=_as_str(data.get("semantic_light_kind")),
             intensity=_as_float(data.get("intensity")),
+            intensity_raw=_as_float(data.get("intensity_raw")),
+            intensity_unit=_as_str(data.get("intensity_unit")),
+            intensity_candela_proxy=_as_float(data.get("intensity_candela_proxy") or data.get("intensity")),
             radius=_as_float(data.get("radius")),
+            radius_m=_as_float(data.get("radius_m") or data.get("radius")),
             position=_float_tuple(data.get("position"), 3),  # type: ignore[arg-type]
+            transform_basis=_as_str(data.get("transform_basis")),
             rotation=_float_tuple(data.get("rotation"), 4),  # type: ignore[arg-type]
+            direction_sc=_float_tuple(data.get("direction_sc"), 3) if data.get("direction_sc") is not None else None,  # type: ignore[arg-type]
             inner_angle=_as_float(data.get("inner_angle")),
             outer_angle=_as_float(data.get("outer_angle")),
             projector_texture=_as_str(data.get("projector_texture")),
@@ -546,6 +564,9 @@ class SceneInstanceRecord:
     palette_id: str | None
     parent_entity_name: str | None = None
     parent_node_name: str | None = None
+    source_transform_basis: str | None = None
+    local_transform_sc: Matrix4 | None = None
+    resolved_no_rotation: bool = False
     no_rotation: bool = False
     offset_position: Vec3 = (0.0, 0.0, 0.0)
     offset_rotation: Vec3 = (0.0, 0.0, 0.0)
@@ -563,6 +584,9 @@ class SceneInstanceRecord:
             palette_id=_as_str(data.get("palette_id")),
             parent_entity_name=_as_str(data.get("parent_entity_name")),
             parent_node_name=_as_str(data.get("parent_node_name")),
+            source_transform_basis=_as_str(data.get("source_transform_basis")),
+            local_transform_sc=_matrix4(data.get("local_transform_sc")) if data.get("local_transform_sc") is not None else None,
+            resolved_no_rotation=_as_bool(data.get("resolved_no_rotation")),
             no_rotation=_as_bool(data.get("no_rotation")),
             offset_position=_float_tuple(data.get("offset_position"), 3),  # type: ignore[arg-type]
             offset_rotation=_float_tuple(data.get("offset_rotation"), 3),  # type: ignore[arg-type]

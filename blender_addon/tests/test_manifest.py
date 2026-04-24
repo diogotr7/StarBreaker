@@ -11,7 +11,7 @@ REPO_ROOT = STARBREAKER_ROOT.parent
 
 sys.path.insert(0, str(ADDON_ROOT))
 
-from starbreaker_addon.manifest import LightRecord, MaterialSidecar, PackageBundle, TextureReference, infer_export_root
+from starbreaker_addon.manifest import LightRecord, LightState, MaterialSidecar, PackageBundle, SceneInstanceRecord, TextureReference, infer_export_root
 
 
 ARGO_SCENE = REPO_ROOT / "ships/Packages/ARGO MOLE/scene.json"
@@ -114,6 +114,75 @@ class ManifestTests(unittest.TestCase):
             }
         )
         self.assertIsNone(light_none.projector_texture)
+
+    def test_light_record_parses_additive_semantic_fields(self) -> None:
+        light = LightRecord.from_value(
+            {
+                "name": "Light-Semantic",
+                "color": [1.0, 1.0, 1.0],
+                "light_type": "Projector",
+                "semantic_light_kind": "spot",
+                "intensity": 200.0,
+                "intensity_raw": 1.0,
+                "intensity_unit": "cryengine_authored_intensity",
+                "intensity_candela_proxy": 200.0,
+                "radius": 1000.0,
+                "radius_m": 1000.0,
+                "position": [0.0, 0.0, 0.0],
+                "transform_basis": "cryengine_z_up",
+                "rotation": [1.0, 0.0, 0.0, 0.0],
+                "direction_sc": [1.0, 0.0, 0.0],
+            }
+        )
+
+        self.assertEqual(light.semantic_light_kind, "spot")
+        self.assertEqual(light.intensity_raw, 1.0)
+        self.assertEqual(light.intensity_unit, "cryengine_authored_intensity")
+        self.assertEqual(light.intensity_candela_proxy, 200.0)
+        self.assertEqual(light.radius_m, 1000.0)
+        self.assertEqual(light.transform_basis, "cryengine_z_up")
+        self.assertEqual(light.direction_sc, (1.0, 0.0, 0.0))
+
+    def test_scene_instance_record_parses_additive_transform_fields(self) -> None:
+        instance = SceneInstanceRecord.from_value(
+            {
+                "entity_name": "Child-A",
+                "mesh_asset": "Data/Objects/Ships/Test/child.glb",
+                "source_transform_basis": "cryengine_z_up",
+                "local_transform_sc": [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [1.0, 2.0, 3.0, 1.0],
+                ],
+                "resolved_no_rotation": True,
+                "offset_position": [1.0, 2.0, 3.0],
+                "offset_rotation": [0.0, 90.0, 0.0],
+            }
+        )
+
+        self.assertEqual(instance.source_transform_basis, "cryengine_z_up")
+        self.assertIsNotNone(instance.local_transform_sc)
+        self.assertEqual(instance.local_transform_sc[3], (1.0, 2.0, 3.0, 1.0))
+        self.assertTrue(instance.resolved_no_rotation)
+
+    def test_light_state_parses_explicit_intensity_semantics(self) -> None:
+        state = LightState.from_value(
+            {
+                "intensity_raw": 0.5,
+                "intensity_unit": "cryengine_authored_intensity",
+                "intensity_cd": 100.0,
+                "intensity_candela_proxy": 100.0,
+                "temperature": 6500.0,
+                "use_temperature": False,
+                "color": [1.0, 1.0, 1.0],
+            }
+        )
+
+        self.assertEqual(state.intensity_raw, 0.5)
+        self.assertEqual(state.intensity_unit, "cryengine_authored_intensity")
+        self.assertEqual(state.intensity_cd, 100.0)
+        self.assertEqual(state.intensity_candela_proxy, 100.0)
 
     def test_texture_reference_preserves_ddna_smoothness_markers(self) -> None:
         texture = TextureReference.from_value(

@@ -421,23 +421,26 @@ class OrchestrationMixin:
         anchor.empty_display_type = "PLAIN_AXES"
         self.collection.objects.link(anchor)
 
-        target_parent = parent_node or parent
+        target_parent = parent if record.resolved_no_rotation else (parent_node or parent)
         anchor.parent = target_parent
         anchor.rotation_mode = "QUATERNION"
-        parent_world_matrix = None
-        if parent_node is not None:
-            parent_world_matrix = tuple(tuple(parent_node.matrix_world[index][column] for column in range(4)) for index in range(4))
-        anchor.location = _scene_attachment_offset_to_blender(
-            tuple(record.offset_position),
-            tuple(record.offset_rotation),
-            no_rotation=record.no_rotation,
-            parent_world_matrix=parent_world_matrix,
-        )
-        desired_rotation = Euler(tuple(math.radians(value) for value in record.offset_rotation), "XYZ").to_quaternion()
-        if parent_node is not None and record.no_rotation:
-            anchor.rotation_quaternion = parent_node.matrix_world.to_quaternion().inverted() @ desired_rotation
+        if record.local_transform_sc is not None and record.source_transform_basis == "cryengine_z_up":
+            anchor.matrix_basis = _scene_matrix_to_blender(record.local_transform_sc)
         else:
-            anchor.rotation_quaternion = desired_rotation
+            parent_world_matrix = None
+            if parent_node is not None:
+                parent_world_matrix = tuple(tuple(parent_node.matrix_world[index][column] for column in range(4)) for index in range(4))
+            anchor.location = _scene_attachment_offset_to_blender(
+                tuple(record.offset_position),
+                tuple(record.offset_rotation),
+                no_rotation=record.no_rotation,
+                parent_world_matrix=parent_world_matrix,
+            )
+            desired_rotation = Euler(tuple(math.radians(value) for value in record.offset_rotation), "XYZ").to_quaternion()
+            if parent_node is not None and record.no_rotation:
+                anchor.rotation_quaternion = parent_node.matrix_world.to_quaternion().inverted() @ desired_rotation
+            else:
+                anchor.rotation_quaternion = desired_rotation
 
         try:
             template = self.ensure_template(record.mesh_asset)
@@ -526,9 +529,17 @@ class OrchestrationMixin:
         if state_name and isinstance(state_map, dict):
             active_state = state_map.get(state_name)
         active_intensity_raw = getattr(active_state, "intensity_raw", None) if active_state is not None else None
+        active_intensity_candela_proxy = (
+            getattr(active_state, "intensity_candela_proxy", None) if active_state is not None else None
+        )
+        light_intensity_candela_proxy = getattr(light, "intensity_candela_proxy", None)
         light_data = bpy.data.lights.new(name=light.name or "StarBreaker Light", type=blender_light_type)
         light_data.energy = _light_energy_to_blender(
-            light.intensity,
+            active_intensity_candela_proxy
+            if active_intensity_candela_proxy is not None
+            else light_intensity_candela_proxy
+            if light_intensity_candela_proxy is not None
+            else 0.0,
             blender_light_type,
             intensity_raw=active_intensity_raw,
         )

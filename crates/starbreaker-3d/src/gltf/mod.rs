@@ -8,7 +8,7 @@ use crate::error::Error;
 use crate::nmc::NodeMeshCombo;
 use crate::types::{MaterialTextures, Mesh};
 
-use glb_builder::GlbBuilder;
+pub(crate) use glb_builder::{offset_to_gltf_matrix, GlbBuilder, PackedMeshInfo};
 
 /// All input data for building a GLB file.
 pub struct GlbInput {
@@ -190,7 +190,14 @@ pub fn write_glb_with_progress(
     // ---- Attach child entities ----
     let num_children = input.children.len();
     for (i, child) in input.children.into_iter().enumerate() {
-        builder.attach_child_entity(child, &scene_nodes, opts.material_mode, opts.fallback_palette.as_ref(), loaders.load_textures);
+        let _ = builder.attach_child_entity(
+            child,
+            &scene_nodes,
+            opts.material_mode,
+            opts.fallback_palette.as_ref(),
+            loaders.load_textures,
+            None,
+        );
         if num_children > 0 {
             let fraction = (i + 1) as f32 / num_children as f32;
             report_progress(progress, 0.20 + 0.40 * fraction, "Packing child meshes");

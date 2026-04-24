@@ -409,9 +409,9 @@ impl GlbBuilder {
         }
     }
 
-    /// Compute a node's world-space translation by walking up the parent chain.
+    /// Compute a node's world-space transform by walking up the parent chain.
     /// Uses the glTF column-major matrices stored in nodes.
-    pub fn compute_node_world_translation(&self, node_idx: usize) -> [f32; 3] {
+    pub fn compute_node_world_matrix(&self, node_idx: usize) -> [f32; 16] {
         let nodes = &self.nodes_json;
         // Build parent map from children arrays
         let mut parent_of: Vec<Option<usize>> = vec![None; nodes.len()];
@@ -460,6 +460,13 @@ impl GlbBuilder {
             world = mat4_mul(&world, &local);
         }
 
+        world
+    }
+
+    /// Compute a node's world-space translation by walking up the parent chain.
+    /// Uses the glTF column-major matrices stored in nodes.
+    pub fn compute_node_world_translation(&self, node_idx: usize) -> [f32; 3] {
+        let world = self.compute_node_world_matrix(node_idx);
         [world[12], world[13], world[14]]
     }
 
@@ -538,7 +545,8 @@ impl GlbBuilder {
             Option<&crate::mtl::MtlFile>,
             Option<&crate::mtl::TintPalette>,
         ) -> Option<crate::types::MaterialTextures>,
-    ) {
+        resolved_local_matrix: Option<[f32; 16]>,
+    ) -> u32 {
         if child.offset_position != [0.0; 3] || child.offset_rotation != [0.0; 3] {
             log::info!(
                 "  glb '{}': parent_node='{}' offset pos=[{:.2},{:.2},{:.2}] rot=[{:.1},{:.1},{:.1}]",
@@ -650,7 +658,7 @@ impl GlbBuilder {
                     .map(|&i| json::Index::new(child_node_base + i))
                     .collect();
                 wrapper_children.extend(bone_node_indices);
-                let offset_matrix = offset_to_gltf_matrix(child.offset_position, child.offset_rotation);
+                let offset_matrix = resolved_local_matrix.or(offset_to_gltf_matrix(child.offset_position, child.offset_rotation));
                 self.nodes_json.push(json::Node {
                     name: Some(child.entity_name.clone()),
                     children: if wrapper_children.is_empty() {
@@ -671,7 +679,7 @@ impl GlbBuilder {
                 if !self.node_name_to_idx.contains_key(&lower_name) {
                     self.node_name_to_idx.insert(lower_name, idx);
                 }
-                let offset_matrix = offset_to_gltf_matrix(child.offset_position, child.offset_rotation);
+                let offset_matrix = resolved_local_matrix.or(offset_to_gltf_matrix(child.offset_position, child.offset_rotation));
                 self.nodes_json.push(json::Node {
                     name: Some(child.entity_name.clone()),
                     mesh: child_packed.as_ref().map(|cp| json::Index::new(cp.mesh_idx)),
@@ -687,7 +695,7 @@ impl GlbBuilder {
             if !self.node_name_to_idx.contains_key(&lower_name) {
                 self.node_name_to_idx.insert(lower_name, idx);
             }
-            let offset_matrix = offset_to_gltf_matrix(child.offset_position, child.offset_rotation);
+            let offset_matrix = resolved_local_matrix.or(offset_to_gltf_matrix(child.offset_position, child.offset_rotation));
             self.nodes_json.push(json::Node {
                 name: Some(child.entity_name.clone()),
                 mesh: child_packed.as_ref().map(|cp| json::Index::new(cp.mesh_idx)),
@@ -721,7 +729,7 @@ impl GlbBuilder {
             .or_else(|| scene_nodes.first().map(|n| n.value() as u32))
             .unwrap_or(0);
 
-        if child.no_rotation {
+        if child.no_rotation && resolved_local_matrix.is_none() {
             // noRotation: attach to scene root with translation-only parent position,
             // then apply the item port offset on top (which may include its own rotation).
             let world_translation = self.compute_node_world_translation(target_idx as usize);
@@ -742,6 +750,8 @@ impl GlbBuilder {
         } else {
             self.append_child_to_node(target_idx, child_node_idx);
         }
+
+        child_node_idx
     }
 
     /// Pack and attach interior CGF meshes as instanced nodes.
