@@ -10,6 +10,27 @@ use crate::types::{MaterialTextures, Mesh};
 
 pub(crate) use glb_builder::{offset_to_gltf_matrix, GlbBuilder, PackedMeshInfo};
 
+fn hierarchy_covers_bones(nmc: Option<&NodeMeshCombo>, bones: &[crate::skeleton::Bone]) -> bool {
+    let Some(nmc) = nmc.filter(|nmc| !nmc.nodes.is_empty()) else {
+        return false;
+    };
+    if bones.is_empty() {
+        return false;
+    }
+
+    let node_names = nmc
+        .nodes
+        .iter()
+        .filter(|node| !node.name.is_empty())
+        .map(|node| node.name.to_lowercase())
+        .collect::<std::collections::HashSet<_>>();
+
+    bones
+        .iter()
+        .filter(|bone| !bone.name.is_empty())
+        .all(|bone| node_names.contains(&bone.name.to_lowercase()))
+}
+
 /// All input data for building a GLB file.
 pub struct GlbInput {
     pub root_mesh: Option<Mesh>,
@@ -185,7 +206,9 @@ pub fn write_glb_with_progress(
     log::info!("[mem-phase] root packed, bin={}MB", builder.bin.len() / 1_048_576);
     report_progress(progress, 0.20, "Packing child meshes");
     // ---- Skeleton bone nodes ----
-    builder.attach_skeleton_bones(&input.skeleton_bones, &scene_nodes);
+    if !hierarchy_covers_bones(input.root_nmc.as_ref(), &input.skeleton_bones) {
+        builder.attach_skeleton_bones(&input.skeleton_bones, &scene_nodes);
+    }
 
     // ---- Attach child entities ----
     let num_children = input.children.len();
@@ -908,6 +931,7 @@ mod tests {
             geometry_path: format!("Data/Objects/{entity_name}.skin"),
             material_path: format!("Data/Objects/{entity_name}.mtl"),
             bones: Vec::new(),
+            skeleton_source_path: None,
             entity_name: entity_name.into(),
             parent_node_name: String::new(),
             parent_entity_name: String::new(),

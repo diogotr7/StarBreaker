@@ -24,6 +24,7 @@ type EntityPayload = (
     String,
     String,
     Vec<crate::skeleton::Bone>,
+    Option<String>,
 );
 
 type InteriorMeshAsset = (
@@ -96,6 +97,14 @@ pub struct ExportOptions {
     pub lod_level: u32,
     /// Texture mip level (0 = full resolution, 2 = 1/4 res, 4 = 1/16 res).
     pub texture_mip: u32,
+    /// Apply default-state animation poses (e.g. landing-gear-deployed) to
+    /// skeletons that ship a `.chrparams` file. Affects the rest pose written
+    /// into the GLB; runtime animation tracks are not yet exported.
+    pub apply_default_animation_pose: bool,
+    /// Animation event tags (chrparams `<Animation name="…"/>`) to look up
+    /// when `apply_default_animation_pose` is enabled. The first match wins
+    /// per skeleton. Default: `landing_gear_extend`.
+    pub default_animation_tags: Vec<String>,
 }
 
 impl Default for ExportOptions {
@@ -111,6 +120,8 @@ impl Default for ExportOptions {
             include_shields: false,
             lod_level: 1,
             texture_mip: 2,
+            apply_default_animation_pose: true,
+            default_animation_tags: vec!["landing_gear_extend".to_string()],
         }
     }
 }
@@ -270,11 +281,29 @@ fn export_entity_payload_cached(
         .query_single::<String>(&mtl_compiled, record)?
         .unwrap_or_default();
 
-    let (mesh, mtl_file, textures, nmc, skeleton_bones, primary_path) =
+    let (
+        mesh,
+        mtl_file,
+        textures,
+        nmc,
+        skeleton_bones,
+        primary_path,
+        skeleton_source_path,
+    ) =
         load_geometry_parts(p4k, &geometry_path, &material_path, opts, png_cache, false)?;
 
     if !opts.material_mode.include_materials() {
-        return Ok((mesh, None, None, nmc, None, primary_path, material_path, skeleton_bones));
+        return Ok((
+            mesh,
+            None,
+            None,
+            nmc,
+            None,
+            primary_path,
+            material_path,
+            skeleton_bones,
+            skeleton_source_path,
+        ));
     }
 
     let palette = query_tint_palette(db, record);
@@ -287,6 +316,7 @@ fn export_entity_payload_cached(
         primary_path,
         material_path,
         skeleton_bones,
+        skeleton_source_path,
     ))
 }
 
@@ -308,7 +338,7 @@ fn export_entity_from_paths_cached(
     png_cache: &mut PngCache,
     use_model_bbox: bool,
 ) -> Result<EntityPayload, Error> {
-    let (mesh, mtl_file, textures, nmc, skeleton_bones, primary_path) =
+    let (mesh, mtl_file, textures, nmc, skeleton_bones, primary_path, skeleton_source_path) =
         load_geometry_parts(p4k, geometry_path, material_path, opts, png_cache, use_model_bbox)?;
 
     if !opts.material_mode.include_materials() {
@@ -321,6 +351,7 @@ fn export_entity_from_paths_cached(
             primary_path,
             material_path.to_string(),
             skeleton_bones,
+            skeleton_source_path,
         ));
     }
 
@@ -333,11 +364,12 @@ fn export_entity_from_paths_cached(
         primary_path,
         material_path.to_string(),
         skeleton_bones,
+        skeleton_source_path,
     ))
 }
 
 /// Shared geometry loading: resolve parts, load skeleton, load + merge meshes.
-/// Returns (mesh, mtl, textures, nmc, skeleton_bones, primary_path).
+/// Returns (mesh, mtl, textures, nmc, skeleton_bones, primary_path, skeleton_source_path).
 fn load_geometry_parts(
     p4k: &MappedP4k,
     geometry_path: &str,
@@ -352,18 +384,41 @@ fn load_geometry_parts(
     Option<nmc::NodeMeshCombo>,
     Vec<crate::skeleton::Bone>,
     String,
+    Option<String>,
 ), Error> {
     let resolved = resolve_geometry_files(p4k, geometry_path)?;
     let primary_path = resolved.parts[0].path.clone();
+    let skeleton_source_path = skeleton_source_paths(resolved.skeleton_path.as_deref(), &primary_path)
+        .first()
+        .map(|path| (*path).to_string());
 
-    let skeleton_bones = load_skeleton(p4k, resolved.skeleton_path.as_deref(), &primary_path);
+    let mut skeleton_bones = load_skeleton(p4k, resolved.skeleton_path.as_deref(), &primary_path);
+
+    if opts.apply_default_animation_pose && !skeleton_bones.is_empty() {
+        for path in skeleton_source_paths(resolved.skeleton_path.as_deref(), &primary_path) {
+            let updated = apply_default_animation_pose_for_skel(p4k, path, &mut skeleton_bones, opts);
+            if updated > 0 {
+                log::info!(
+                    "[anim] applied default pose to {updated} bone(s) for skeleton {path}"
+                );
+                break;
+            }
+        }
+    }
 
     let effective_material = resolved.parts[0]
         .material_override
         .as_deref()
         .unwrap_or(material_path);
-    let (mut mesh, mtl_file, textures, nmc) =
+    let (mut mesh, mtl_file, textures, mut nmc) =
         load_single_mesh(p4k, &primary_path, effective_material, opts, png_cache, use_model_bbox)?;
+
+    if nmc.is_none() {
+        nmc = synthesize_nmc_from_bones(&mesh, &skeleton_bones);
+        if nmc.is_some() {
+            rebase_mesh_submeshes_to_bone_space(&mut mesh, &skeleton_bones);
+        }
+    }
 
     // Merge additional parts (CA_BONE/CA_SKIN attachments from CDF).
     let no_tex_opts = ExportOptions { material_mode: MaterialMode::Colors, ..opts.clone() };
@@ -381,7 +436,15 @@ fn load_geometry_parts(
         }
     }
 
-    Ok((mesh, mtl_file, textures, nmc, skeleton_bones, primary_path))
+    Ok((
+        mesh,
+        mtl_file,
+        textures,
+        nmc,
+        skeleton_bones,
+        primary_path,
+        skeleton_source_path,
+    ))
 }
 
 /// Load skeleton bones from a .chr path. Returns empty vec if path is None or load fails.
@@ -418,6 +481,99 @@ fn load_skeleton(
         }
     }
     Vec::new()
+}
+
+/// Look up a `.chrparams` for the given skeleton path, find an animation
+/// matching one of `opts.default_animation_tags`, and bake its final-frame
+/// pose into `bones`. Returns the number of bones updated (0 = nothing
+/// applied / chrparams missing / animation missing).
+fn apply_default_animation_pose_for_skel(
+    p4k: &MappedP4k,
+    skel_path: &str,
+    bones: &mut [crate::skeleton::Bone],
+    opts: &ExportOptions,
+) -> usize {
+    // Derive the .chrparams path: replace .chr/.skin extension with .chrparams.
+    let chrparams_path = match swap_extension(skel_path, "chrparams") {
+        Some(p) => p,
+        None => return 0,
+    };
+    let p4k_path = datacore_path_to_p4k(&chrparams_path);
+    let bytes = match p4k
+        .entry_case_insensitive(&p4k_path)
+        .and_then(|entry| p4k.read(entry).ok())
+    {
+        Some(b) => b,
+        None => return 0,
+    };
+    let cp = match crate::chrparams::ChrParams::from_bytes(&bytes) {
+        Ok(cp) => cp,
+        Err(e) => {
+            log::warn!("[anim] failed to parse {chrparams_path}: {e}");
+            return 0;
+        }
+    };
+    // Pick the first matching animation tag.
+    let mut tag_match: Option<(&str, String)> = None;
+    for tag in &opts.default_animation_tags {
+        if let Some(p) = cp.animations.get(tag) {
+            tag_match = Some((tag.as_str(), cp.resolved_caf_path(p)));
+            break;
+        }
+    }
+    let (_tag, _caf_path) = match tag_match {
+        Some(t) => t,
+        None => return 0,
+    };
+    // We need the .dba ($TracksDatabase). The .caf is a hint that the right
+    // bone subset will live in some DBA block; we don't open the .caf.
+    let dba_path = match cp.tracks_database.as_deref() {
+        Some(p) => p,
+        None => return 0,
+    };
+    let dba_p4k = datacore_path_to_p4k(dba_path);
+    let dba_bytes = match p4k
+        .entry_case_insensitive(&dba_p4k)
+        .and_then(|entry| p4k.read(entry).ok())
+    {
+        Some(b) => b,
+        None => {
+            log::warn!("[anim] tracks database not found: {dba_path}");
+            return 0;
+        }
+    };
+    let db = match crate::animation::parse_dba(&dba_bytes) {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("[anim] failed to parse {dba_path}: {e}");
+            return 0;
+        }
+    };
+    // Skeleton bone-hash set for signature matching.
+    let skel_hashes: std::collections::HashSet<u32> = bones
+        .iter()
+        .map(|b| crate::animation::bone_name_hash(&b.name))
+        .collect();
+    let clip = match crate::animation::find_block_for_skeleton(&db, &skel_hashes, true) {
+        Some(c) => c,
+        None => return 0,
+    };
+    let pose = crate::animation::clip_final_pose(clip);
+    crate::animation::apply_pose_to_skeleton(bones, &pose)
+}
+
+/// Replace the file extension of `path` with `new_ext` (no leading dot).
+/// Returns `None` if `path` has no extension.
+fn swap_extension(path: &str, new_ext: &str) -> Option<String> {
+    let dot = path.rfind('.')?;
+    let slash = path.rfind(|c: char| c == '/' || c == '\\').unwrap_or(0);
+    if dot < slash {
+        return None;
+    }
+    let mut out = String::with_capacity(dot + 1 + new_ext.len());
+    out.push_str(&path[..dot + 1]);
+    out.push_str(new_ext);
+    Some(out)
 }
 
 /// Export an entity with its loadout tree as a single GLB.
@@ -468,8 +624,17 @@ pub fn assemble_glb_with_loadout_with_progress(
     let paint_display_names = build_paint_display_name_map(db, &localization);
 
     // Export root entity (mesh + textures).
-    let (root_mesh, root_mtl, root_tex, _, mut root_palette, geometry_path, material_path, root_bones) =
-        export_entity_payload(db, p4k, record, &payload_opts)?;
+    let (
+        root_mesh,
+        root_mtl,
+        root_tex,
+        _,
+        mut root_palette,
+        geometry_path,
+        material_path,
+        root_bones,
+        root_skeleton_source_path,
+    ) = export_entity_payload(db, p4k, record, &payload_opts)?;
     if let Some(palette) = root_palette.as_mut() {
         populate_palette_display_name(palette, &paint_display_names);
     }
@@ -508,7 +673,17 @@ pub fn assemble_glb_with_loadout_with_progress(
     if opts.include_attachments {
         for (gear_path, bone_name) in &gear_parts {
             match export_entity_from_paths(p4k, gear_path, "", &child_opts) {
-                Ok((gear_mesh, gear_mtl, _, gear_nmc, _, gear_geometry_path, gear_material_path, gear_bones)) => {
+                Ok((
+                    gear_mesh,
+                    gear_mtl,
+                    _,
+                    gear_nmc,
+                    _,
+                    gear_geometry_path,
+                    gear_material_path,
+                    gear_bones,
+                    gear_skeleton_source_path,
+                )) => {
                     let verts = gear_mesh.positions.len();
                     let textures = if child_payload_material_mode.include_textures() {
                         gear_mtl.as_ref().map(|materials| {
@@ -535,6 +710,7 @@ pub fn assemble_glb_with_loadout_with_progress(
                         geometry_path: gear_geometry_path,
                         material_path: gear_material_path,
                         bones: gear_bones,
+                        skeleton_source_path: gear_skeleton_source_path,
                         entity_name: gear_path.rsplit('/').next().unwrap_or(gear_path).to_string(),
                         parent_node_name: bone_name.clone(),
                         parent_entity_name: resolved.entity_name.clone(),
@@ -702,6 +878,7 @@ pub fn assemble_glb_with_loadout_with_progress(
                 root_palette: root_palette.clone(),
                 available_palettes,
                 root_bones,
+                root_skeleton_source_path,
                 children: child_payloads,
                 interiors: loaded_interiors,
                 paint_variants,
@@ -789,6 +966,7 @@ fn load_child_mesh(
     Vec<crate::skeleton::Bone>,
     String,
     String,
+    Option<String>,
 )> {
     let result = if child.geometry_path.is_some() {
         let gp = child.geometry_path.as_deref().unwrap_or("");
@@ -803,8 +981,10 @@ fn load_child_mesh(
         export_entity_payload(db, p4k, &child.record, opts)
     };
 
-    result.ok().map(|(mesh, mtl, _tex, nmc, palette, geometry_path, material_path, bones)| {
-        (mesh, mtl, nmc, palette, bones, geometry_path, material_path)
+    result
+        .ok()
+        .map(|(mesh, mtl, _tex, nmc, palette, geometry_path, material_path, bones, skeleton_source_path)| {
+        (mesh, mtl, nmc, palette, bones, geometry_path, material_path, skeleton_source_path)
     })
 }
 
@@ -832,6 +1012,7 @@ struct LoadedChildPayload {
     bones: Vec<crate::skeleton::Bone>,
     geometry_path: String,
     material_path: String,
+    skeleton_source_path: Option<String>,
 }
 
 fn collect_child_payload_specs(
@@ -929,6 +1110,13 @@ fn load_child_payload_asset(
                 {
                     let material_path = child.material_path.as_deref().unwrap_or("");
                     let (_, materials) = load_nmc_and_material(p4k, geometry_path, material_path);
+                    let skeleton_source_path = resolve_geometry_files(p4k, geometry_path)
+                        .ok()
+                        .and_then(|resolved| {
+                            skeleton_source_paths(resolved.skeleton_path.as_deref(), &resolved.parts[0].path)
+                                .first()
+                                .map(|path| (*path).to_string())
+                        });
                     return Some(LoadedChildPayload {
                         mesh: empty_child_mesh(),
                         materials,
@@ -938,13 +1126,14 @@ fn load_child_payload_asset(
                         bones: Vec::new(),
                         geometry_path: geometry_path.to_string(),
                         material_path: material_path.to_string(),
+                        skeleton_source_path,
                     });
                 }
             }
         }
     }
 
-    let (mesh, mtl, nmc, palette, bones, geometry_path, material_path) =
+    let (mesh, mtl, nmc, palette, bones, geometry_path, material_path, skeleton_source_path) =
         load_child_mesh(child, db, p4k, mesh_opts)?;
     let textures = if final_material_mode.include_textures() {
         mtl.as_ref().map(|materials| {
@@ -972,6 +1161,7 @@ fn load_child_payload_asset(
         bones,
         geometry_path,
         material_path,
+        skeleton_source_path,
     })
 }
 
@@ -1039,6 +1229,7 @@ fn load_child_payloads(
                     geometry_path: loaded.geometry_path.clone(),
                     material_path: loaded.material_path.clone(),
                     bones: loaded.bones.clone(),
+                    skeleton_source_path: loaded.skeleton_source_path.clone(),
                     entity_name: child.entity_name.clone(),
                     parent_node_name: spec.parent_node_name.clone(),
                     parent_entity_name: spec.parent_entity_name.clone(),
@@ -1056,6 +1247,7 @@ fn load_child_payloads(
                     geometry_path: child.geometry_path.clone().unwrap_or_default(),
                     material_path: child.material_path.clone().unwrap_or_default(),
                     bones: Vec::new(),
+                    skeleton_source_path: None,
                     entity_name: child.entity_name.clone(),
                     parent_node_name: spec.parent_node_name.clone(),
                     parent_entity_name: spec.parent_entity_name.clone(),
@@ -1751,6 +1943,93 @@ fn mat4_to_array(m: glam::Mat4) -> [[f32; 4]; 4] {
     m.to_cols_array_2d()
 }
 
+fn mat3x4_from_mat4(m: glam::Mat4) -> [[f32; 4]; 3] {
+    let cols = m.to_cols_array_2d();
+    [
+        [cols[0][0], cols[1][0], cols[2][0], cols[3][0]],
+        [cols[0][1], cols[1][1], cols[2][1], cols[3][1]],
+        [cols[0][2], cols[1][2], cols[2][2], cols[3][2]],
+    ]
+}
+
+fn bone_world_transform(bone: &crate::skeleton::Bone) -> glam::Mat4 {
+    let rotation = glam::Quat::from_xyzw(
+        bone.world_rotation[1],
+        bone.world_rotation[2],
+        bone.world_rotation[3],
+        bone.world_rotation[0],
+    );
+    glam::Mat4::from_rotation_translation(rotation, glam::Vec3::from(bone.world_position))
+}
+
+fn synthesize_nmc_from_bones(
+    mesh: &crate::types::Mesh,
+    bones: &[crate::skeleton::Bone],
+) -> Option<crate::nmc::NodeMeshCombo> {
+    if bones.is_empty() || mesh.submeshes.is_empty() {
+        return None;
+    }
+
+    let mut referenced_node_indices = std::collections::BTreeSet::new();
+    for submesh in &mesh.submeshes {
+        let index = submesh.node_parent_index as usize;
+        if index >= bones.len() {
+            return None;
+        }
+        referenced_node_indices.insert(index);
+    }
+
+    if referenced_node_indices.len() <= 1 {
+        return None;
+    }
+
+    let world_transforms = bones.iter().map(bone_world_transform).collect::<Vec<_>>();
+    let root_index = bones
+        .iter()
+        .enumerate()
+        .find(|(index, bone)| bone.parent_index.is_none() || bone.parent_index == Some(*index as u16))
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    let root_inv = world_transforms[root_index].inverse();
+    let nodes = bones
+        .iter()
+        .enumerate()
+        .map(|(index, bone)| {
+            let parent_index = bone
+                .parent_index
+                .filter(|parent| (*parent as usize) < bones.len() && *parent as usize != index);
+            let relative = if let Some(parent) = parent_index {
+                let _ = parent;
+                glam::Mat4::from_rotation_translation(
+                    glam::Quat::from_xyzw(
+                        bone.local_rotation[1],
+                        bone.local_rotation[2],
+                        bone.local_rotation[3],
+                        bone.local_rotation[0],
+                    ),
+                    glam::Vec3::from_array(bone.local_position),
+                )
+            } else {
+                root_inv * world_transforms[index]
+            };
+            crate::nmc::NmcNode {
+                name: bone.name.clone(),
+                parent_index,
+                world_to_bone: mat3x4_from_mat4(relative.inverse()),
+                bone_to_world: mat3x4_from_mat4(relative),
+                scale: [1.0, 1.0, 1.0],
+                geometry_type: 0,
+                properties: std::collections::HashMap::new(),
+            }
+        })
+        .collect();
+
+    Some(crate::nmc::NodeMeshCombo {
+        nodes,
+        material_indices: vec![0; bones.len()],
+    })
+}
+
 /// Load NMC node table for a CGF/CGA file. The metadata is bundled with the
 /// .cgf itself in Ivo-format files; for split files (.cgf + .cgfm) the table
 /// lives in the .cgfm sidecar.
@@ -2030,7 +2309,7 @@ fn load_interior_mesh_asset(
         png_cache,
         false,
     ) {
-        Ok((mesh, mtl, _tex, nmc, _palette, _, _, _bones)) => {
+        Ok((mesh, mtl, _tex, nmc, _palette, _, _, _bones, _skeleton_source_path)) => {
             let needs_bake = mesh
                 .scaling_min
                 .iter()
@@ -4343,6 +4622,117 @@ fn transform_mesh_by_bone(mesh: &mut crate::Mesh, bone: &crate::skeleton::Bone) 
     mesh.model_max = new_max.into();
 }
 
+fn rebase_mesh_submeshes_to_bone_space(
+    mesh: &mut crate::Mesh,
+    bones: &[crate::skeleton::Bone],
+) -> bool {
+    if mesh.submeshes.is_empty() || bones.is_empty() {
+        return false;
+    }
+
+    let source_positions = mesh.positions.clone();
+    let source_uvs = mesh.uvs.clone();
+    let source_secondary_uvs = mesh.secondary_uvs.clone();
+    let source_normals = mesh.normals.clone();
+    let source_tangents = mesh.tangents.clone();
+    let source_colors = mesh.colors.clone();
+    let source_indices = mesh.indices.clone();
+    let source_submeshes = mesh.submeshes.clone();
+
+    let mut rebuilt_positions: Vec<[f32; 3]> = Vec::new();
+    let mut rebuilt_uvs = source_uvs.as_ref().map(|_| Vec::new());
+    let mut rebuilt_secondary_uvs = source_secondary_uvs.as_ref().map(|_| Vec::new());
+    let mut rebuilt_normals = source_normals.as_ref().map(|_| Vec::new());
+    let mut rebuilt_tangents = source_tangents.as_ref().map(|_| Vec::new());
+    let mut rebuilt_colors = source_colors.as_ref().map(|_| Vec::new());
+    let mut rebuilt_indices = Vec::new();
+    let mut rebuilt_submeshes = Vec::with_capacity(source_submeshes.len());
+
+    for submesh in &source_submeshes {
+        let bone_index = submesh.node_parent_index as usize;
+        if bone_index >= bones.len() {
+            return false;
+        }
+
+        let bone = &bones[bone_index];
+        let bone_inverse = bone_world_transform(bone).inverse();
+        let [qw, qx, qy, qz] = bone.world_rotation;
+        let inv_rot = glam::Quat::from_xyzw(qx, qy, qz, qw).inverse();
+
+        let start = submesh.first_index as usize;
+        let end = (start + submesh.num_indices as usize).min(source_indices.len());
+        let mut remap = std::collections::BTreeMap::<u32, u32>::new();
+        let first_vertex = rebuilt_positions.len() as u32;
+        let first_index = rebuilt_indices.len() as u32;
+
+        for source_index in &source_indices[start..end] {
+            let rebuilt_index = if let Some(existing) = remap.get(source_index) {
+                *existing
+            } else {
+                let source_vertex = *source_index as usize;
+                if source_vertex >= source_positions.len() {
+                    return false;
+                }
+                let transformed = bone_inverse.transform_point3(glam::Vec3::from(source_positions[source_vertex]));
+                let new_index = rebuilt_positions.len() as u32;
+                rebuilt_positions.push(transformed.into());
+
+                if let (Some(source), Some(target)) = (&source_uvs, rebuilt_uvs.as_mut()) {
+                    target.push(source[source_vertex]);
+                }
+                if let (Some(source), Some(target)) = (&source_secondary_uvs, rebuilt_secondary_uvs.as_mut()) {
+                    target.push(source[source_vertex]);
+                }
+                if let (Some(source), Some(target)) = (&source_normals, rebuilt_normals.as_mut()) {
+                    target.push((inv_rot * glam::Vec3::from(source[source_vertex])).into());
+                }
+                if let (Some(source), Some(target)) = (&source_tangents, rebuilt_tangents.as_mut()) {
+                    let tangent = source[source_vertex];
+                    let rotated = inv_rot * glam::Vec3::new(tangent[0], tangent[1], tangent[2]);
+                    target.push([rotated.x, rotated.y, rotated.z, tangent[3]]);
+                }
+                if let (Some(source), Some(target)) = (&source_colors, rebuilt_colors.as_mut()) {
+                    target.push(source[source_vertex]);
+                }
+
+                remap.insert(*source_index, new_index);
+                new_index
+            };
+            rebuilt_indices.push(rebuilt_index);
+        }
+
+        let mut rebuilt_submesh = submesh.clone();
+        rebuilt_submesh.first_vertex = first_vertex;
+        rebuilt_submesh.num_vertices = rebuilt_positions.len() as u32 - first_vertex;
+        rebuilt_submesh.first_index = first_index;
+        rebuilt_submesh.num_indices = rebuilt_indices.len() as u32 - first_index;
+        rebuilt_submeshes.push(rebuilt_submesh);
+    }
+
+    let mut new_min = [f32::MAX; 3];
+    let mut new_max = [f32::MIN; 3];
+    for position in &rebuilt_positions {
+        for axis in 0..3 {
+            new_min[axis] = new_min[axis].min(position[axis]);
+            new_max[axis] = new_max[axis].max(position[axis]);
+        }
+    }
+
+    mesh.positions = rebuilt_positions;
+    mesh.uvs = rebuilt_uvs;
+    mesh.secondary_uvs = rebuilt_secondary_uvs;
+    mesh.normals = rebuilt_normals;
+    mesh.tangents = rebuilt_tangents;
+    mesh.colors = rebuilt_colors;
+    mesh.indices = rebuilt_indices;
+    mesh.submeshes = rebuilt_submeshes;
+    if !mesh.positions.is_empty() {
+        mesh.model_min = new_min;
+        mesh.model_max = new_max;
+    }
+    true
+}
+
 pub(crate) fn datacore_path_to_p4k(path: &str) -> String {
     // Some DataCore paths already include a "Data/" prefix — strip it to avoid "Data\Data\".
     let clean = path
@@ -4911,7 +5301,7 @@ pub fn socpaks_to_glb(
                 &mut interior_png_cache,
                 false,
             ) {
-                Ok((mesh, mtl, _tex, nmc, _palette, _, _, _bones)) => {
+                Ok((mesh, mtl, _tex, nmc, _palette, _, _, _bones, _skeleton_source_path)) => {
                     let needs_bake = mesh.scaling_min.iter().zip(&mesh.model_min)
                         .chain(mesh.scaling_max.iter().zip(&mesh.model_max))
                         .any(|(s, m)| (s - m).abs() > 0.01);
@@ -5204,9 +5594,144 @@ mod tests {
         }
     }
 
+    fn sample_mesh(node_parent_indices: &[u16]) -> crate::types::Mesh {
+        let submeshes = node_parent_indices
+            .iter()
+            .enumerate()
+            .map(|(index, node_parent_index)| crate::types::SubMesh {
+                material_name: None,
+                material_id: index as u32,
+                first_index: (index as u32) * 3,
+                num_indices: 3,
+                first_vertex: (index as u32) * 3,
+                num_vertices: 3,
+                node_parent_index: *node_parent_index,
+            })
+            .collect();
+
+        crate::types::Mesh {
+            positions: vec![[0.0, 0.0, 0.0]; node_parent_indices.len() * 3],
+            indices: (0..(node_parent_indices.len() as u32 * 3)).collect(),
+            uvs: None,
+            secondary_uvs: None,
+            normals: None,
+            tangents: None,
+            colors: None,
+            submeshes,
+            model_min: [0.0; 3],
+            model_max: [0.0; 3],
+            scaling_min: [0.0; 3],
+            scaling_max: [0.0; 3],
+        }
+    }
+
+    fn sample_bone(
+        name: &str,
+        parent_index: Option<u16>,
+        local_position: [f32; 3],
+        world_position: [f32; 3],
+    ) -> crate::skeleton::Bone {
+        crate::skeleton::Bone {
+            name: name.to_string(),
+            parent_index,
+            object_node_index: None,
+            local_position,
+            local_rotation: [1.0, 0.0, 0.0, 0.0],
+            world_position,
+            world_rotation: [1.0, 0.0, 0.0, 0.0],
+        }
+    }
+
     #[test]
     fn export_options_default_to_bundled_kind() {
         assert_eq!(ExportOptions::default().kind, ExportKind::Bundled);
+    }
+
+    #[test]
+    fn synthetic_skin_nmc_uses_root_relative_bone_transforms() {
+        let mesh = sample_mesh(&[0, 1]);
+        let bones = vec![
+            sample_bone("root", None, [2.0, 0.0, 0.0], [2.0, 0.0, 0.0]),
+            sample_bone("foot", Some(0), [1.5, 2.5, 0.0], [5.0, 4.0, 0.0]),
+        ];
+
+        let nmc = synthesize_nmc_from_bones(&mesh, &bones)
+            .expect("expected a synthetic node hierarchy");
+
+        assert_eq!(nmc.nodes.len(), 2);
+        assert_eq!(nmc.nodes[0].name, "root");
+        assert_eq!(nmc.nodes[1].name, "foot");
+        assert_eq!(nmc.nodes[1].parent_index, Some(0));
+        assert_eq!(nmc.nodes[0].bone_to_world[0][3], 0.0);
+        assert_eq!(nmc.nodes[0].bone_to_world[1][3], 0.0);
+        assert_eq!(nmc.nodes[0].bone_to_world[2][3], 0.0);
+        assert_eq!(nmc.nodes[1].bone_to_world[0][3], 1.5);
+        assert_eq!(nmc.nodes[1].bone_to_world[1][3], 2.5);
+        assert_eq!(nmc.nodes[1].bone_to_world[2][3], 0.0);
+    }
+
+    #[test]
+    fn synthetic_skin_rebases_rigid_submesh_vertices_to_bone_space() {
+        let mut mesh = crate::types::Mesh {
+            positions: vec![
+                [2.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [2.0, 1.0, 0.0],
+                [5.0, 4.0, 0.0],
+                [6.0, 4.0, 0.0],
+                [5.0, 5.0, 0.0],
+            ],
+            indices: vec![0, 1, 2, 3, 4, 5],
+            uvs: None,
+            secondary_uvs: None,
+            normals: None,
+            tangents: None,
+            colors: None,
+            submeshes: vec![
+                crate::types::SubMesh {
+                    material_name: None,
+                    material_id: 0,
+                    first_index: 0,
+                    num_indices: 3,
+                    first_vertex: 0,
+                    num_vertices: 3,
+                    node_parent_index: 0,
+                },
+                crate::types::SubMesh {
+                    material_name: None,
+                    material_id: 1,
+                    first_index: 3,
+                    num_indices: 3,
+                    first_vertex: 3,
+                    num_vertices: 3,
+                    node_parent_index: 1,
+                },
+            ],
+            model_min: [2.0, 0.0, 0.0],
+            model_max: [6.0, 5.0, 0.0],
+            scaling_min: [2.0, 0.0, 0.0],
+            scaling_max: [6.0, 5.0, 0.0],
+        };
+        let bones = vec![
+            sample_bone("root", None, [2.0, 0.0, 0.0], [2.0, 0.0, 0.0]),
+            sample_bone("foot", Some(0), [3.0, 4.0, 0.0], [5.0, 4.0, 0.0]),
+        ];
+
+        assert!(rebase_mesh_submeshes_to_bone_space(&mut mesh, &bones));
+        assert_eq!(mesh.positions[0], [0.0, 0.0, 0.0]);
+        assert_eq!(mesh.positions[1], [1.0, 0.0, 0.0]);
+        assert_eq!(mesh.positions[2], [0.0, 1.0, 0.0]);
+        assert_eq!(mesh.positions[3], [0.0, 0.0, 0.0]);
+        assert_eq!(mesh.positions[4], [1.0, 0.0, 0.0]);
+        assert_eq!(mesh.positions[5], [0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn synthetic_skin_nmc_skips_single_node_meshes() {
+        let mesh = sample_mesh(&[0, 0]);
+        let bones = vec![sample_bone("root", None, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0])];
+
+        assert!(synthesize_nmc_from_bones(&mesh, &bones).is_none());
     }
 
     #[test]

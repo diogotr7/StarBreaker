@@ -184,3 +184,78 @@ The exporter-side contract gaps are now mostly closed. The remaining work is pri
 - Case is canonicalized from the actual P4k entry when possible so `Objects` and `objects` do not create duplicate export trees.
 - Canonical textures preserve the original game-relative location whenever a direct source texture exists.
 - Generated mesh and sidecar paths remain stable for the same source geometry or material path.
+
+## Animation Records
+
+Each exported scene entity carries an optional `animations` array containing all discoverable animations for that entity and its components. Animations are discovered by:
+
+1. Locating the skeleton's `.chrparams` CryXmlB file (derived by swapping extension from `.chr`)
+2. Parsing the animation map and `$TracksDatabase` reference (usually a `.dba` file)
+3. Loading the tracks database and exporting **all** animation clips
+
+**Animation Clip Structure:**
+
+Each animation clip object contains:
+
+- `name` — animation identifier (e.g., `lg_deploy_l`, `lg_retract`, derived from .chrparams event name)
+- `fps` — playback frame rate (typically 30)
+- `frame_count` — total keyframe count
+- `bones` — map of bone identifiers (by name or CRC32 hash if available) to channel objects
+
+**Bone Channel Structure:**
+
+Each bone channel contains:
+
+- `rotation` — array of `[w, x, y, z]` quaternions (Blender wxyz convention after axis conversion) per keyframe
+- `position` — array of `[x, y, z]` position vectors (Blender Z-up convention) per keyframe
+- `has_rotation` / `has_position` — boolean flags indicating which channels are actually animated
+- `times` — optional array of frame indices or time samples; if omitted, assume uniform 0 to frame_count-1
+
+**Bone Identification:**
+
+Bone references use the following priority:
+
+1. If the source skeleton provides CRC32 hashes (preferred), use `"bone_hash"` as the key (u32 hex string, e.g., `"0xC1571A1A"`)
+2. Otherwise use bone name string (e.g., `"BONE_Back_Right_Foot_Main"`)
+
+**Serialization Format:**
+
+Animations are stored per-entity in `scene.json` under the entity's `animations` array. For shared skeletons or components, all clips are listed and the Blender addon filters by context.
+
+**Example:**
+
+```json
+{
+  "name": "lg_deploy_l",
+  "fps": 30,
+  "frame_count": 120,
+  "bones": {
+    "0xC1571A1A": {
+      "has_rotation": true,
+      "has_position": true,
+      "rotation": [
+        [0.707, 0.0, 0.0, 0.707],
+        [0.708, 0.0, 0.0, 0.705]
+      ],
+      "position": [
+        [0.0, 0.0, 0.0],
+        [0.1, 0.0, -0.05]
+      ]
+    }
+  }
+}
+```
+
+**Import Modes (Blender Addon):**
+
+The Blender addon provides four playback modes per animation:
+
+- **None** — leave skeleton bones in bind pose, do not apply animation
+- **Snap to First Frame** — apply rotation and position from keyframe 0 only
+- **Snap to Last Frame** — apply rotation and position from keyframe frame_count-1 (default for static poses like landing gear deployed)
+- **Insert as Action** — create a Blender Action with per-bone f-curve channels for full timeline playback
+
+**Compatibility:**
+
+- Sidecars generated without animations (older exports) simply omit the `animations` array; the Blender addon gracefully skips animation UI if absent.
+- Future exports may extend this format with additional fields such as per-bone rotation/position masks, compression metadata, or event markers. Importers should safely ignore unknown fields.

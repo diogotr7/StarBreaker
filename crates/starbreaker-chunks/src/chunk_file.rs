@@ -73,6 +73,13 @@ impl<'a> IvoChunkFile<'a> {
         let end = start + entry.size;
         &self.data[start..end]
     }
+
+    /// Returns the full file data. Useful when chunk-relative offsets refer
+    /// to data that may extend past the chunk's computed size boundary
+    /// (e.g. DBA controller offsets indexing into a shared keyframe pool).
+    pub fn file_data(&self) -> &'a [u8] {
+        self.data
+    }
 }
 
 /// A parsed CrCh chunk file.

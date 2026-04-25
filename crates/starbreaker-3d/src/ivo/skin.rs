@@ -57,11 +57,19 @@ struct RawFloatVertex {
     uv: [u16; 2],
 }
 
+#[derive(Clone, Copy, FromBytes, KnownLayout, Immutable)]
+#[repr(C, packed)]
+struct RawBoneMap12 {
+    joint_indices: [u16; 4],
+    weights: [u8; 4],
+}
+
 const _: () = {
     assert!(size_of::<RawMeshInfo>() == 76);
     assert!(size_of::<RawSubMeshDescriptor>() == 48);
     assert!(size_of::<RawQuantizedVertex>() == 16);
     assert!(size_of::<RawFloatVertex>() == 20);
+    assert!(size_of::<RawBoneMap12>() == 12);
 };
 
 /// Datastream type tag constants.
@@ -119,6 +127,8 @@ pub struct SubMeshDescriptor {
     pub num_vertices: u32,
     pub radius: f32,
     pub center: [f32; 3],
+    pub unknown0: u32,
+    pub unknown1: u32,
 }
 
 #[derive(Debug)]
@@ -127,9 +137,28 @@ pub struct DataStreams {
     pub uvs: Vec<[u16; 2]>,
     pub secondary_uvs: Option<Vec<[u16; 2]>>,
     pub indices: Vec<u32>,
+    pub bone_maps: Option<Vec<BoneMap12>>,
     pub colors: Option<Vec<[u8; 4]>>,
     pub tangents: Option<TangentData>,
     pub normals: Option<NormalData>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BoneMap12 {
+    pub joint_indices: [u16; 4],
+    pub weights: [u8; 4],
+}
+
+impl BoneMap12 {
+    pub fn dominant_joint(self) -> Option<u16> {
+        let (slot, weight) = self
+            .weights
+            .iter()
+            .copied()
+            .enumerate()
+            .max_by_key(|(_, weight)| *weight)?;
+        (weight > 0).then_some(self.joint_indices[slot])
+    }
 }
 
 /// Raw normal data — format determined by which stream was present.
@@ -165,6 +194,7 @@ pub struct SkinMesh {
     pub flags: u32,
     pub info: MeshInfo,
     pub submeshes: Vec<SubMeshDescriptor>,
+    pub extra_words: Vec<u32>,
     pub streams: DataStreams,
 }
 
@@ -198,6 +228,8 @@ impl SubMeshDescriptor {
             num_vertices: raw.num_vertices,
             radius: raw.radius,
             center: raw.center,
+            unknown0: raw._unknown0,
+            unknown1: raw._unknown1,
         }
     }
 }
@@ -219,8 +251,36 @@ impl SkinMesh {
         let submeshes: Vec<SubMeshDescriptor> =
             raw_submeshes.iter().map(SubMeshDescriptor::from_raw).collect();
 
-        // Skip extra data after submeshes (determined by extra_count field in MeshInfo)
-        reader.advance(info.extra_count as usize * 4)?;
+        let extra_words = if info.extra_count == 0 {
+            Vec::new()
+        } else {
+            reader.read_slice::<u32>(info.extra_count as usize)?.to_vec()
+        };
+
+        if std::env::var("SB_DEBUG_RIGID_BIND").is_ok() {
+            log::debug!(
+                "SkinMesh flags={} verts={} indices={} submeshes={} extra_words={:?}",
+                flags,
+                info.num_vertices,
+                info.num_indices,
+                info.num_submeshes,
+                extra_words,
+            );
+            for (index, submesh) in submeshes.iter().enumerate() {
+                log::debug!(
+                    "  submesh[{index}] node_parent={} first_index={} num_indices={} first_vertex={} num_vertices={} center={:?} radius={} unknown0=0x{:#010X} unknown1=0x{:#010X}",
+                    submesh.node_parent_index,
+                    submesh.first_index,
+                    submesh.num_indices,
+                    submesh.first_vertex,
+                    submesh.num_vertices,
+                    submesh.center,
+                    submesh.radius,
+                    submesh.unknown0,
+                    submesh.unknown1,
+                );
+            }
+        }
 
         // Datastreams
         let streams = Self::read_streams(&mut reader, &info)?;
@@ -229,6 +289,7 @@ impl SkinMesh {
             flags,
             info,
             submeshes,
+            extra_words,
             streams,
         })
     }
@@ -238,6 +299,7 @@ impl SkinMesh {
         let mut uvs: Option<Vec<[u16; 2]>> = None;
         let mut secondary_uvs: Option<Vec<[u16; 2]>> = None;
         let mut indices: Option<Vec<u32>> = None;
+        let mut bone_maps: Option<Vec<BoneMap12>> = None;
         let mut colors: Option<Vec<[u8; 4]>> = None;
         let mut tangents: Option<TangentData> = None;
         let mut normals: Option<NormalData> = None;
@@ -353,6 +415,21 @@ impl SkinMesh {
                     }
                     tangents = Some(TangentData::Tangents(raw.to_vec()));
                 }
+                stream_type::IVOBONEMAP => {
+                    if element_size == 12 {
+                        let raw = reader.read_slice::<RawBoneMap12>(num_verts)?;
+                        bone_maps = Some(
+                            raw.iter()
+                                .map(|entry| BoneMap12 {
+                                    joint_indices: entry.joint_indices,
+                                    weights: entry.weights,
+                                })
+                                .collect(),
+                        );
+                    } else {
+                        reader.advance(element_size as usize * num_verts)?;
+                    }
+                }
                 _ => {
                     let count = num_verts;
                     let skip_bytes = element_size as usize * count;
@@ -384,6 +461,7 @@ impl SkinMesh {
             indices: indices.ok_or(Error::MissingChunk {
                 chunk_type: stream_type::IVOINDICES,
             })?,
+            bone_maps,
             colors,
             tangents,
             normals,

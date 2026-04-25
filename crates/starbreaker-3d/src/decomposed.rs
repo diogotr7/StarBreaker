@@ -27,6 +27,7 @@ pub(crate) struct DecomposedInput {
     pub root_palette: Option<TintPalette>,
     pub available_palettes: Vec<TintPalette>,
     pub root_bones: Vec<Bone>,
+    pub root_skeleton_source_path: Option<String>,
     pub children: Vec<EntityPayload>,
     pub interiors: LoadedInteriors,
     /// All available paint variants for this entity, populated from SubGeometry entries.
@@ -223,6 +224,7 @@ fn resolve_child_instance_transforms(input: &DecomposedInput) -> Vec<ResolvedChi
                 geometry_path: child.geometry_path.clone(),
                 material_path: child.material_path.clone(),
                 bones: child.bones.clone(),
+                skeleton_source_path: child.skeleton_source_path.clone(),
                 entity_name: child.entity_name.clone(),
                 parent_node_name: child.parent_node_name.clone(),
                 parent_entity_name: child.parent_entity_name.clone(),
@@ -969,6 +971,54 @@ pub(crate) fn write_decomposed_export(
         report_progress(progress, 0.85, "Writing manifests");
     }
 
+    let root_animations = if opts.apply_default_animation_pose {
+        let mut clips: Vec<serde_json::Value> = Vec::new();
+        let mut seen_names = std::collections::HashSet::<String>::new();
+
+        let mut append_from_skeleton = |skeleton_path: &str| {
+            match crate::animation::extract_animations_for_skeleton_json(p4k, skeleton_path) {
+                Ok(Some(serde_json::Value::Array(values))) => {
+                    for clip in values {
+                        let name = clip
+                            .get("name")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if name.is_empty() || seen_names.insert(name) {
+                            clips.push(clip);
+                        }
+                    }
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => {}
+                Err(error) => {
+                    log::warn!(
+                        "[anim] failed to extract animations for skeleton '{}': {}",
+                        skeleton_path,
+                        error
+                    );
+                }
+            }
+        };
+
+        if let Some(skeleton_path) = input.root_skeleton_source_path.as_deref() {
+            append_from_skeleton(skeleton_path);
+        }
+        for child in &input.children {
+            if let Some(skeleton_path) = child.skeleton_source_path.as_deref() {
+                append_from_skeleton(skeleton_path);
+            }
+        }
+
+        if clips.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Array(clips))
+        }
+    } else {
+        None
+    };
+
     let scene_manifest = build_scene_manifest_value(
         &input.entity_name,
         &package_name,
@@ -977,6 +1027,7 @@ pub(crate) fn write_decomposed_export(
         &root_mesh_asset,
         root_material_sidecar.as_deref(),
         root_palette_id.as_deref(),
+        root_animations.as_ref(),
         &child_instances,
         &interior_records,
         opts,
@@ -1035,11 +1086,12 @@ fn build_scene_manifest_value(
     root_mesh_asset: &str,
     root_material_sidecar: Option<&str>,
     root_palette_id: Option<&str>,
+    root_animations: Option<&serde_json::Value>,
     child_instances: &[SceneInstanceRecord],
     interiors: &[InteriorContainerRecord],
     opts: &ExportOptions,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut manifest = serde_json::json!({
         "version": 1,
         "export_kind": "Decomposed",
         "package_rule": {
@@ -1069,7 +1121,13 @@ fn build_scene_manifest_value(
         },
         "children": child_instances.iter().map(scene_instance_json).collect::<Vec<_>>(),
         "interiors": interiors.iter().map(interior_container_json).collect::<Vec<_>>(),
-    })
+    });
+
+    if let Some(animations) = root_animations {
+        manifest["root_entity"]["animations"] = animations.clone();
+    }
+
+    manifest
 }
 
 fn build_palette_manifest_value(records: &BTreeMap<String, PaletteRecord>) -> serde_json::Value {
@@ -3178,6 +3236,7 @@ mod tests {
             "Data/Objects/Ships/Test/root.glb",
             Some("Data/Objects/Ships/Test/root.materials.json"),
             Some("palette/root"),
+            None,
             &[child],
             &[interior],
             &ExportOptions::default(),

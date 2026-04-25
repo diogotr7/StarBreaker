@@ -20,6 +20,14 @@ pub enum SkinCommand {
         #[arg(long, env = "SC_DATA_P4K")]
         p4k: Option<PathBuf>,
     },
+    /// Inspect a .skinm/.skin/.cgfm/.chr file and print parsed metadata
+    Inspect {
+        /// P4k path substring (case-insensitive)
+        path: String,
+        /// Path to Data.p4k
+        #[arg(long, env = "SC_DATA_P4K")]
+        p4k: Option<PathBuf>,
+    },
     /// Scan all mesh files and report stream/chunk type statistics
     ScanStreams {
         /// Path to Data.p4k
@@ -40,6 +48,7 @@ impl SkinCommand {
     pub fn run(self) -> Result<()> {
         match self {
             Self::Export { path, output, p4k } => export(path, output, p4k),
+            Self::Inspect { path, p4k } => inspect(path, p4k),
             Self::ScanStreams { p4k } => scan_streams(p4k),
             Self::FindStream { stream_id, p4k } => find_stream(stream_id, p4k),
         }
@@ -303,5 +312,101 @@ fn export(search: String, output: Option<PathBuf>, p4k_path: Option<PathBuf>) ->
     std::fs::write(&output, &glb)
         .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
     eprintln!("Written {} bytes to {}", glb.len(), output.display());
+    Ok(())
+}
+
+fn inspect(search: String, p4k_path: Option<PathBuf>) -> Result<()> {
+    use starbreaker_chunks::ChunkFile;
+
+    let p4k = load_p4k(p4k_path.as_deref())?;
+    let search_lower = search.to_lowercase();
+
+    let entry = p4k
+        .entries()
+        .iter()
+        .find(|e| {
+            let name = e.name.to_lowercase();
+            // Prefer exact suffix match if search includes an extension
+            if let Some(dot) = search_lower.rfind('.') {
+                let search_ext = &search_lower[dot..];
+                if !name.ends_with(search_ext) {
+                    return false;
+                }
+            }
+            name.contains(&search_lower)
+                && (name.ends_with(".skinm")
+                    || name.ends_with(".skin")
+                    || name.ends_with(".cgfm")
+                    || name.ends_with(".chr"))
+        })
+        .ok_or_else(|| CliError::NotFound(format!(
+            "no .skinm/.skin/.cgfm/.chr file matching '{search}' in P4k"
+        )))?;
+
+    println!("Found: {}", entry.name);
+    let data = p4k.read(entry)?;
+
+    let lower_name = entry.name.to_lowercase();
+    let is_skel_file = lower_name.ends_with(".chr") || lower_name.ends_with(".skin");
+    if is_skel_file {
+        if let Some(bones) = starbreaker_3d::skeleton::parse_skeleton(&data) {
+            println!("Skeleton bones: {}", bones.len());
+            for (index, bone) in bones.iter().enumerate() {
+                println!(
+                    "  [{index}] {} parent={:?} object_node_index={:?} local_pos={:?} local_rot={:?} world_pos={:?} world_rot={:?}",
+                    bone.name,
+                    bone.parent_index,
+                    bone.object_node_index,
+                    bone.local_position,
+                    bone.local_rotation,
+                    bone.world_position,
+                    bone.world_rotation,
+                );
+            }
+            return Ok(());
+        }
+        return Err(CliError::InvalidInput(format!(
+            "failed to parse skeleton from {}",
+            entry.name
+        )));
+    }
+
+    let chunk_file = ChunkFile::from_bytes(&data)
+        .map_err(|error| CliError::InvalidInput(format!("failed to parse chunk file {}: {error}", entry.name)))?;
+    let ChunkFile::Ivo(ivo) = chunk_file else {
+        return Err(CliError::InvalidInput(format!("unsupported non-IVO mesh file {}", entry.name)));
+    };
+
+    let skin_entry = ivo
+        .chunks()
+        .iter()
+        .find(|chunk| chunk.chunk_type == starbreaker_chunks::known_types::ivo::IVO_SKIN2)
+        .ok_or_else(|| CliError::InvalidInput(format!("no IVO_SKIN2 chunk in {}", entry.name)))?;
+
+    let skin = starbreaker_3d::ivo::skin::SkinMesh::read(ivo.chunk_data(skin_entry))
+        .map_err(|error| CliError::InvalidInput(format!("failed to parse skin mesh {}: {error}", entry.name)))?;
+
+    println!(
+        "SkinMesh flags={} verts={} indices={} submeshes={} extra_words={:?}",
+        skin.flags,
+        skin.info.num_vertices,
+        skin.info.num_indices,
+        skin.info.num_submeshes,
+        skin.extra_words,
+    );
+    for (index, submesh) in skin.submeshes.iter().enumerate() {
+        println!(
+            "  submesh[{index}] node_parent={} first_index={} num_indices={} first_vertex={} num_vertices={} center={:?} radius={} unknown0=0x{:08X} unknown1=0x{:08X}",
+            submesh.node_parent_index,
+            submesh.first_index,
+            submesh.num_indices,
+            submesh.first_vertex,
+            submesh.num_vertices,
+            submesh.center,
+            submesh.radius,
+            submesh.unknown0,
+            submesh.unknown1,
+        );
+    }
     Ok(())
 }

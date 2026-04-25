@@ -621,28 +621,30 @@ impl GlbBuilder {
                     );
                 }
 
-                // Create bone attachment nodes for this entity's skeleton.
                 let mut bone_node_indices: Vec<json::Index<json::Node>> = Vec::new();
-                for bone in &child.bones {
-                    if bone.name.is_empty() {
-                        continue;
+                if !super::hierarchy_covers_bones(Some(child_nmc), &child.bones) {
+                    // Create bone attachment nodes for this entity's skeleton.
+                    for bone in &child.bones {
+                        if bone.name.is_empty() {
+                            continue;
+                        }
+                        let lower = bone.name.to_lowercase();
+                        if self.node_name_to_idx.contains_key(&lower) {
+                            continue; // NMC node already registered this name
+                        }
+                        let bone_idx = self.nodes_json.len() as u32;
+                        let [qw, qx, qy, qz] = bone.world_rotation;
+                        let rot = glam::Quat::from_xyzw(qx, qy, qz, qw);
+                        let trans = glam::Vec3::from(bone.world_position);
+                        let m = glam::Mat4::from_rotation_translation(rot, trans);
+                        self.nodes_json.push(json::Node {
+                            name: Some(bone.name.clone()),
+                            matrix: Some(m.to_cols_array()),
+                            ..Default::default()
+                        });
+                        self.node_name_to_idx.insert(lower, bone_idx);
+                        bone_node_indices.push(json::Index::new(bone_idx));
                     }
-                    let lower = bone.name.to_lowercase();
-                    if self.node_name_to_idx.contains_key(&lower) {
-                        continue; // NMC node already registered this name
-                    }
-                    let bone_idx = self.nodes_json.len() as u32;
-                    let [qw, qx, qy, qz] = bone.world_rotation;
-                    let rot = glam::Quat::from_xyzw(qx, qy, qz, qw);
-                    let trans = glam::Vec3::from(bone.world_position);
-                    let m = glam::Mat4::from_rotation_translation(rot, trans);
-                    self.nodes_json.push(json::Node {
-                        name: Some(bone.name.clone()),
-                        matrix: Some(m.to_cols_array()),
-                        ..Default::default()
-                    });
-                    self.node_name_to_idx.insert(lower, bone_idx);
-                    bone_node_indices.push(json::Index::new(bone_idx));
                 }
 
                 // Create a wrapper node for the child entity containing its NMC root nodes + bone nodes

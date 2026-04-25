@@ -10,6 +10,8 @@ pub(crate) mod pipeline;
 pub mod skeleton;
 pub(crate) mod socpak;
 pub mod types;
+pub mod animation;
+pub mod chrparams;
 
 pub use error::Error;
 pub use pipeline::{

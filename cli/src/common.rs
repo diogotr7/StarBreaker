@@ -100,6 +100,8 @@ impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
             include_shields: opts.include_shields,
             texture_mip: opts.mip,
             lod_level: opts.lod,
+            apply_default_animation_pose: true,
+            default_animation_tags: vec!["landing_gear_extend".to_string()],
         }
     }
 }

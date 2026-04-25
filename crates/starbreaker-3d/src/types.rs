@@ -140,6 +140,101 @@ fn compute_smooth_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 
     norms
 }
 
+fn split_rigid_weighted_submeshes(
+    submeshes: &[SubMesh],
+    indices: &[u32],
+    bone_maps: Option<&[crate::ivo::skin::BoneMap12]>,
+) -> (Vec<SubMesh>, Vec<u32>) {
+    let Some(bone_maps) = bone_maps else {
+        return (submeshes.to_vec(), indices.to_vec());
+    };
+
+    let mut rebuilt_submeshes = Vec::with_capacity(submeshes.len());
+    let mut rebuilt_indices = Vec::with_capacity(indices.len());
+
+    for submesh in submeshes {
+        let start = submesh.first_index as usize;
+        let end = (start + submesh.num_indices as usize).min(indices.len());
+        let source_indices = &indices[start..end];
+        let triangle_count = source_indices.len() / 3;
+
+        if triangle_count == 0 {
+            let mut original = submesh.clone();
+            original.first_index = rebuilt_indices.len() as u32;
+            original.num_indices = source_indices.len() as u32;
+            rebuilt_indices.extend_from_slice(source_indices);
+            rebuilt_submeshes.push(original);
+            continue;
+        }
+
+        let mut grouped_indices = std::collections::BTreeMap::<u16, Vec<u32>>::new();
+        let mut rigid_triangles = 0usize;
+        let mut valid = true;
+
+        for triangle in source_indices.chunks(3) {
+            if triangle.len() < 3 {
+                continue;
+            }
+
+            let mut triangle_joints = [0u16; 3];
+            for (joint_slot, vertex_index) in triangle.iter().enumerate() {
+                let Some(joint) = bone_maps
+                    .get(*vertex_index as usize)
+                    .and_then(|entry| entry.dominant_joint())
+                else {
+                    valid = false;
+                    break;
+                };
+                triangle_joints[joint_slot] = joint;
+            }
+
+            if !valid {
+                break;
+            }
+
+            let triangle_joint = if triangle_joints[0] == triangle_joints[1]
+                || triangle_joints[0] == triangle_joints[2]
+            {
+                triangle_joints[0]
+            } else if triangle_joints[1] == triangle_joints[2] {
+                triangle_joints[1]
+            } else {
+                triangle_joints[0]
+            };
+
+            if triangle_joints[0] == triangle_joints[1] && triangle_joints[1] == triangle_joints[2] {
+                rigid_triangles += 1;
+            }
+
+            grouped_indices
+                .entry(triangle_joint)
+                .or_default()
+                .extend_from_slice(triangle);
+        }
+
+        let rigid_ratio = rigid_triangles as f32 / triangle_count as f32;
+        if !valid || grouped_indices.len() <= 1 || rigid_ratio < 0.9 {
+            let mut original = submesh.clone();
+            original.first_index = rebuilt_indices.len() as u32;
+            original.num_indices = source_indices.len() as u32;
+            rebuilt_indices.extend_from_slice(source_indices);
+            rebuilt_submeshes.push(original);
+            continue;
+        }
+
+        for (joint, joint_indices) in grouped_indices {
+            let mut split = submesh.clone();
+            split.first_index = rebuilt_indices.len() as u32;
+            split.num_indices = joint_indices.len() as u32;
+            split.node_parent_index = joint;
+            rebuilt_indices.extend_from_slice(&joint_indices);
+            rebuilt_submeshes.push(split);
+        }
+    }
+
+    (rebuilt_submeshes, rebuilt_indices)
+}
+
 pub fn build_mesh(skin: &SkinMesh, materials: &[MaterialName]) -> Mesh {
     build_mesh_with_bbox(skin, materials, false)
 }
@@ -191,7 +286,7 @@ pub fn build_mesh_with_bbox(skin: &SkinMesh, materials: &[MaterialName], use_mod
             num_vertices: s.page_base,
             node_parent_index: s.node_parent_index,
         })
-        .collect();
+        .collect::<Vec<_>>();
 
     // Indices in IVO format are relative to a vertex page base.
     // For meshes with >65535 vertices, vertices are split into pages addressable by u16 indices.
@@ -208,6 +303,12 @@ pub fn build_mesh_with_bbox(skin: &SkinMesh, materials: &[MaterialName], use_mod
             }
         }
     }
+
+    let (submeshes, indices) = split_rigid_weighted_submeshes(
+        &submeshes,
+        &indices,
+        skin.streams.bone_maps.as_deref(),
+    );
 
     // Decode normals and tangents from stream data.
     // Priority for normals:
@@ -373,6 +474,9 @@ pub struct EntityPayload {
     /// Skeleton bones from this entity's .chr/.skin file.
     /// Used to create attachment points for children that reference bone names.
     pub bones: Vec<crate::skeleton::Bone>,
+    /// Source path used to resolve this payload's animation tracks
+    /// (`.chrparams`/`$TracksDatabase`) when exporting sidecar animations.
+    pub skeleton_source_path: Option<String>,
     pub entity_name: String,
     /// NMC node name in the parent to attach under.
     pub parent_node_name: String,
@@ -494,7 +598,7 @@ pub struct InteriorPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ivo::skin::{DataStreams, MeshInfo, SubMeshDescriptor};
+    use crate::ivo::skin::{BoneMap12, DataStreams, MeshInfo, SubMeshDescriptor};
 
     #[test]
     fn build_mesh_from_synthetic_skin() {
@@ -521,7 +625,10 @@ mod tests {
                 num_vertices: 3,
                 radius: 5.0,
                 center: [5.0, 5.0, 5.0],
+                unknown0: 0,
+                unknown1: 0,
             }],
+            extra_words: Vec::new(),
             streams: DataStreams {
                 positions: PositionData::Quantized(vec![
                     [0x8001, 0x8001, 0x8001], // SNorm -1 → bbox min
@@ -531,6 +638,7 @@ mod tests {
                 uvs: vec![[0x0000, 0x0000], [0x3C00, 0x3C00], [0x3800, 0x3800]],
                 secondary_uvs: Some(vec![[0x3800, 0x0000], [0x0000, 0x3800], [0x3C00, 0x0000]]),
                 indices: vec![0, 1, 2],
+                bone_maps: None,
                 colors: None,
                 tangents: None,
                 normals: None,
@@ -562,5 +670,74 @@ mod tests {
         assert_eq!(secondary_uvs[0], [0.5, 0.0]);
         assert_eq!(secondary_uvs[1], [0.0, 0.5]);
         assert_eq!(secondary_uvs[2], [1.0, 0.0]);
+    }
+
+    #[test]
+    fn build_mesh_splits_rigid_bone_mapped_submeshes() {
+        let skin = SkinMesh {
+            flags: 0,
+            info: MeshInfo {
+                flags2: 5,
+                num_vertices: 6,
+                num_indices: 6,
+                num_submeshes: 1,
+                model_min: [0.0, 0.0, 0.0],
+                model_max: [1.0, 1.0, 1.0],
+                min_bound: [0.0, 0.0, 0.0],
+                max_bound: [1.0, 1.0, 1.0],
+                extra_count: 0,
+            },
+            submeshes: vec![SubMeshDescriptor {
+                mat_id: 0,
+                node_parent_index: 0,
+                first_index: 0,
+                num_indices: 6,
+                first_vertex: 0,
+                page_base: 0,
+                num_vertices: 6,
+                radius: 1.0,
+                center: [0.5, 0.5, 0.5],
+                unknown0: 0,
+                unknown1: 0,
+            }],
+            extra_words: Vec::new(),
+            streams: DataStreams {
+                positions: PositionData::Float(vec![
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [2.0, 0.0, 0.0],
+                    [3.0, 0.0, 0.0],
+                    [2.0, 1.0, 0.0],
+                ]),
+                uvs: Vec::new(),
+                secondary_uvs: None,
+                indices: vec![0, 1, 2, 3, 4, 5],
+                bone_maps: Some(vec![
+                    BoneMap12 { joint_indices: [0, 0, 0, 0], weights: [255, 0, 0, 0] },
+                    BoneMap12 { joint_indices: [0, 0, 0, 0], weights: [255, 0, 0, 0] },
+                    BoneMap12 { joint_indices: [0, 0, 0, 0], weights: [255, 0, 0, 0] },
+                    BoneMap12 { joint_indices: [3, 0, 0, 0], weights: [255, 0, 0, 0] },
+                    BoneMap12 { joint_indices: [3, 0, 0, 0], weights: [255, 0, 0, 0] },
+                    BoneMap12 { joint_indices: [3, 0, 0, 0], weights: [255, 0, 0, 0] },
+                ]),
+                colors: None,
+                tangents: None,
+                normals: None,
+            },
+        };
+
+        let materials = vec![MaterialName {
+            name: "test_material".into(),
+        }];
+
+        let mesh = build_mesh(&skin, &materials);
+
+        assert_eq!(mesh.submeshes.len(), 2);
+        assert_eq!(mesh.submeshes[0].node_parent_index, 0);
+        assert_eq!(mesh.submeshes[1].node_parent_index, 3);
+        assert_eq!(mesh.submeshes[0].num_indices, 3);
+        assert_eq!(mesh.submeshes[1].num_indices, 3);
+        assert_eq!(mesh.indices, vec![0, 1, 2, 3, 4, 5]);
     }
 }
