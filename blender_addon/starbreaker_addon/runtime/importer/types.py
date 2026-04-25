@@ -60,6 +60,10 @@ class StencilOverlaySockets:
     roughness: Any | None = None
     specular: Any | None = None
     specular_tint: Any | None = None
+    stencil_diffuse_color: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    stencil_diffuse_color_2: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    stencil_diffuse_color_3: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    tone_mode: float = 0.0
 
 
 @dataclass(frozen=True)

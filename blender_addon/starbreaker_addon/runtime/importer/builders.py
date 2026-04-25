@@ -776,11 +776,10 @@ class BuildersMixin:
         iridescence_active = authored_angle_shift or (palette_angle_shift_channel is not None)
         self._set_socket_default(_input_socket(shader_group, "Iridescence Factor"), 1.0 if iridescence_active else 0.0)
         self._set_socket_default(_input_socket(shader_group, "Stencil Color"), (1.0, 1.0, 1.0, 1.0))
-        self._set_socket_default(_input_socket(shader_group, "Stencil Color Factor"), 0.0)
-        self._set_socket_default(_input_socket(shader_group, "Stencil Factor"), 0.0)
-        self._set_socket_default(_input_socket(shader_group, "Stencil Roughness"), 0.45)
-        self._set_socket_default(_input_socket(shader_group, "Stencil Specular"), 0.0)
-        self._set_socket_default(_input_socket(shader_group, "Stencil Specular Tint"), (1.0, 1.0, 1.0, 1.0))
+        self._set_socket_default(_input_socket(shader_group, "StencilDiffuseColor"), (1.0, 1.0, 1.0, 1.0))
+        self._set_socket_default(_input_socket(shader_group, "StencilDiffuseColor2"), (1.0, 1.0, 1.0, 1.0))
+        self._set_socket_default(_input_socket(shader_group, "StencilDiffuseColor3"), (1.0, 1.0, 1.0, 1.0))
+        self._set_socket_default(_input_socket(shader_group, "Stencil Tone Mode"), 0.0)
         self._link_group_input(links, iridescence_ramp_color, shader_group, "Iridescence Ramp Color")
         if iridescence_ramp_color is not None:
             self._set_socket_default(_input_socket(shader_group, "Iridescence Ramp Weight"), 1.0)
@@ -926,11 +925,19 @@ class BuildersMixin:
         self._link_group_input(links, wear_factor, shader_group, "Wear Factor")
         self._link_group_input(links, damage_factor, shader_group, "Damage Factor")
         self._link_group_input(links, stencil.color, shader_group, "Stencil Color")
-        self._link_group_input(links, stencil.color_factor, shader_group, "Stencil Color Factor")
-        self._link_group_input(links, stencil.factor, shader_group, "Stencil Factor")
-        self._link_group_input(links, stencil.roughness, shader_group, "Stencil Roughness")
-        self._link_group_input(links, stencil.specular, shader_group, "Stencil Specular")
-        self._link_group_input(links, stencil.specular_tint, shader_group, "Stencil Specular Tint")
+        self._set_socket_default(
+            _input_socket(shader_group, "StencilDiffuseColor"),
+            (*stencil.stencil_diffuse_color, 1.0),
+        )
+        self._set_socket_default(
+            _input_socket(shader_group, "StencilDiffuseColor2"),
+            (*stencil.stencil_diffuse_color_2, 1.0),
+        )
+        self._set_socket_default(
+            _input_socket(shader_group, "StencilDiffuseColor3"),
+            (*stencil.stencil_diffuse_color_3, 1.0),
+        )
+        self._set_socket_default(_input_socket(shader_group, "Stencil Tone Mode"), float(stencil.tone_mode))
         self._link_group_input(
             links,
             macro_normal_node.outputs[0] if macro_normal_node is not None else None,

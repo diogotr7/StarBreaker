@@ -54,6 +54,49 @@ def _detail_strength_or_zero(strength: float, mask_socket: Any) -> float:
     return float(strength) if mask_socket is not None else 0.0
 
 
+def _stencil_override_selection(
+    tint_override: float,
+    *,
+    is_virtual: bool,
+    tint_1: tuple[float, float, float] | None,
+    tint_2: tuple[float, float, float] | None,
+    tint_3: tuple[float, float, float] | None,
+    specular_1: tuple[float, float, float] | None,
+    specular_2: tuple[float, float, float] | None,
+    specular_3: tuple[float, float, float] | None,
+    stencil_glossiness: float | None,
+) -> tuple[tuple[float, float, float], tuple[float, float, float] | None, float, float]:
+    """Resolve the single-tint stencil override settings.
+
+    `StencilTintOverride` behaves like a tint-slot selector. For non-virtual
+    HardSurface stencils, a selected tint that is still the neutral white
+    default and has no authored gloss/specular should not create a diffuse
+    color overlay; the stencil still remains useful as a factor source for the
+    roughness path.
+    """
+
+    selected_index = int(round(float(tint_override)))
+    if selected_index not in (1, 2, 3):
+        selected_index = 1
+    tint_options = (tint_1, tint_2, tint_3)
+    specular_options = (specular_1, specular_2, specular_3)
+    selected_tint = tint_options[selected_index - 1] or (1.0, 1.0, 1.0)
+    selected_specular = specular_options[selected_index - 1]
+
+    tint_is_neutral = all(abs(component - 1.0) <= 0.01 for component in selected_tint)
+    has_selected_specular = (
+        selected_specular is not None and (_mean_triplet(selected_specular) or 0.0) > 0.0
+    )
+    has_selected_gloss = stencil_glossiness is not None and stencil_glossiness > 0.0
+    color_enable = 1.0
+    tone_mode = 0.0
+    if not is_virtual and tint_is_neutral and not has_selected_specular and not has_selected_gloss:
+        color_enable = 0.0
+        tone_mode = 1.0
+
+    return selected_tint, selected_specular, color_enable, tone_mode
+
+
 class LayersMixin:
     """Layer/wear/detail/stencil/iridescence wiring for ``PackageImporter``."""
 
@@ -458,135 +501,31 @@ class LayersMixin:
         if stencil_node is None:
             return StencilOverlaySockets()
 
-        tint = _public_param_triplet(
+        stencil_diffuse_color = _public_param_triplet(
             submaterial,
             "StencilDiffuseColor1",
             "StencilDiffuse1",
             "StencilTintColor",
             "TintColor",
             "StencilDiffuseColor",
-        )
-        tint_2 = _public_param_triplet(submaterial, "StencilDiffuseColor2", "StencilDiffuse2")
-        tint_3 = _public_param_triplet(submaterial, "StencilDiffuseColor3", "StencilDiffuse3")
-        specular_1 = _public_param_triplet(
-            submaterial, "StencilSpecularColor1", "StencilSpecular1", "StencilSpecularColor"
-        )
-        specular_2 = _public_param_triplet(submaterial, "StencilSpecularColor2", "StencilSpecular2")
-        specular_3 = _public_param_triplet(submaterial, "StencilSpecularColor3", "StencilSpecular3")
-        multi_channel_stencil = any(
-            value is not None for value in (tint_2, tint_3, specular_2, specular_3)
-        )
+        ) or (1.0, 1.0, 1.0)
+        stencil_diffuse_color_2 = _public_param_triplet(
+            submaterial,
+            "StencilDiffuseColor2",
+            "StencilDiffuse2",
+        ) or (1.0, 1.0, 1.0)
+        stencil_diffuse_color_3 = _public_param_triplet(
+            submaterial,
+            "StencilDiffuseColor3",
+            "StencilDiffuse3",
+        ) or (1.0, 1.0, 1.0)
         tint_override = _optional_float_public_param(submaterial, "StencilTintOverride") or 0.0
-        stencil_glossiness = _optional_float_public_param(submaterial, "StencilGlossiness")
-        opacity = _optional_float_public_param(submaterial, "StencilOpacity")
-
-        breakup_node = None
-        breakup_strength = 0.0
-        breakup_ref = _submaterial_texture_reference(
-            submaterial, slots=("TexSlot8",), roles=("breakup", "grime_breakup")
-        )
-        if breakup_ref is not None and breakup_ref.export_path is not None:
-            breakup_tiling = _optional_float_public_param(submaterial, "StencilBreakupTiling")
-            breakup_node = self._tiled_image_node(
-                nodes,
-                links,
-                breakup_ref.export_path,
-                x=x,
-                y=y - 220,
-                is_color=False,
-                tiling=breakup_tiling
-                if breakup_tiling is not None and breakup_tiling > 0.0
-                else 1.0,
-                uv_map_name=stencil_uv_map,
-            )
-            breakup_strength = max(
-                0.0,
-                min(
-                    1.0,
-                    _optional_float_public_param(
-                        submaterial, "StencilDiffuseBreakup", "StencilGlossBreakup"
-                    )
-                    or 0.0,
-                ),
-            )
-
-        group_node = nodes.new("ShaderNodeGroup")
-        group_node.location = (x + 420, y)
-        group_node.node_tree = self._ensure_runtime_hardsurface_stencil_group()
-        group_node.label = "StarBreaker HardSurface Stencil"
-
-        links.new(stencil_node.outputs[0], group_node.inputs["Stencil Color"])
-        stencil_alpha_socket = _output_socket(stencil_node, "Alpha")
-        if stencil_alpha_socket is not None:
-            links.new(stencil_alpha_socket, group_node.inputs["Stencil Alpha"])
-        if breakup_node is not None:
-            links.new(breakup_node.outputs[0], group_node.inputs["Breakup Color"])
-            breakup_alpha_socket = _output_socket(breakup_node, "Alpha")
-            if breakup_alpha_socket is not None:
-                links.new(breakup_alpha_socket, group_node.inputs["Breakup Alpha"])
-            group_node.inputs["Breakup Strength"].default_value = breakup_strength
-            group_node.inputs["Breakup Enable"].default_value = (
-                1.0 if breakup_strength > 0.0 else 0.0
-            )
-        else:
-            group_node.inputs["Breakup Enable"].default_value = 0.0
-
-        if opacity is not None:
-            group_node.inputs["Stencil Opacity"].default_value = max(0.0, min(1.0, opacity))
-        if stencil_glossiness is not None:
-            group_node.inputs["Stencil Glossiness"].default_value = max(
-                0.0, min(1.0, stencil_glossiness)
-            )
-
-        use_override = stencil_ref.is_virtual or tint_override > 0.0
-        if use_override:
-            group_node.inputs["Mode"].default_value = 0.0
-            group_node.inputs["Tint1"].default_value = (
-                *(tint if tint is not None else (1.0, 1.0, 1.0)),
-                1.0,
-            )
-            group_node.inputs["Tint1 Enable"].default_value = 1.0
-            group_node.inputs["Tint2 Enable"].default_value = 0.0
-            group_node.inputs["Tint3 Enable"].default_value = 0.0
-        elif multi_channel_stencil:
-            group_node.inputs["Mode"].default_value = 1.0
-            for slot, color in (("Tint1", tint), ("Tint2", tint_2), ("Tint3", tint_3)):
-                enable_key = f"{slot} Enable"
-                if color is not None and (_mean_triplet(color) or 0.0) > 0.01:
-                    group_node.inputs[slot].default_value = (*color, 1.0)
-                    group_node.inputs[enable_key].default_value = 1.0
-                else:
-                    group_node.inputs[enable_key].default_value = 0.0
-        else:
-            group_node.inputs["Mode"].default_value = 0.0
-            group_node.inputs["Tint1 Enable"].default_value = 0.0
-            group_node.inputs["Tint2 Enable"].default_value = 0.0
-            group_node.inputs["Tint3 Enable"].default_value = 0.0
-
-        for slot, color in (
-            ("Specular1", specular_1),
-            ("Specular2", specular_2),
-            ("Specular3", specular_3),
-        ):
-            enable_key = f"{slot} Enable"
-            if color is not None and (_mean_triplet(color) or 0.0) > 0.0:
-                group_node.inputs[slot].default_value = (*color, 1.0)
-                group_node.inputs[enable_key].default_value = 1.0
-            else:
-                group_node.inputs[enable_key].default_value = 0.0
-
-        has_specular = any(
-            c is not None and (_mean_triplet(c) or 0.0) > 0.0
-            for c in (specular_1, specular_2, specular_3)
-        )
-
         return StencilOverlaySockets(
-            color=group_node.outputs["Color"],
-            color_factor=group_node.outputs["Color Factor"],
-            factor=group_node.outputs["Factor"],
-            roughness=group_node.outputs["Roughness"] if stencil_glossiness is not None else None,
-            specular=group_node.outputs["Specular"] if has_specular else None,
-            specular_tint=group_node.outputs["Specular Tint"] if has_specular else None,
+            color=stencil_node.outputs[0],
+            stencil_diffuse_color=stencil_diffuse_color,
+            stencil_diffuse_color_2=stencil_diffuse_color_2,
+            stencil_diffuse_color_3=stencil_diffuse_color_3,
+            tone_mode=tint_override if tint_override > 0.0 else (1.0 if stencil_ref.is_virtual else 0.0),
         )
 
     # ------------------------------------------------------------------
