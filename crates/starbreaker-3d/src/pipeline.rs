@@ -308,14 +308,32 @@ fn export_entity_from_paths_cached(
     png_cache: &mut PngCache,
     use_model_bbox: bool,
 ) -> Result<EntityPayload, Error> {
-    let (mesh, mtl_file, textures, nmc, _skeleton_bones, primary_path) =
+    let (mesh, mtl_file, textures, nmc, skeleton_bones, primary_path) =
         load_geometry_parts(p4k, geometry_path, material_path, opts, png_cache, use_model_bbox)?;
 
     if !opts.material_mode.include_materials() {
-        return Ok((mesh, None, None, nmc, None, primary_path, material_path.to_string(), Vec::new()));
+        return Ok((
+            mesh,
+            None,
+            None,
+            nmc,
+            None,
+            primary_path,
+            material_path.to_string(),
+            skeleton_bones,
+        ));
     }
 
-    Ok((mesh, mtl_file, textures, nmc, None, primary_path, material_path.to_string(), Vec::new()))
+    Ok((
+        mesh,
+        mtl_file,
+        textures,
+        nmc,
+        None,
+        primary_path,
+        material_path.to_string(),
+        skeleton_bones,
+    ))
 }
 
 /// Shared geometry loading: resolve parts, load skeleton, load + merge meshes.
@@ -338,7 +356,7 @@ fn load_geometry_parts(
     let resolved = resolve_geometry_files(p4k, geometry_path)?;
     let primary_path = resolved.parts[0].path.clone();
 
-    let skeleton_bones = load_skeleton(p4k, resolved.skeleton_path.as_deref());
+    let skeleton_bones = load_skeleton(p4k, resolved.skeleton_path.as_deref(), &primary_path);
 
     let effective_material = resolved.parts[0]
         .material_override
@@ -367,13 +385,39 @@ fn load_geometry_parts(
 }
 
 /// Load skeleton bones from a .chr path. Returns empty vec if path is None or load fails.
-fn load_skeleton(p4k: &MappedP4k, skel_path: Option<&str>) -> Vec<crate::skeleton::Bone> {
-    let Some(skel_path) = skel_path else { return Vec::new() };
-    let p4k_skel = datacore_path_to_p4k(skel_path);
-    p4k.entry_case_insensitive(&p4k_skel)
-        .and_then(|entry| p4k.read(entry).ok())
-        .and_then(|data| crate::skeleton::parse_skeleton(&data))
-        .unwrap_or_default()
+fn skeleton_source_paths<'a>(skel_path: Option<&'a str>, geometry_path: &'a str) -> Vec<&'a str> {
+    let mut paths = Vec::new();
+    if let Some(path) = skel_path.filter(|path| !path.is_empty()) {
+        paths.push(path);
+    }
+    if !geometry_path.is_empty()
+        && !paths
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(geometry_path))
+    {
+        paths.push(geometry_path);
+    }
+    paths
+}
+
+/// Load skeleton bones from an explicit `.chr` path, falling back to the primary geometry.
+/// Direct `.skin` assets can carry inline CompiledBones chunks without a companion skeleton.
+fn load_skeleton(
+    p4k: &MappedP4k,
+    skel_path: Option<&str>,
+    geometry_path: &str,
+) -> Vec<crate::skeleton::Bone> {
+    for path in skeleton_source_paths(skel_path, geometry_path) {
+        let p4k_path = datacore_path_to_p4k(path);
+        if let Some(bones) = p4k
+            .entry_case_insensitive(&p4k_path)
+            .and_then(|entry| p4k.read(entry).ok())
+            .and_then(|data| crate::skeleton::parse_skeleton(&data))
+        {
+            return bones;
+        }
+    }
+    Vec::new()
 }
 
 /// Export an entity with its loadout tree as a single GLB.
@@ -464,7 +508,7 @@ pub fn assemble_glb_with_loadout_with_progress(
     if opts.include_attachments {
         for (gear_path, bone_name) in &gear_parts {
             match export_entity_from_paths(p4k, gear_path, "", &child_opts) {
-                Ok((gear_mesh, gear_mtl, _, gear_nmc, _, gear_geometry_path, gear_material_path, _)) => {
+                Ok((gear_mesh, gear_mtl, _, gear_nmc, _, gear_geometry_path, gear_material_path, gear_bones)) => {
                     let verts = gear_mesh.positions.len();
                     let textures = if child_payload_material_mode.include_textures() {
                         gear_mtl.as_ref().map(|materials| {
@@ -490,7 +534,7 @@ pub fn assemble_glb_with_loadout_with_progress(
                         palette: root_palette.clone(),
                         geometry_path: gear_geometry_path,
                         material_path: gear_material_path,
-                        bones: Vec::new(),
+                        bones: gear_bones,
                         entity_name: gear_path.rsplit('/').next().unwrap_or(gear_path).to_string(),
                         parent_node_name: bone_name.clone(),
                         parent_entity_name: resolved.entity_name.clone(),
@@ -1090,7 +1134,7 @@ pub fn resolve_loadout_meshes(
     let (nmc, _mtl) = load_nmc_and_material(p4k, &geometry_path, &material_path);
 
     let resolved = resolve_geometry_files(p4k, &geometry_path)?;
-    let bones = load_skeleton(p4k, resolved.skeleton_path.as_deref());
+    let bones = load_skeleton(p4k, resolved.skeleton_path.as_deref(), &resolved.parts[0].path);
 
     // Check if mesh companion exists.
     // CDF files don't have companion files — check for the CDF itself.
@@ -5288,6 +5332,28 @@ mod tests {
         assert_eq!(
             datacore_path_to_p4k("a/b/c/d/e.cgf"),
             "Data\\a\\b\\c\\d\\e.cgf"
+        );
+    }
+
+    #[test]
+    fn skeleton_source_paths_include_direct_skin_geometry() {
+        assert_eq!(
+            skeleton_source_paths(None, "Data/Objects/Ships/Test/gear.skin"),
+            vec!["Data/Objects/Ships/Test/gear.skin"]
+        );
+    }
+
+    #[test]
+    fn skeleton_source_paths_prefer_explicit_skeleton_before_geometry() {
+        assert_eq!(
+            skeleton_source_paths(
+                Some("Data/Objects/Ships/Test/gear.chr"),
+                "Data/Objects/Ships/Test/gear.skin"
+            ),
+            vec![
+                "Data/Objects/Ships/Test/gear.chr",
+                "Data/Objects/Ships/Test/gear.skin",
+            ]
         );
     }
 }
