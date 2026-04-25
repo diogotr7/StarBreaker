@@ -973,18 +973,37 @@ pub(crate) fn write_decomposed_export(
 
     let root_animations = if opts.apply_default_animation_pose {
         let mut clips: Vec<serde_json::Value> = Vec::new();
-        let mut seen_names = std::collections::HashSet::<String>::new();
+        // Map from clip name → index in `clips`, used to merge same-named clips
+        // from different child skeletons (e.g. landing_gear_extend from front/left/right CHRs).
+        let mut name_to_index = std::collections::HashMap::<String, usize>::new();
 
         let mut append_from_skeleton = |skeleton_path: &str, include_unmatched: bool, allow_bone_subset_fallback: bool| {
             match crate::animation::extract_animations_for_skeleton_json(p4k, skeleton_path, include_unmatched, allow_bone_subset_fallback) {
                 Ok(Some(serde_json::Value::Array(values))) => {
-                    for clip in values {
+                    for mut clip in values {
                         let name = clip
                             .get("name")
                             .and_then(|value| value.as_str())
                             .unwrap_or("")
                             .to_string();
-                        if name.is_empty() || seen_names.insert(name) {
+                        if name.is_empty() {
+                            clips.push(clip);
+                        } else if let Some(&existing_idx) = name_to_index.get(&name) {
+                            // Merge bone channels from this clip into the existing one.
+                            if let (Some(serde_json::Value::Object(new_bones)), Some(existing_clip)) =
+                                (clip.get_mut("bones").map(|b| b.take()), clips.get_mut(existing_idx))
+                            {
+                                if let Some(serde_json::Value::Object(existing_bones)) =
+                                    existing_clip.get_mut("bones")
+                                {
+                                    for (k, v) in new_bones {
+                                        existing_bones.entry(k).or_insert(v);
+                                    }
+                                }
+                            }
+                        } else {
+                            let idx = clips.len();
+                            name_to_index.insert(name, idx);
                             clips.push(clip);
                         }
                     }
