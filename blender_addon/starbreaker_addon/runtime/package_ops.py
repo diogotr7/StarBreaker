@@ -634,6 +634,11 @@ def apply_animation_mode_to_package_root(
     elif normalized_mode in {"snap_first", "snap_last"}:
         frame_index = 0 if normalized_mode == "snap_first" else -1
         updated = _apply_animation_pose(package_root, clip, frame_index)
+        if updated == 0:
+            paired = _paired_clip_for_snap(package, clip, frame_index)
+            if paired is not None:
+                paired_clip, paired_frame_index = paired
+                updated = _apply_animation_pose(package_root, paired_clip, paired_frame_index)
     else:
         updated = _insert_animation_action(context, package_root, clip)
 
@@ -681,7 +686,8 @@ def _animation_display_name(clip: dict[str, Any]) -> str:
 
     raw_name = str(clip.get("name", "")).strip()
     shortened = _strip_animation_prefix(raw_name)
-    return shortened or raw_name
+    filename = Path(shortened).name if shortened else ""
+    return filename or shortened or raw_name
 
 
 def _find_animation_clip(package: PackageBundle, animation_name: str) -> dict[str, Any] | None:
@@ -691,6 +697,36 @@ def _find_animation_clip(package: PackageBundle, animation_name: str) -> dict[st
     for clip in _animation_clips(package):
         if str(clip.get("name", "")).strip() == target:
             return clip
+    return None
+
+
+def _paired_clip_for_snap(
+    package: PackageBundle,
+    clip: dict[str, Any],
+    frame_index: int,
+) -> tuple[dict[str, Any], int] | None:
+    name = str(clip.get("name", "")).strip()
+    if not name:
+        return None
+
+    candidates: list[tuple[str, int]] = []
+    if name.endswith("_retract.caf"):
+        alt_name = f"{name[:-len('_retract.caf')]}_deploy.caf"
+        candidates.append((alt_name, 0 if frame_index == -1 else -1))
+    if name.endswith("_deploy.caf"):
+        alt_name = f"{name[:-len('_deploy.caf')]}_retract.caf"
+        candidates.append((alt_name, 0 if frame_index == -1 else -1))
+    if name.endswith("_close.caf"):
+        alt_name = f"{name[:-len('_close.caf')]}_open.caf"
+        candidates.append((alt_name, 0 if frame_index == -1 else -1))
+    if name.endswith("_open.caf"):
+        alt_name = f"{name[:-len('_open.caf')]}_close.caf"
+        candidates.append((alt_name, 0 if frame_index == -1 else -1))
+
+    for alt_name, alt_frame in candidates:
+        alt_clip = _find_animation_clip(package, alt_name)
+        if alt_clip is not None:
+            return alt_clip, alt_frame
     return None
 
 

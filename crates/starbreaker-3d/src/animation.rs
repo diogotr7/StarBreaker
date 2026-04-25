@@ -83,6 +83,9 @@ struct ControllerEntry {
 #[derive(Debug)]
 struct DbaMetaEntry {
     fps: u16,
+    num_controllers: u16,
+    end_frame: u32,
+    start_rotation: [f32; 4],
 }
 
 /// IVO chunk type IDs for animation data.
@@ -118,21 +121,162 @@ pub fn parse_dba(data: &[u8]) -> Result<AnimationDatabase, Error> {
         .map(|c| parse_dba_metadata(ivo.chunk_data(c)))
         .unwrap_or_default();
 
-    let blocks = parse_animation_blocks(data_bytes)?;
+    let mut blocks = parse_animation_blocks(data_bytes)?;
+    if !meta_entries.is_empty() && blocks.len() > meta_entries.len() {
+        log::warn!(
+            "DBA parse produced {} blocks but metadata lists {}; truncating to metadata count",
+            blocks.len(),
+            meta_entries.len()
+        );
+        blocks.truncate(meta_entries.len());
+    }
 
-    let clips: Vec<AnimationClip> = blocks
-        .into_iter()
-        .enumerate()
-        .map(|(i, block)| {
-            let (name, fps) = meta_entries
-                .get(i)
-                .map(|(name, meta)| (name.clone(), meta.fps as f32))
-                .unwrap_or_else(|| (format!("anim_{i}"), 30.0));
-            AnimationClip { name, fps, channels: block }
-        })
-        .collect();
+    let clips = match_dba_metadata_to_blocks(blocks, &meta_entries);
 
     Ok(AnimationDatabase { clips })
+}
+
+fn match_dba_metadata_to_blocks(
+    blocks: Vec<Vec<BoneChannel>>,
+    meta_entries: &[(String, DbaMetaEntry)],
+) -> Vec<AnimationClip> {
+    if blocks.is_empty() {
+        return Vec::new();
+    }
+    if meta_entries.is_empty() {
+        return blocks
+            .into_iter()
+            .enumerate()
+            .map(|(i, channels)| AnimationClip {
+                name: format!("anim_{i}"),
+                fps: 30.0,
+                channels,
+            })
+            .collect();
+    }
+
+    let mut indexed_blocks: Vec<Option<Vec<BoneChannel>>> = blocks.into_iter().map(Some).collect();
+    let block_end_frames: Vec<u32> = indexed_blocks
+        .iter()
+        .map(|b| b.as_ref().map_or(0, |block| block_end_frame(block)))
+        .collect();
+    let mut block_assigned = vec![false; indexed_blocks.len()];
+    let mut meta_to_block: Vec<Option<usize>> = vec![None; meta_entries.len()];
+
+    let mut scored_pairs: Vec<(f32, usize, usize)> = Vec::new();
+    for (mi, (_, meta)) in meta_entries.iter().enumerate() {
+        for (bi, maybe_block) in indexed_blocks.iter().enumerate() {
+            let Some(block) = maybe_block.as_ref() else {
+                continue;
+            };
+            if block.len() != meta.num_controllers as usize {
+                continue;
+            }
+            let block_end = block_end_frames[bi];
+            let frame_delta = meta.end_frame.abs_diff(block_end) as f32;
+            let rot_score = block_distance_to_start_rotation(block, meta.start_rotation);
+            let score = frame_delta * 10.0 + rot_score;
+            scored_pairs.push((score, mi, bi));
+        }
+    }
+    scored_pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    for (_score, mi, bi) in scored_pairs {
+        if meta_to_block[mi].is_some() || block_assigned[bi] {
+            continue;
+        }
+        meta_to_block[mi] = Some(bi);
+        block_assigned[bi] = true;
+    }
+
+    for (mi, (_, meta)) in meta_entries.iter().enumerate() {
+        if meta_to_block[mi].is_some() {
+            continue;
+        }
+        if let Some((bi, _)) = indexed_blocks
+            .iter()
+            .enumerate()
+            .find(|(bi, block)| !block_assigned[*bi] && block.as_ref().is_some_and(|b| b.len() == meta.num_controllers as usize))
+        {
+            meta_to_block[mi] = Some(bi);
+            block_assigned[bi] = true;
+        }
+    }
+
+    for (mi, _) in meta_entries.iter().enumerate() {
+        if meta_to_block[mi].is_some() {
+            continue;
+        }
+        if let Some((bi, _)) = indexed_blocks
+            .iter()
+            .enumerate()
+            .find(|(bi, block)| !block_assigned[*bi] && block.is_some())
+        {
+            meta_to_block[mi] = Some(bi);
+            block_assigned[bi] = true;
+        }
+    }
+
+    let mut clips: Vec<AnimationClip> = Vec::new();
+    for (meta_index, (name, meta)) in meta_entries.iter().enumerate() {
+        let Some(block_index) = meta_to_block.get(meta_index).and_then(|m| *m) else {
+            continue;
+        };
+        if let Some(channels) = indexed_blocks[block_index].take() {
+            let clip_name = if name.trim().is_empty() {
+                format!("anim_{meta_index}")
+            } else {
+                name.clone()
+            };
+            clips.push(AnimationClip {
+                name: clip_name,
+                fps: if meta.fps == 0 { 30.0 } else { meta.fps as f32 },
+                channels,
+            });
+        }
+    }
+
+    for (idx, maybe_block) in indexed_blocks.into_iter().enumerate() {
+        if let Some(channels) = maybe_block {
+            clips.push(AnimationClip {
+                name: format!("anim_unmatched_{idx}"),
+                fps: 30.0,
+                channels,
+            });
+        }
+    }
+
+    clips
+}
+
+fn block_distance_to_start_rotation(block: &[BoneChannel], sr: [f32; 4]) -> f32 {
+    let mut best = f32::INFINITY;
+    for ch in block {
+        if let Some(kf0) = ch.rotations.first() {
+            let q = kf0.value;
+            let dot = (q[0] * sr[0] + q[1] * sr[1] + q[2] * sr[2] + q[3] * sr[3])
+                .abs()
+                .clamp(0.0, 1.0);
+            let distance = 1.0 - dot;
+            if distance < best {
+                best = distance;
+            }
+        }
+    }
+    best
+}
+
+fn block_end_frame(block: &[BoneChannel]) -> u32 {
+    let mut max_frame = 0.0f32;
+    for ch in block {
+        if let Some(last) = ch.rotations.last() {
+            max_frame = max_frame.max(last.time);
+        }
+        if let Some(last) = ch.positions.last() {
+            max_frame = max_frame.max(last.time);
+        }
+    }
+    max_frame.round().max(0.0) as u32
 }
 
 /// Parse a `.caf` file from raw bytes.
@@ -369,6 +513,14 @@ fn parse_dba_metadata(data: &[u8]) -> Vec<(String, DbaMetaEntry)> {
         let o = 4 + i * entry_size;
         entries.push(DbaMetaEntry {
             fps: u16::from_le_bytes([data[o + 8], data[o + 9]]),
+            num_controllers: u16::from_le_bytes([data[o + 10], data[o + 11]]),
+            end_frame: u32::from_le_bytes([data[o + 24], data[o + 25], data[o + 26], data[o + 27]]),
+            start_rotation: [
+                f32::from_le_bytes([data[o + 28], data[o + 29], data[o + 30], data[o + 31]]),
+                f32::from_le_bytes([data[o + 32], data[o + 33], data[o + 34], data[o + 35]]),
+                f32::from_le_bytes([data[o + 36], data[o + 37], data[o + 38], data[o + 39]]),
+                f32::from_le_bytes([data[o + 40], data[o + 41], data[o + 42], data[o + 43]]),
+            ],
         });
     }
 

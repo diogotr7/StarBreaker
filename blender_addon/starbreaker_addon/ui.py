@@ -48,9 +48,9 @@ _PALETTE_ITEMS_CACHE: list[tuple[str, str, str]] = []
 _LIVERY_ITEMS_CACHE: list[tuple[str, str, str]] = []
 _ANIMATION_MODE_ITEMS: tuple[tuple[str, str, str], ...] = (
     ("none", "None", "Leave current transforms (restore bind pose if available)"),
-    ("snap_first", "Snap First", "Apply first keyframe pose"),
-    ("snap_last", "Snap Last", "Apply last keyframe pose"),
-    ("action", "Insert Action", "Insert full keyframes as Blender Action"),
+    ("snap_first", "First", "Apply first keyframe pose"),
+    ("snap_last", "Last", "Apply last keyframe pose"),
+    ("action", "Insert", "Insert full keyframes as Blender Action"),
 )
 _IMPORT_PROGRESS_ACTIVE_PROP = "starbreaker_import_progress_active"
 _IMPORT_PROGRESS_VALUE_PROP = "starbreaker_import_progress_value"
@@ -728,11 +728,12 @@ class STARBREAKER_PT_tools(Panel):
             else:
                 mode_map = package_animation_mode_map(package_root)
                 for animation_name, animation_display_name in animation_items:
-                    row = animation_box.row(align=True)
-                    row.label(text=animation_display_name)
+                    name_row = animation_box.row()
+                    name_row.label(text=animation_display_name)
                     current_mode = mode_map.get(animation_name, "none")
+                    buttons_row = animation_box.row(align=True)
                     for mode_id, mode_label, _ in _ANIMATION_MODE_ITEMS:
-                        op = row.operator(
+                        op = buttons_row.operator(
                             STARBREAKER_OT_apply_animation_mode.bl_idname,
                             text=mode_label,
                             depress=(current_mode == mode_id),
