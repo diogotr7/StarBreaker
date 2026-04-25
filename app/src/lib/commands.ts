@@ -124,6 +124,7 @@ export interface ExportRequest {
   threads: number;
   overwrite_existing_assets: boolean;
   include_nodraw: boolean;
+  include_animations: boolean;
 }
 
 export interface ExportProgress {

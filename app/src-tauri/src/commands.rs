@@ -436,6 +436,7 @@ pub struct ExportRequest {
     pub threads: usize,
     pub overwrite_existing_assets: bool,
     pub include_nodraw: bool,
+    pub include_animations: bool,
 }
 
 #[derive(Clone)]
@@ -691,6 +692,8 @@ pub async fn start_export(
         include_shields: false,
         texture_mip: request.mip,
         lod_level: request.lod,
+        apply_default_animation_pose: request.include_animations,
+        default_animation_tags: vec!["landing_gear_extend".to_string()],
     };
 
     log::info!(
