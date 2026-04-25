@@ -22,10 +22,22 @@ server, export pipeline). Blender-addon-specific guidance lives in
 
 ## Building
 
-Use `cargo build` (debug) for iteration, NOT `cargo build --release`.
-Debug profile is `[optimized + debuginfo]` in this workspace — fast
-enough for testing. Release builds take much longer and are only
-needed for deployment (MCP server, final binaries, CLI re-exports).
+Use the repo build scripts from `scripts/` so builds run the same way every time:
+
+- `./scripts/build-dev-cli.sh` — debug CLI only
+- `./scripts/build-dev-all.sh` — debug CLI + Tauri app + AppImage
+- `./scripts/build-release-cli.sh` — release CLI only
+- `./scripts/build-release-all.sh` — release CLI + Tauri app + AppImage
+
+These scripts use repo-relative paths and require no arguments for the normal
+dev/release flow. The `build-all` scripts also clear any running
+`starbreaker-app` process first so Tauri bundling does not fail with
+`Text file busy`.
+
+If you need to invoke Cargo directly, use `cargo build` (debug) for iteration,
+NOT `cargo build --release`. Debug profile is `[optimized + debuginfo]` in this
+workspace — fast enough for testing. Release builds take much longer and are
+only needed for deployment (MCP server, final binaries, CLI re-exports).
 
 ## Coding Practices
 
