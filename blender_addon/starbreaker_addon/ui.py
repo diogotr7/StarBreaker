@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import time
 
@@ -34,6 +35,7 @@ from .runtime import (
     apply_paint_to_selected_package,
     apply_palette_to_selected_package,
     available_package_animation_items,
+    package_animation_diagnostics,
     available_light_state_names,
     dump_selected_metadata,
     exterior_palette_ids,
@@ -651,6 +653,59 @@ class STARBREAKER_OT_apply_animation_mode(Operator):
         return {"FINISHED"}
 
 
+class STARBREAKER_OT_dump_animation_diagnostics(Operator):
+    bl_idname = "starbreaker.dump_animation_diagnostics"
+    bl_label = "Animation Diagnostics"
+    bl_options = {"REGISTER"}
+    bl_description = "Dump hash/object matching diagnostics for one animation"
+
+    animation_name: StringProperty(name="Animation")  # type: ignore[assignment]
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return _package_root_from_context(context) is not None
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        package_root = _package_root_from_context(context)
+        if package_root is None:
+            self.report({"ERROR"}, "Select an imported StarBreaker object first")
+            return {"CANCELLED"}
+
+        package = _selected_package(context)
+        if package is None:
+            self.report({"ERROR"}, "Unable to load package from selected object")
+            return {"CANCELLED"}
+
+        name = (self.animation_name or "").strip()
+        if not name:
+            self.report({"ERROR"}, "No animation selected")
+            return {"CANCELLED"}
+
+        try:
+            diagnostics = package_animation_diagnostics(package, package_root, name)
+        except Exception as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+
+        text_name = f"starbreaker_anim_diag_{Path(name).stem}.json"
+        text = bpy.data.texts.get(text_name)
+        if text is None:
+            text = bpy.data.texts.new(text_name)
+        else:
+            text.clear()
+        text.from_string(json.dumps(diagnostics, indent=2, sort_keys=True))
+
+        self.report(
+            {"INFO"},
+            (
+                f"{name}: {diagnostics['matched_object_count']} objects, "
+                f"{diagnostics['unmatched_hash_count']} unmatched hashes "
+                f"(saved to {text.name})"
+            ),
+        )
+        return {"FINISHED"}
+
+
 class STARBREAKER_PT_tools(Panel):
     bl_label = "StarBreaker"
     bl_idname = "STARBREAKER_PT_tools"
@@ -728,8 +783,14 @@ class STARBREAKER_PT_tools(Panel):
             else:
                 mode_map = package_animation_mode_map(package_root)
                 for animation_name, animation_display_name in animation_items:
-                    name_row = animation_box.row()
+                    name_row = animation_box.row(align=True)
                     name_row.label(text=animation_display_name)
+                    diag = name_row.operator(
+                        STARBREAKER_OT_dump_animation_diagnostics.bl_idname,
+                        text="Diag",
+                        icon="INFO",
+                    )
+                    diag.animation_name = animation_name
                     current_mode = mode_map.get(animation_name, "none")
                     buttons_row = animation_box.row(align=True)
                     for mode_id, mode_label, _ in _ANIMATION_MODE_ITEMS:
@@ -751,6 +812,7 @@ CLASSES = [
     STARBREAKER_OT_switch_light_state,
     STARBREAKER_OT_dump_metadata,
     STARBREAKER_OT_apply_animation_mode,
+    STARBREAKER_OT_dump_animation_diagnostics,
     STARBREAKER_PT_tools,
 ]
 

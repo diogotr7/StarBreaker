@@ -975,8 +975,8 @@ pub(crate) fn write_decomposed_export(
         let mut clips: Vec<serde_json::Value> = Vec::new();
         let mut seen_names = std::collections::HashSet::<String>::new();
 
-        let mut append_from_skeleton = |skeleton_path: &str| {
-            match crate::animation::extract_animations_for_skeleton_json(p4k, skeleton_path) {
+        let mut append_from_skeleton = |skeleton_path: &str, include_unmatched: bool, allow_bone_subset_fallback: bool| {
+            match crate::animation::extract_animations_for_skeleton_json(p4k, skeleton_path, include_unmatched, allow_bone_subset_fallback) {
                 Ok(Some(serde_json::Value::Array(values))) => {
                     for clip in values {
                         let name = clip
@@ -1002,11 +1002,11 @@ pub(crate) fn write_decomposed_export(
         };
 
         if let Some(skeleton_path) = input.root_skeleton_source_path.as_deref() {
-            append_from_skeleton(skeleton_path);
+            append_from_skeleton(skeleton_path, true, false);
         }
         for child in &input.children {
             if let Some(skeleton_path) = child.skeleton_source_path.as_deref() {
-                append_from_skeleton(skeleton_path);
+                append_from_skeleton(skeleton_path, false, true);
             }
         }
 

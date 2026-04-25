@@ -612,6 +612,67 @@ def package_animation_mode_map(package_root: bpy.types.Object) -> dict[str, str]
     return result
 
 
+def package_animation_diagnostics(
+    package: PackageBundle,
+    package_root: bpy.types.Object,
+    animation_name: str,
+) -> dict[str, Any]:
+    clip = _find_animation_clip(package, animation_name)
+    if clip is None:
+        raise RuntimeError(f"Animation '{animation_name}' not found in package sidecar")
+
+    bones = clip.get("bones")
+    channel_hashes: list[str] = []
+    if isinstance(bones, dict):
+        channel_hashes = [str(key) for key in bones.keys() if isinstance(key, str)]
+
+    hash_to_objects: dict[str, list[str]] = {}
+    for obj in _iter_candidate_bone_objects(package_root):
+        bone_hash = _object_bone_hash(obj)
+        source_name = str(obj.get(PROP_SOURCE_NODE_NAME, obj.name) or "")
+        hash_to_objects.setdefault(bone_hash, []).append(source_name)
+
+    matched_hashes: list[str] = []
+    unmatched_hashes: list[str] = []
+    matched_objects: set[str] = set()
+    ambiguous_hashes: list[str] = []
+
+    for bone_hash in channel_hashes:
+        names = hash_to_objects.get(bone_hash, [])
+        if names:
+            matched_hashes.append(bone_hash)
+            matched_objects.update(names)
+            if len(names) > 1:
+                ambiguous_hashes.append(bone_hash)
+        else:
+            unmatched_hashes.append(bone_hash)
+
+    top_matches = sorted(
+        (
+            {
+                "hash": bone_hash,
+                "objects": sorted(hash_to_objects.get(bone_hash, [])),
+            }
+            for bone_hash in matched_hashes
+        ),
+        key=lambda item: len(item["objects"]),
+        reverse=True,
+    )
+
+    return {
+        "animation_name": animation_name,
+        "display_name": _animation_display_name(clip),
+        "channel_hash_count": len(channel_hashes),
+        "matched_hash_count": len(matched_hashes),
+        "unmatched_hash_count": len(unmatched_hashes),
+        "matched_object_count": len(matched_objects),
+        "ambiguous_hash_count": len(ambiguous_hashes),
+        "unmatched_hashes": sorted(unmatched_hashes),
+        "matched_objects": sorted(matched_objects),
+        "top_matches": top_matches[:20],
+    }
+
+
 def apply_animation_mode_to_package_root(
     context: bpy.types.Context,
     package_root: bpy.types.Object,

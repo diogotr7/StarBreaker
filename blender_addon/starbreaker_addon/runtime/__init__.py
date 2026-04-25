@@ -60,6 +60,7 @@ from .package_ops import (
     apply_paint_to_selected_package,
     apply_palette_to_package_root,
     apply_palette_to_selected_package,
+    package_animation_diagnostics,
     available_package_animation_items,
     available_package_animation_names,
     available_light_state_names,

@@ -21,7 +21,7 @@
 //! decoder follows the Ghidra-confirmed bit layout (sign-bit borrow across
 //! u16 boundaries).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use starbreaker_chunks::ChunkFile;
 
@@ -83,9 +83,6 @@ struct ControllerEntry {
 #[derive(Debug)]
 struct DbaMetaEntry {
     fps: u16,
-    num_controllers: u16,
-    end_frame: u32,
-    start_rotation: [f32; 4],
 }
 
 /// IVO chunk type IDs for animation data.
@@ -155,89 +152,29 @@ fn match_dba_metadata_to_blocks(
             .collect();
     }
 
-    let mut indexed_blocks: Vec<Option<Vec<BoneChannel>>> = blocks.into_iter().map(Some).collect();
-    let block_end_frames: Vec<u32> = indexed_blocks
-        .iter()
-        .map(|b| b.as_ref().map_or(0, |block| block_end_frame(block)))
-        .collect();
-    let mut block_assigned = vec![false; indexed_blocks.len()];
-    let mut meta_to_block: Vec<Option<usize>> = vec![None; meta_entries.len()];
-
-    let mut scored_pairs: Vec<(f32, usize, usize)> = Vec::new();
-    for (mi, (_, meta)) in meta_entries.iter().enumerate() {
-        for (bi, maybe_block) in indexed_blocks.iter().enumerate() {
-            let Some(block) = maybe_block.as_ref() else {
-                continue;
-            };
-            if block.len() != meta.num_controllers as usize {
-                continue;
-            }
-            let block_end = block_end_frames[bi];
-            let frame_delta = meta.end_frame.abs_diff(block_end) as f32;
-            let rot_score = block_distance_to_start_rotation(block, meta.start_rotation);
-            let score = frame_delta * 10.0 + rot_score;
-            scored_pairs.push((score, mi, bi));
-        }
-    }
-    scored_pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
-
-    for (_score, mi, bi) in scored_pairs {
-        if meta_to_block[mi].is_some() || block_assigned[bi] {
-            continue;
-        }
-        meta_to_block[mi] = Some(bi);
-        block_assigned[bi] = true;
-    }
-
-    for (mi, (_, meta)) in meta_entries.iter().enumerate() {
-        if meta_to_block[mi].is_some() {
-            continue;
-        }
-        if let Some((bi, _)) = indexed_blocks
-            .iter()
-            .enumerate()
-            .find(|(bi, block)| !block_assigned[*bi] && block.as_ref().is_some_and(|b| b.len() == meta.num_controllers as usize))
-        {
-            meta_to_block[mi] = Some(bi);
-            block_assigned[bi] = true;
-        }
-    }
-
-    for (mi, _) in meta_entries.iter().enumerate() {
-        if meta_to_block[mi].is_some() {
-            continue;
-        }
-        if let Some((bi, _)) = indexed_blocks
-            .iter()
-            .enumerate()
-            .find(|(bi, block)| !block_assigned[*bi] && block.is_some())
-        {
-            meta_to_block[mi] = Some(bi);
-            block_assigned[bi] = true;
-        }
-    }
-
     let mut clips: Vec<AnimationClip> = Vec::new();
-    for (meta_index, (name, meta)) in meta_entries.iter().enumerate() {
-        let Some(block_index) = meta_to_block.get(meta_index).and_then(|m| *m) else {
-            continue;
+
+    // SC DBA metadata names are emitted in the same order as animation blocks
+    // once false-positive block scanning is eliminated/truncated.
+    for (i, (name, meta)) in meta_entries.iter().enumerate() {
+        let Some(channels) = blocks.get(i) else {
+            break;
         };
-        if let Some(channels) = indexed_blocks[block_index].take() {
-            let clip_name = if name.trim().is_empty() {
-                format!("anim_{meta_index}")
-            } else {
-                name.clone()
-            };
-            clips.push(AnimationClip {
-                name: clip_name,
-                fps: if meta.fps == 0 { 30.0 } else { meta.fps as f32 },
-                channels,
-            });
-        }
+        let clip_name = if name.trim().is_empty() {
+            format!("anim_{i}")
+        } else {
+            name.clone()
+        };
+        clips.push(AnimationClip {
+            name: clip_name,
+            fps: if meta.fps == 0 { 30.0 } else { meta.fps as f32 },
+            channels: channels.clone(),
+        });
     }
 
-    for (idx, maybe_block) in indexed_blocks.into_iter().enumerate() {
-        if let Some(channels) = maybe_block {
+    // Preserve any extra parsed blocks as unnamed clips for debugging.
+    if blocks.len() > meta_entries.len() {
+        for (idx, channels) in blocks.into_iter().enumerate().skip(meta_entries.len()) {
             clips.push(AnimationClip {
                 name: format!("anim_unmatched_{idx}"),
                 fps: 30.0,
@@ -249,35 +186,6 @@ fn match_dba_metadata_to_blocks(
     clips
 }
 
-fn block_distance_to_start_rotation(block: &[BoneChannel], sr: [f32; 4]) -> f32 {
-    let mut best = f32::INFINITY;
-    for ch in block {
-        if let Some(kf0) = ch.rotations.first() {
-            let q = kf0.value;
-            let dot = (q[0] * sr[0] + q[1] * sr[1] + q[2] * sr[2] + q[3] * sr[3])
-                .abs()
-                .clamp(0.0, 1.0);
-            let distance = 1.0 - dot;
-            if distance < best {
-                best = distance;
-            }
-        }
-    }
-    best
-}
-
-fn block_end_frame(block: &[BoneChannel]) -> u32 {
-    let mut max_frame = 0.0f32;
-    for ch in block {
-        if let Some(last) = ch.rotations.last() {
-            max_frame = max_frame.max(last.time);
-        }
-        if let Some(last) = ch.positions.last() {
-            max_frame = max_frame.max(last.time);
-        }
-    }
-    max_frame.round().max(0.0) as u32
-}
 
 /// Parse a `.caf` file from raw bytes.
 pub fn parse_caf(data: &[u8]) -> Result<AnimationDatabase, Error> {
@@ -513,14 +421,6 @@ fn parse_dba_metadata(data: &[u8]) -> Vec<(String, DbaMetaEntry)> {
         let o = 4 + i * entry_size;
         entries.push(DbaMetaEntry {
             fps: u16::from_le_bytes([data[o + 8], data[o + 9]]),
-            num_controllers: u16::from_le_bytes([data[o + 10], data[o + 11]]),
-            end_frame: u32::from_le_bytes([data[o + 24], data[o + 25], data[o + 26], data[o + 27]]),
-            start_rotation: [
-                f32::from_le_bytes([data[o + 28], data[o + 29], data[o + 30], data[o + 31]]),
-                f32::from_le_bytes([data[o + 32], data[o + 33], data[o + 34], data[o + 35]]),
-                f32::from_le_bytes([data[o + 36], data[o + 37], data[o + 38], data[o + 39]]),
-                f32::from_le_bytes([data[o + 40], data[o + 41], data[o + 42], data[o + 43]]),
-            ],
         });
     }
 
@@ -1163,14 +1063,115 @@ pub fn database_to_animations_json(db: &AnimationDatabase) -> serde_json::Value 
     serde_json::Value::Array(db.clips.iter().map(clip_to_json).collect())
 }
 
-/// Extract all animations for a skeleton from P4k and return as JSON.
+/// Match DBA blocks to `.chrparams` event names using a hybrid approach:
 ///
-/// This is the complete pipeline: derive .chrparams path, parse chrparams,
-/// load the tracks database (.dba), and convert all clips to JSON.
-/// Returns None if the skeleton has no .chrparams file.
+/// 1. **Path-based** (primary): resolve the chrparams CAF path to its full
+///    engine path and match it case-insensitively against DBA metadata names.
+///    This works for any DBA where metadata is correctly ordered.
+///
+/// 2. **Bone-subset fallback** (secondary): if the path-matched block contains
+///    bones that are NOT in this skeleton, the DBA metadata for this section is
+///    scrambled (as seen in `Scorpius.dba` for landing gear clips).  In that
+///    case, fall back to finding the first unmatched DBA block whose entire bone
+///    set is a subset of this skeleton's bones.
+///
+/// Unmatched DBA blocks retain their original DBA metadata names only when
+/// `include_unmatched` is `true`.  Pass `false` for child skeleton sources that
+/// share the root's DBA so that already-covered blocks are not duplicated.
+fn caf_anchored_remap(
+    db: &AnimationDatabase,
+    chrparams: &crate::chrparams::ChrParams,
+    skeleton_bone_hashes: &HashSet<u32>,
+    include_unmatched: bool,
+    allow_bone_subset_fallback: bool,
+) -> Vec<AnimationClip> {
+    // Build a name→index map from the DBA metadata names (case-insensitive).
+    let mut name_map: HashMap<String, usize> = HashMap::new();
+    for (i, clip) in db.clips.iter().enumerate() {
+        name_map.entry(clip.name.to_ascii_lowercase()).or_insert(i);
+    }
+
+    // When skeleton_bone_hashes is empty we skip validation (skeleton not found).
+    let can_validate = !skeleton_bone_hashes.is_empty();
+
+    let mut matched = vec![false; db.clips.len()];
+    let mut named_clips: Vec<AnimationClip> = Vec::new();
+
+    for (event_name, caf_path) in &chrparams.animations {
+        let resolved_caf = chrparams.resolved_caf_path(caf_path);
+        let resolved_lower = resolved_caf.to_ascii_lowercase();
+
+        let mut chosen_idx: Option<usize> = None;
+
+        // Step 1: path-based lookup.
+        if let Some(&path_idx) = name_map.get(&resolved_lower) {
+            if !matched[path_idx] {
+                let block_valid = !can_validate || db.clips[path_idx]
+                    .channels
+                    .iter()
+                    .all(|ch| skeleton_bone_hashes.contains(&ch.bone_hash));
+                if block_valid {
+                    chosen_idx = Some(path_idx);
+                } else {
+                    log::debug!(
+                        "[anim] path-matched block {path_idx} for '{event_name}' has bones outside skeleton — using bone-subset fallback"
+                    );
+                }
+            }
+        }
+
+        // Step 2: bone-subset fallback if path lookup failed or was invalid.
+        // Only used for child CHRs (small bone sets); the root body CHR
+        // has a large superset of bones, so this fallback would misfire.
+        if chosen_idx.is_none() && can_validate && allow_bone_subset_fallback {
+            chosen_idx = (0..db.clips.len()).find(|&i| {
+                !matched[i]
+                    && !db.clips[i].channels.is_empty()
+                    && db.clips[i]
+                        .channels
+                        .iter()
+                        .all(|ch| skeleton_bone_hashes.contains(&ch.bone_hash))
+            });
+            if chosen_idx.is_some() {
+                log::debug!(
+                    "[anim] bone-subset fallback: assigned block {:?} to '{event_name}'",
+                    chosen_idx
+                );
+            }
+        }
+
+        if let Some(idx) = chosen_idx {
+            matched[idx] = true;
+            named_clips.push(AnimationClip {
+                name: event_name.clone(),
+                fps: db.clips[idx].fps,
+                channels: db.clips[idx].channels.clone(),
+            });
+        } else {
+            log::debug!(
+                "[anim] no DBA block found for event '{event_name}' ({resolved_caf})"
+            );
+        }
+    }
+
+    // Append unmatched DBA blocks with their original metadata names, but only
+    // when the caller wants them (root skeleton context).
+    if include_unmatched {
+        for (i, clip) in db.clips.iter().enumerate() {
+            if !matched[i] {
+                named_clips.push(clip.clone());
+            }
+        }
+    }
+
+    named_clips
+}
+
 pub fn extract_animations_for_skeleton_json(
     p4k: &starbreaker_p4k::MappedP4k,
     skeleton_path: &str,
+    include_unmatched_dba_blocks: bool,
+    allow_bone_subset_fallback: bool,
 ) -> Result<Option<serde_json::Value>, Error> {
     let mut candidate_paths = Vec::new();
     if let Some(path) = swap_extension(skeleton_path, ".chrparams") {
@@ -1215,7 +1216,24 @@ pub fn extract_animations_for_skeleton_json(
             .ok_or_else(|| Error::Other(format!("Cannot load tracks database: {resolved_path}")))?
             .to_vec();
         let db = parse_dba(&dba_data)?;
-        return Ok(Some(database_to_animations_json(&db)));
+        // Load the skeleton file and compute its bone hash set.  This is used
+        // to identify which DBA blocks belong to this CHR (bone-subset scan).
+        let skeleton_p4k_path = crate::pipeline::datacore_path_to_p4k(skeleton_path);
+        let skeleton_bone_hashes: HashSet<u32> = p4k
+            .entry_case_insensitive(&skeleton_p4k_path)
+            .and_then(|e| p4k.read(e).ok())
+            .and_then(|data| crate::skeleton::parse_skeleton(&data))
+            .map(|bones| {
+                bones.iter().map(|b| bone_name_hash(&b.name)).collect()
+            })
+            .unwrap_or_default();
+        log::debug!(
+            "[anim] skeleton '{}' has {} bone hashes",
+            skeleton_path,
+            skeleton_bone_hashes.len()
+        );
+        let clips = caf_anchored_remap(&db, &chrparams, &skeleton_bone_hashes, include_unmatched_dba_blocks, allow_bone_subset_fallback);
+        return Ok(Some(database_to_animations_json(&AnimationDatabase { clips })));
     }
 
     // Fallback for chrparams that reference per-clip CAF files directly.
