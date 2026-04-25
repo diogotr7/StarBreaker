@@ -52,6 +52,7 @@ from .constants import (
 from .importer import PackageImporter
 from .importer.groups import apply_pom_detail_mode
 from .package_ops import (
+    apply_animation_mode_to_package_root,
     apply_light_state,
     apply_livery_to_package_root,
     apply_livery_to_selected_package,
@@ -59,10 +60,13 @@ from .package_ops import (
     apply_paint_to_selected_package,
     apply_palette_to_package_root,
     apply_palette_to_selected_package,
+    available_package_animation_items,
+    available_package_animation_names,
     available_light_state_names,
     dump_selected_metadata,
     exterior_palette_ids,
     find_package_root,
     import_package,
+    package_animation_mode_map,
 )
 

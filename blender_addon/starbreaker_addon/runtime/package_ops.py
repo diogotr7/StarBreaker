@@ -28,6 +28,7 @@ from .constants import (
     PROP_PAINT_VARIANT_SIDECAR,
     PROP_PALETTE_ID,
     PROP_SCENE_PATH,
+    PROP_SOURCE_NODE_NAME,
     PROP_SUBMATERIAL_JSON,
 )
 from .validators import _purge_orphaned_file_backed_images, _purge_orphaned_runtime_groups
@@ -567,4 +568,262 @@ def apply_light_state(state_name: str) -> int:
     for light in _iter_starbreaker_lights():
         if _apply_state_to_light(light, state_name):
             updated += 1
+    return updated
+
+
+_ANIMATION_MODES_PROP = "starbreaker_animation_modes"
+_ANIMATION_BIND_TRS_PROP = "starbreaker_animation_bind_trs"
+
+
+def available_package_animation_names(package: PackageBundle) -> list[str]:
+    """Return animation names exported on the package root entity."""
+    return [name for name, _ in available_package_animation_items(package)]
+
+
+def available_package_animation_items(package: PackageBundle) -> list[tuple[str, str]]:
+    """Return ``(clip_name, display_name)`` pairs for exported animations.
+
+    ``clip_name`` is the canonical sidecar key used for lookups. ``display_name``
+    prefers localized metadata when present, then falls back to a shortened path.
+    """
+    items: list[tuple[str, str]] = []
+    for clip in _animation_clips(package):
+        clip_name = str(clip.get("name", "")).strip()
+        if not clip_name:
+            continue
+        items.append((clip_name, _animation_display_name(clip)))
+    return items
+
+
+def package_animation_mode_map(package_root: bpy.types.Object) -> dict[str, str]:
+    payload = package_root.get(_ANIMATION_MODES_PROP)
+    if not isinstance(payload, str) or not payload:
+        return {}
+    try:
+        loaded = json.loads(payload)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    result: dict[str, str] = {}
+    for key, value in loaded.items():
+        if isinstance(key, str) and isinstance(value, str):
+            result[key] = value
+    return result
+
+
+def apply_animation_mode_to_package_root(
+    context: bpy.types.Context,
+    package_root: bpy.types.Object,
+    animation_name: str,
+    mode: str,
+) -> int:
+    """Apply one animation in one of: none, snap_first, snap_last, action."""
+    package = _load_package_from_root(package_root)
+    clip = _find_animation_clip(package, animation_name)
+    if clip is None:
+        raise RuntimeError(f"Animation '{animation_name}' not found in package sidecar")
+
+    normalized_mode = mode.strip().lower()
+    if normalized_mode not in {"none", "snap_first", "snap_last", "action"}:
+        raise RuntimeError(f"Unsupported animation mode: {mode}")
+
+    updated = 0
+    if normalized_mode == "none":
+        updated = _restore_bind_pose(package_root)
+    elif normalized_mode in {"snap_first", "snap_last"}:
+        frame_index = 0 if normalized_mode == "snap_first" else -1
+        updated = _apply_animation_pose(package_root, clip, frame_index)
+    else:
+        updated = _insert_animation_action(context, package_root, clip)
+
+    mode_map = package_animation_mode_map(package_root)
+    mode_map[animation_name] = normalized_mode
+    package_root[_ANIMATION_MODES_PROP] = json.dumps(mode_map, separators=(",", ":"), sort_keys=True)
+    return updated
+
+
+def _animation_clips(package: PackageBundle) -> list[dict[str, Any]]:
+    raw = package.scene.root_entity.raw
+    clips = raw.get("animations") if isinstance(raw, dict) else None
+    if not isinstance(clips, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for clip in clips:
+        if isinstance(clip, dict):
+            result.append(clip)
+    return result
+
+
+def _strip_animation_prefix(name: str) -> str:
+    normalized = name.strip()
+    if normalized.lower().startswith("animations/"):
+        return normalized[len("animations/") :]
+    return normalized
+
+
+def _animation_display_name(clip: dict[str, Any]) -> str:
+    for key in ("localized_name", "display_name", "label", "title", "ui_name"):
+        value = clip.get(key)
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                return text
+
+    localization = clip.get("localization")
+    if isinstance(localization, dict):
+        for key in ("localized_name", "display_name", "label", "title", "ui_name"):
+            value = localization.get(key)
+            if isinstance(value, str):
+                text = value.strip()
+                if text:
+                    return text
+
+    raw_name = str(clip.get("name", "")).strip()
+    shortened = _strip_animation_prefix(raw_name)
+    return shortened or raw_name
+
+
+def _find_animation_clip(package: PackageBundle, animation_name: str) -> dict[str, Any] | None:
+    target = animation_name.strip()
+    if not target:
+        return None
+    for clip in _animation_clips(package):
+        if str(clip.get("name", "")).strip() == target:
+            return clip
+    return None
+
+
+def _object_bone_hash(obj: bpy.types.Object) -> str:
+    import zlib
+
+    source_name = str(obj.get(PROP_SOURCE_NODE_NAME, obj.name) or "")
+    digest = zlib.crc32(source_name.encode("utf-8")) & 0xFFFFFFFF
+    return f"0x{digest:08X}"
+
+
+def _iter_candidate_bone_objects(package_root: bpy.types.Object) -> list[bpy.types.Object]:
+    return [obj for obj in _iter_package_objects(package_root) if obj.type in {"EMPTY", "MESH"}]
+
+
+def _store_bind_pose_once(obj: bpy.types.Object) -> None:
+    if isinstance(obj.get(_ANIMATION_BIND_TRS_PROP), str):
+        return
+    payload = {
+        "location": [float(v) for v in obj.location],
+        "rotation_mode": str(obj.rotation_mode),
+        "rotation_quaternion": [float(v) for v in obj.rotation_quaternion],
+    }
+    obj[_ANIMATION_BIND_TRS_PROP] = json.dumps(payload, separators=(",", ":"))
+
+
+def _restore_bind_pose(package_root: bpy.types.Object) -> int:
+    restored = 0
+    for obj in _iter_candidate_bone_objects(package_root):
+        payload = obj.get(_ANIMATION_BIND_TRS_PROP)
+        if not isinstance(payload, str) or not payload:
+            continue
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        location = data.get("location")
+        rotation_mode = data.get("rotation_mode")
+        rotation_quaternion = data.get("rotation_quaternion")
+        if isinstance(location, list) and len(location) >= 3:
+            obj.location = (float(location[0]), float(location[1]), float(location[2]))
+        if isinstance(rotation_mode, str):
+            obj.rotation_mode = rotation_mode
+        if isinstance(rotation_quaternion, list) and len(rotation_quaternion) >= 4:
+            obj.rotation_mode = "QUATERNION"
+            obj.rotation_quaternion = (
+                float(rotation_quaternion[0]),
+                float(rotation_quaternion[1]),
+                float(rotation_quaternion[2]),
+                float(rotation_quaternion[3]),
+            )
+        restored += 1
+    return restored
+
+
+def _apply_animation_pose(package_root: bpy.types.Object, clip: dict[str, Any], frame_index: int) -> int:
+    bones = clip.get("bones")
+    if not isinstance(bones, dict):
+        return 0
+    updated = 0
+    for obj in _iter_candidate_bone_objects(package_root):
+        key = _object_bone_hash(obj)
+        channel = bones.get(key)
+        if not isinstance(channel, dict):
+            continue
+        _store_bind_pose_once(obj)
+
+        rotations = channel.get("rotation")
+        positions = channel.get("position")
+        if isinstance(rotations, list) and rotations:
+            sample = rotations[0] if frame_index == 0 else rotations[-1]
+            if isinstance(sample, list) and len(sample) >= 4:
+                obj.rotation_mode = "QUATERNION"
+                obj.rotation_quaternion = (
+                    float(sample[0]),
+                    float(sample[1]),
+                    float(sample[2]),
+                    float(sample[3]),
+                )
+        if isinstance(positions, list) and positions:
+            sample = positions[0] if frame_index == 0 else positions[-1]
+            if isinstance(sample, list) and len(sample) >= 3:
+                obj.location = (float(sample[0]), float(sample[1]), float(sample[2]))
+        updated += 1
+    return updated
+
+
+def _insert_animation_action(
+    _context: bpy.types.Context,
+    package_root: bpy.types.Object,
+    clip: dict[str, Any],
+) -> int:
+    bones = clip.get("bones")
+    if not isinstance(bones, dict):
+        return 0
+    name = str(clip.get("name", "animation")) or "animation"
+    action_name = f"SB_{package_root.name}_{name}"
+    action = bpy.data.actions.get(action_name)
+    if action is None:
+        action = bpy.data.actions.new(name=action_name)
+    else:
+        while action.fcurves:
+            action.fcurves.remove(action.fcurves[0])
+
+    updated = 0
+    for obj in _iter_candidate_bone_objects(package_root):
+        key = _object_bone_hash(obj)
+        channel = bones.get(key)
+        if not isinstance(channel, dict):
+            continue
+        _store_bind_pose_once(obj)
+        obj.rotation_mode = "QUATERNION"
+        obj.animation_data_create()
+        obj.animation_data.action = action
+
+        rotations = channel.get("rotation") if isinstance(channel.get("rotation"), list) else []
+        positions = channel.get("position") if isinstance(channel.get("position"), list) else []
+
+        for index, sample in enumerate(positions):
+            if isinstance(sample, list) and len(sample) >= 3:
+                obj.location = (float(sample[0]), float(sample[1]), float(sample[2]))
+                obj.keyframe_insert(data_path="location", frame=index)
+
+        for index, sample in enumerate(rotations):
+            if isinstance(sample, list) and len(sample) >= 4:
+                obj.rotation_quaternion = (
+                    float(sample[0]),
+                    float(sample[1]),
+                    float(sample[2]),
+                    float(sample[3]),
+                )
+                obj.keyframe_insert(data_path="rotation_quaternion", frame=index)
+
+        updated += 1
+
     return updated

@@ -28,21 +28,30 @@ from .runtime import (
     SCENE_POM_DETAIL_PROP,
     apply_pom_detail_mode,
     SCENE_WEAR_STRENGTH_PROP,
+    apply_animation_mode_to_package_root,
     apply_light_state,
     apply_livery_to_selected_package,
     apply_paint_to_selected_package,
     apply_palette_to_selected_package,
+    available_package_animation_items,
     available_light_state_names,
     dump_selected_metadata,
     exterior_palette_ids,
     find_package_root,
     import_package,
+    package_animation_mode_map,
 )
 
 
 _PAINT_ITEMS_CACHE: list[tuple[str, str, str]] = []
 _PALETTE_ITEMS_CACHE: list[tuple[str, str, str]] = []
 _LIVERY_ITEMS_CACHE: list[tuple[str, str, str]] = []
+_ANIMATION_MODE_ITEMS: tuple[tuple[str, str, str], ...] = (
+    ("none", "None", "Leave current transforms (restore bind pose if available)"),
+    ("snap_first", "Snap First", "Apply first keyframe pose"),
+    ("snap_last", "Snap Last", "Apply last keyframe pose"),
+    ("action", "Insert Action", "Insert full keyframes as Blender Action"),
+)
 _IMPORT_PROGRESS_ACTIVE_PROP = "starbreaker_import_progress_active"
 _IMPORT_PROGRESS_VALUE_PROP = "starbreaker_import_progress_value"
 _IMPORT_PROGRESS_DESCRIPTION_PROP = "starbreaker_import_progress_description"
@@ -612,6 +621,36 @@ class STARBREAKER_OT_dump_metadata(Operator):
         return {"FINISHED"}
 
 
+class STARBREAKER_OT_apply_animation_mode(Operator):
+    bl_idname = "starbreaker.apply_animation_mode"
+    bl_label = "Apply Animation Mode"
+    bl_options = {"REGISTER", "UNDO"}
+
+    animation_name: StringProperty(name="Animation")  # type: ignore[assignment]
+    mode: EnumProperty(name="Mode", items=_ANIMATION_MODE_ITEMS)  # type: ignore[assignment]
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return find_package_root(context.active_object) is not None
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        package_root = _package_root_from_context(context)
+        if package_root is None:
+            self.report({"ERROR"}, "Select an imported StarBreaker object first")
+            return {"CANCELLED"}
+        name = (self.animation_name or "").strip()
+        if not name:
+            self.report({"ERROR"}, "No animation selected")
+            return {"CANCELLED"}
+        try:
+            updated = apply_animation_mode_to_package_root(context, package_root, name, self.mode)
+        except Exception as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"{name}: {self.mode} ({updated} object(s) updated)")
+        return {"FINISHED"}
+
+
 class STARBREAKER_PT_tools(Panel):
     bl_label = "StarBreaker"
     bl_idname = "STARBREAKER_PT_tools"
@@ -680,6 +719,27 @@ class STARBREAKER_PT_tools(Panel):
                 )
                 op.state_name = name
 
+        if package is not None:
+            animation_items = available_package_animation_items(package)
+            animation_box = layout.box()
+            animation_box.label(text="Animations")
+            if not animation_items:
+                animation_box.label(text="No animations exported in this scene.json")
+            else:
+                mode_map = package_animation_mode_map(package_root)
+                for animation_name, animation_display_name in animation_items:
+                    row = animation_box.row(align=True)
+                    row.label(text=animation_display_name)
+                    current_mode = mode_map.get(animation_name, "none")
+                    for mode_id, mode_label, _ in _ANIMATION_MODE_ITEMS:
+                        op = row.operator(
+                            STARBREAKER_OT_apply_animation_mode.bl_idname,
+                            text=mode_label,
+                            depress=(current_mode == mode_id),
+                        )
+                        op.animation_name = animation_name
+                        op.mode = mode_id
+
 
 CLASSES = [
     STARBREAKER_OT_import_decomposed_package,
@@ -689,6 +749,7 @@ CLASSES = [
     STARBREAKER_OT_apply_livery,
     STARBREAKER_OT_switch_light_state,
     STARBREAKER_OT_dump_metadata,
+    STARBREAKER_OT_apply_animation_mode,
     STARBREAKER_PT_tools,
 ]
 
