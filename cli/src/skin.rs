@@ -27,6 +27,11 @@ pub enum SkinCommand {
         /// Path to Data.p4k
         #[arg(long, env = "SC_DATA_P4K")]
         p4k: Option<PathBuf>,
+        /// For .skinm files: dump per-vertex bone weight statistics
+        /// (max influence count, weight distribution, vertices weighted to
+        /// multiple bones).
+        #[arg(long)]
+        bone_weights: bool,
     },
     /// Scan all mesh files and report stream/chunk type statistics
     ScanStreams {
@@ -48,7 +53,7 @@ impl SkinCommand {
     pub fn run(self) -> Result<()> {
         match self {
             Self::Export { path, output, p4k } => export(path, output, p4k),
-            Self::Inspect { path, p4k } => inspect(path, p4k),
+            Self::Inspect { path, p4k, bone_weights } => inspect(path, p4k, bone_weights),
             Self::ScanStreams { p4k } => scan_streams(p4k),
             Self::FindStream { stream_id, p4k } => find_stream(stream_id, p4k),
         }
@@ -315,7 +320,7 @@ fn export(search: String, output: Option<PathBuf>, p4k_path: Option<PathBuf>) ->
     Ok(())
 }
 
-fn inspect(search: String, p4k_path: Option<PathBuf>) -> Result<()> {
+fn inspect(search: String, p4k_path: Option<PathBuf>, bone_weights: bool) -> Result<()> {
     use starbreaker_chunks::ChunkFile;
 
     let p4k = load_p4k(p4k_path.as_deref())?;
@@ -407,6 +412,56 @@ fn inspect(search: String, p4k_path: Option<PathBuf>) -> Result<()> {
             submesh.unknown0,
             submesh.unknown1,
         );
+    }
+
+    if bone_weights {
+        match &skin.streams.bone_maps {
+            None => println!("\n[bone-weights] mesh has no bone_maps stream — purely rigid"),
+            Some(maps) => {
+                println!("\n[bone-weights] {} vertices total", maps.len());
+
+                // Influence-count histogram: how many vertices have 1, 2, 3, 4 non-zero weights?
+                let mut influence_hist = [0usize; 5];
+                let mut joint_usage: HashMap<u16, usize> = HashMap::new();
+                let mut multi_bone_examples: Vec<(usize, [u16; 4], [u8; 4])> = vec![];
+
+                for (vid, bm) in maps.iter().enumerate() {
+                    let n = bm.weights.iter().filter(|w| **w > 0).count();
+                    influence_hist[n] += 1;
+                    for slot in 0..4 {
+                        if bm.weights[slot] > 0 {
+                            *joint_usage.entry(bm.joint_indices[slot]).or_insert(0) += 1;
+                        }
+                    }
+                    if n >= 2 && multi_bone_examples.len() < 16 {
+                        multi_bone_examples.push((vid, bm.joint_indices, bm.weights));
+                    }
+                }
+
+                println!("\nInfluence-count histogram (verts weighted to N non-zero bones):");
+                for n in 0..=4 {
+                    let pct = (influence_hist[n] as f64 / maps.len() as f64) * 100.0;
+                    println!("  {n}-bone: {:>8} ({:>5.1}%)", influence_hist[n], pct);
+                }
+
+                println!("\nJoint usage (vertices weighted to each bone, sorted by count):");
+                let mut sorted_joints: Vec<_> = joint_usage.into_iter().collect();
+                sorted_joints.sort_by(|a, b| b.1.cmp(&a.1));
+                for (joint, count) in sorted_joints.iter().take(20) {
+                    println!("  joint[{:>3}]: {:>8} verts", joint, count);
+                }
+
+                if !multi_bone_examples.is_empty() {
+                    println!("\nFirst {} vertices with multi-bone weights:", multi_bone_examples.len());
+                    for (vid, joints, weights) in &multi_bone_examples {
+                        println!(
+                            "  vert[{:>5}] joints={:?} weights={:?}",
+                            vid, joints, weights
+                        );
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
