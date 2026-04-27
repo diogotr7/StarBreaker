@@ -1091,19 +1091,33 @@ def _apply_best_channel_transform(
     if isinstance(positions, list) and positions:
         position_sample = _select_sample(positions, 3, _position_score)
 
-    # Phase 29: rest-endpoint detection. CryEngine state-transition clips
-    # (canopy_open/close, landing_gear_deploy/retract, wings_deploy, etc.)
-    # are PATHS between two engine-tracked states; the clip data alone does
-    # not carry the canonical destination pose. By convention, the endpoint
-    # whose rotation matches bind IS the rest state — at that endpoint the
-    # bone's transform must equal bind exactly, regardless of where the
-    # position track happens to land. This keeps snap_first/snap_last
-    # consistent with the engine's state contract instead of drifting by
-    # the residual offset between bind and the nearest recorded keyframe.
+    # Phase 29: rest-endpoint detection for simple-hinge state-transition
+    # clips. CryEngine clips like canopy_open/close are PATHS between two
+    # engine-tracked states; the clip data alone does not carry the
+    # canonical destination pose. For *simple hinge* bones whose bind
+    # rotation is identity (i.e. rest = parent's frame, no offset), we
+    # can recognise the rest endpoint of the clip by its rotation
+    # matching identity within ~1° and snap the bone directly to bind.
+    #
+    # The identity-bind guard is important: bones with non-trivial bind
+    # rotations (landing-gear feet, ball joints, etc.) routinely have
+    # clip rotation tracks that LAND ON bind orientation while their
+    # POSITION track is far from bind (foot rotates level when leg is
+    # extended). Those bones must continue through the existing
+    # anchored-delta math; they are not "rest" just because the
+    # rotation cleanly returns to bind.
+    _IDENTITY_TOLERANCE_RAD = 0.0175  # ~1 degree
+    bind_rot_is_identity = (
+        abs(bind_rot[0] - 1.0) < _IDENTITY_TOLERANCE_RAD
+        and abs(bind_rot[1]) < _IDENTITY_TOLERANCE_RAD
+        and abs(bind_rot[2]) < _IDENTITY_TOLERANCE_RAD
+        and abs(bind_rot[3]) < _IDENTITY_TOLERANCE_RAD
+    )
     if (
         endpoint_policy == "literal"
         and rotation_sample is not None
-        and _rotation_score(rotation_sample) < 0.0175  # ~1 degree
+        and bind_rot_is_identity
+        and _rotation_score(rotation_sample) < _IDENTITY_TOLERANCE_RAD
     ):
         obj.rotation_mode = "QUATERNION"
         obj.rotation_quaternion = bind_rot
