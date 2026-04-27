@@ -11,6 +11,7 @@ circular import between this module and ``_legacy``.
 from __future__ import annotations
 
 import json
+import math
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
@@ -586,13 +587,33 @@ def available_package_animation_items(package: PackageBundle) -> list[tuple[str,
     ``clip_name`` is the canonical sidecar key used for lookups. ``display_name``
     prefers localized metadata when present, then falls back to a shortened path.
     """
+    clips = _animation_clips(package)
+    preferred_exact_names = {
+        str(clip.get("name", "")).strip()
+        for clip in clips
+        if _is_preferred_package_animation_name(str(clip.get("name", "")).strip())
+    }
+
     items: list[tuple[str, str]] = []
-    for clip in _animation_clips(package):
+    for clip in clips:
         clip_name = str(clip.get("name", "")).strip()
         if not clip_name:
             continue
+        if preferred_exact_names and clip_name not in preferred_exact_names:
+            continue
         items.append((clip_name, _animation_display_name(clip)))
     return items
+
+
+def _is_preferred_package_animation_name(name: str) -> bool:
+    normalized = name.strip()
+    if not normalized:
+        return False
+    if "/" in normalized:
+        return False
+    if normalized.startswith("$"):
+        return False
+    return True
 
 
 def package_animation_mode_map(package_root: bpy.types.Object) -> dict[str, str]:
@@ -624,11 +645,19 @@ def package_animation_diagnostics(
     bones = clip.get("bones")
     channel_hashes: list[str] = []
     if isinstance(bones, dict):
-        channel_hashes = [str(key) for key in bones.keys() if isinstance(key, str)]
+        channel_hashes = [
+            canonical
+            for key in bones.keys()
+            if isinstance(key, str)
+            for canonical in [
+                _canonical_bone_hash_key(key),
+            ]
+            if canonical is not None
+        ]
 
     hash_to_objects: dict[str, list[str]] = {}
     for obj in _iter_candidate_bone_objects(package_root):
-        bone_hash = _object_bone_hash(obj)
+        bone_hash = _canonical_bone_hash_key(_object_bone_hash(obj)) or _object_bone_hash(obj)
         source_name = str(obj.get(PROP_SOURCE_NODE_NAME, obj.name) or "")
         hash_to_objects.setdefault(bone_hash, []).append(source_name)
 
@@ -689,24 +718,75 @@ def apply_animation_mode_to_package_root(
     if normalized_mode not in {"none", "snap_first", "snap_last", "action"}:
         raise RuntimeError(f"Unsupported animation mode: {mode}")
 
-    updated = 0
+    mode_map = package_animation_mode_map(package_root)
+    # If enabling a clip that overlaps channels with already enabled clips,
+    # disable those conflicting modes first so poses do not stack into an
+    # impossible "exploded" state.
+    if normalized_mode != "none":
+        target_hashes = _clip_bone_hashes(clip)
+        conflicting_names: set[str] = set()
+        if target_hashes:
+            for other_name, other_mode in mode_map.items():
+                if other_name == animation_name or other_mode == "none":
+                    continue
+                other_clip = _find_animation_clip(package, other_name)
+                if other_clip is None:
+                    continue
+                if target_hashes & _clip_bone_hashes(other_clip):
+                    conflicting_names.add(other_name)
+
+        if conflicting_names:
+            # Rebuild the active pose stack from bind so removed conflicts are
+            # guaranteed to stop contributing transforms.
+            _restore_bind_pose(package_root)
+            for other_name in conflicting_names:
+                mode_map[other_name] = "none"
+            for other_name, other_mode in mode_map.items():
+                if other_name == animation_name or other_mode == "none":
+                    continue
+                other_clip = _find_animation_clip(package, other_name)
+                if other_clip is None:
+                    continue
+                _apply_animation_mode_for_clip(context, package_root, package, other_clip, other_mode)
+
+    updated = _apply_animation_mode_for_clip(context, package_root, package, clip, normalized_mode)
+
+    mode_map[animation_name] = normalized_mode
+    package_root[_ANIMATION_MODES_PROP] = json.dumps(mode_map, separators=(",", ":"), sort_keys=True)
+    return updated
+
+
+def _apply_animation_mode_for_clip(
+    context: bpy.types.Context,
+    package_root: bpy.types.Object,
+    package: PackageBundle,
+    clip: dict[str, Any],
+    mode: str,
+) -> int:
+    normalized_mode = mode.strip().lower()
     if normalized_mode == "none":
-        updated = _restore_bind_pose(package_root)
-    elif normalized_mode in {"snap_first", "snap_last"}:
+        return _restore_bind_pose(package_root)
+    if normalized_mode in {"snap_first", "snap_last"}:
         frame_index = 0 if normalized_mode == "snap_first" else -1
-        updated = _apply_animation_pose(package_root, clip, frame_index)
+        endpoint_policy = _snap_endpoint_policy(str(clip.get("name", "")), normalized_mode)
+        updated = _apply_animation_pose(package_root, clip, frame_index, endpoint_policy)
         if updated == 0:
             paired = _paired_clip_for_snap(package, clip, frame_index)
             if paired is not None:
                 paired_clip, paired_frame_index = paired
-                updated = _apply_animation_pose(package_root, paired_clip, paired_frame_index)
-    else:
-        updated = _insert_animation_action(context, package_root, clip)
+                paired_policy = _snap_endpoint_policy(str(paired_clip.get("name", "")), normalized_mode)
+                updated = _apply_animation_pose(package_root, paired_clip, paired_frame_index, paired_policy)
+        return updated
+    if normalized_mode == "action":
+        return _insert_animation_action(context, package_root, clip)
+    raise RuntimeError(f"Unsupported animation mode: {mode}")
 
-    mode_map = package_animation_mode_map(package_root)
-    mode_map[animation_name] = normalized_mode
-    package_root[_ANIMATION_MODES_PROP] = json.dumps(mode_map, separators=(",", ":"), sort_keys=True)
-    return updated
+
+def _clip_bone_hashes(clip: dict[str, Any]) -> set[str]:
+    bones = clip.get("bones")
+    if not isinstance(bones, dict):
+        return set()
+    return {str(key) for key in bones.keys() if isinstance(key, str)}
 
 
 def _animation_clips(package: PackageBundle) -> list[dict[str, Any]]:
@@ -771,24 +851,37 @@ def _paired_clip_for_snap(
         return None
 
     candidates: list[tuple[str, int]] = []
-    if name.endswith("_retract.caf"):
-        alt_name = f"{name[:-len('_retract.caf')]}_deploy.caf"
-        candidates.append((alt_name, 0 if frame_index == -1 else -1))
-    if name.endswith("_deploy.caf"):
-        alt_name = f"{name[:-len('_deploy.caf')]}_retract.caf"
-        candidates.append((alt_name, 0 if frame_index == -1 else -1))
-    if name.endswith("_close.caf"):
-        alt_name = f"{name[:-len('_close.caf')]}_open.caf"
-        candidates.append((alt_name, 0 if frame_index == -1 else -1))
-    if name.endswith("_open.caf"):
-        alt_name = f"{name[:-len('_open.caf')]}_close.caf"
-        candidates.append((alt_name, 0 if frame_index == -1 else -1))
+    def _append_pair(base: str, from_suffix: str, to_suffix: str) -> None:
+        if base.endswith(from_suffix):
+            alt_name = f"{base[:-len(from_suffix)]}{to_suffix}"
+            candidates.append((alt_name, 0 if frame_index == -1 else -1))
+
+    _append_pair(name, "_retract.caf", "_deploy.caf")
+    _append_pair(name, "_deploy.caf", "_retract.caf")
+    _append_pair(name, "_close.caf", "_open.caf")
+    _append_pair(name, "_open.caf", "_close.caf")
+    _append_pair(name, "_retract", "_deploy")
+    _append_pair(name, "_deploy", "_retract")
+    _append_pair(name, "_close", "_open")
+    _append_pair(name, "_open", "_close")
 
     for alt_name, alt_frame in candidates:
         alt_clip = _find_animation_clip(package, alt_name)
         if alt_clip is not None:
             return alt_clip, alt_frame
     return None
+
+
+def _snap_endpoint_policy(animation_name: str, mode: str) -> str:
+    # The exporter (Phase 24B) now reverses clips whose internal direction
+    # disagrees with the chrparams event-name semantic, so snap modes can
+    # apply the literal first/last keyframe. Previously this function used
+    # "most_bind_error"/"least_bind_error" heuristics to compensate for
+    # reversed clips, which is now redundant and would re-flip corrected
+    # clips to the wrong endpoint. Keep the signature for callers but
+    # always return literal.
+    del animation_name, mode
+    return "literal"
 
 
 def _object_bone_hash(obj: bpy.types.Object) -> str:
@@ -799,6 +892,36 @@ def _object_bone_hash(obj: bpy.types.Object) -> str:
     return f"0x{digest:08X}"
 
 
+def _canonical_bone_hash_key(value: Any) -> str | None:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            parsed = int(text, 16) if text.lower().startswith("0x") else int(text)
+        except ValueError:
+            return text
+        return f"0x{parsed & 0xFFFFFFFF:08X}"
+    if isinstance(value, int):
+        return f"0x{value & 0xFFFFFFFF:08X}"
+    return None
+
+
+def _normalized_bone_channels(clip: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    bones = clip.get("bones")
+    if not isinstance(bones, dict):
+        return {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw_key, channel in bones.items():
+        if not isinstance(channel, dict):
+            continue
+        key = _canonical_bone_hash_key(raw_key)
+        if key is None:
+            continue
+        normalized[key] = channel
+    return normalized
+
+
 def _iter_candidate_bone_objects(package_root: bpy.types.Object) -> list[bpy.types.Object]:
     return [obj for obj in _iter_package_objects(package_root) if obj.type in {"EMPTY", "MESH"}]
 
@@ -806,71 +929,229 @@ def _iter_candidate_bone_objects(package_root: bpy.types.Object) -> list[bpy.typ
 def _store_bind_pose_once(obj: bpy.types.Object) -> None:
     if isinstance(obj.get(_ANIMATION_BIND_TRS_PROP), str):
         return
+    parent_distance = None
+    if obj.parent is not None:
+        parent_distance = float((obj.matrix_world.translation - obj.parent.matrix_world.translation).length)
     payload = {
         "location": [float(v) for v in obj.location],
         "rotation_mode": str(obj.rotation_mode),
         "rotation_quaternion": [float(v) for v in obj.rotation_quaternion],
+        "parent_distance": parent_distance,
     }
     obj[_ANIMATION_BIND_TRS_PROP] = json.dumps(payload, separators=(",", ":"))
+
+
+def _bind_pose_payload(obj: bpy.types.Object) -> dict[str, Any] | None:
+    payload = obj.get(_ANIMATION_BIND_TRS_PROP)
+    if not isinstance(payload, str) or not payload:
+        return None
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _restore_object_bind_pose(obj: bpy.types.Object, data: dict[str, Any]) -> None:
+    location = data.get("location")
+    rotation_mode = data.get("rotation_mode")
+    rotation_quaternion = data.get("rotation_quaternion")
+    if isinstance(location, list) and len(location) >= 3:
+        obj.location = (float(location[0]), float(location[1]), float(location[2]))
+    if isinstance(rotation_mode, str):
+        obj.rotation_mode = rotation_mode
+    if isinstance(rotation_quaternion, list) and len(rotation_quaternion) >= 4:
+        obj.rotation_mode = "QUATERNION"
+        obj.rotation_quaternion = (
+            float(rotation_quaternion[0]),
+            float(rotation_quaternion[1]),
+            float(rotation_quaternion[2]),
+            float(rotation_quaternion[3]),
+        )
+
+
+def _is_parent_distance_outlier(obj: bpy.types.Object, data: dict[str, Any]) -> bool:
+    if obj.parent is None:
+        return False
+    bind_distance_raw = data.get("parent_distance")
+    if not isinstance(bind_distance_raw, (int, float)):
+        return False
+
+    bind_distance = float(bind_distance_raw)
+    current_distance = float((obj.matrix_world.translation - obj.parent.matrix_world.translation).length)
+
+    if bind_distance <= 1e-5:
+        return current_distance > 0.25
+
+    ratio = current_distance / bind_distance
+    return abs(current_distance - bind_distance) > 0.75 and (ratio > 2.5 or ratio < 0.4)
+
+
+def _apply_candidate_transform(
+    obj: bpy.types.Object,
+    bind_data: dict[str, Any],
+    rotation_sample: list[Any] | None,
+    position_sample: list[Any] | None,
+    *,
+    rotation_order: str,
+    use_position: bool,
+    decoder: str | None,
+) -> None:
+    _restore_object_bind_pose(obj, bind_data)
+
+    if rotation_sample is not None and len(rotation_sample) >= 4:
+        obj.rotation_mode = "QUATERNION"
+        if rotation_order == "xyzw":
+            obj.rotation_quaternion = (
+                float(rotation_sample[3]),
+                float(rotation_sample[0]),
+                float(rotation_sample[1]),
+                float(rotation_sample[2]),
+            )
+        else:
+            obj.rotation_quaternion = (
+                float(rotation_sample[0]),
+                float(rotation_sample[1]),
+                float(rotation_sample[2]),
+                float(rotation_sample[3]),
+            )
+
+    if use_position and decoder is not None and position_sample is not None and len(position_sample) >= 3:
+        obj.location = _decode_animation_position(position_sample, decoder)
+
+
+def _candidate_parent_distance_error(obj: bpy.types.Object, bind_data: dict[str, Any]) -> float:
+    if obj.parent is None:
+        return 0.0
+    bind_distance_raw = bind_data.get("parent_distance")
+    if not isinstance(bind_distance_raw, (int, float)):
+        return 0.0
+    bind_distance = float(bind_distance_raw)
+    current_distance = float((obj.matrix_world.translation - obj.parent.matrix_world.translation).length)
+    return abs(current_distance - bind_distance)
+
+
+def _apply_best_channel_transform(
+    obj: bpy.types.Object,
+    bind_data: dict[str, Any],
+    channel: dict[str, Any],
+    frame_index: int,
+    endpoint_policy: str,
+) -> None:
+    _restore_object_bind_pose(obj, bind_data)
+
+    rotations = channel.get("rotation")
+    positions = channel.get("position")
+
+    bind_location = bind_data.get("location", obj.location)
+    bind_loc = (float(bind_location[0]), float(bind_location[1]), float(bind_location[2]))
+
+    bind_quaternion = bind_data.get("rotation_quaternion", obj.rotation_quaternion)
+    bind_rot = (
+        float(bind_quaternion[0]),
+        float(bind_quaternion[1]),
+        float(bind_quaternion[2]),
+        float(bind_quaternion[3]),
+    )
+
+    def _rotation_score(sample: list[Any]) -> float:
+        w = float(sample[0])
+        x = float(sample[1])
+        y = float(sample[2])
+        z = float(sample[3])
+        dot = abs(bind_rot[0] * w + bind_rot[1] * x + bind_rot[2] * y + bind_rot[3] * z)
+        dot = max(0.0, min(1.0, dot))
+        return 2.0 * math.acos(dot)
+
+    def _position_score(sample: list[Any]) -> float:
+        decoded = _decode_animation_position(sample, "identity")
+        dx = decoded[0] - bind_loc[0]
+        dy = decoded[1] - bind_loc[1]
+        dz = decoded[2] - bind_loc[2]
+        return (dx * dx + dy * dy + dz * dz) ** 0.5
+
+    def _select_sample(values: list[Any], item_len: int, scorer: Callable[[list[Any]], float]) -> list[Any] | None:
+        valid: list[list[Any]] = [v for v in values if isinstance(v, list) and len(v) >= item_len]
+        if not valid:
+            return None
+        if endpoint_policy == "literal":
+            return valid[0] if frame_index == 0 else valid[-1]
+        scored = [(scorer(v), v) for v in valid]
+        if endpoint_policy == "least_bind_error":
+            return min(scored, key=lambda item: item[0])[1]
+        if endpoint_policy == "most_bind_error":
+            return max(scored, key=lambda item: item[0])[1]
+        return valid[0] if frame_index == 0 else valid[-1]
+
+    rotation_sample: list[Any] | None = None
+    if isinstance(rotations, list) and rotations:
+        rotation_sample = _select_sample(rotations, 4, _rotation_score)
+
+    position_sample: list[Any] | None = None
+    if isinstance(positions, list) and positions:
+        position_sample = _select_sample(positions, 3, _position_score)
+    if rotation_sample is not None:
+        obj.rotation_mode = "QUATERNION"
+        # Exporter writes animation rotations in Blender wxyz order.
+        obj.rotation_quaternion = (
+            float(rotation_sample[0]),
+            float(rotation_sample[1]),
+            float(rotation_sample[2]),
+            float(rotation_sample[3]),
+        )
+
+    if position_sample is not None and isinstance(positions, list) and positions:
+        # Source of truth: exporter writes sidecar positions in Blender local XYZ
+        # already (see crates/starbreaker-3d/src/animation.rs::clip_to_json).
+        # Anchor channel deltas to the frame nearest bind (closed/reference
+        # state) so semantic snap modes remain stable even when raw channel
+        # positions carry a static offset.
+        valid_positions: list[list[Any]] = [v for v in positions if isinstance(v, list) and len(v) >= 3]
+        sample_decoded = _decode_animation_position(position_sample, "identity")
+        if valid_positions:
+            closed_sample = min(valid_positions, key=_position_score)
+            closed_decoded = _decode_animation_position(closed_sample, "identity")
+            obj.location = (
+                bind_loc[0] + (sample_decoded[0] - closed_decoded[0]),
+                bind_loc[1] + (sample_decoded[1] - closed_decoded[1]),
+                bind_loc[2] + (sample_decoded[2] - closed_decoded[2]),
+            )
+        else:
+            obj.location = sample_decoded
 
 
 def _restore_bind_pose(package_root: bpy.types.Object) -> int:
     restored = 0
     for obj in _iter_candidate_bone_objects(package_root):
-        payload = obj.get(_ANIMATION_BIND_TRS_PROP)
-        if not isinstance(payload, str) or not payload:
+        data = _bind_pose_payload(obj)
+        if data is None:
             continue
-        try:
-            data = json.loads(payload)
-        except json.JSONDecodeError:
-            continue
-        location = data.get("location")
-        rotation_mode = data.get("rotation_mode")
-        rotation_quaternion = data.get("rotation_quaternion")
-        if isinstance(location, list) and len(location) >= 3:
-            obj.location = (float(location[0]), float(location[1]), float(location[2]))
-        if isinstance(rotation_mode, str):
-            obj.rotation_mode = rotation_mode
-        if isinstance(rotation_quaternion, list) and len(rotation_quaternion) >= 4:
-            obj.rotation_mode = "QUATERNION"
-            obj.rotation_quaternion = (
-                float(rotation_quaternion[0]),
-                float(rotation_quaternion[1]),
-                float(rotation_quaternion[2]),
-                float(rotation_quaternion[3]),
-            )
+        _restore_object_bind_pose(obj, data)
         restored += 1
     return restored
 
 
-def _apply_animation_pose(package_root: bpy.types.Object, clip: dict[str, Any], frame_index: int) -> int:
-    bones = clip.get("bones")
-    if not isinstance(bones, dict):
+def _apply_animation_pose(
+    package_root: bpy.types.Object,
+    clip: dict[str, Any],
+    frame_index: int,
+    endpoint_policy: str = "literal",
+) -> int:
+    bones = _normalized_bone_channels(clip)
+    if not bones:
         return 0
     updated = 0
     for obj in _iter_candidate_bone_objects(package_root):
-        key = _object_bone_hash(obj)
+        key = _canonical_bone_hash_key(_object_bone_hash(obj)) or _object_bone_hash(obj)
         channel = bones.get(key)
         if not isinstance(channel, dict):
             continue
         _store_bind_pose_once(obj)
+        bind_data = _bind_pose_payload(obj)
+        if bind_data is None:
+            continue
 
-        rotations = channel.get("rotation")
-        positions = channel.get("position")
-        if isinstance(rotations, list) and rotations:
-            sample = rotations[0] if frame_index == 0 else rotations[-1]
-            if isinstance(sample, list) and len(sample) >= 4:
-                obj.rotation_mode = "QUATERNION"
-                obj.rotation_quaternion = (
-                    float(sample[0]),
-                    float(sample[1]),
-                    float(sample[2]),
-                    float(sample[3]),
-                )
-        if isinstance(positions, list) and positions:
-            sample = positions[0] if frame_index == 0 else positions[-1]
-            if isinstance(sample, list) and len(sample) >= 3:
-                obj.location = (float(sample[0]), float(sample[1]), float(sample[2]))
+        _apply_best_channel_transform(obj, bind_data, channel, frame_index, endpoint_policy)
         updated += 1
     return updated
 
@@ -880,25 +1161,28 @@ def _insert_animation_action(
     package_root: bpy.types.Object,
     clip: dict[str, Any],
 ) -> int:
-    bones = clip.get("bones")
-    if not isinstance(bones, dict):
+    bones = _normalized_bone_channels(clip)
+    if not bones:
         return 0
     name = str(clip.get("name", "animation")) or "animation"
     action_name = f"SB_{package_root.name}_{name}"
     action = bpy.data.actions.get(action_name)
-    if action is None:
-        action = bpy.data.actions.new(name=action_name)
-    else:
-        while action.fcurves:
-            action.fcurves.remove(action.fcurves[0])
+    if action is not None:
+        # Blender 5.1 uses slot-based actions; replacing the action is the
+        # most robust cross-version way to clear prior keyframes.
+        bpy.data.actions.remove(action, do_unlink=True)
+    action = bpy.data.actions.new(name=action_name)
 
     updated = 0
     for obj in _iter_candidate_bone_objects(package_root):
-        key = _object_bone_hash(obj)
+        key = _canonical_bone_hash_key(_object_bone_hash(obj)) or _object_bone_hash(obj)
         channel = bones.get(key)
         if not isinstance(channel, dict):
             continue
         _store_bind_pose_once(obj)
+        bind_data = _bind_pose_payload(obj)
+        if bind_data is None:
+            continue
         obj.rotation_mode = "QUATERNION"
         obj.animation_data_create()
         obj.animation_data.action = action
@@ -906,10 +1190,38 @@ def _insert_animation_action(
         rotations = channel.get("rotation") if isinstance(channel.get("rotation"), list) else []
         positions = channel.get("position") if isinstance(channel.get("position"), list) else []
 
-        for index, sample in enumerate(positions):
-            if isinstance(sample, list) and len(sample) >= 3:
-                obj.location = (float(sample[0]), float(sample[1]), float(sample[2]))
-                obj.keyframe_insert(data_path="location", frame=index)
+        if positions:
+            bind_location = bind_data.get("location", obj.location)
+            bind = (float(bind_location[0]), float(bind_location[1]), float(bind_location[2]))
+
+            first = positions[0] if isinstance(positions[0], list) and len(positions[0]) >= 3 else None
+            last = positions[-1] if isinstance(positions[-1], list) and len(positions[-1]) >= 3 else None
+            anchor: tuple[float, float, float] | None = None
+            if first is not None and last is not None:
+                first_decoded = _decode_animation_position(first, "identity")
+                last_decoded = _decode_animation_position(last, "identity")
+                first_dist_sq = (
+                    (first_decoded[0] - bind[0]) ** 2
+                    + (first_decoded[1] - bind[1]) ** 2
+                    + (first_decoded[2] - bind[2]) ** 2
+                )
+                last_dist_sq = (
+                    (last_decoded[0] - bind[0]) ** 2
+                    + (last_decoded[1] - bind[1]) ** 2
+                    + (last_decoded[2] - bind[2]) ** 2
+                )
+                anchor = first_decoded if first_dist_sq <= last_dist_sq else last_decoded
+
+            if anchor is not None:
+                for index, sample in enumerate(positions):
+                    if isinstance(sample, list) and len(sample) >= 3:
+                        sample_decoded = _decode_animation_position(sample, "identity")
+                        obj.location = (
+                            bind[0] + (sample_decoded[0] - anchor[0]),
+                            bind[1] + (sample_decoded[1] - anchor[1]),
+                            bind[2] + (sample_decoded[2] - anchor[2]),
+                        )
+                        obj.keyframe_insert(data_path="location", frame=index)
 
         for index, sample in enumerate(rotations):
             if isinstance(sample, list) and len(sample) >= 4:
@@ -924,3 +1236,64 @@ def _insert_animation_action(
         updated += 1
 
     return updated
+
+
+def _animation_position_to_blender_local(sample: list[Any]) -> tuple[float, float, float]:
+    # Backwards-compatible default decoder retained for older call sites.
+    return _decode_animation_position(sample, "legacy")
+
+
+def _decode_animation_position(sample: list[Any], decoder: str) -> tuple[float, float, float]:
+    x = float(sample[0])
+    y = float(sample[1])
+    z = float(sample[2])
+    if decoder == "legacy":
+        # Legacy export decode: [x, z, -y] -> (x, y, z_blender)
+        return (x, -z, y)
+    if decoder == "swizzled":
+        # Alternate export decode: [cry_y, -cry_z, cry_x] -> (cry_x, -cry_z, cry_y)
+        return (z, y, x)
+    # "identity": already-authored Blender XYZ.
+    return (x, y, z)
+
+
+def _select_position_decoder(
+    positions: list[Any],
+    bind_location: Any,
+    frame_index: int | None = None,
+) -> str | None:
+    if not isinstance(positions, list) or not positions:
+        return None
+
+    valid_samples = [sample for sample in positions if isinstance(sample, list) and len(sample) >= 3]
+    if not valid_samples:
+        return None
+
+    bind = (float(bind_location[0]), float(bind_location[1]), float(bind_location[2]))
+    candidates = ("legacy", "swizzled", "identity")
+
+    if frame_index is None:
+        anchor_samples = [valid_samples[0], valid_samples[-1]]
+    else:
+        anchor_samples = [valid_samples[0] if frame_index == 0 else valid_samples[-1]]
+
+    def _distance_sq(loc: tuple[float, float, float]) -> float:
+        dx = loc[0] - bind[0]
+        dy = loc[1] - bind[1]
+        dz = loc[2] - bind[2]
+        return dx * dx + dy * dy + dz * dz
+
+    scored = [
+        (
+            min(_distance_sq(_decode_animation_position(sample, decoder)) for sample in anchor_samples),
+            decoder,
+        )
+        for decoder in candidates
+    ]
+    scored.sort(key=lambda item: item[0])
+
+    # If even the closest decode is far from bind pose, treat translation keys
+    # as unreliable for this channel and keep bind translation.
+    if scored[0][0] > 0.25:  # 0.5m squared
+        return None
+    return scored[0][1]

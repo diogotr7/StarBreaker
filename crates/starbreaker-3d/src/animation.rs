@@ -83,6 +83,14 @@ struct ControllerEntry {
 #[derive(Debug)]
 struct DbaMetaEntry {
     fps: u16,
+    /// Expected number of bone controllers in the matching block.
+    num_controllers: u16,
+    /// End frame from metadata entry.
+    end_frame: u32,
+    /// Start-frame reference rotation (xyzw quaternion in CryEngine space).
+    /// Used to match this metadata entry to the correct DBA block when the
+    /// metadata name order differs from the block data order.
+    start_rotation: [f32; 4],
 }
 
 /// IVO chunk type IDs for animation data.
@@ -152,31 +160,106 @@ fn match_dba_metadata_to_blocks(
             .collect();
     }
 
+    // Precompute per-block first-frame rotations and max frame for similarity matching.
+    let block_first_rots: Vec<Vec<[f32; 4]>> = blocks
+        .iter()
+        .map(|channels| {
+            channels
+                .iter()
+                .filter_map(|ch| ch.rotations.first().map(|kf| kf.value))
+                .collect()
+        })
+        .collect();
+    let block_max_frames: Vec<f32> = blocks
+        .iter()
+        .map(|channels| {
+            let mut max_frame = 0.0f32;
+            for ch in channels {
+                if let Some(last_rot) = ch.rotations.last() {
+                    max_frame = max_frame.max(last_rot.time);
+                }
+                if let Some(last_pos) = ch.positions.last() {
+                    max_frame = max_frame.max(last_pos.time);
+                }
+            }
+            max_frame
+        })
+        .collect();
+
+    let mut matched = vec![false; blocks.len()];
     let mut clips: Vec<AnimationClip> = Vec::new();
 
-    // SC DBA metadata names are emitted in the same order as animation blocks
-    // once false-positive block scanning is eliminated/truncated.
-    for (i, (name, meta)) in meta_entries.iter().enumerate() {
-        let Some(channels) = blocks.get(i) else {
-            break;
-        };
-        let clip_name = if name.trim().is_empty() {
-            format!("anim_{i}")
+    // Greedy matching: for each metadata entry, find the unmatched block that
+    // has the right num_controllers AND whose best-matching channel first-frame
+    // rotation is closest to start_rotation (by absolute quaternion dot product).
+    // This correctly handles DBAs where metadata names are alphabetically sorted
+    // but block data is in a different (authoring/CRC) order.
+    for (name, meta) in meta_entries.iter() {
+        let nc = meta.num_controllers as usize;
+        let sr = meta.start_rotation;
+
+        let mut best: Option<(usize, f32, f32)> = None;
+        for (i, first_rots) in block_first_rots.iter().enumerate() {
+            if matched[i] || blocks[i].len() != nc {
+                continue;
+            }
+            // Find the channel whose first-frame rotation is closest to start_rotation.
+            let min_d = if first_rots.is_empty() {
+                0.5 // No rotation data: neutral distance
+            } else {
+                first_rots
+                    .iter()
+                    .map(|q| {
+                        let dot = (q[0] * sr[0] + q[1] * sr[1] + q[2] * sr[2] + q[3] * sr[3])
+                            .abs()
+                            .clamp(0.0, 1.0);
+                        1.0 - dot
+                    })
+                    .fold(f32::INFINITY, f32::min)
+            };
+            let frame_delta = if meta.end_frame > 0 {
+                (block_max_frames[i] - meta.end_frame as f32).abs()
+            } else {
+                0.0
+            };
+            match best {
+                None => best = Some((i, min_d, frame_delta)),
+                Some((_, prev_rot, prev_frame))
+                    if min_d < prev_rot - 1e-6
+                        || ((min_d - prev_rot).abs() <= 1e-6 && frame_delta < prev_frame) =>
+                {
+                    best = Some((i, min_d, frame_delta))
+                }
+                _ => {}
+            }
+        }
+
+        if let Some((idx, _, _)) = best {
+            matched[idx] = true;
+            let clip_name = if name.trim().is_empty() {
+                format!("anim_{idx}")
+            } else {
+                name.clone()
+            };
+            clips.push(AnimationClip {
+                name: clip_name,
+                fps: if meta.fps == 0 { 30.0 } else { meta.fps as f32 },
+                channels: blocks[idx].clone(),
+            });
         } else {
-            name.clone()
-        };
-        clips.push(AnimationClip {
-            name: clip_name,
-            fps: if meta.fps == 0 { 30.0 } else { meta.fps as f32 },
-            channels: channels.clone(),
-        });
+            log::debug!("[anim] no block with nc={nc} for metadata entry '{name}'");
+        }
     }
 
-    // Preserve any extra parsed blocks as unnamed clips for debugging.
-    if blocks.len() > meta_entries.len() {
-        for (idx, channels) in blocks.into_iter().enumerate().skip(meta_entries.len()) {
+    // Append any blocks not claimed by a metadata entry.
+    for (i, channels) in blocks.into_iter().enumerate() {
+        if !matched[i] {
+            log::debug!(
+                "[anim] block {i} ({} channels) not matched by any metadata entry",
+                channels.len()
+            );
             clips.push(AnimationClip {
-                name: format!("anim_unmatched_{idx}"),
+                name: format!("anim_unmatched_{i}"),
                 fps: 30.0,
                 channels,
             });
@@ -419,8 +502,27 @@ fn parse_dba_metadata(data: &[u8]) -> Vec<(String, DbaMetaEntry)> {
     let mut entries = Vec::with_capacity(count);
     for i in 0..count {
         let o = 4 + i * entry_size;
+        // Layout (v0x902):
+        // +0x0C fps(u16), +0x0E num_controllers(u16), +0x18 end_frame(u32),
+        // +0x1C..+0x2C start_rotation(f32x4)
+        let fps = u16::from_le_bytes([data[o + 12], data[o + 13]]);
+        let num_controllers = u16::from_le_bytes([data[o + 14], data[o + 15]]);
+        let end_frame = u32::from_le_bytes([data[o + 24], data[o + 25], data[o + 26], data[o + 27]]);
+        let start_rotation = if o + 44 <= data.len() {
+            [
+                f32::from_le_bytes(data[o + 28..o + 32].try_into().unwrap_or([0; 4])),
+                f32::from_le_bytes(data[o + 32..o + 36].try_into().unwrap_or([0; 4])),
+                f32::from_le_bytes(data[o + 36..o + 40].try_into().unwrap_or([0; 4])),
+                f32::from_le_bytes(data[o + 40..o + 44].try_into().unwrap_or([0; 4])),
+            ]
+        } else {
+            [0.0, 0.0, 0.0, 1.0]
+        };
         entries.push(DbaMetaEntry {
-            fps: u16::from_le_bytes([data[o + 8], data[o + 9]]),
+            fps,
+            num_controllers,
+            end_frame,
+            start_rotation,
         });
     }
 
@@ -471,6 +573,19 @@ fn read_time_keys(
                 return Err(Error::Other(format!("Time keys overflow at 0x{offset:x}")));
             }
             Ok((0..count).map(|i| data[offset + i] as f32).collect())
+        }
+        // 2 bytes per key (u16 frame numbers)
+        0x01 => {
+            let size = count * 2;
+            if offset + size > data.len() {
+                return Err(Error::Other(format!("Time keys overflow at 0x{offset:x}")));
+            }
+            Ok((0..count)
+                .map(|i| {
+                    let o = offset + i * 2;
+                    u16::from_le_bytes([data[o], data[o + 1]]) as f32
+                })
+                .collect())
         }
         // 8-byte header (start u16 + end u16 + marker u32), interpolate linearly
         0x02 | 0x42 => {
@@ -1063,6 +1178,108 @@ pub fn database_to_animations_json(db: &AnimationDatabase) -> serde_json::Value 
     serde_json::Value::Array(db.clips.iter().map(clip_to_json).collect())
 }
 
+fn tokenize_for_match(input: &str) -> Vec<String> {
+    const STOPWORDS: &[&str] = &[
+        "animations",
+        "animation",
+        "spaceships",
+        "ships",
+        "objects",
+        "object",
+        "rsi",
+        "scorpius",
+        "play",
+        "ssmp",
+        "component",
+        "audio",
+        "trigger",
+        "event",
+        "caf",
+        // Directional tokens are too generic and cause false matches
+        // (e.g. cooler_left_* selecting wing clips just because many wing
+        // bones contain "left").
+        "left",
+        "right",
+        "top",
+        "bottom",
+        "front",
+        "rear",
+        "main",
+        // Common action verbs are non-discriminative across many clips.
+        "open",
+        "close",
+        "deploy",
+        "retract",
+    ];
+
+    input
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_ascii_lowercase())
+        .filter(|t| t.len() >= 3)
+        .filter(|t| !STOPWORDS.iter().any(|w| w == t))
+        .collect()
+}
+
+fn clip_semantic_score(
+    clip: &AnimationClip,
+    event_tokens: &[String],
+    skeleton_bone_name_by_hash: &HashMap<u32, String>,
+) -> i32 {
+    if event_tokens.is_empty() {
+        return 0;
+    }
+
+    let mut score = 0i32;
+
+    // DBA metadata names can be misaligned with block contents, so semantic
+    // scoring is intentionally based on resolved channel bone names only.
+    for ch in &clip.channels {
+        let Some(name) = skeleton_bone_name_by_hash.get(&ch.bone_hash) else {
+            continue;
+        };
+        let lower = name.to_ascii_lowercase();
+        let bone_tokens = tokenize_for_match(&lower);
+
+        for token in event_tokens {
+            if bone_tokens.iter().any(|bt| bt == token) {
+                score += 4;
+            } else if lower.contains(token) {
+                score += 2;
+            }
+        }
+    }
+    score
+}
+
+fn clip_motion_score_milli(clip: &AnimationClip) -> i64 {
+    let mut score = 0.0f64;
+
+    for ch in &clip.channels {
+        if ch.rotations.len() >= 2 {
+            let q0 = ch.rotations.first().map(|k| k.value).unwrap_or([0.0; 4]);
+            let q1 = ch.rotations.last().map(|k| k.value).unwrap_or([0.0; 4]);
+            let dot = (q0[0] * q1[0] + q0[1] * q1[1] + q0[2] * q1[2] + q0[3] * q1[3])
+                .abs()
+                .clamp(0.0, 1.0) as f64;
+            // Quaternion angular distance in radians.
+            let angle = 2.0f64 * dot.acos();
+            score += angle;
+        }
+
+        if ch.positions.len() >= 2 {
+            let p0 = ch.positions.first().map(|k| k.value).unwrap_or([0.0; 3]);
+            let p1 = ch.positions.last().map(|k| k.value).unwrap_or([0.0; 3]);
+            let dx = (p1[0] - p0[0]) as f64;
+            let dy = (p1[1] - p0[1]) as f64;
+            let dz = (p1[2] - p0[2]) as f64;
+            score += (dx * dx + dy * dy + dz * dz).sqrt();
+        }
+    }
+
+    (score * 1000.0).round() as i64
+}
+
 /// Match DBA blocks to `.chrparams` event names using a hybrid approach:
 ///
 /// 1. **Path-based** (primary): resolve the chrparams CAF path to its full
@@ -1082,6 +1299,8 @@ fn caf_anchored_remap(
     db: &AnimationDatabase,
     chrparams: &crate::chrparams::ChrParams,
     skeleton_bone_hashes: &HashSet<u32>,
+    skeleton_bone_name_by_hash: &HashMap<u32, String>,
+    animevents_targets_by_caf: &HashMap<String, Vec<String>>,
     include_unmatched: bool,
     allow_bone_subset_fallback: bool,
 ) -> Vec<AnimationClip> {
@@ -1100,8 +1319,22 @@ fn caf_anchored_remap(
     for (event_name, caf_path) in &chrparams.animations {
         let resolved_caf = chrparams.resolved_caf_path(caf_path);
         let resolved_lower = resolved_caf.to_ascii_lowercase();
+        let caf_file = resolved_caf
+            .rsplit_once('/')
+            .map(|(_, tail)| tail)
+            .unwrap_or(resolved_caf.as_str())
+            .trim_end_matches(".caf");
+
+        let mut event_tokens = tokenize_for_match(event_name);
+        event_tokens.extend(tokenize_for_match(caf_file));
+        if let Some(targets) = animevents_targets_by_caf.get(&resolved_lower) {
+            for target in targets {
+                event_tokens.extend(tokenize_for_match(target));
+            }
+        }
 
         let mut chosen_idx: Option<usize> = None;
+        let mut path_idx_hint: Option<usize> = None;
 
         // Step 1: path-based lookup.
         if let Some(&path_idx) = name_map.get(&resolved_lower) {
@@ -1111,11 +1344,66 @@ fn caf_anchored_remap(
                     .iter()
                     .all(|ch| skeleton_bone_hashes.contains(&ch.bone_hash));
                 if block_valid {
+                    // Keep as a hint; we may override it if semantic scoring finds
+                    // a better candidate among similarly-valid blocks.
+                    path_idx_hint = Some(path_idx);
                     chosen_idx = Some(path_idx);
                 } else {
                     log::debug!(
-                        "[anim] path-matched block {path_idx} for '{event_name}' has bones outside skeleton — using bone-subset fallback"
+                        "[anim] path-matched block {path_idx} for '{event_name}' has bones outside skeleton — using semantic/bone-subset fallback"
                     );
+                }
+            }
+        }
+
+        // Step 1.5: semantic disambiguation. This is especially important for
+        // root body CHRs where many clips share controller counts/start quats and
+        // path-index alignment can be wrong when DBA metadata order differs from
+        // block order.
+        if can_validate && !skeleton_bone_name_by_hash.is_empty() {
+            let best_semantic = (0..db.clips.len())
+                .filter(|&i| !matched[i])
+                .filter(|&i| {
+                    !db.clips[i].channels.is_empty()
+                        && db.clips[i]
+                            .channels
+                            .iter()
+                            .all(|ch| skeleton_bone_hashes.contains(&ch.bone_hash))
+                })
+                .map(|i| {
+                    let composite =
+                        clip_semantic_score(&db.clips[i], &event_tokens, skeleton_bone_name_by_hash);
+                    let motion = clip_motion_score_milli(&db.clips[i]);
+                    (
+                        i,
+                        composite,
+                        motion,
+                    )
+                })
+                .max_by_key(|(_, score, motion)| (*score, *motion));
+
+            if let Some((semantic_idx, semantic_score, _semantic_motion)) = best_semantic {
+                let hinted_score = path_idx_hint
+                    .map(|idx| {
+                        clip_semantic_score(
+                            &db.clips[idx],
+                            &event_tokens,
+                            skeleton_bone_name_by_hash,
+                        )
+                    })
+                    .unwrap_or(i32::MIN);
+
+                // Prefer semantic winner only when it has a strictly stronger
+                // bone-name token match than the path hint, OR when no path
+                // hint exists AND the semantic match has positive overlap.
+                // Equal-score motion-tiebreak previously caused systematic
+                // reassignment of correct path matches to nearby high-motion
+                // blocks; require a strict lexical advantage instead.
+                let strictly_better = semantic_score > hinted_score;
+                let no_hint_with_overlap =
+                    path_idx_hint.is_none() && semantic_score > 0;
+                if strictly_better || no_hint_with_overlap {
+                    chosen_idx = Some(semantic_idx);
                 }
             }
         }
@@ -1164,7 +1452,158 @@ fn caf_anchored_remap(
         }
     }
 
+    // Step 3: clip-direction correction for named animations.
+    //
+    // Empirical finding (Phase 24B / 23A): paired animation clips in the DBA
+    // are time-reversed relative to their event-name semantic. For example,
+    // `wings_deploy` is observed to start at ~63° rotation and end at ~5°
+    // (near bind), which is the *retract* direction. The companion
+    // `wings_retract` is the inverse. The chrparams labelling and DBA
+    // direction disagree.
+    //
+    // We reverse keyframe time within a clip when the name keyword and the
+    // observed orientation disagree:
+    //   - `deploy`/`open`/`extend`  → expected end_frame_far_from_bind
+    //   - `retract`/`close`/`compress` → expected start_frame_far_from_bind
+    //
+    // Only applied when there is a clear bind-distance asymmetry between
+    // first and last frames (>2x ratio AND at least one frame >5° rotation
+    // or >0.05m position).
+    for clip in named_clips.iter_mut() {
+        correct_clip_direction(clip);
+    }
+
     named_clips
+}
+
+/// Returns the magnitude of "distance from bind" for a single keyframe entry.
+/// Bind = identity rotation (w=1, xyz=0) and zero position. Returns the
+/// rotation angle in radians plus position magnitude in meters.
+fn keyframe_bind_distance(
+    rot: Option<&[f32; 4]>,
+    pos: Option<&[f32; 3]>,
+) -> f64 {
+    let mut d = 0.0f64;
+    if let Some(q) = rot {
+        // Quaternion stored as CryEngine XYZW in the channel keyframe;
+        // the W component is at index 3.
+        let w = q[3].clamp(-1.0, 1.0) as f64;
+        d += 2.0 * w.abs().clamp(0.0, 1.0).acos();
+    }
+    if let Some(p) = pos {
+        let dx = p[0] as f64;
+        let dy = p[1] as f64;
+        let dz = p[2] as f64;
+        d += (dx * dx + dy * dy + dz * dz).sqrt();
+    }
+    d
+}
+
+fn correct_clip_direction(clip: &mut AnimationClip) {
+    // Determine expected direction from clip name.
+    let name_lower = clip.name.to_ascii_lowercase();
+    // "extend" matches before "retract" via substring; we check explicitly.
+    let expects_end_far = name_lower.contains("deploy")
+        || name_lower.contains("open")
+        || name_lower.contains("extend");
+    let expects_start_far = name_lower.contains("retract")
+        || name_lower.contains("close")
+        || name_lower.contains("compress");
+
+    if !(expects_end_far || expects_start_far) {
+        return; // No directional keyword.
+    }
+    // Per-channel SIGNED contribution: (last_bind_dist - first_bind_dist).
+    // Sum across channels gives the net direction. Position channels often
+    // store static offsets, so rotation is preferred; we fall back to
+    // position deltas when rotation has no signal.
+    let mut signed_total = 0.0f64;
+    let mut total_motion = 0.0f64;
+    for ch in &clip.channels {
+        let r0 = ch.rotations.first().map(|k| &k.value);
+        let r_n = ch.rotations.last().map(|k| &k.value);
+        if r0.is_none() || r_n.is_none() {
+            continue;
+        }
+        let d0 = keyframe_bind_distance(r0, None);
+        let d_n = keyframe_bind_distance(r_n, None);
+        signed_total += d_n - d0;
+        total_motion += (d_n - d0).abs();
+    }
+
+    if total_motion < 0.087 {
+        for ch in &clip.channels {
+            if ch.positions.len() < 2 {
+                continue;
+            }
+            let p0 = ch.positions.first().unwrap().value;
+            let p_n = ch.positions.last().unwrap().value;
+            let m0 = (p0[0].powi(2) + p0[1].powi(2) + p0[2].powi(2)).sqrt() as f64;
+            let m_n = (p_n[0].powi(2) + p_n[1].powi(2) + p_n[2].powi(2)).sqrt() as f64;
+            let delta = ((p_n[0] - p0[0]).powi(2)
+                + (p_n[1] - p0[1]).powi(2)
+                + (p_n[2] - p0[2]).powi(2))
+            .sqrt() as f64;
+            if delta > 0.01 {
+                signed_total += m_n - m0;
+                total_motion += delta;
+            }
+        }
+    }
+
+    if total_motion < 0.087 {
+        return; // Not enough motion to determine direction.
+    }
+
+    let directional_strength = signed_total.abs() / total_motion;
+    log::info!(
+        "[anim] direction-check '{}' signed={:.3} motion={:.3} strength={:.2}",
+        clip.name, signed_total, total_motion, directional_strength
+    );
+    if directional_strength < 0.30 {
+        return;
+    }
+
+    let actual_end_far = signed_total > 0.0;
+    let needs_reverse = if expects_end_far {
+        !actual_end_far
+    } else {
+        actual_end_far
+    };
+
+    if !needs_reverse {
+        return;
+    }
+
+    // Reverse keyframe time. We mirror times around the clip's max_time so
+    // the duration is preserved and frame 0 stays frame 0.
+    let mut max_time = 0.0f32;
+    for ch in &clip.channels {
+        for k in &ch.rotations {
+            max_time = max_time.max(k.time);
+        }
+        for k in &ch.positions {
+            max_time = max_time.max(k.time);
+        }
+    }
+
+    log::info!(
+        "[anim] reversing direction of clip '{}' signed={:.3} expects_end_far={}",
+        clip.name,
+        signed_total,
+        expects_end_far
+    );
+
+    for ch in clip.channels.iter_mut() {
+        for k in ch.rotations.iter_mut() {
+            k.time = max_time - k.time;
+        }
+        ch.rotations.reverse();
+        for k in ch.positions.iter_mut() {
+            k.time = max_time - k.time;
+        }
+        ch.positions.reverse();
+    }
 }
 
 pub fn extract_animations_for_skeleton_json(
@@ -1203,8 +1642,31 @@ pub fn extract_animations_for_skeleton_json(
     };
 
     // Parse chrparams to get tracks database path
-    let chrparams = crate::chrparams::ChrParams::from_bytes(&chrparams_data)
-        .map_err(|e| Error::Other(format!("Failed to parse chrparams: {e}")))?;
+    let chrparams = match crate::chrparams::ChrParams::from_bytes(&chrparams_data) {
+        Ok(value) => value,
+        Err(error) => {
+            let text = error.to_string();
+            // Some non-skeleton assets are probed via heuristic path swaps and
+            // resolve to non-CryXml payloads. Treat those as "no animations" to
+            // avoid noisy warnings during normal export.
+            if text.contains("InvalidMagic") {
+                return Ok(None);
+            }
+            return Err(Error::Other(format!("Failed to parse chrparams: {error}")));
+        }
+    };
+
+    let animevents_targets_by_caf: HashMap<String, Vec<String>> = chrparams
+        .anim_event_database
+        .as_deref()
+        .and_then(|path| {
+            let resolved = chrparams.resolved_caf_path(path);
+            let resolved_p4k = crate::pipeline::datacore_path_to_p4k(&resolved);
+            p4k.entry_case_insensitive(&resolved_p4k)
+                .and_then(|e| p4k.read(e).ok())
+                .and_then(|bytes| crate::chrparams::parse_animevents_targets(&bytes).ok())
+        })
+        .unwrap_or_default();
 
     // Prefer tracks database (.dba) when present.
     if let Some(tracks_db_path) = chrparams.tracks_database.clone() {
@@ -1219,12 +1681,23 @@ pub fn extract_animations_for_skeleton_json(
         // Load the skeleton file and compute its bone hash set.  This is used
         // to identify which DBA blocks belong to this CHR (bone-subset scan).
         let skeleton_p4k_path = crate::pipeline::datacore_path_to_p4k(skeleton_path);
-        let skeleton_bone_hashes: HashSet<u32> = p4k
+        let (skeleton_bone_hashes, skeleton_bone_name_by_hash): (
+            HashSet<u32>,
+            HashMap<u32, String>,
+        ) = p4k
             .entry_case_insensitive(&skeleton_p4k_path)
             .and_then(|e| p4k.read(e).ok())
             .and_then(|data| crate::skeleton::parse_skeleton(&data))
             .map(|bones| {
-                bones.iter().map(|b| bone_name_hash(&b.name)).collect()
+                let hashes = bones
+                    .iter()
+                    .map(|b| bone_name_hash(&b.name))
+                    .collect::<HashSet<_>>();
+                let name_map = bones
+                    .iter()
+                    .map(|b| (bone_name_hash(&b.name), b.name.to_ascii_lowercase()))
+                    .collect::<HashMap<_, _>>();
+                (hashes, name_map)
             })
             .unwrap_or_default();
         log::debug!(
@@ -1232,7 +1705,15 @@ pub fn extract_animations_for_skeleton_json(
             skeleton_path,
             skeleton_bone_hashes.len()
         );
-        let clips = caf_anchored_remap(&db, &chrparams, &skeleton_bone_hashes, include_unmatched_dba_blocks, allow_bone_subset_fallback);
+        let clips = caf_anchored_remap(
+            &db,
+            &chrparams,
+            &skeleton_bone_hashes,
+            &skeleton_bone_name_by_hash,
+            &animevents_targets_by_caf,
+            include_unmatched_dba_blocks,
+            allow_bone_subset_fallback,
+        );
         return Ok(Some(database_to_animations_json(&AnimationDatabase { clips })));
     }
 
