@@ -1090,8 +1090,12 @@ pub fn clip_to_json(clip: &AnimationClip) -> serde_json::Value {
         let mut position_array = vec![];
         for keyframe in &channel.positions {
             let p = keyframe.value;
-            // Apply CryEngine Y-up → Blender Z-up axis swap: (x, y, z) → (y, -z, x)
-            position_array.push(serde_json::json!([p[1], -p[2], p[0]]));
+            // CryEngine Y-up → Blender Z-up axis swap: (x, y, z) → (x, -z, y).
+            // Must match the static-import convention used by the addon's
+            // `_scene_position_to_blender` (runtime/importer/utils.py); both
+            // sides need to put CryEngine X into Blender X so that animation
+            // deltas land in the same frame as the bone's bind position.
+            position_array.push(serde_json::json!([p[0], -p[2], p[1]]));
         }
 
         let bone_key = format!("0x{:X}", channel.bone_hash);
@@ -1891,6 +1895,40 @@ mod bake_tests {
         assert!((r[0] - 0.0).abs() < 1e-5, "{:?}", r);
         assert!((r[1] - 1.0).abs() < 1e-5, "{:?}", r);
         assert!(r[2].abs() < 1e-5, "{:?}", r);
+    }
+
+    #[test]
+    fn clip_to_json_position_axis_swap_matches_static_import() {
+        // Pin the CryEngine Y-up → Blender Z-up axis swap for animation
+        // position keyframes. This MUST match the static-import convention
+        // used by the addon's `_scene_position_to_blender` in
+        // `blender_addon/starbreaker_addon/runtime/importer/utils.py`,
+        // which maps (cry_x, cry_y, cry_z) → (cry_x, -cry_z, cry_y). If
+        // the two diverge, animation deltas land in a different basis than
+        // the bone's bind pose and the result is the inverted X-shape
+        // failure documented in `docs/StarBreaker/animation-research.md`
+        // (Scorpius wing-deploy kinematics).
+        let clip = AnimationClip {
+            name: "test_clip".to_string(),
+            fps: 30.0,
+            channels: vec![BoneChannel {
+                bone_hash: 0xDEADBEEF,
+                rotations: vec![],
+                positions: vec![Keyframe {
+                    time: 0.0,
+                    value: [1.0, 2.0, 3.0],
+                }],
+            }],
+        };
+
+        let json = clip_to_json(&clip);
+        let bones = json["bones"].as_object().unwrap();
+        let entry = bones.values().next().unwrap();
+        let pos = entry["position"].as_array().unwrap();
+        let kf = pos[0].as_array().unwrap();
+        assert_eq!(kf[0].as_f64().unwrap(), 1.0, "Blender X must be cry_x");
+        assert_eq!(kf[1].as_f64().unwrap(), -3.0, "Blender Y must be -cry_z");
+        assert_eq!(kf[2].as_f64().unwrap(), 2.0, "Blender Z must be cry_y");
     }
 }
 
