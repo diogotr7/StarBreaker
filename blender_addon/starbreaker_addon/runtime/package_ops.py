@@ -1157,7 +1157,7 @@ def _apply_animation_pose(
 
 
 def _insert_animation_action(
-    _context: bpy.types.Context,
+    context: bpy.types.Context,
     package_root: bpy.types.Object,
     clip: dict[str, Any],
 ) -> int:
@@ -1165,13 +1165,12 @@ def _insert_animation_action(
     if not bones:
         return 0
     name = str(clip.get("name", "animation")) or "animation"
-    action_name = f"SB_{package_root.name}_{name}"
-    action = bpy.data.actions.get(action_name)
-    if action is not None:
-        # Blender 5.1 uses slot-based actions; replacing the action is the
-        # most robust cross-version way to clear prior keyframes.
-        bpy.data.actions.remove(action, do_unlink=True)
-    action = bpy.data.actions.new(name=action_name)
+
+    # Phase 24A: insert keyframes starting at the current scene frame so
+    # multiple action-mode clips can chain naturally on the timeline. The
+    # caller (UI button "Insert") sets the playhead at the desired anchor.
+    scene = context.scene if context is not None else bpy.context.scene
+    frame_offset = int(scene.frame_current) if scene is not None else 0
 
     updated = 0
     for obj in _iter_candidate_bone_objects(package_root):
@@ -1185,7 +1184,23 @@ def _insert_animation_action(
             continue
         obj.rotation_mode = "QUATERNION"
         obj.animation_data_create()
+
+        # Phase 24C: each animated object gets its own Action, named after
+        # the clip + bone, and grouped by the bone's display name so the
+        # Dope Sheet Action editor shows clean per-bone groups. The Action
+        # is pushed onto a per-clip NLA track so multiple clips coexist on
+        # the timeline without overwriting each other.
+        action_name = f"SB_{package_root.name}_{name}_{obj.name}"
+        existing = bpy.data.actions.get(action_name)
+        if existing is not None:
+            bpy.data.actions.remove(existing, do_unlink=True)
+        action = bpy.data.actions.new(name=action_name)
         obj.animation_data.action = action
+        group_name = obj.name
+        try:
+            action.groups.new(group_name)
+        except Exception:
+            pass
 
         rotations = channel.get("rotation") if isinstance(channel.get("rotation"), list) else []
         positions = channel.get("position") if isinstance(channel.get("position"), list) else []
@@ -1221,7 +1236,7 @@ def _insert_animation_action(
                             bind[1] + (sample_decoded[1] - anchor[1]),
                             bind[2] + (sample_decoded[2] - anchor[2]),
                         )
-                        obj.keyframe_insert(data_path="location", frame=index)
+                        obj.keyframe_insert(data_path="location", frame=frame_offset + index)
 
         for index, sample in enumerate(rotations):
             if isinstance(sample, list) and len(sample) >= 4:
@@ -1231,7 +1246,35 @@ def _insert_animation_action(
                     float(sample[2]),
                     float(sample[3]),
                 )
-                obj.keyframe_insert(data_path="rotation_quaternion", frame=index)
+                obj.keyframe_insert(data_path="rotation_quaternion", frame=frame_offset + index)
+
+        # Phase 24C: assign all fcurves on this action to the bone's group
+        # so the Action editor renders a single collapsible group per bone.
+        bone_group = action.groups.get(group_name)
+        if bone_group is not None:
+            for fcurve in action.fcurves:
+                if fcurve.group is None:
+                    fcurve.group = bone_group
+
+        # Phase 24C: push the per-object action onto a per-clip NLA track so
+        # the Action stays editable and multiple clips don't overwrite each
+        # other on the timeline.
+        anim = obj.animation_data
+        if anim is not None and action.frame_range[1] > action.frame_range[0]:
+            track = anim.nla_tracks.get(name)
+            if track is None:
+                track = anim.nla_tracks.new()
+                track.name = name
+            strip_start = int(action.frame_range[0])
+            try:
+                strip = track.strips.new(name=name, start=strip_start, action=action)
+                strip.name = name
+            except Exception:
+                # Strip may already exist at that frame; ignore.
+                pass
+            # Detach the active action so the NLA strip drives playback
+            # without double-evaluation; the Action remains in bpy.data.
+            anim.action = None
 
         updated += 1
 
