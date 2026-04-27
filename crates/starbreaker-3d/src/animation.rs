@@ -92,6 +92,11 @@ struct DbaMetaEntry {
     /// Retained for future cross-validation; the current matcher uses
     /// 1:1 index alignment (see Phase 27 in animation-research.md).
     start_rotation: [f32; 4],
+    /// Start-frame reference position (XY only; only 8 bytes fit in the
+    /// 48-byte entry). Empirically `(0, 0)` for most clips on Scorpius;
+    /// non-zero for landing-gear and similar clips that translate the
+    /// whole bone group. See Phase 29 in todo.md.
+    start_position_xy: [f32; 2],
 }
 
 /// IVO chunk type IDs for animation data.
@@ -443,8 +448,11 @@ fn parse_dba_metadata(data: &[u8]) -> Vec<(String, DbaMetaEntry)> {
         //   +0x10 (4) reserved
         //   +0x14 (4) end_frame  (u32, frame count of the clip)
         //   +0x18 (16) start_rotation (f32×4 quaternion XYZW)
-        //   +0x28 (8)  start_position trailing — only 8 of 12 bytes fit; the
-        //              last component is implicit / unused for matching.
+        //   +0x28 (8)  start_position trailing — only XY of a 3-component
+        //              position fits (Z elided / always implicit 0).
+        //              Empirically (0, 0) for most clips; non-zero for
+        //              landing-gear and similar group-translating clips
+        //              (Phase 29 empirical confirmation, 2026-04-28).
         // Block ordering is identical to metadata ordering; matching is by
         // index (see match_dba_metadata_to_blocks below).
         let fps = u16::from_le_bytes([data[o + 8], data[o + 9]]);
@@ -456,11 +464,16 @@ fn parse_dba_metadata(data: &[u8]) -> Vec<(String, DbaMetaEntry)> {
             f32::from_le_bytes(data[o + 32..o + 36].try_into().unwrap_or([0; 4])),
             f32::from_le_bytes(data[o + 36..o + 40].try_into().unwrap_or([0; 4])),
         ];
+        let start_position_xy = [
+            f32::from_le_bytes(data[o + 40..o + 44].try_into().unwrap_or([0; 4])),
+            f32::from_le_bytes(data[o + 44..o + 48].try_into().unwrap_or([0; 4])),
+        ];
         entries.push(DbaMetaEntry {
             fps,
             num_controllers,
             end_frame,
             start_rotation,
+            start_position_xy,
         });
     }
 
