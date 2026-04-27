@@ -97,9 +97,11 @@ pub struct ExportOptions {
     pub lod_level: u32,
     /// Texture mip level (0 = full resolution, 2 = 1/4 res, 4 = 1/16 res).
     pub texture_mip: u32,
+    /// Export animation clips into decomposed scene sidecars.
+    pub include_animations: bool,
     /// Apply default-state animation poses (e.g. landing-gear-deployed) to
     /// skeletons that ship a `.chrparams` file. Affects the rest pose written
-    /// into the GLB; runtime animation tracks are not yet exported.
+    /// into the GLB / decomposed skeleton data.
     pub apply_default_animation_pose: bool,
     /// Animation event tags (chrparams `<Animation name="…"/>`) to look up
     /// when `apply_default_animation_pose` is enabled. The first match wins
@@ -120,6 +122,7 @@ impl Default for ExportOptions {
             include_shields: false,
             lod_level: 1,
             texture_mip: 2,
+            include_animations: false,
             apply_default_animation_pose: true,
             default_animation_tags: vec!["landing_gear_extend".to_string()],
         }

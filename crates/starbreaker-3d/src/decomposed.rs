@@ -971,7 +971,7 @@ pub(crate) fn write_decomposed_export(
         report_progress(progress, 0.85, "Writing manifests");
     }
 
-    let root_animations = if opts.apply_default_animation_pose {
+    let root_animations = if opts.include_animations {
         let mut clips: Vec<serde_json::Value> = Vec::new();
         // Map from clip name → index in `clips`, used to merge same-named clips
         // from different child skeletons (e.g. landing_gear_extend from front/left/right CHRs).

@@ -319,22 +319,39 @@ def _is_axis_conversion_root(obj: bpy.types.Object) -> bool:
     return obj.data is None and source_name == "CryEngine_Z_up"
 
 
-def _should_neutralize_axis_root(obj: bpy.types.Object, mesh_asset: str) -> bool:
-    """Phase 12: neutralize any ``CryEngine_Z_up`` template root when the
-    instance is parented to a hardpoint.
+def _is_identity_matrix(mat: Matrix, *, tol: float = 1e-5) -> bool:
+    ident = Matrix.Identity(4)
+    for row in range(4):
+        for col in range(4):
+            if abs(float(mat[row][col]) - float(ident[row][col])) > tol:
+                return False
+    return True
 
-    Historically this additionally required ``_has_non_identity_descendants``
-    to be true, which meant templates whose axis-conversion empty had
-    only identity-transformed descendants (e.g. ``geo_vtol_fan`` inside
-    ``rsi_aurora_mk2_fan_vtol.glb``) kept the 90° Z-up→Y-up rotation
-    baked into their top-level transform even though the parent
-    hardpoint already provides the correct orientation. For
-    hardpoint-attached instances the axis conversion is always
-    redundant — the scene matrix conversion
-    (``_scene_matrix_to_blender``) has already brought the hardpoint
-    into Blender space — so we strip it unconditionally.
+
+def _has_non_identity_direct_children(obj: bpy.types.Object, *, tol: float = 1e-5) -> bool:
+    """Return True if the axis root directly wraps authored local transforms.
+
+    A ``CryEngine_Z_up`` root commonly wraps an asset root whose own local
+    transform is identity while deeper descendants carry the asset's authored
+    pivots. Those deeper transforms should not block neutralization for
+    node-attached loadout items. Only direct wrapped children indicate whether
+    the axis root itself is carrying authored offsets that would be lost.
     """
-    return _is_axis_conversion_root(obj)
+    return any(not _is_identity_matrix(child.matrix_basis, tol=tol) for child in obj.children)
+
+
+def _should_neutralize_axis_root(obj: bpy.types.Object, mesh_asset: str) -> bool:
+    """Return whether an axis-conversion root can be safely neutralized.
+
+    Some assets use ``CryEngine_Z_up`` as a pure wrapper; others carry
+    authored direct-child offsets under that root. Unconditionally stripping
+    the root can detach parts in the latter case, so neutralization is
+    limited to identity-like wrapper hierarchies at the immediate wrapped
+    child level.
+    """
+    if not _is_axis_conversion_root(obj):
+        return False
+    return not _has_non_identity_direct_children(obj)
 
 
 def _slot_mapping_for_object(obj: bpy.types.Object) -> list[int | None] | None:

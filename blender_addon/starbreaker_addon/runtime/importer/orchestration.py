@@ -774,8 +774,13 @@ class OrchestrationMixin:
         clone.hide_set(False)
         clone.hide_render = False
         clone[PROP_TEMPLATE_PATH] = mesh_asset
-        clone[PROP_SOURCE_NODE_NAME] = source.get(PROP_SOURCE_NODE_NAME, source.name)
+        source_node_name = str(source.get(PROP_SOURCE_NODE_NAME, source.name) or source.name)
+        clone[PROP_SOURCE_NODE_NAME] = source_node_name
+        hide_by_default = self._should_hide_source_node_by_default(source_node_name)
         (link_collection or self.collection).objects.link(clone)
+        if hide_by_default:
+            clone.hide_viewport = True
+            clone.hide_render = True
         clone.matrix_basis = source.matrix_basis.copy()
         mapping[source.name] = clone
 
@@ -886,6 +891,15 @@ class OrchestrationMixin:
     def _scene_root_parent(self, objects: list[bpy.types.Object]) -> bpy.types.Object | None:
         indexed = self._index_nodes(objects)
         return indexed.get("CryEngine_Z_up")
+
+
+    def _should_hide_source_node_by_default(self, source_node_name: str) -> bool:
+        name = source_node_name.strip().lower()
+        return (
+            name.startswith("damage_")
+            or name.startswith("debris_")
+            or name.startswith("helper_")
+        )
 
     def _root_objects(self, objects: list[bpy.types.Object]) -> list[bpy.types.Object]:
         imported_pointers = {obj.as_pointer() for obj in objects}

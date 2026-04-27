@@ -87,6 +87,11 @@ rsync -a --delete StarBreaker/blender_addon/starbreaker_addon/ \
 `--delete` is important: it removes stray stale `.py` files (deleted
 modules, renamed files) that would otherwise shadow the new code.
 
+After `rsync`, force-reload the addon in Blender before validating
+behavior. Even with synced files, Python module caching can keep stale
+function objects alive until the reload sequence in
+"Reload the addon after deploy" is run.
+
 ## Running the Tests
 
 The suite stubs `bpy` so it runs on system Python, not inside Blender:

@@ -21,7 +21,7 @@
 //! - All other entries map an event name (the key the engine binds to game
 //!   logic) to a `.caf` filename within the tracks database.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use starbreaker_cryxml::CryXml;
 
@@ -33,6 +33,8 @@ pub struct ChrParams {
     /// `$TracksDatabase` path (engine-relative, e.g. `Animations/.../Scorpius.dba`),
     /// or `None` if the chrparams uses standalone `.caf` files only.
     pub tracks_database: Option<String>,
+    /// `$AnimEventDatabase` path (`.animevents`) when present.
+    pub anim_event_database: Option<String>,
     /// Filepath prefix applied to relative `path` attributes (`#filepath`).
     pub filepath_prefix: Option<String>,
     /// Animation event name → `.caf` filename (or full path if absolute).
@@ -66,6 +68,7 @@ impl ChrParams {
                 match name {
                     "#filepath" => out.filepath_prefix = Some(path.to_string()),
                     "$TracksDatabase" => out.tracks_database = Some(path.to_string()),
+                    "$AnimEventDatabase" => out.anim_event_database = Some(path.to_string()),
                     _ => {
                         out.animations.insert(name.to_string(), path.to_string());
                     }
@@ -96,6 +99,64 @@ impl ChrParams {
             None => raw_path.to_string(),
         }
     }
+}
+
+/// Parse a `.animevents` file and extract per-animation hint labels.
+///
+/// Returns a map keyed by lowercase animation path (e.g.
+/// `animations/.../canopy_open.caf`) with associated labels from attributes
+/// such as `bone="..."` and `parameter="..."`.
+pub fn parse_animevents_targets(data: &[u8]) -> Result<HashMap<String, Vec<String>>, Error> {
+    let xml = starbreaker_cryxml::from_bytes(data)
+        .map_err(|e| Error::Other(format!("CryXml parse: {e:?}")))?;
+
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+
+    fn walk(
+        xml: &CryXml,
+        node: &starbreaker_cryxml::CryXmlNode,
+        current_animation: Option<&str>,
+        out: &mut HashMap<String, Vec<String>>,
+    ) {
+        let tag = xml.node_tag(node);
+        let mut local_animation = current_animation;
+
+        if tag.eq_ignore_ascii_case("animation") {
+            let mut anim_name: Option<&str> = None;
+            for (k, v) in xml.node_attributes(node) {
+                if (k.eq_ignore_ascii_case("animation") || k.eq_ignore_ascii_case("name"))
+                    && v.to_ascii_lowercase().ends_with(".caf")
+                {
+                    anim_name = Some(v);
+                    break;
+                }
+            }
+            if let Some(a) = anim_name {
+                local_animation = Some(a);
+            }
+        }
+
+        if let Some(anim_path) = local_animation {
+            let key = anim_path.to_ascii_lowercase();
+            for (k, v) in xml.node_attributes(node) {
+                if (k.eq_ignore_ascii_case("bone") || k.eq_ignore_ascii_case("parameter"))
+                    && !v.trim().is_empty()
+                {
+                    let entry = out.entry(key.clone()).or_default();
+                    if !entry.iter().any(|existing| existing.eq_ignore_ascii_case(v)) {
+                        entry.push(v.to_string());
+                    }
+                }
+            }
+        }
+
+        for child in xml.node_children(node) {
+            walk(xml, child, local_animation, out);
+        }
+    }
+
+    walk(&xml, xml.root(), None, &mut out);
+    Ok(out)
 }
 
 #[cfg(test)]
