@@ -1090,6 +1090,26 @@ def _apply_best_channel_transform(
     position_sample: list[Any] | None = None
     if isinstance(positions, list) and positions:
         position_sample = _select_sample(positions, 3, _position_score)
+
+    # Phase 29: rest-endpoint detection. CryEngine state-transition clips
+    # (canopy_open/close, landing_gear_deploy/retract, wings_deploy, etc.)
+    # are PATHS between two engine-tracked states; the clip data alone does
+    # not carry the canonical destination pose. By convention, the endpoint
+    # whose rotation matches bind IS the rest state — at that endpoint the
+    # bone's transform must equal bind exactly, regardless of where the
+    # position track happens to land. This keeps snap_first/snap_last
+    # consistent with the engine's state contract instead of drifting by
+    # the residual offset between bind and the nearest recorded keyframe.
+    if (
+        endpoint_policy == "literal"
+        and rotation_sample is not None
+        and _rotation_score(rotation_sample) < 0.0175  # ~1 degree
+    ):
+        obj.rotation_mode = "QUATERNION"
+        obj.rotation_quaternion = bind_rot
+        obj.location = bind_loc
+        return
+
     if rotation_sample is not None:
         obj.rotation_mode = "QUATERNION"
         # Exporter writes animation rotations in Blender wxyz order.
