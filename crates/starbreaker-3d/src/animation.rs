@@ -81,6 +81,7 @@ struct ControllerEntry {
 
 /// DBA metadata entry (48 = 0x30 bytes per animation, v0x902).
 #[derive(Debug)]
+#[allow(dead_code)]
 struct DbaMetaEntry {
     fps: u16,
     /// Expected number of bone controllers in the matching block.
@@ -88,8 +89,8 @@ struct DbaMetaEntry {
     /// End frame from metadata entry.
     end_frame: u32,
     /// Start-frame reference rotation (xyzw quaternion in CryEngine space).
-    /// Used to match this metadata entry to the correct DBA block when the
-    /// metadata name order differs from the block data order.
+    /// Retained for future cross-validation; the current matcher uses
+    /// 1:1 index alignment (see Phase 27 in animation-research.md).
     start_rotation: [f32; 4],
 }
 
@@ -160,112 +161,41 @@ fn match_dba_metadata_to_blocks(
             .collect();
     }
 
-    // Precompute per-block first-frame rotations and max frame for similarity matching.
-    let block_first_rots: Vec<Vec<[f32; 4]>> = blocks
-        .iter()
-        .map(|channels| {
-            channels
-                .iter()
-                .filter_map(|ch| ch.rotations.first().map(|kf| kf.value))
-                .collect()
-        })
-        .collect();
-    let block_max_frames: Vec<f32> = blocks
-        .iter()
-        .map(|channels| {
-            let mut max_frame = 0.0f32;
-            for ch in channels {
-                if let Some(last_rot) = ch.rotations.last() {
-                    max_frame = max_frame.max(last_rot.time);
-                }
-                if let Some(last_pos) = ch.positions.last() {
-                    max_frame = max_frame.max(last_pos.time);
-                }
-            }
-            max_frame
-        })
-        .collect();
-
-    let mut matched = vec![false; blocks.len()];
-    let mut clips: Vec<AnimationClip> = Vec::new();
-
-    // Greedy matching: for each metadata entry, find the unmatched block that
-    // has the right num_controllers AND whose best-matching channel first-frame
-    // rotation is closest to start_rotation (by absolute quaternion dot product).
-    // This correctly handles DBAs where metadata names are alphabetically sorted
-    // but block data is in a different (authoring/CRC) order.
-    for (name, meta) in meta_entries.iter() {
-        let nc = meta.num_controllers as usize;
-        let sr = meta.start_rotation;
-
-        let mut best: Option<(usize, f32, f32)> = None;
-        for (i, first_rots) in block_first_rots.iter().enumerate() {
-            if matched[i] || blocks[i].len() != nc {
-                continue;
-            }
-            // Find the channel whose first-frame rotation is closest to start_rotation.
-            let min_d = if first_rots.is_empty() {
-                0.5 // No rotation data: neutral distance
-            } else {
-                first_rots
-                    .iter()
-                    .map(|q| {
-                        let dot = (q[0] * sr[0] + q[1] * sr[1] + q[2] * sr[2] + q[3] * sr[3])
-                            .abs()
-                            .clamp(0.0, 1.0);
-                        1.0 - dot
-                    })
-                    .fold(f32::INFINITY, f32::min)
-            };
-            let frame_delta = if meta.end_frame > 0 {
-                (block_max_frames[i] - meta.end_frame as f32).abs()
-            } else {
-                0.0
-            };
-            match best {
-                None => best = Some((i, min_d, frame_delta)),
-                Some((_, prev_rot, prev_frame))
-                    if min_d < prev_rot - 1e-6
-                        || ((min_d - prev_rot).abs() <= 1e-6 && frame_delta < prev_frame) =>
-                {
-                    best = Some((i, min_d, frame_delta))
-                }
-                _ => {}
-            }
-        }
-
-        if let Some((idx, _, _)) = best {
-            matched[idx] = true;
-            let clip_name = if name.trim().is_empty() {
-                format!("anim_{idx}")
-            } else {
-                name.clone()
-            };
-            clips.push(AnimationClip {
-                name: clip_name,
-                fps: if meta.fps == 0 { 30.0 } else { meta.fps as f32 },
-                channels: blocks[idx].clone(),
-            });
-        } else {
-            log::debug!("[anim] no block with nc={nc} for metadata entry '{name}'");
-        }
-    }
-
-    // Append any blocks not claimed by a metadata entry.
+    // Authoritative mapping: DBA metadata entries are 1:1 index-aligned with
+    // animation blocks. Verified empirically on Scorpius.dba (2026-04-27): all
+    // 55 metadata entries match their corresponding block by num_controllers,
+    // including the wings_deploy and rsi_scorpius_lg_deploy_r blocks that
+    // earlier heuristic matchers misassigned. See
+    // docs/StarBreaker/animation-research.md "Phase 27 — DBA metadata layout
+    // corrected" for the byte-level decoding evidence.
+    //
+    // Mismatches in num_controllers between metadata and block at the same
+    // index indicate either a parser bug or a corrupt DBA. Log a warning and
+    // fall back to a positional name so the clip is still exported.
+    let mut clips: Vec<AnimationClip> = Vec::with_capacity(blocks.len());
     for (i, channels) in blocks.into_iter().enumerate() {
-        if !matched[i] {
-            log::debug!(
-                "[anim] block {i} ({} channels) not matched by any metadata entry",
-                channels.len()
-            );
-            clips.push(AnimationClip {
-                name: format!("anim_unmatched_{i}"),
-                fps: 30.0,
-                channels,
-            });
-        }
+        let (name, fps) = match meta_entries.get(i) {
+            Some((name, meta)) => {
+                if (meta.num_controllers as usize) != channels.len() {
+                    log::warn!(
+                        "[anim] DBA metadata[{i}] '{name}' nctrl={} disagrees with block channels={}; \
+                         keeping index-aligned name but parser may have decoded entry size incorrectly",
+                        meta.num_controllers,
+                        channels.len()
+                    );
+                }
+                let clip_name = if name.trim().is_empty() {
+                    format!("anim_{i}")
+                } else {
+                    name.clone()
+                };
+                let fps = if meta.fps == 0 { 30.0 } else { meta.fps as f32 };
+                (clip_name, fps)
+            }
+            None => (format!("anim_{i}"), 30.0),
+        };
+        clips.push(AnimationClip { name, fps, channels });
     }
-
     clips
 }
 
@@ -502,22 +432,30 @@ fn parse_dba_metadata(data: &[u8]) -> Vec<(String, DbaMetaEntry)> {
     let mut entries = Vec::with_capacity(count);
     for i in 0..count {
         let o = 4 + i * entry_size;
-        // Layout (v0x902):
-        // +0x0C fps(u16), +0x0E num_controllers(u16), +0x18 end_frame(u32),
-        // +0x1C..+0x2C start_rotation(f32x4)
-        let fps = u16::from_le_bytes([data[o + 12], data[o + 13]]);
-        let num_controllers = u16::from_le_bytes([data[o + 14], data[o + 15]]);
-        let end_frame = u32::from_le_bytes([data[o + 24], data[o + 25], data[o + 26], data[o + 27]]);
-        let start_rotation = if o + 44 <= data.len() {
-            [
-                f32::from_le_bytes(data[o + 28..o + 32].try_into().unwrap_or([0; 4])),
-                f32::from_le_bytes(data[o + 32..o + 36].try_into().unwrap_or([0; 4])),
-                f32::from_le_bytes(data[o + 36..o + 40].try_into().unwrap_or([0; 4])),
-                f32::from_le_bytes(data[o + 40..o + 44].try_into().unwrap_or([0; 4])),
-            ]
-        } else {
-            [0.0, 0.0, 0.0, 1.0]
-        };
+        // Layout (v0x902, 48 bytes per entry, empirically verified against
+        // Scorpius.dba 2026-04-27 — see docs/StarBreaker/animation-research.md
+        // "Phase 27 — DBA metadata layout corrected"):
+        //   +0x00 (4) flags0 (often 0; sometimes float weight)
+        //   +0x04 (4) flags1 (0 or small int)
+        //   +0x08 (2) fps        (u16, e.g. 30 = 0x001E)
+        //   +0x0A (2) num_controllers (u16, == bone_count of the matching block)
+        //   +0x0C (4) version    (always 0x00000900 in v0x902)
+        //   +0x10 (4) reserved
+        //   +0x14 (4) end_frame  (u32, frame count of the clip)
+        //   +0x18 (16) start_rotation (f32×4 quaternion XYZW)
+        //   +0x28 (8)  start_position trailing — only 8 of 12 bytes fit; the
+        //              last component is implicit / unused for matching.
+        // Block ordering is identical to metadata ordering; matching is by
+        // index (see match_dba_metadata_to_blocks below).
+        let fps = u16::from_le_bytes([data[o + 8], data[o + 9]]);
+        let num_controllers = u16::from_le_bytes([data[o + 10], data[o + 11]]);
+        let end_frame = u32::from_le_bytes([data[o + 20], data[o + 21], data[o + 22], data[o + 23]]);
+        let start_rotation = [
+            f32::from_le_bytes(data[o + 24..o + 28].try_into().unwrap_or([0; 4])),
+            f32::from_le_bytes(data[o + 28..o + 32].try_into().unwrap_or([0; 4])),
+            f32::from_le_bytes(data[o + 32..o + 36].try_into().unwrap_or([0; 4])),
+            f32::from_le_bytes(data[o + 36..o + 40].try_into().unwrap_or([0; 4])),
+        ];
         entries.push(DbaMetaEntry {
             fps,
             num_controllers,
@@ -526,9 +464,20 @@ fn parse_dba_metadata(data: &[u8]) -> Vec<(String, DbaMetaEntry)> {
         });
     }
 
-    let mut names = Vec::with_capacity(count);
+    // Names region is preceded by alignment-padding NUL bytes (observed in
+    // Scorpius.dba: 4 leading NULs to align the first name to an 8-byte
+    // boundary). Skip leading NULs so we land on the first real name.
     let mut pos = entries_end;
+    while pos < data.len() && data[pos] == 0 {
+        pos += 1;
+    }
+
+    let mut names = Vec::with_capacity(count);
     for _ in 0..count {
+        if pos >= data.len() {
+            names.push(String::new());
+            continue;
+        }
         let end = data[pos..]
             .iter()
             .position(|&b| b == 0)
@@ -1476,6 +1425,163 @@ fn caf_anchored_remap(
     named_clips
 }
 
+/// Diagnostic record for a single chrparams event, describing how the
+/// matching pipeline (path → semantic → bone-subset) selected a DBA block.
+///
+/// Returned by [`caf_anchored_remap_decisions`]. Used by the `dba match`
+/// CLI subcommand to debug clip-mismatches such as the wings_deploy
+/// X-shape issue.
+#[derive(Debug, Clone)]
+pub struct ClipMatchDecision {
+    pub event_name: String,
+    pub caf_path: String,
+    /// Final block index chosen, or `None` if no block matched.
+    pub chosen_block: Option<usize>,
+    /// Which step picked the block: "path", "semantic-override",
+    /// "semantic-no-hint", "bone-subset", or "unmatched".
+    pub method: &'static str,
+    /// The block matched purely by path lookup (Step 1), if any.
+    pub path_block: Option<usize>,
+    /// The block winning the semantic-overlap scoring (Step 1.5), if any.
+    pub semantic_block: Option<usize>,
+    /// Semantic score of the path-matched block (or i32::MIN if none).
+    pub path_score: i32,
+    /// Semantic score of the semantic-best block (or 0 if none).
+    pub semantic_score: i32,
+}
+
+/// Run the per-event matching loop from [`caf_anchored_remap`] and return
+/// per-event decision details without building the named clips. This is a
+/// diagnostic helper used by the CLI `dba match` subcommand.
+pub fn caf_anchored_remap_decisions(
+    db: &AnimationDatabase,
+    chrparams: &crate::chrparams::ChrParams,
+    skeleton_bone_hashes: &HashSet<u32>,
+    skeleton_bone_name_by_hash: &HashMap<u32, String>,
+    animevents_targets_by_caf: &HashMap<String, Vec<String>>,
+    allow_bone_subset_fallback: bool,
+) -> Vec<ClipMatchDecision> {
+    let mut name_map: HashMap<String, usize> = HashMap::new();
+    for (i, clip) in db.clips.iter().enumerate() {
+        name_map.entry(clip.name.to_ascii_lowercase()).or_insert(i);
+    }
+
+    let can_validate = !skeleton_bone_hashes.is_empty();
+    let mut matched = vec![false; db.clips.len()];
+    let mut decisions: Vec<ClipMatchDecision> = Vec::new();
+
+    for (event_name, caf_path) in &chrparams.animations {
+        let resolved_caf = chrparams.resolved_caf_path(caf_path);
+        let resolved_lower = resolved_caf.to_ascii_lowercase();
+        let caf_file = resolved_caf
+            .rsplit_once('/')
+            .map(|(_, tail)| tail)
+            .unwrap_or(resolved_caf.as_str())
+            .trim_end_matches(".caf");
+
+        let mut event_tokens = tokenize_for_match(event_name);
+        event_tokens.extend(tokenize_for_match(caf_file));
+        if let Some(targets) = animevents_targets_by_caf.get(&resolved_lower) {
+            for target in targets {
+                event_tokens.extend(tokenize_for_match(target));
+            }
+        }
+
+        let mut chosen_idx: Option<usize> = None;
+        let mut method: &'static str = "unmatched";
+        let mut path_block: Option<usize> = None;
+        let mut semantic_block: Option<usize> = None;
+        let mut path_score: i32 = i32::MIN;
+        let mut semantic_score_val: i32 = 0;
+
+        if let Some(&path_idx) = name_map.get(&resolved_lower) {
+            if !matched[path_idx] {
+                let block_valid = !can_validate
+                    || db.clips[path_idx]
+                        .channels
+                        .iter()
+                        .all(|ch| skeleton_bone_hashes.contains(&ch.bone_hash));
+                if block_valid {
+                    path_block = Some(path_idx);
+                    chosen_idx = Some(path_idx);
+                    method = "path";
+                    path_score = clip_semantic_score(
+                        &db.clips[path_idx],
+                        &event_tokens,
+                        skeleton_bone_name_by_hash,
+                    );
+                }
+            }
+        }
+
+        if can_validate && !skeleton_bone_name_by_hash.is_empty() {
+            let best_semantic = (0..db.clips.len())
+                .filter(|&i| !matched[i])
+                .filter(|&i| {
+                    !db.clips[i].channels.is_empty()
+                        && db.clips[i]
+                            .channels
+                            .iter()
+                            .all(|ch| skeleton_bone_hashes.contains(&ch.bone_hash))
+                })
+                .map(|i| {
+                    let composite = clip_semantic_score(
+                        &db.clips[i],
+                        &event_tokens,
+                        skeleton_bone_name_by_hash,
+                    );
+                    let motion = clip_motion_score_milli(&db.clips[i]);
+                    (i, composite, motion)
+                })
+                .max_by_key(|(_, score, motion)| (*score, *motion));
+
+            if let Some((semantic_idx, semantic_score, _)) = best_semantic {
+                semantic_block = Some(semantic_idx);
+                semantic_score_val = semantic_score;
+                let strictly_better = semantic_score > path_score;
+                let no_hint_with_overlap = path_block.is_none() && semantic_score > 0;
+                if strictly_better {
+                    chosen_idx = Some(semantic_idx);
+                    method = "semantic-override";
+                } else if no_hint_with_overlap {
+                    chosen_idx = Some(semantic_idx);
+                    method = "semantic-no-hint";
+                }
+            }
+        }
+
+        if chosen_idx.is_none() && can_validate && allow_bone_subset_fallback {
+            chosen_idx = (0..db.clips.len()).find(|&i| {
+                !matched[i]
+                    && !db.clips[i].channels.is_empty()
+                    && db.clips[i]
+                        .channels
+                        .iter()
+                        .all(|ch| skeleton_bone_hashes.contains(&ch.bone_hash))
+            });
+            if chosen_idx.is_some() {
+                method = "bone-subset";
+            }
+        }
+
+        if let Some(idx) = chosen_idx {
+            matched[idx] = true;
+        }
+
+        decisions.push(ClipMatchDecision {
+            event_name: event_name.clone(),
+            caf_path: resolved_caf,
+            chosen_block: chosen_idx,
+            method,
+            path_block,
+            semantic_block,
+            path_score,
+            semantic_score: semantic_score_val,
+        });
+    }
+
+    decisions
+}
 /// Returns the magnitude of "distance from bind" for a single keyframe entry.
 /// Bind = identity rotation (w=1, xyz=0) and zero position. Returns the
 /// rotation angle in radians plus position magnitude in meters.
