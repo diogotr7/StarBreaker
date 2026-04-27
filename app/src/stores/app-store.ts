@@ -3,7 +3,7 @@ import { persist } from "zustand/middleware";
 import type { DiscoverResult } from "../lib/commands";
 import { tauriStorage } from "../lib/tauri-storage";
 
-export type AppMode = "p4k" | "datacore" | "export" | "audio";
+export type AppMode = "p4k" | "datacore" | "export" | "audio" | "scene";
 
 interface AppState {
   mode: AppMode;

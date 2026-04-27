@@ -940,6 +940,8 @@ mod tests {
             offset_rotation: [0.0; 3],
             detach_direction: [0.0; 3],
             port_flags: String::new(),
+            instance_id: 0,
+            parent_instance_id: 0,
         }
     }
 

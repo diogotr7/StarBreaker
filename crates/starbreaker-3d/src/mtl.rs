@@ -1100,19 +1100,78 @@ fn parse_rgb(s: &str) -> [f32; 3] {
     }
 }
 
-/// Extract the MtlName string from a .cgf/.skin metadata IVO file.
+/// Extract the MtlName string from a .cgf / .cgfm / .cga / .skin metadata file.
+///
+/// Handles both chunk file formats StarBreaker recognises:
+///   - **IVO** — newer Star Citizen content. MtlName chunk type
+///     `0x83353333`, payload is a flat 128-byte null-terminated name
+///     parsed by `MaterialName::read`.
+///   - **CrCh** — legacy CryEngine content (still common for older ships
+///     and components). MtlName chunk type `0x1014`, with a version-keyed
+///     layout — see `extract_crch_mtl_name` below.
+///
+/// Returns `None` only if no MtlName chunk is present or its payload is
+/// too short for the version's expected layout. Empty names are also
+/// rejected (treated as "no MtlName declared").
 pub fn extract_mtl_name(data: &[u8]) -> Option<String> {
     let chunk_file = ChunkFile::from_bytes(data).ok()?;
-    let ivo = match &chunk_file {
-        ChunkFile::Ivo(ivo) => ivo,
-        ChunkFile::CrCh(_) => return None,
-    };
+    match &chunk_file {
+        ChunkFile::Ivo(ivo) => ivo
+            .chunks()
+            .iter()
+            .find(|c| c.chunk_type == starbreaker_chunks::known_types::ivo::MTL_NAME_IVO320)
+            .and_then(|entry| MaterialName::read(ivo.chunk_data(entry)).ok())
+            .map(|m| m.name),
+        ChunkFile::CrCh(crch) => crch
+            .chunks()
+            .iter()
+            .find(|c| c.chunk_type == starbreaker_chunks::known_types::crch::MTL_NAME)
+            .and_then(|entry| extract_crch_mtl_name(crch.chunk_data(entry), entry.version)),
+    }
+}
 
-    ivo.chunks()
+/// Decode a CrCh `MtlName` chunk's raw payload into the asset's MTL path.
+///
+/// Layout matches the Lumberyard `CryHeaders.h` / `CGFLoader.cpp`
+/// definitions for the legacy CryEngine MtlName chunk: a fixed 128-byte
+/// null-terminated `char` name at a version-dependent offset within the
+/// payload.
+///
+/// Two chunk versions are observed in current content:
+///   - **0x0800** — fixed 408-byte struct. Name at offset `0x08` (after
+///     `i32 nFlags` and `i32 nFlags2`).
+///   - **0x0802** — variable-length, fixed 132-byte header. Name at
+///     offset `0x00` — flags were dropped from the header.
+///
+/// For an unknown version the offset-0 layout is used as a fallback;
+/// it's the dominant case in current content. The fallback is benign
+/// for an unrecognised 0x0800-style chunk because nFlags is almost
+/// always all-zero, so the decode produces an empty string and the
+/// caller treats that as "no MtlName".
+///
+/// Backslashes in the stored path are normalised to forward slashes to
+/// match the canonicalisation the rest of the pipeline uses.
+fn extract_crch_mtl_name(data: &[u8], version: u16) -> Option<String> {
+    const NAME_LEN: usize = 128;
+    let name_offset: usize = match version {
+        0x0800 => 8,
+        _ => 0,
+    };
+    if data.len() < name_offset + NAME_LEN {
+        return None;
+    }
+    let name_bytes = &data[name_offset..name_offset + NAME_LEN];
+    let raw: String = name_bytes
         .iter()
-        .find(|c| c.chunk_type == starbreaker_chunks::known_types::ivo::MTL_NAME_IVO320)
-        .and_then(|entry| MaterialName::read(ivo.chunk_data(entry)).ok())
-        .map(|m| m.name)
+        .take_while(|&&b| b != 0)
+        .map(|&b| b as char)
+        .collect();
+    let normalised = raw.replace('\\', "/");
+    if normalised.is_empty() {
+        None
+    } else {
+        Some(normalised)
+    }
 }
 
 #[cfg(test)]
