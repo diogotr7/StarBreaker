@@ -815,14 +815,15 @@ pub struct BonePose {
 /// Y-up `xyzw` convention) into the Blender Z-up `wxyz` form used by our
 /// pipeline.
 ///
-/// Empirically derived from the Scorpius rear-gear gate test
-/// (see `docs/StarBreaker/animation-research.md`):
-/// `blender_wxyz = (w, y, -z, x)` matched the user-aligned deployed-pose
-/// target at 2.54° on the foot bone and held smoothly across all 50
-/// keyframes of `lg_deploy_r`.
+/// Must match the position axis swap used by `clip_to_json` and the static
+/// import's `_scene_position_to_blender`: `(cx, cy, cz) → (cx, -cz, cy)`.
+/// Applying the same basis change to a quaternion's vector component gives
+/// `(qx, qy, qz, qw) → (qw, qx, -qz, qy)` in Blender WXYZ form. Keeping
+/// rotation and translation in the same basis is required for animation
+/// deltas to compose correctly with the bone's bind pose.
 pub fn cry_xyzw_to_blender_wxyz(q: [f32; 4]) -> [f32; 4] {
     let [x, y, z, w] = q;
-    [w, y, -z, x]
+    [w, x, -z, y]
 }
 
 /// Read a single named animation from a `.dba` and return final-frame local
@@ -867,7 +868,9 @@ pub fn clip_final_pose(clip: &AnimationClip) -> HashMap<u32, BonePose> {
             .unwrap_or([1.0, 0.0, 0.0, 0.0]);
         let position = ch.positions.last().map(|kf| {
             let [x, y, z] = kf.value;
-            [y, -z, x]
+            // Same basis change as `clip_to_json` and static import:
+            // CryEngine (x, y, z) → Blender (x, -z, y).
+            [x, -z, y]
         });
         poses.insert(ch.bone_hash, BonePose { rotation, position });
     }
@@ -1929,6 +1932,23 @@ mod bake_tests {
         assert_eq!(kf[0].as_f64().unwrap(), 1.0, "Blender X must be cry_x");
         assert_eq!(kf[1].as_f64().unwrap(), -3.0, "Blender Y must be -cry_z");
         assert_eq!(kf[2].as_f64().unwrap(), 2.0, "Blender Z must be cry_y");
+    }
+
+    #[test]
+    fn cry_xyzw_to_blender_wxyz_axis_swap_matches_position_swap() {
+        // The quaternion's vector component must transform under the same
+        // basis change as positions: CryEngine (cx, cy, cz) → Blender
+        // (cx, -cz, cy). For an input quaternion (qx=1, qy=2, qz=3, qw=4)
+        // the Blender WXYZ form must be (4, 1, -3, 2). If this drifts from
+        // the position swap (e.g. picks up the legacy (cy, -cz, cx)
+        // convention), animation rotations land in a basis 90° away from
+        // their position deltas and the wing-deploy X-shape collapses.
+        let q = [1.0_f32, 2.0, 3.0, 4.0]; // CryEngine xyzw
+        let blender = cry_xyzw_to_blender_wxyz(q);
+        assert_eq!(blender[0], 4.0, "Blender W = cry_w");
+        assert_eq!(blender[1], 1.0, "Blender X axis = cry_x axis");
+        assert_eq!(blender[2], -3.0, "Blender Y axis = -cry_z axis");
+        assert_eq!(blender[3], 2.0, "Blender Z axis = cry_y axis");
     }
 }
 
