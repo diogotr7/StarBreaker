@@ -1104,18 +1104,36 @@ def _apply_best_channel_transform(
     if position_sample is not None and isinstance(positions, list) and positions:
         # Source of truth: exporter writes sidecar positions in Blender local XYZ
         # already (see crates/starbreaker-3d/src/animation.rs::clip_to_json).
-        # Anchor channel deltas to the frame nearest bind (closed/reference
-        # state) so semantic snap modes remain stable even when raw channel
-        # positions carry a static offset.
+        # Anchor channel deltas to the clip endpoint (first or last keyframe)
+        # nearest bind, treating that endpoint as the "closed/reference" state.
+        # Picking from endpoints only — never mid-clip frames — matches the
+        # transition-pair semantics of CryEngine state-switching clips
+        # (closed↔open, retracted↔deployed). Mid-clip frames may arc through
+        # arbitrary geometry on the way (e.g. the Scorpius landing gear foot
+        # swings within ~0.5m of bind mid-deploy while both endpoints sit
+        # ~2.3m away); using `min` over all frames would pick that mid-arc
+        # frame as the anchor and produce a wildly wrong delta. This matches
+        # the anchor selection used by `_insert_animation_action` below.
         valid_positions: list[list[Any]] = [v for v in positions if isinstance(v, list) and len(v) >= 3]
         sample_decoded = _decode_animation_position(position_sample, "identity")
         if valid_positions:
-            closed_sample = min(valid_positions, key=_position_score)
-            closed_decoded = _decode_animation_position(closed_sample, "identity")
+            first_decoded = _decode_animation_position(valid_positions[0], "identity")
+            last_decoded = _decode_animation_position(valid_positions[-1], "identity")
+            first_dist_sq = (
+                (first_decoded[0] - bind_loc[0]) ** 2
+                + (first_decoded[1] - bind_loc[1]) ** 2
+                + (first_decoded[2] - bind_loc[2]) ** 2
+            )
+            last_dist_sq = (
+                (last_decoded[0] - bind_loc[0]) ** 2
+                + (last_decoded[1] - bind_loc[1]) ** 2
+                + (last_decoded[2] - bind_loc[2]) ** 2
+            )
+            anchor_decoded = first_decoded if first_dist_sq <= last_dist_sq else last_decoded
             obj.location = (
-                bind_loc[0] + (sample_decoded[0] - closed_decoded[0]),
-                bind_loc[1] + (sample_decoded[1] - closed_decoded[1]),
-                bind_loc[2] + (sample_decoded[2] - closed_decoded[2]),
+                bind_loc[0] + (sample_decoded[0] - anchor_decoded[0]),
+                bind_loc[1] + (sample_decoded[1] - anchor_decoded[1]),
+                bind_loc[2] + (sample_decoded[2] - anchor_decoded[2]),
             )
         else:
             obj.location = sample_decoded
