@@ -914,6 +914,8 @@ mod tests {
             no_rotation: false,
             offset_position: [0.0; 3],
             offset_rotation: [0.0; 3],
+            instance_id: 0,
+            parent_instance_id: 0,
         }
     }
 

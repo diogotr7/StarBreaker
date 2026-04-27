@@ -2361,6 +2361,18 @@ fn build_material(
 
     let mat_extras = {
         let mut map = serde_json::Map::new();
+        // Top-level binding hint for the TS loader: the submaterial array
+        // index in the paired `*.materials.json` sidecar. The Rust GLB
+        // writer and the sidecar writer both emit submaterials in
+        // `materials.iter().enumerate()` order, so this index is the
+        // engine-truth cross-reference. Names diverge across naming
+        // spaces (MTL-source vs Blender-semantic, `_mtl_` vs `:` vs
+        // bare-name) but indices do not.
+        //
+        // GLTFLoader copies `material.extras` to `material.userData
+        // .gltfExtensions` on the JS side, so the loader reads it as a
+        // single property lookup — no name parsing, no fallback ladder.
+        map.insert("submat_index".into(), serde_json::json!(sub.material_id));
         if let Some(m) = mtl_sub {
             if !m.name.is_empty() {
                 map.insert("source_name".into(), serde_json::json!(m.name));

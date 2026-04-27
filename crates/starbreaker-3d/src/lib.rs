@@ -1,6 +1,11 @@
 pub mod dequant;
 pub(crate) mod decomposed;
 pub mod error;
+
+/// Decomposed-export contract version. Re-exported from the internal
+/// `decomposed` module so the Tauri cache layer can stamp it onto cache
+/// keys and the scene viewer can detect schema bumps.
+pub use decomposed::CONTRACT_VERSION as DECOMPOSED_CONTRACT_VERSION;
 pub(crate) mod gltf;
 pub(crate) mod included_objects;
 pub mod ivo;

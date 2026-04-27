@@ -448,6 +448,7 @@ pub fn assemble_glb_with_loadout_with_progress(
     ensure_supported_export_options(opts)?;
 
     use crate::types::EntityPayload;
+    let export_t0 = std::time::Instant::now();
 
     report_progress(progress, 0.02, "Resolving loadout");
     let payload_material_mode = if opts.kind == ExportKind::Decomposed {
@@ -504,6 +505,9 @@ pub fn assemble_glb_with_loadout_with_progress(
     };
     let gear_parts = query_landing_gear(db, record);
     let mut child_payloads: Vec<EntityPayload> = Vec::new();
+    // Single allocator shared by every child source (landing gear,
+    // loadout walk) so all instance ids in this export are unique.
+    let mut instance_id_allocator = InstanceIdAllocator::new();
     report_progress(progress, 0.28, "Flattening attachments");
     if opts.include_attachments {
         for (gear_path, bone_name) in &gear_parts {
@@ -541,6 +545,8 @@ pub fn assemble_glb_with_loadout_with_progress(
                         no_rotation: false,
                         offset_position: [0.0; 3],
                         offset_rotation: [0.0; 3],
+                        instance_id: instance_id_allocator.allocate(),
+                        parent_instance_id: ROOT_INSTANCE_ID,
                     });
                     log::info!("  landing gear '{gear_path}' → '{bone_name}', {verts} verts");
                 }
@@ -550,12 +556,14 @@ pub fn assemble_glb_with_loadout_with_progress(
         flatten_resolved_tree(
             &resolved.children,
             &resolved.entity_name,
+            ROOT_INSTANCE_ID,
             None,
             db,
             p4k,
             &child_opts,
             child_payload_material_mode,
             existing_asset_paths,
+            &mut instance_id_allocator,
             &mut child_payloads,
         );
     }
@@ -690,6 +698,8 @@ pub fn assemble_glb_with_loadout_with_progress(
         }
         let paint_variants = enumerate_paint_variants_for_entity(db, p4k, record, &paint_display_names);
         let decomposed_progress = progress.map(|progress| progress.sub(0.60, 0.90));
+        // Capture count before child_payloads is moved into DecomposedInput.
+        let child_payload_count = child_payloads.len();
         let decomposed = crate::decomposed::write_decomposed_export(
             p4k,
             crate::decomposed::DecomposedInput {
@@ -714,6 +724,9 @@ pub fn assemble_glb_with_loadout_with_progress(
 
         report_progress(progress, 0.90, "Writing structured package");
 
+        // glb_count: root GLB + one per child payload (interiors are separate assets)
+        let glb_count = child_payload_count + 1;
+        log::info!("[export] done entity={} glb_count={} total={}ms", resolved.entity_name, glb_count, export_t0.elapsed().as_millis());
         return Ok(ExportResult {
             kind: opts.kind,
             format: opts.format,
@@ -764,6 +777,7 @@ pub fn assemble_glb_with_loadout_with_progress(
 
     report_progress(progress, 0.90, "Writing bundled file");
 
+    log::info!("[export] done entity={} glb_count=1 total={}ms", resolved.entity_name, export_t0.elapsed().as_millis());
     Ok(ExportResult {
         kind: opts.kind,
         format: opts.format,
@@ -808,11 +822,25 @@ fn load_child_mesh(
     })
 }
 
+/// Reserved instance id for the root entity. Children never collide with
+/// this because `assign_child_instance_ids` starts the counter at
+/// `ROOT_INSTANCE_ID + 1`.
+pub(crate) const ROOT_INSTANCE_ID: u32 = 0;
+
 struct ChildPayloadSpec {
     child: crate::types::ResolvedNode,
     parent_entity_name: String,
     parent_node_name: String,
     no_rotation: bool,
+    /// Unique per-export id assigned to this placement. Disambiguates
+    /// sibling placements whose `entity_name` collides (e.g. two copies
+    /// of `Mount_Gimbal_S1_NoSafety` on a paired-weapon ship).
+    instance_id: u32,
+    /// Instance id of the most recent geometry-creating ancestor (the
+    /// root or another `ChildPayloadSpec`). Children whose authored
+    /// parent has no geometry are reparented during traversal, so this
+    /// id matches the actual scene-graph parent in the export.
+    parent_instance_id: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -834,12 +862,65 @@ struct LoadedChildPayload {
     material_path: String,
 }
 
+/// Counter that hands out unique `instance_id`s during a single export
+/// run. Starts at `ROOT_INSTANCE_ID + 1` so the root entity keeps id 0.
+struct InstanceIdAllocator {
+    next: u32,
+}
+
+impl InstanceIdAllocator {
+    fn new() -> Self {
+        Self { next: ROOT_INSTANCE_ID + 1 }
+    }
+
+    fn allocate(&mut self) -> u32 {
+        let id = self.next;
+        self.next = self.next.checked_add(1).expect("instance id overflowed u32");
+        id
+    }
+}
+
+#[cfg(test)]
 fn collect_child_payload_specs(
     children: &[crate::types::ResolvedNode],
     parent_entity_name: &str,
     override_attachment: Option<(&str, bool)>,
     out: &mut Vec<ChildPayloadSpec>,
 ) {
+    // Convenience wrapper for tests that don't care about instance ids.
+    // Allocates a fresh allocator and treats the implicit parent as the
+    // export root (id 0).
+    let mut allocator = InstanceIdAllocator::new();
+    collect_child_payload_specs_with_ids(
+        children,
+        parent_entity_name,
+        ROOT_INSTANCE_ID,
+        override_attachment,
+        &mut allocator,
+        out,
+    );
+}
+
+fn collect_child_payload_specs_with_ids(
+    children: &[crate::types::ResolvedNode],
+    parent_entity_name: &str,
+    parent_instance_id: u32,
+    override_attachment: Option<(&str, bool)>,
+    allocator: &mut InstanceIdAllocator,
+    out: &mut Vec<ChildPayloadSpec>,
+) {
+    // Tree-walk pass that emits one spec per scene-graph node and
+    // assigns each spec a unique `instance_id` from the shared
+    // allocator. The recursion threads the *current* spec's id down as
+    // the parent for any grandchildren so each child knows exactly
+    // which placement it attaches to, even when several siblings carry
+    // the same `entity_name` (e.g. paired weapon mounts).
+    //
+    // Reparenting case: when a child has no geometry of its own
+    // (`!child_creates_nodes`), it does not produce a spec. Its
+    // grandchildren therefore inherit the *enclosing* parent's
+    // `parent_instance_id` rather than getting a synthetic id, mirroring
+    // the existing reparenting rules for `parent_entity_name`.
     for child in children {
         let (attach_name, no_rotation) = match override_attachment {
             Some((name, parent_no_rot)) => (name.to_string(), child.no_rotation || parent_no_rot),
@@ -848,18 +929,30 @@ fn collect_child_payload_specs(
 
         let child_creates_nodes = child.has_geometry || child.nmc.is_some();
         if child_creates_nodes {
+            let instance_id = allocator.allocate();
             out.push(ChildPayloadSpec {
                 child: child.clone_payload_source(),
                 parent_entity_name: parent_entity_name.to_string(),
                 parent_node_name: attach_name,
                 no_rotation,
+                instance_id,
+                parent_instance_id,
             });
-            collect_child_payload_specs(&child.children, &child.entity_name, None, out);
+            collect_child_payload_specs_with_ids(
+                &child.children,
+                &child.entity_name,
+                instance_id,
+                None,
+                allocator,
+                out,
+            );
         } else {
-            collect_child_payload_specs(
+            collect_child_payload_specs_with_ids(
                 &child.children,
                 parent_entity_name,
+                parent_instance_id,
                 Some((&child.attachment_name, child.no_rotation)),
+                allocator,
                 out,
             );
         }
@@ -1045,6 +1138,8 @@ fn load_child_payloads(
                     no_rotation: spec.no_rotation,
                     offset_position: child.offset_position,
                     offset_rotation: child.offset_rotation,
+                    instance_id: spec.instance_id,
+                    parent_instance_id: spec.parent_instance_id,
                 })
             } else if child.nmc.is_some() {
                 Some(crate::types::EntityPayload {
@@ -1062,6 +1157,8 @@ fn load_child_payloads(
                     no_rotation: spec.no_rotation,
                     offset_position: child.offset_position,
                     offset_rotation: child.offset_rotation,
+                    instance_id: spec.instance_id,
+                    parent_instance_id: spec.parent_instance_id,
                 })
             } else {
                 None
@@ -1074,19 +1171,34 @@ fn load_child_payloads(
 ///
 /// When `override_attachment` is Some, the first level of children uses that
 /// attachment name instead of their own (reparenting through a no-geometry parent).
+///
+/// Instance ids for the emitted payloads come from the caller-supplied
+/// `allocator` so they remain unique across multiple calls within the same
+/// export run (e.g. landing-gear payloads queued before the loadout walk).
+/// All immediate children attach to `parent_instance_id`; the tree walk
+/// threads each interior node's id down to its grandchildren.
 fn flatten_resolved_tree(
     children: &[crate::types::ResolvedNode],
     parent_entity_name: &str,
+    parent_instance_id: u32,
     override_attachment: Option<(&str, bool)>,
     db: &Database,
     p4k: &MappedP4k,
     mesh_opts: &ExportOptions,
     final_material_mode: MaterialMode,
     existing_asset_paths: Option<&HashSet<String>>,
+    allocator: &mut InstanceIdAllocator,
     out: &mut Vec<crate::types::EntityPayload>,
 ) {
     let mut specs = Vec::new();
-    collect_child_payload_specs(children, parent_entity_name, override_attachment, &mut specs);
+    collect_child_payload_specs_with_ids(
+        children,
+        parent_entity_name,
+        parent_instance_id,
+        override_attachment,
+        allocator,
+        &mut specs,
+    );
     out.extend(load_child_payloads(
         specs,
         db,
@@ -3391,25 +3503,63 @@ fn query_landing_gear(db: &Database, record: &Record) -> Vec<(String, String)> {
 }
 
 /// Resolve and parse the .mtl material file for a mesh.
+///
+/// CryEngine itself reads the MtlName chunk embedded in the CGF/CGA/SKIN
+/// metadata to find a mesh's material. That chunk is the authoritative
+/// engine-truth source — every mesh declares the path it expects. Prefer
+/// that when present so component meshes whose DataCore loadout entry
+/// points at a generic interior-master MTL still bind to the
+/// asset-specific MTL the mesh itself declares.
+///
+/// The DataCore-supplied path remains as a fallback for two reasons:
+///   - Some meshes (older content, non-Ivo formats) lack an MtlName chunk.
+///   - Some loadouts intentionally remap a mesh to a sibling MTL (rare).
+///
+/// Paint variants override the result of this function via
+/// `resolve_paint_override`, so swapping the priority here doesn't affect
+/// paint application — paint runs on top of whichever base MTL we picked.
 fn resolve_material(
     p4k: &MappedP4k,
     datacore_material_path: &str,
     p4k_geom_path: &str,
     metadata_bytes: Option<&[u8]>,
 ) -> Option<mtl::MtlFile> {
-    // 1. Try DataCore material path first
+    let datacore_p4k = if datacore_material_path.is_empty() {
+        String::new()
+    } else {
+        datacore_path_to_p4k(datacore_material_path)
+    };
+
+    // 1. Prefer the MtlName chunk declared by the mesh's metadata. The
+    //    runtime resolves a CGF's MTL the same way, so this gives the
+    //    asset-specific MTL when one exists.
+    if let Some(metadata) = metadata_bytes {
+        if let Some(mtl_name) = mtl::extract_mtl_name(metadata) {
+            let mtl_p4k_path = resolve_mtl_p4k_path(&mtl_name, p4k_geom_path);
+            if let Some(mtl) = try_load_mtl(p4k, &mtl_p4k_path) {
+                log::debug!(
+                    "resolve_material: mtlname mesh={p4k_geom_path} mtl='{mtl_p4k_path}' submats={}",
+                    mtl.materials.len(),
+                );
+                return Some(mtl);
+            }
+        }
+    }
+
+    // 2. Fall back to the DataCore-supplied path when no MtlName chunk
+    //    is present or its target failed to load.
     if !datacore_material_path.is_empty() {
-        let p4k_path = datacore_path_to_p4k(datacore_material_path);
-        if let Some(mtl) = try_load_mtl(p4k, &p4k_path) {
+        if let Some(mtl) = try_load_mtl(p4k, &datacore_p4k) {
+            log::debug!(
+                "resolve_material: datacore mesh={p4k_geom_path} mtl='{datacore_p4k}' submats={}",
+                mtl.materials.len(),
+            );
             return Some(mtl);
         }
     }
 
-    // 2. Use pre-loaded metadata companion for MtlName fallback
-    let metadata = metadata_bytes?;
-    let mtl_name = mtl::extract_mtl_name(metadata)?;
-    let mtl_p4k_path = resolve_mtl_p4k_path(&mtl_name, p4k_geom_path);
-    try_load_mtl(p4k, &mtl_p4k_path)
+    log::debug!("resolve_material: no MTL resolved mesh={p4k_geom_path}");
+    None
 }
 
 /// Resolve paint-based palette and material overrides from an equipped paint item.
@@ -5219,6 +5369,44 @@ mod tests {
 
         let empty = sample_export_result(ExportKind::Bundled, Vec::new());
         assert_eq!(empty.bundled_bytes(), None);
+    }
+
+    #[test]
+    fn collect_child_payload_specs_assigns_unique_instance_ids_to_paired_siblings() {
+        // Two `Mount_Gimbal_S1_NoSafety` siblings on different hardpoints.
+        // Each carries one `laser` grandchild, and both grandchildren share
+        // the literal `entity_name = "laser"`. Without unique ids a
+        // downstream consumer cannot tell which laser hangs off which mount.
+        let mount_left = resolved_node(
+            "Mount_Gimbal_S1_NoSafety",
+            "hardpoint_weapon_left",
+            true,
+            false,
+            vec![resolved_node("laser", "hardpoint_gun", true, false, Vec::new())],
+        );
+        let mount_right = resolved_node(
+            "Mount_Gimbal_S1_NoSafety",
+            "hardpoint_weapon_right",
+            true,
+            false,
+            vec![resolved_node("laser", "hardpoint_gun", true, false, Vec::new())],
+        );
+
+        let mut specs = Vec::new();
+        collect_child_payload_specs(&[mount_left, mount_right], "root_ship", None, &mut specs);
+
+        assert_eq!(specs.len(), 4);
+        // Instance ids are unique per spec, even when entity_name collides.
+        let ids: std::collections::HashSet<u32> =
+            specs.iter().map(|spec| spec.instance_id).collect();
+        assert_eq!(ids.len(), specs.len(), "instance ids must be unique");
+        // Both mounts attach to the export root.
+        assert_eq!(specs[0].parent_instance_id, ROOT_INSTANCE_ID);
+        assert_eq!(specs[2].parent_instance_id, ROOT_INSTANCE_ID);
+        // Each grandchild laser points at *its own* mount (not the other).
+        assert_eq!(specs[1].parent_instance_id, specs[0].instance_id);
+        assert_eq!(specs[3].parent_instance_id, specs[2].instance_id);
+        assert_ne!(specs[1].parent_instance_id, specs[3].parent_instance_id);
     }
 
     #[test]

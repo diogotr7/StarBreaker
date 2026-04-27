@@ -12,6 +12,9 @@ pub struct AppState {
     pub p4k: Mutex<Option<Arc<MappedP4k>>>,
     pub dcb_bytes: Mutex<Option<Vec<u8>>>,
     pub export_cancel: Arc<AtomicBool>,
+    /// Cancel flag for the Scene Viewer's in-process exporter. Separate
+    /// from `export_cancel` so the two pipelines don't stomp each other.
+    pub scene_export_cancel: Arc<AtomicBool>,
     /// Localization strings from Data\Localization\english\global.ini.
     /// Keys are lowercase for case-insensitive lookup.
     pub localization: Mutex<HashMap<String, String>>,
@@ -31,6 +34,7 @@ impl AppState {
             p4k: Mutex::new(None),
             dcb_bytes: Mutex::new(None),
             export_cancel: Arc::new(AtomicBool::new(false)),
+            scene_export_cancel: Arc::new(AtomicBool::new(false)),
             localization: Mutex::new(HashMap::new()),
             record_index: Mutex::new(None),
             atl_index: Mutex::new(None),

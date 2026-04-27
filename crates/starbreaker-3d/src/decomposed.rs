@@ -12,10 +12,30 @@ use crate::nmc::NodeMeshCombo;
 use crate::pipeline::{
     DecomposedExport, ExportOptions, ExportedFile, ExportedFileKind, InteriorCgfEntry,
     LoadedInteriors, MaterialMode,
-    PngCache,
+    PngCache, ROOT_INSTANCE_ID,
 };
 use crate::skeleton::Bone;
 use crate::types::{EntityPayload, Mesh};
+
+/// Decomposed-export contract version. Bump whenever the on-disk
+/// scene.json / palettes.json / material-sidecar shape changes in a way
+/// that the scene viewer cannot transparently fall back from. Every
+/// emitted scene.json carries this value as `contract_version`; the
+/// Tauri cache key suffix appends `_v<N>` so old slots become unreachable
+/// after a bump and can be reaped by the "Clear all cache" button or
+/// `prune_stale_cache` startup hook.
+///
+/// Version history:
+/// - 1: initial sentinel (introduced alongside the cache UI rework). All
+///   prior exports — which never carried `contract_version` — are
+///   treated as unversioned and live in cache slots without `_v<N>`.
+/// - 2: GLB material entries gained `extras.submat_index`, the engine-truth
+///   binding into the paired sidecar's submaterials array. The TS loader
+///   reads it directly via Three.js `material.userData.gltfExtensions
+///   .submat_index`, replacing the 5-strategy name-matching ladder.
+///   Pre-v2 GLBs lack the field; their slots are auto-orphaned and
+///   regenerated.
+pub const CONTRACT_VERSION: u32 = 2;
 
 pub(crate) struct DecomposedInput {
     pub entity_name: String,
@@ -86,6 +106,15 @@ struct SceneInstanceRecord {
     palette_id: Option<String>,
     parent_node_name: Option<String>,
     parent_entity_name: Option<String>,
+    /// Unique per-export id for this child placement. Disambiguates
+    /// sibling placements that share the same `entity_name` (e.g. paired
+    /// weapon mounts). Loaders should prefer keying their attach
+    /// registry on `instance_id` over `entity_name`.
+    instance_id: u32,
+    /// Instance id of the parent placement (root or another child).
+    /// Loaders should prefer this over `parent_entity_name` for
+    /// disambiguating which parent a child belongs to.
+    parent_instance_id: u32,
     source_transform_basis: Option<String>,
     local_transform_sc: Option<[[f32; 4]; 4]>,
     resolved_no_rotation: bool,
@@ -127,11 +156,26 @@ fn empty_scene_graph_mesh() -> Mesh {
 }
 
 fn flat_4x4_to_rows(flat: [f32; 16]) -> [[f32; 4]; 4] {
+    // glTF / glam emit column-major: flat[col * 4 + row].
+    // scene.json local_transform_sc is row-major: rows[row][col].
     [
-        [flat[0], flat[1], flat[2], flat[3]],
-        [flat[4], flat[5], flat[6], flat[7]],
-        [flat[8], flat[9], flat[10], flat[11]],
-        [flat[12], flat[13], flat[14], flat[15]],
+        [flat[0], flat[4], flat[8], flat[12]],
+        [flat[1], flat[5], flat[9], flat[13]],
+        [flat[2], flat[6], flat[10], flat[14]],
+        [flat[3], flat[7], flat[11], flat[15]],
+    ]
+}
+
+/// Transpose a column-major 4x4 (each inner array = one column) into the
+/// row-major nested layout that scene.json transforms use. The in-memory
+/// `InteriorMesh.transform` and `InteriorPayload.container_transform` are
+/// column-major (for glTF), but the JSON contract is row-major.
+fn cols_to_rows_4x4(cols: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    [
+        [cols[0][0], cols[1][0], cols[2][0], cols[3][0]],
+        [cols[0][1], cols[1][1], cols[2][1], cols[3][1]],
+        [cols[0][2], cols[1][2], cols[2][2], cols[3][2]],
+        [cols[0][3], cols[1][3], cols[2][3], cols[3][3]],
     ]
 }
 
@@ -229,6 +273,8 @@ fn resolve_child_instance_transforms(input: &DecomposedInput) -> Vec<ResolvedChi
                 no_rotation: child.no_rotation,
                 offset_position: child.offset_position,
                 offset_rotation: child.offset_rotation,
+                instance_id: child.instance_id,
+                parent_instance_id: child.parent_instance_id,
             },
             &scene_nodes,
             MaterialMode::None,
@@ -627,6 +673,7 @@ pub(crate) fn write_decomposed_export(
             materials,
             opts.texture_mip,
             existing_asset_paths,
+            input.root_palette.as_ref(),
         )
     });
     let root_palette_id = input
@@ -663,6 +710,7 @@ pub(crate) fn write_decomposed_export(
                 materials,
                 opts.texture_mip,
                 existing_asset_paths,
+                variant.palette.as_ref(),
             )
         });
         paint_variant_json.push(serde_json::json!({
@@ -722,6 +770,7 @@ pub(crate) fn write_decomposed_export(
                 materials,
                 opts.texture_mip,
                 existing_asset_paths,
+                child.palette.as_ref(),
             )
         });
         let palette_id = child
@@ -746,6 +795,8 @@ pub(crate) fn write_decomposed_export(
             palette_id,
             parent_node_name: Some(child.parent_node_name.clone()),
             parent_entity_name: Some(child.parent_entity_name.clone()),
+            instance_id: child.instance_id,
+            parent_instance_id: child.parent_instance_id,
             source_transform_basis: Some("cryengine_z_up".to_string()),
             local_transform_sc: Some(resolved_transform.local_transform_sc),
             resolved_no_rotation: resolved_transform.resolved_no_rotation,
@@ -788,9 +839,10 @@ pub(crate) fn write_decomposed_export(
                 .as_ref()
                 .or(container.palette.as_ref());
             let cache_key = format!(
-                "{}|{}",
+                "{}|{}|{}",
                 entry.cgf_path.to_lowercase(),
-                entry.material_path.as_deref().unwrap_or("").to_lowercase()
+                entry.material_path.as_deref().unwrap_or("").to_lowercase(),
+                effective_palette_id.as_deref().unwrap_or(""),
             );
             let (mesh_asset, material_sidecar) = if let Some(cached) = interior_asset_cache.get(&cache_key) {
                 cached.clone()
@@ -817,11 +869,22 @@ pub(crate) fn write_decomposed_export(
                     material_sidecar_relative_path(&source_material_path, &entry.name, opts.texture_mip)
                 });
                 let material_sidecar = interior_material_view.sidecar_materials.as_ref().map(|materials| {
-                    if let Some(requested_path) = requested_material_sidecar.as_ref() {
-                        if files.contains_key(requested_path)
-                            || existing_asset_paths.is_some_and(|paths| paths.contains(&requested_path.to_ascii_lowercase()))
-                        {
-                            return requested_path.clone();
+                    // Only honor the existing-sidecar fast path when there is no
+                    // palette to bake. With a resolved palette the sidecar JSON is
+                    // palette-dependent (HardSurface submaterials carry resolved
+                    // entry colors) and a stale on-disk sidecar would point at the
+                    // wrong palette. The content-hash collision logic in
+                    // insert_binary_file still dedupes by exact bytes when the
+                    // palettes happen to match.
+                    let has_baked_palette = effective_palette_ref.is_some()
+                        && materials_have_palette_routed_submaterial(materials);
+                    if !has_baked_palette {
+                        if let Some(requested_path) = requested_material_sidecar.as_ref() {
+                            if files.contains_key(requested_path)
+                                || existing_asset_paths.is_some_and(|paths| paths.contains(&requested_path.to_ascii_lowercase()))
+                            {
+                                return requested_path.clone();
+                            }
                         }
                     }
                     write_material_sidecar(
@@ -836,6 +899,7 @@ pub(crate) fn write_decomposed_export(
                         materials,
                         opts.texture_mip,
                         existing_asset_paths,
+                        effective_palette_ref,
                     )
                 });
                 let reuse_existing_mesh_asset = (files.contains_key(&requested_mesh_asset)
@@ -1041,6 +1105,7 @@ fn build_scene_manifest_value(
 ) -> serde_json::Value {
     serde_json::json!({
         "version": 1,
+        "contract_version": CONTRACT_VERSION,
         "export_kind": "Decomposed",
         "package_rule": {
             "root": "caller_selected_export_root",
@@ -1051,6 +1116,7 @@ fn build_scene_manifest_value(
         },
         "root_entity": {
             "entity_name": entity_name,
+            "instance_id": ROOT_INSTANCE_ID,
             "geometry_path": geometry_path,
             "material_path": material_path,
             "mesh_asset": root_mesh_asset,
@@ -1180,6 +1246,8 @@ fn build_livery_manifest_value(records: &BTreeMap<String, LiveryUsage>) -> serde
 fn scene_instance_json(instance: &SceneInstanceRecord) -> serde_json::Value {
     serde_json::json!({
         "entity_name": instance.entity_name,
+        "instance_id": instance.instance_id,
+        "parent_instance_id": instance.parent_instance_id,
         "geometry_path": instance.geometry_path,
         "material_path": instance.material_path,
         "mesh_asset": instance.mesh_asset,
@@ -1200,7 +1268,7 @@ fn interior_container_json(container: &InteriorContainerRecord) -> serde_json::V
     serde_json::json!({
         "name": container.name,
         "palette_id": container.palette_id,
-        "container_transform": container.container_transform,
+        "container_transform": cols_to_rows_4x4(container.container_transform),
         "placements": container.placements.iter().map(|placement| {
             serde_json::json!({
                 "cgf_path": placement.cgf_path,
@@ -1208,7 +1276,7 @@ fn interior_container_json(container: &InteriorContainerRecord) -> serde_json::V
                 "mesh_asset": placement.mesh_asset,
                 "material_sidecar": placement.material_sidecar,
                 "entity_class_guid": placement.entity_class_guid,
-                "transform": placement.transform,
+                "transform": cols_to_rows_4x4(placement.transform),
                 "palette_id": placement.palette_id,
             })
         }).collect::<Vec<_>>(),
@@ -1299,6 +1367,7 @@ fn write_material_sidecar(
     materials: &MtlFile,
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
+    palette: Option<&TintPalette>,
 ) -> String {
     let source_material_path = material_source_path(p4k, materials, material_path, geometry_path);
     let relative_path = material_sidecar_relative_path(&source_material_path, fallback_name, texture_mip);
@@ -1323,6 +1392,7 @@ fn write_material_sidecar(
         &relative_path,
         palettes_manifest_path,
         &extracted,
+        palette,
     );
     insert_json_file(files, relative_path, value)
 }
@@ -1482,6 +1552,7 @@ fn build_material_sidecar_value(
     relative_path: &str,
     palettes_manifest_path: &str,
     extracted: &[ExtractedMaterialEntry],
+    palette: Option<&TintPalette>,
 ) -> serde_json::Value {
     let source_stem = source_material_path
         .rsplit('/')
@@ -1490,6 +1561,7 @@ fn build_material_sidecar_value(
         .strip_suffix(".mtl")
         .unwrap_or(source_material_path);
     let blender_material_names = preferred_blender_material_names(&materials.materials, source_stem);
+    let resolved_palette_id = palette.map(palette_id);
 
     serde_json::json!({
         "version": 1,
@@ -1503,6 +1575,7 @@ fn build_material_sidecar_value(
         "palette_contract": {
             "shared_manifest": palettes_manifest_path,
             "scene_instance_field": "palette_id",
+            "resolved_palette_id": resolved_palette_id,
         },
         "paint_override": materials.paint_override.as_ref().map(paint_override_json),
         "submaterials": materials.materials.iter().enumerate().map(|(index, material)| {
@@ -1513,6 +1586,8 @@ fn build_material_sidecar_value(
                 &blender_material_names[index],
                 index,
                 &extracted[index],
+                palette,
+                resolved_palette_id.as_deref(),
             )
         }).collect::<Vec<_>>(),
     })
@@ -1544,6 +1619,8 @@ fn build_submaterial_json(
     blender_material_name: &str,
     index: usize,
     extracted: &ExtractedMaterialEntry,
+    palette: Option<&TintPalette>,
+    resolved_palette_id: Option<&str>,
 ) -> serde_json::Value {
     let semantic_slots = material.semantic_texture_slots();
     let decoded_flags = material.decoded_string_gen_mask();
@@ -1558,6 +1635,11 @@ fn build_submaterial_json(
         .filter(|binding| binding.is_virtual)
         .map(|binding| binding.path.clone())
         .collect::<Vec<_>>();
+    let tint_palette_json = build_submaterial_tint_palette_json(
+        material,
+        palette,
+        resolved_palette_id,
+    );
 
     serde_json::json!({
         "index": index,
@@ -1565,6 +1647,7 @@ fn build_submaterial_json(
         "blender_material_name": blender_material_name,
         "shader": material.shader,
         "shader_family": material.shader_family().as_str(),
+        "tint_palette": tint_palette_json,
         "authored_attributes": authored_attributes_json(&material.authored_attributes),
         "authored_public_params": raw_public_params_json(&material.public_params),
         "authored_child_blocks": authored_blocks_json(&material.authored_child_blocks),
@@ -2080,6 +2163,82 @@ fn palette_channel_json(channel: u8, is_glass: bool) -> Option<serde_json::Value
     }
 }
 
+/// Build the per-submaterial `tint_palette` JSON block. Emitted when the
+/// submaterial belongs to a palette-driven shader family (HardSurface) and
+/// the entity has a resolved TintPaletteTree palette. Carries the full
+/// resolved entry colors plus the channel this submaterial reads from so
+/// downstream consumers can apply
+/// `final_diffuse = entry.tint_color * (tiling_texture / 255)`
+/// without re-doing palette lookup themselves.
+fn build_submaterial_tint_palette_json(
+    material: &SubMaterial,
+    palette: Option<&TintPalette>,
+    resolved_palette_id: Option<&str>,
+) -> Option<serde_json::Value> {
+    let palette = palette?;
+    let family = material.shader_family();
+    if !matches!(family, crate::mtl::ShaderFamily::HardSurface) {
+        return None;
+    }
+    let assigned_channel = resolve_submaterial_palette_channel(material);
+    let entries = serde_json::Value::Array(vec![
+        tint_palette_entry_json("entryA", &palette.primary, &palette.finish.primary),
+        tint_palette_entry_json("entryB", &palette.secondary, &palette.finish.secondary),
+        tint_palette_entry_json("entryC", &palette.tertiary, &palette.finish.tertiary),
+    ]);
+    Some(serde_json::json!({
+        "palette_id": resolved_palette_id,
+        "palette_source_name": palette.source_name,
+        "assigned_channel": assigned_channel,
+        "entries": entries,
+    }))
+}
+
+fn tint_palette_entry_json(
+    channel: &str,
+    tint_color: &[f32; 3],
+    finish: &crate::mtl::TintPaletteFinishEntry,
+) -> serde_json::Value {
+    serde_json::json!({
+        "channel": channel,
+        "tint_color": tint_color,
+        "spec_color": finish.specular,
+        "glossiness": finish.glossiness,
+    })
+}
+
+/// True when at least one submaterial in the file is a palette-driven
+/// HardSurface entry whose sidecar emission depends on the resolved palette.
+fn materials_have_palette_routed_submaterial(materials: &MtlFile) -> bool {
+    materials.materials.iter().any(|material| {
+        matches!(material.shader_family(), crate::mtl::ShaderFamily::HardSurface)
+    })
+}
+
+/// Resolve which palette entry channel a submaterial reads from.
+/// Prefers the authoritative MTL `PaletteTint` value when present, then
+/// falls back to the `Paint_Primary` / `_Secondary` / `_Tertiary` naming
+/// convention. Returns `None` when nothing matches so consumers can decide
+/// their own resolution policy.
+fn resolve_submaterial_palette_channel(material: &SubMaterial) -> Option<&'static str> {
+    match material.palette_tint {
+        1 => return Some("entryA"),
+        2 => return Some("entryB"),
+        3 => return Some("entryC"),
+        _ => {}
+    }
+    let lower = material.name.to_ascii_lowercase();
+    if lower.starts_with("paint_primary") {
+        Some("entryA")
+    } else if lower.starts_with("paint_secondary") {
+        Some("entryB")
+    } else if lower.starts_with("paint_tertiary") {
+        Some("entryC")
+    } else {
+        None
+    }
+}
+
 fn texture_ref_json(texture_ref: &TextureExportRef) -> serde_json::Value {
     let mut value = serde_json::Map::from_iter([
         ("role".to_string(), serde_json::json!(texture_ref.role)),
@@ -2573,6 +2732,7 @@ mod tests {
             "Data/Objects/Ships/Test/hull.materials.json",
             "Packages/ARGO MOLE/palettes.json",
             &extracted,
+            None,
         );
 
         assert_eq!(value["source_material_path"], serde_json::json!("Data/Objects/Ships/Test/hull.mtl"));
@@ -2618,6 +2778,208 @@ mod tests {
         assert_eq!(value["submaterials"][0]["virtual_inputs"][0], serde_json::json!("$TintPaletteDecal"));
     }
 
+    fn sample_palette_for_tint_test() -> TintPalette {
+        TintPalette {
+            source_name: Some("rsi_polaris_default".into()),
+            display_name: Some("Polaris Default".into()),
+            primary: [0.10, 0.20, 0.30],
+            secondary: [0.30, 0.20, 0.10],
+            tertiary: [0.40, 0.50, 0.60],
+            glass: [0.05, 0.05, 0.10],
+            decal_color_r: None,
+            decal_color_g: None,
+            decal_color_b: None,
+            decal_texture: None,
+            finish: crate::mtl::TintPaletteFinish {
+                primary: crate::mtl::TintPaletteFinishEntry {
+                    specular: Some([0.9, 0.9, 0.9]),
+                    glossiness: Some(0.55),
+                },
+                secondary: crate::mtl::TintPaletteFinishEntry {
+                    specular: Some([0.5, 0.5, 0.5]),
+                    glossiness: Some(0.42),
+                },
+                tertiary: crate::mtl::TintPaletteFinishEntry {
+                    specular: Some([0.2, 0.2, 0.2]),
+                    glossiness: Some(0.30),
+                },
+                glass: Default::default(),
+            },
+        }
+    }
+
+    #[test]
+    fn material_sidecar_emits_tint_palette_for_hardsurface_with_palette_routing() {
+        let mut material = sample_submaterial();
+        material.shader = "HardSurface".into();
+        material.layers.clear();
+        material.palette_tint = 1; // entryA / primary
+
+        let materials = MtlFile {
+            materials: vec![material],
+            source_path: Some("Data/Objects/Ships/Test/hull.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
+        };
+        let extracted = vec![ExtractedMaterialEntry::default()];
+        let palette = sample_palette_for_tint_test();
+
+        let value = build_material_sidecar_value(
+            &materials,
+            "Data/Objects/Ships/Test/hull.mtl",
+            "Data/Objects/Ships/Test/hull.materials.json",
+            "Packages/Test/palettes.json",
+            &extracted,
+            Some(&palette),
+        );
+
+        let tint = &value["submaterials"][0]["tint_palette"];
+        assert_eq!(tint["palette_source_name"], serde_json::json!("rsi_polaris_default"));
+        assert_eq!(tint["palette_id"], serde_json::json!("palette/rsi_polaris_default"));
+        assert_eq!(tint["assigned_channel"], serde_json::json!("entryA"));
+        let entries = tint["entries"].as_array().expect("entries array");
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0]["channel"], serde_json::json!("entryA"));
+        let tint_a = entries[0]["tint_color"].as_array().expect("tint_color array");
+        assert_eq!(tint_a.len(), 3);
+        assert!((tint_a[0].as_f64().unwrap() - 0.10).abs() < 1e-5);
+        assert!((tint_a[1].as_f64().unwrap() - 0.20).abs() < 1e-5);
+        assert!((tint_a[2].as_f64().unwrap() - 0.30).abs() < 1e-5);
+        let spec_a = entries[0]["spec_color"].as_array().expect("spec_color array");
+        assert!((spec_a[0].as_f64().unwrap() - 0.9).abs() < 1e-5);
+        let glossiness = entries[0]["glossiness"]
+            .as_f64()
+            .expect("glossiness numeric");
+        assert!((glossiness - 0.55).abs() < 1e-5);
+        assert_eq!(entries[1]["channel"], serde_json::json!("entryB"));
+        assert_eq!(entries[2]["channel"], serde_json::json!("entryC"));
+        assert_eq!(
+            value["palette_contract"]["resolved_palette_id"],
+            serde_json::json!("palette/rsi_polaris_default")
+        );
+    }
+
+    #[test]
+    fn material_sidecar_tint_palette_uses_paint_name_when_routing_absent() {
+        let mut material = sample_submaterial();
+        material.name = "Paint_Secondary_decals".into();
+        material.shader = "HardSurface".into();
+        material.layers.clear();
+        material.palette_tint = 0; // no MTL routing -> fall back to name
+
+        let materials = MtlFile {
+            materials: vec![material],
+            source_path: Some("Data/Objects/Ships/Test/hull.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
+        };
+        let extracted = vec![ExtractedMaterialEntry::default()];
+        let palette = sample_palette_for_tint_test();
+
+        let value = build_material_sidecar_value(
+            &materials,
+            "Data/Objects/Ships/Test/hull.mtl",
+            "Data/Objects/Ships/Test/hull.materials.json",
+            "Packages/Test/palettes.json",
+            &extracted,
+            Some(&palette),
+        );
+
+        assert_eq!(
+            value["submaterials"][0]["tint_palette"]["assigned_channel"],
+            serde_json::json!("entryB")
+        );
+    }
+
+    #[test]
+    fn material_sidecar_omits_tint_palette_when_no_palette_resolved() {
+        let mut material = sample_submaterial();
+        material.shader = "HardSurface".into();
+        material.layers.clear();
+        material.palette_tint = 1;
+
+        let materials = MtlFile {
+            materials: vec![material],
+            source_path: Some("Data/Objects/Ships/Test/hull.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
+        };
+        let extracted = vec![ExtractedMaterialEntry::default()];
+
+        let value = build_material_sidecar_value(
+            &materials,
+            "Data/Objects/Ships/Test/hull.mtl",
+            "Data/Objects/Ships/Test/hull.materials.json",
+            "Packages/Test/palettes.json",
+            &extracted,
+            None,
+        );
+
+        assert!(value["submaterials"][0]["tint_palette"].is_null());
+        assert!(value["palette_contract"]["resolved_palette_id"].is_null());
+    }
+
+    #[test]
+    fn material_sidecar_omits_tint_palette_for_non_hardsurface() {
+        // Illum/GlassPBR/etc. submaterials should not carry a baked tint
+        // palette even when the entity has one resolved.
+        let mut material = sample_submaterial();
+        material.shader = "Illum".into();
+        material.layers.clear();
+        material.palette_tint = 0;
+
+        let materials = MtlFile {
+            materials: vec![material],
+            source_path: Some("Data/Objects/Ships/Test/hull.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
+        };
+        let extracted = vec![ExtractedMaterialEntry::default()];
+        let palette = sample_palette_for_tint_test();
+
+        let value = build_material_sidecar_value(
+            &materials,
+            "Data/Objects/Ships/Test/hull.mtl",
+            "Data/Objects/Ships/Test/hull.materials.json",
+            "Packages/Test/palettes.json",
+            &extracted,
+            Some(&palette),
+        );
+
+        assert!(value["submaterials"][0]["tint_palette"].is_null());
+    }
+
+    #[test]
+    fn material_sidecar_tint_palette_has_no_assigned_channel_when_unknown() {
+        let mut material = sample_submaterial();
+        material.name = "metal_random".into();
+        material.shader = "HardSurface".into();
+        material.layers.clear();
+        material.palette_tint = 0;
+
+        let materials = MtlFile {
+            materials: vec![material],
+            source_path: Some("Data/Objects/Ships/Test/hull.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
+        };
+        let extracted = vec![ExtractedMaterialEntry::default()];
+        let palette = sample_palette_for_tint_test();
+
+        let value = build_material_sidecar_value(
+            &materials,
+            "Data/Objects/Ships/Test/hull.mtl",
+            "Data/Objects/Ships/Test/hull.materials.json",
+            "Packages/Test/palettes.json",
+            &extracted,
+            Some(&palette),
+        );
+
+        let tint = &value["submaterials"][0]["tint_palette"];
+        assert!(tint["assigned_channel"].is_null());
+        assert_eq!(tint["entries"].as_array().map(|e| e.len()), Some(3));
+    }
+
     #[test]
     fn material_sidecar_json_preserves_iridescence_support_fields() {
         let mut material = sample_submaterial();
@@ -2656,6 +3018,7 @@ mod tests {
             "Data/Objects/Ships/Test/hull.materials.json",
             "Packages/ARGO MOLE/palettes.json",
             &extracted,
+            None,
         );
 
         assert_eq!(value["submaterials"][0]["decoded_feature_flags"]["has_iridescence"], serde_json::json!(true));
@@ -2717,6 +3080,7 @@ mod tests {
             "Data/Objects/Ships/Test/hull.materials.json",
             "Packages/ARGO MOLE/palettes.json",
             &extracted,
+            None,
         );
 
         assert_eq!(value["submaterials"][0]["blender_material_name"], serde_json::json!("hull:hull_panel_0"));
@@ -3137,6 +3501,8 @@ mod tests {
             palette_id: Some("palette/test".into()),
             parent_node_name: Some("hardpoint_weapon_left".into()),
             parent_entity_name: Some("root".into()),
+            instance_id: 1,
+            parent_instance_id: ROOT_INSTANCE_ID,
             source_transform_basis: Some("cryengine_z_up".into()),
             local_transform_sc: Some(crate::socpak::build_container_transform([1.0, 2.0, 3.0], [0.0, 90.0, 0.0])),
             resolved_no_rotation: false,
@@ -3184,11 +3550,14 @@ mod tests {
         );
 
         assert_eq!(value["root_entity"]["mesh_asset"], serde_json::json!("Data/Objects/Ships/Test/root.glb"));
+        assert_eq!(value["root_entity"]["instance_id"], serde_json::json!(ROOT_INSTANCE_ID));
         assert_eq!(value["children"][0]["mesh_asset"], serde_json::json!("Data/Objects/Ships/Test/child.glb"));
         assert_eq!(value["children"][0]["parent_node_name"], serde_json::json!("hardpoint_weapon_left"));
         assert_eq!(value["children"][0]["source_transform_basis"], serde_json::json!("cryengine_z_up"));
         assert!(value["children"][0]["local_transform_sc"].is_array());
         assert_eq!(value["children"][0]["resolved_no_rotation"], serde_json::json!(false));
+        assert_eq!(value["children"][0]["instance_id"], serde_json::json!(1));
+        assert_eq!(value["children"][0]["parent_instance_id"], serde_json::json!(ROOT_INSTANCE_ID));
         assert_eq!(value["interiors"][0]["placements"][0]["mesh_asset"], serde_json::json!("Data/Objects/Ships/Test/interior_panel.glb"));
         assert_eq!(value["package_rule"]["package_dir"], serde_json::json!("Packages/ARGO MOLE"));
         assert_eq!(value["package_rule"]["normalized_p4k_relative_paths"], serde_json::json!(true));

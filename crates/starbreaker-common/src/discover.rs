@@ -26,7 +26,12 @@
 use std::path::PathBuf;
 
 /// Known Star Citizen channel names, in preference order.
-pub const CHANNELS: &[&str] = &["LIVE", "PTU", "EPTU", "TECH-PREVIEW"];
+///
+/// HOTFIX is a transient channel CIG spins up to ship emergency fixes
+/// outside the normal LIVE/PTU/EPTU cadence. TECH-PREVIEW is used for
+/// limited-access feature previews. Both appear in the launcher and ship
+/// a full Data.p4k, so they belong in discovery.
+pub const CHANNELS: &[&str] = &["LIVE", "PTU", "EPTU", "HOTFIX", "TECH-PREVIEW"];
 
 /// Default install root on Windows.
 pub const DEFAULT_ROOT: &str = r"C:\Program Files\Roberts Space Industries\StarCitizen";

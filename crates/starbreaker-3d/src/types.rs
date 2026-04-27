@@ -384,6 +384,16 @@ pub struct EntityPayload {
     pub offset_position: [f32; 3],
     /// Item port helper offset rotation (Euler angles in degrees).
     pub offset_rotation: [f32; 3],
+    /// Unique per-export instance id for this child placement. The root
+    /// entity is reserved id 0; every distinct child placement gets a
+    /// fresh monotonic id even when several share the same `entity_name`
+    /// (e.g. paired weapon mounts on a hardpoint pair). Lets downstream
+    /// consumers disambiguate sibling placements that the authored
+    /// entity name alone cannot.
+    pub instance_id: u32,
+    /// Instance id of the parent placement this child attaches to.
+    /// Always populated for children (the root has no parent).
+    pub parent_instance_id: u32,
 }
 
 /// A light extracted from a CryXMLB entity in a .soc file.

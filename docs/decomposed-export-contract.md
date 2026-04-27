@@ -18,8 +18,60 @@ Within that export root:
 - the package directory path under `Packages/<package name>`
 - root entity metadata and asset references
 - child attachment relationships via `parent_entity_name`, `parent_node_name`, `offset_position`, `offset_rotation`, and `no_rotation`
+- a unique per-export `instance_id` on the root and every child, plus `parent_instance_id` on every child, so consumers can disambiguate sibling placements that share the same `entity_name` (see "Instance Identity" below)
 - interior container transforms, placement records, and exported light data
 - material sidecar and palette references for every scene instance
+
+## Instance Identity
+
+Authored `entity_name` values are not unique across a scene. A ship can mount
+the same entity at several hardpoints (paired weapon mounts, paired
+countermeasure launchers, paired turrets), and every instance shares one name.
+Children that record `parent_entity_name = "Mount_Gimbal_S1_NoSafety"` therefore
+cannot tell which physical mount they hang off when more than one exists.
+
+To disambiguate, every scene instance now carries a unique `instance_id`:
+
+- the root entity is reserved id `0`
+- every distinct child placement gets a fresh monotonic `u32` from a counter
+  scoped to a single export run
+- every child also carries `parent_instance_id` referencing the actual
+  scene-graph parent (root or another child)
+
+Consumers should key any parent-attach registry on `instance_id` rather than
+`entity_name`, and resolve a child's parent via `parent_instance_id` rather
+than `parent_entity_name`. The name fields remain in the JSON for
+human-readable debugging.
+
+```json
+"children": [
+  {
+    "entity_name": "Mount_Gimbal_S1_NoSafety",
+    "instance_id": 23,
+    "parent_entity_name": "EntityClassDefinition.XIAN_Nox",
+    "parent_instance_id": 0,
+    "parent_node_name": "hardpoint_weapon_right"
+  },
+  {
+    "entity_name": "Mount_Gimbal_S1_NoSafety",
+    "instance_id": 25,
+    "parent_entity_name": "EntityClassDefinition.XIAN_Nox",
+    "parent_instance_id": 0,
+    "parent_node_name": "hardpoint_weapon_left"
+  }
+]
+```
+
+`instance_id` is unique only within one export. It is not stable across
+re-exports of the same entity (the counter walks the loadout in order, so
+order-preserving changes will keep ids stable, but adding or removing a child
+can shift later ids). Consumers should therefore not persist instance ids
+across export runs.
+
+Backward compatibility: older sidecars without `instance_id` /
+`parent_instance_id` remain valid. Loaders should fall back to
+`entity_name` / `parent_entity_name` matching with a warning so the operator
+knows disambiguation is best-effort until the export is regenerated.
 
 ## Light Records
 
@@ -151,6 +203,61 @@ Each `*.materials.json` sidecar preserves:
 - material-set identity and palette-routing metadata
 - resolved paint-override selectors when equipped paints choose a palette or material through `SubGeometry` tag matching
 - variant-membership hints for palette-routed and layered materials
+- per-submaterial `tint_palette` block with the resolved TintPaletteTree colors when the submaterial belongs to a palette-driven family (currently HardSurface)
+
+### Tint Palette Block
+
+HardSurface ship hulls render as a palette color modulated by a shared
+tiling texture: `final_diffuse = entry.tint_color * (tiling / 255)`.
+The exporter resolves the entity's TintPaletteTree once via
+`Components[SGeometryResourceParams].Geometry.Geometry.Palette.RootRecord`
+and bakes the resolved entry colors into every HardSurface submaterial in
+the sidecar so consumers do not need DataCore access at render time.
+
+The sidecar also carries the shared palette identifier on the parent
+`palette_contract.resolved_palette_id`, which matches the same id stored
+in `palettes.json` and on every scene instance in `scene.json`. Consumers
+that prefer the shared manifest can ignore the per-submaterial entries
+and resolve via that lookup instead.
+
+`assigned_channel` is filled from the MTL's authored `PaletteTint`
+attribute when set (`1=entryA`, `2=entryB`, `3=entryC`). When that
+attribute is absent the exporter falls back to the
+`Paint_Primary` / `Paint_Secondary` / `Paint_Tertiary` submaterial-name
+prefix. Submaterials that match neither leave `assigned_channel` null
+but still receive the full `entries` array so consumers can apply their
+own routing rule.
+
+`tint_color` and `spec_color` are linear RGB in `[0,1]`, sRGB-decoded
+from the authored 0-255 source values. `glossiness` is the authored
+scalar, or `null` when the entry omits it.
+
+```json
+"submaterials": [
+  {
+    "submaterial_name": "metal_a",
+    "shader_family": "HardSurface",
+    "tint_palette": {
+      "palette_id": "palette/rsi_polaris_default",
+      "palette_source_name": "rsi_polaris_default",
+      "assigned_channel": "entryA",
+      "entries": [
+        {
+          "channel": "entryA",
+          "tint_color": [0.10, 0.20, 0.30],
+          "spec_color": [0.9, 0.9, 0.9],
+          "glossiness": 0.55
+        },
+        { "channel": "entryB", "tint_color": [0.30, 0.20, 0.10], "spec_color": [0.5, 0.5, 0.5], "glossiness": 0.42 },
+        { "channel": "entryC", "tint_color": [0.40, 0.50, 0.60], "spec_color": [0.2, 0.2, 0.2], "glossiness": 0.30 }
+      ]
+    }
+  }
+]
+```
+
+The block is omitted (`null`) for non-HardSurface submaterials and for
+entities that have no resolved TintPaletteTree.
 
 The current sidecar contract is now substantially closer to the raw `.mtl` XML surface, but it is still intentionally split into two layers:
 
