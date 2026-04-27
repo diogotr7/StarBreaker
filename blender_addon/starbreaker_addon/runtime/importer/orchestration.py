@@ -451,7 +451,32 @@ class OrchestrationMixin:
             self._apply_instance_metadata([anchor], record, effective_palette_id)
             return anchor, [anchor]
 
-        clones = self.instantiate_template(template, anchor, neutralize_axis_root=parent_node is not None)
+        # When attached to a parent_node that itself carries a non-identity local
+        # rotation (e.g. a ``*_attach`` helper inside a loadout component), the
+        # template's ``CryEngine_Z_up`` wrapper would apply its glTF→Blender axis
+        # conversion in the rotated parent frame, double-applying the rotation
+        # and flipping child geometry (e.g. missiles ending up pointing
+        # ship-backward). Force-neutralize the wrapper for those cases. Top-level
+        # instances and entities attached to identity-rotation body parts
+        # (e.g. ``RSI_Scorpius.001``) keep the original guard so the wrapper
+        # composes correctly with offset_rotation-driven anchor placements.
+        force_neutralize = False
+        if parent_node is not None:
+            parent_local_quat = parent_node.matrix_basis.to_quaternion()
+            # Identity quat (within tolerance) means no extra parent-frame rotation.
+            if (
+                abs(parent_local_quat.w - 1.0) > 1e-4
+                or abs(parent_local_quat.x) > 1e-4
+                or abs(parent_local_quat.y) > 1e-4
+                or abs(parent_local_quat.z) > 1e-4
+            ):
+                force_neutralize = True
+        clones = self.instantiate_template(
+            template,
+            anchor,
+            neutralize_axis_root=parent_node is not None,
+            force_neutralize_axis_root=force_neutralize,
+        )
         self._apply_instance_metadata([anchor, *clones], record, effective_palette_id)
 
         for clone in clones:
