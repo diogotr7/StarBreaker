@@ -322,6 +322,13 @@ impl SceneExportOpts {
             include_shields: false,
             texture_mip: self.mip,
             lod_level: self.lod,
+            // Match the upstream defaults from `ExportOptions::default()`
+            // -- the scene viewer renders parked ships, so we want the
+            // landing-gear-extended pose baked in but no animation
+            // tracks emitted.
+            include_animations: false,
+            apply_default_animation_pose: true,
+            default_animation_tags: vec!["landing_gear_extend".to_string()],
         }
     }
 
