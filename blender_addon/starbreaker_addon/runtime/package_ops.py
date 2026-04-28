@@ -1847,18 +1847,30 @@ def _insert_animation_action(
                         )
                         obj.keyframe_insert(data_path="location", frame=_action_frame(sample_time))
 
+        # Phase 47.3: align each rotation sample to the previous *keyed*
+        # sample's hemisphere so per-component LINEAR interpolation stays
+        # on the short arc. Without this, a sign flip between consecutive
+        # source samples (q vs -q — same rotation) makes Blender lerp
+        # through ~0 at the midpoint, producing a spurious 180° "inversion"
+        # frame between the two keys (observed on Scorpius
+        # `landing_gear_extend` BONE_Front_Landing_Gear_Foot frames 37→39).
+        prev_keyed_quat: tuple[float, float, float, float] | None = None
         for index, sample in enumerate(rotations):
             sample_time = rotation_times[index] if index < len(rotation_times) else float(index)
             if trim_frame is not None and sample_time > trim_frame:
                 continue
             if isinstance(sample, list) and len(sample) >= 4:
-                obj.rotation_quaternion = (
+                sample_q = (
                     float(sample[0]),
                     float(sample[1]),
                     float(sample[2]),
                     float(sample[3]),
                 )
+                if prev_keyed_quat is not None:
+                    sample_q = _quat_align(prev_keyed_quat, sample_q)
+                obj.rotation_quaternion = sample_q
                 obj.keyframe_insert(data_path="rotation_quaternion", frame=_action_frame(sample_time))
+                prev_keyed_quat = sample_q
 
         # Phase 24C / Phase 39: assign all fcurves on this action to the
         # bone's group so the Action editor renders a single collapsible
