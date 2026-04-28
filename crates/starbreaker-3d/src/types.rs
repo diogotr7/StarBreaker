@@ -405,6 +405,10 @@ pub struct ResolvedNode {
     pub offset_position: [f32; 3],
     /// Item port helper offset rotation (Euler angles in degrees).
     pub offset_rotation: [f32; 3],
+    /// Item port detach direction from the parent port definition, in port-local source axes.
+    pub detach_direction: [f32; 3],
+    /// Raw item port flags from SItemPortDef (e.g. "invisible uneditable").
+    pub port_flags: String,
     /// NMC scene graph (loaded from .cga even if mesh is missing).
     pub nmc: Option<crate::nmc::NodeMeshCombo>,
     /// Skeleton bones from .chr (only for CDF entities).
@@ -431,6 +435,8 @@ impl ResolvedNode {
             no_rotation: self.no_rotation,
             offset_position: self.offset_position,
             offset_rotation: self.offset_rotation,
+            detach_direction: self.detach_direction,
+            port_flags: self.port_flags.clone(),
             nmc: None, // NMC not needed for reparented nodes
             bones: Vec::new(),
             has_geometry: self.has_geometry,
@@ -449,6 +455,8 @@ impl ResolvedNode {
             no_rotation: self.no_rotation,
             offset_position: self.offset_position,
             offset_rotation: self.offset_rotation,
+            detach_direction: self.detach_direction,
+            port_flags: self.port_flags.clone(),
             nmc: self.nmc.clone(),
             bones: self.bones.clone(),
             has_geometry: self.has_geometry,
@@ -488,6 +496,10 @@ pub struct EntityPayload {
     pub offset_position: [f32; 3],
     /// Item port helper offset rotation (Euler angles in degrees).
     pub offset_rotation: [f32; 3],
+    /// Item port detach direction from the parent port definition, in port-local source axes.
+    pub detach_direction: [f32; 3],
+    /// Raw item port flags from SItemPortDef (e.g. "invisible uneditable").
+    pub port_flags: String,
 }
 
 /// A light extracted from a CryXMLB entity in a .soc file.

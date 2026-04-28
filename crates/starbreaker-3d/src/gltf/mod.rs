@@ -938,6 +938,8 @@ mod tests {
             no_rotation: false,
             offset_position: [0.0; 3],
             offset_rotation: [0.0; 3],
+            detach_direction: [0.0; 3],
+            port_flags: String::new(),
         }
     }
 

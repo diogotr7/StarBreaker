@@ -23,6 +23,10 @@ pub struct LoadoutNode {
     pub offset_position: [f32; 3],
     /// Item port helper offset rotation (Euler angles in degrees, CryEngine convention).
     pub offset_rotation: [f32; 3],
+    /// Item port detach direction from the parent port definition, in port-local source axes.
+    pub detach_direction: [f32; 3],
+    /// Raw item port flags from SItemPortDef (e.g. "invisible uneditable").
+    pub port_flags: String,
     /// Port tags from SItemPortContainerComponentParams (e.g., for SubGeometry variant selection).
     pub port_tags: String,
     /// Geometry file path from SGeometryResourceParams, if present.
@@ -265,6 +269,8 @@ struct PortInfo {
     no_rotation: bool,
     offset_position: [f32; 3],
     offset_rotation: [f32; 3],
+    detach_direction: [f32; 3],
+    port_flags: String,
     port_tags: String,
 }
 
@@ -338,11 +344,21 @@ fn build_port_info_map(db: &Database, record: &Record) -> HashMap<String, PortIn
                     .unwrap_or("")
                     .to_string();
 
+                let detach_direction = get_object_field(port, "detachDirection")
+                    .map(|direction| [
+                        get_f32_field(direction, "x").unwrap_or(0.0),
+                        get_f32_field(direction, "y").unwrap_or(0.0),
+                        get_f32_field(direction, "z").unwrap_or(0.0),
+                    ])
+                    .unwrap_or([0.0; 3]);
+
                 map.insert(port_name.to_string(), PortInfo {
                     bone_name,
                     no_rotation,
                     offset_position,
                     offset_rotation,
+                    detach_direction,
+                    port_flags: get_string_field(port, "Flags").unwrap_or("").to_string(),
                     port_tags,
                 });
             }
@@ -361,6 +377,8 @@ fn apply_port_info(db: &Database, parent_record: &Record, children: &mut [Loadou
             child.no_rotation = info.no_rotation;
             child.offset_position = info.offset_position;
             child.offset_rotation = info.offset_rotation;
+            child.detach_direction = info.detach_direction;
+            child.port_flags = info.port_flags.clone();
             child.port_tags = info.port_tags.clone();
             if info.offset_position != [0.0; 3] || info.offset_rotation != [0.0; 3] {
                 log::debug!(
@@ -621,6 +639,8 @@ pub fn resolve_loadout_indexed(idx: &EntityIndex, record: &Record) -> LoadoutTre
             no_rotation: false,
             offset_position: [0.0; 3],
             offset_rotation: [0.0; 3],
+            detach_direction: [0.0; 3],
+            port_flags: String::new(),
             port_tags: String::new(),
             geometry_path,
             material_path,
@@ -886,6 +906,8 @@ fn collect_entries_recursive(
             no_rotation: false,
             offset_position: [0.0; 3],
             offset_rotation: [0.0; 3],
+            detach_direction: [0.0; 3],
+            port_flags: String::new(),
             port_tags: String::new(),
                     geometry_path: child_geom,
                     material_path: child_mtl,
@@ -970,6 +992,8 @@ fn collect_entries_recursive(
                     no_rotation: false,
                     offset_position: [0.0; 3],
                     offset_rotation: [0.0; 3],
+                    detach_direction: [0.0; 3],
+                    port_flags: String::new(),
                     port_tags: String::new(),
                     geometry_path: ref_geom,
                     material_path: ref_mtl,
@@ -990,6 +1014,8 @@ fn collect_entries_recursive(
                     no_rotation: false,
                     offset_position: [0.0; 3],
                     offset_rotation: [0.0; 3],
+                    detach_direction: [0.0; 3],
+                    port_flags: String::new(),
                     port_tags: String::new(),
                     geometry_path: ref_geom,
                     material_path: ref_mtl,
@@ -1035,6 +1061,8 @@ fn collect_entries_recursive(
             no_rotation: false,
             offset_position: [0.0; 3],
             offset_rotation: [0.0; 3],
+            detach_direction: [0.0; 3],
+            port_flags: String::new(),
             port_tags: String::new(),
                     geometry_path: ref_geom,
                     material_path: ref_mtl,

@@ -17,9 +17,11 @@ Within that export root:
 - the root package rule: all asset paths are relative to the selected export root
 - the package directory path under `Packages/<package name>`
 - root entity metadata and asset references
-- child attachment relationships via `parent_entity_name`, `parent_node_name`, `offset_position`, `offset_rotation`, and `no_rotation`
+- child attachment relationships via `parent_entity_name`, `parent_node_name`, `offset_position`, `offset_rotation`, `no_rotation`, and `port_flags`
 - interior container transforms, placement records, and exported light data
 - material sidecar and palette references for every scene instance
+
+`port_flags` is the raw source `SItemPortDef.Flags` string for the item port that attached a child. Importers can use this to preserve source visibility semantics; for example, Blender hides attachments by default when the source port includes `invisible` while keeping the objects present for inspection.
 
 ## Light Records
 
@@ -201,15 +203,17 @@ Each animation clip object contains:
 - `fps` — playback frame rate (typically 30)
 - `frame_count` — total keyframe count
 - `bones` — map of bone identifiers (by name or CRC32 hash if available) to channel objects
+- `fragments` — optional Mannequin ADB fragment metadata for clips reached from the entity's `SAnimationControllerParams` (`fragment`, `tags`, `frag_tags`, `scopes`, `animations`, blend timings, speeds, flags, and procedural params)
 
 **Bone Channel Structure:**
 
 Each bone channel contains:
 
 - `rotation` — array of `[w, x, y, z]` quaternions (Blender wxyz convention after axis conversion) per keyframe
+- `rotation_time` — array of source frame times parallel to `rotation`; if omitted, consumers should fall back to array indices
 - `position` — array of `[x, y, z]` position vectors (Blender Z-up convention) per keyframe
+- `position_time` — array of source frame times parallel to `position`; if omitted, consumers should fall back to array indices
 - `has_rotation` / `has_position` — boolean flags indicating which channels are actually animated
-- `times` — optional array of frame indices or time samples; if omitted, assume uniform 0 to frame_count-1
 
 **Bone Identification:**
 
@@ -220,9 +224,45 @@ Bone references use the following priority:
 
 **Serialization Format:**
 
-Animations are stored per-entity in `scene.json` under the entity's `animations` array. For shared skeletons or components, all clips are listed and the Blender addon filters by context.
+Animations are stored per-entity. The inline `animations` array in
+`scene.json` carries lightweight **index records** only (`name`, `fps`,
+`frame_count`, `fragments`, and a `sidecar` field giving the relative
+path to the heavy per-clip JSON file). The full clip body (`bones`,
+`rotation`, `rotation_time`, `position`, `position_time`) lives in a
+companion file at `Packages/<entity>/animations/<sanitized-clip-name>.json`.
+
+This split (introduced in Phase 35) keeps `scene.json` small and lets
+the Blender addon load animation keyframe data lazily — only when the
+user actually applies a clip. The sidecar filename is derived from the
+clip name with characters outside `[A-Za-z0-9_.-]` replaced by `_`;
+collisions are disambiguated with a numeric suffix.
+
+For shared skeletons or components, all clips are listed and the
+Blender addon filters by context.
 
 **Example:**
+
+`scene.json` (index record only):
+
+```json
+{
+  "name": "lg_deploy_l",
+  "fps": 30,
+  "frame_count": 120,
+  "sidecar": "animations/lg_deploy_l.json",
+  "fragments": [
+    {
+      "fragment": "Landing_Gear",
+      "frag_tags": ["Deploy"],
+      "tags": ["Landing_Gear"],
+      "scopes": ["LandingGear", "LandingGearFront", "LandingGearLeft", "LandingGearRight"],
+      "animations": [{"name": "landing_gear_extend", "flags": "ForceSkelUpdate"}]
+    }
+  ]
+}
+```
+
+`Packages/<entity>/animations/lg_deploy_l.json` (sidecar body):
 
 ```json
 {
@@ -237,12 +277,23 @@ Animations are stored per-entity in `scene.json` under the entity's `animations`
         [0.707, 0.0, 0.0, 0.707],
         [0.708, 0.0, 0.0, 0.705]
       ],
+      "rotation_time": [0.0, 5.0],
       "position": [
         [0.0, 0.0, 0.0],
         [0.1, 0.0, -0.05]
-      ]
+      ],
+      "position_time": [0.0, 5.0]
     }
-  }
+  },
+  "fragments": [
+    {
+      "fragment": "Landing_Gear",
+      "frag_tags": ["Deploy"],
+      "tags": ["Landing_Gear"],
+      "scopes": ["LandingGear", "LandingGearFront", "LandingGearLeft", "LandingGearRight"],
+      "animations": [{"name": "landing_gear_extend", "flags": "ForceSkelUpdate"}]
+    }
+  ]
 }
 ```
 
@@ -252,7 +303,7 @@ The Blender addon provides four playback modes per animation:
 
 - **None** — leave skeleton bones in bind pose, do not apply animation
 - **Snap to First Frame** — apply rotation and position from keyframe 0 only
-- **Snap to Last Frame** — apply rotation and position from keyframe frame_count-1 (default for static poses like landing gear deployed)
+- **Snap to Last Frame** — apply rotation and position from the literal final keyframe, except source-tagged cyclic transition clips (for example Mannequin Open/Close clips whose first/final samples return to the same state) use the timed transition pose selected from the exported source samples
 - **Insert as Action** — create a Blender Action with per-bone f-curve channels for full timeline playback
 
 **Compatibility:**

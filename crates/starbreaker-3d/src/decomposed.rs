@@ -28,6 +28,7 @@ pub(crate) struct DecomposedInput {
     pub available_palettes: Vec<TintPalette>,
     pub root_bones: Vec<Bone>,
     pub root_skeleton_source_path: Option<String>,
+    pub root_animation_controller: Option<crate::animation::AnimationControllerSource>,
     pub children: Vec<EntityPayload>,
     pub interiors: LoadedInteriors,
     /// All available paint variants for this entity, populated from SubGeometry entries.
@@ -93,6 +94,8 @@ struct SceneInstanceRecord {
     no_rotation: bool,
     offset_position: [f32; 3],
     offset_rotation: [f32; 3],
+    detach_direction: [f32; 3],
+    port_flags: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -231,6 +234,8 @@ fn resolve_child_instance_transforms(input: &DecomposedInput) -> Vec<ResolvedChi
                 no_rotation: child.no_rotation,
                 offset_position: child.offset_position,
                 offset_rotation: child.offset_rotation,
+                detach_direction: child.detach_direction,
+                port_flags: child.port_flags.clone(),
             },
             &scene_nodes,
             MaterialMode::None,
@@ -754,6 +759,8 @@ pub(crate) fn write_decomposed_export(
             no_rotation: child.no_rotation,
             offset_position: child.offset_position,
             offset_rotation: child.offset_rotation,
+            detach_direction: child.detach_direction,
+            port_flags: child.port_flags.clone(),
         });
 
         if child_count > 0 {
@@ -1032,7 +1039,43 @@ pub(crate) fn write_decomposed_export(
         if clips.is_empty() {
             None
         } else {
-            Some(serde_json::Value::Array(clips))
+            if let Some(source) = input.root_animation_controller.as_ref() {
+                if let Err(error) = crate::animation::annotate_animation_fragments_json(p4k, &mut clips, source) {
+                    log::warn!("[anim] failed to annotate Mannequin fragments: {error}");
+                }
+            }
+            // Phase 35: split each clip into a lightweight index record
+            // (kept inline in `scene.json`) and a heavy sidecar body
+            // written to `Packages/<entity>/animations/<clip>.json`.
+            // Deduplicate sidecar filenames in case two clips end up
+            // sanitizing to the same name.
+            let mut index_records: Vec<serde_json::Value> = Vec::with_capacity(clips.len());
+            let mut used_filenames: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for clip in clips.iter() {
+                let raw_name = clip
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("clip")
+                    .to_string();
+                let mut base = crate::animation::sanitize_clip_filename(&raw_name);
+                let mut suffix = 1u32;
+                while used_filenames.contains(&base) {
+                    suffix += 1;
+                    base = format!(
+                        "{}_{}",
+                        crate::animation::sanitize_clip_filename(&raw_name),
+                        suffix
+                    );
+                }
+                used_filenames.insert(base.clone());
+                let sidecar_relative = format!("animations/{base}.json");
+                let sidecar_path = package_relative_path(&package_name, &sidecar_relative);
+                let (index, body) =
+                    crate::animation::split_clip_for_sidecar(clip, &sidecar_relative);
+                insert_json_file(&mut files, sidecar_path, body);
+                index_records.push(index);
+            }
+            Some(serde_json::Value::Array(index_records))
         }
     } else {
         None
@@ -1270,6 +1313,8 @@ fn scene_instance_json(instance: &SceneInstanceRecord) -> serde_json::Value {
         "no_rotation": instance.no_rotation,
         "offset_position": instance.offset_position,
         "offset_rotation": instance.offset_rotation,
+        "detach_direction": instance.detach_direction,
+        "port_flags": instance.port_flags,
     })
 }
 
@@ -3220,6 +3265,8 @@ mod tests {
             no_rotation: false,
             offset_position: [1.0, 2.0, 3.0],
             offset_rotation: [0.0, 90.0, 0.0],
+            detach_direction: [0.0, 0.0, -1.0],
+            port_flags: "invisible uneditable".into(),
         };
         let interior = InteriorContainerRecord {
             name: "interior_main".into(),

@@ -295,6 +295,143 @@ class AnimationPoseTests(unittest.TestCase):
         for got, want in zip(obj.rotation_quaternion, (0.985, 0.174, 0.0, 0.0)):
             self.assertAlmostEqual(got, want, places=5)
 
+    def test_fragment_tagged_cyclic_clip_targets_mid_transition_time(self) -> None:
+        clip = {
+            "fragments": [{"frag_tags": ["Open"], "animations": [{"name": "canopy_open"}]}],
+            "bones": {
+                "0x00000001": {
+                    "position": [[0.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.1, 0.0]],
+                    "position_time": [0.0, 36.5, 75.0],
+                },
+                "0x00000002": {
+                    "position": [[1.0, 0.0, 0.0], [1.0, -3.0, 0.0], [1.0, -0.1, 0.0]],
+                    "position_time": [0.0, 36.5, 75.0],
+                },
+            },
+        }
+
+        self.assertEqual(self.package_ops._clip_cyclic_transition_target_frame(clip), 36.5)
+
+    def test_cyclic_target_requires_source_fragment_metadata(self) -> None:
+        clip = {
+            "bones": {
+                "0x00000001": {
+                    "position": [[0.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.1, 0.0]],
+                    "position_time": [0.0, 36.5, 75.0],
+                }
+            }
+        }
+
+        self.assertIsNone(self.package_ops._clip_cyclic_transition_target_frame(clip))
+
+    def test_mixed_cyclic_clip_keeps_literal_endpoint(self) -> None:
+        clip = {
+            "fragments": [{"frag_tags": ["Deploy"], "animations": [{"name": "landing_gear_extend"}]}],
+            "bones": {
+                "0x00000001": {
+                    "position": [[0.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.1, 0.0]],
+                    "position_time": [0.0, 50.0, 100.0],
+                },
+                "0x00000002": {
+                    "position": [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 2.0, 0.0]],
+                    "position_time": [0.0, 50.0, 100.0],
+                },
+                "0x00000003": {
+                    "position": [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 2.0, 0.0]],
+                    "position_time": [0.0, 50.0, 100.0],
+                },
+            },
+        }
+
+        self.assertIsNone(self.package_ops._clip_cyclic_transition_target_frame(clip))
+
+    def test_fragment_endpoint_policy_maps_state_tags_to_transition(self) -> None:
+        deploy = {
+            "fragment": "Landing_Gear",
+            "frag_tags": ["Deploy"],
+            "animations": [{"name": "landing_gear_extend"}],
+        }
+        retract = {
+            "fragment": "Landing_Gear",
+            "frag_tags": ["Retract"],
+            "animations": [{"name": "landing_gear_extend", "speed": -1}],
+        }
+
+        # Forward fragment (Deploy): snap_first -> start, snap_last -> end.
+        self.assertEqual(
+            self.package_ops._fragment_endpoint_policy(deploy, "snap_first"),
+            "transition_start",
+        )
+        self.assertEqual(
+            self.package_ops._fragment_endpoint_policy(deploy, "snap_last"),
+            "transition_end",
+        )
+        # Reverse-playback fragment (Retract, speed=-1): mapping flips.
+        self.assertEqual(
+            self.package_ops._fragment_endpoint_policy(retract, "snap_first"),
+            "transition_end",
+        )
+        self.assertEqual(
+            self.package_ops._fragment_endpoint_policy(retract, "snap_last"),
+            "transition_start",
+        )
+
+    def test_target_frame_snap_opens_from_bind_anchored_start(self) -> None:
+        obj = self._make_object("Canopy_Front", (0.0, 0.0, 0.0))
+        channel = {
+            "position": [[0.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.1, 0.0]],
+            "position_time": [0.0, 36.5, 75.0],
+        }
+
+        self.package_ops._apply_best_channel_transform(
+            obj,
+            self._bind_data((0.0, 0.0, 0.0)),
+            channel,
+            frame_index=-1,
+            endpoint_policy="literal",
+            target_frame=36.5,
+            anchor_frame=36.5,
+        )
+
+        self.assertEqual(obj.location, (0.0, 2.0, 0.0))
+
+    def test_target_frame_snap_closes_to_bind_when_target_is_reference(self) -> None:
+        obj = self._make_object("Canopy_Front", (0.0, 0.0, 0.0))
+        channel = {
+            "position": [[0.0, 2.0, 0.0], [0.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
+            "position_time": [0.0, 36.5, 75.0],
+        }
+
+        self.package_ops._apply_best_channel_transform(
+            obj,
+            self._bind_data((0.0, 0.0, 0.0)),
+            channel,
+            frame_index=-1,
+            endpoint_policy="literal",
+            target_frame=36.5,
+            anchor_frame=36.5,
+        )
+
+        self.assertEqual(obj.location, (0.0, 0.0, 0.0))
+
+    def test_snap_first_can_use_target_frame_as_anchor_reference(self) -> None:
+        obj = self._make_object("Canopy_Front", (0.0, 0.0, 0.0))
+        channel = {
+            "position": [[0.0, 2.0, 0.0], [0.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
+            "position_time": [0.0, 36.5, 75.0],
+        }
+
+        self.package_ops._apply_best_channel_transform(
+            obj,
+            self._bind_data((0.0, 0.0, 0.0)),
+            channel,
+            frame_index=0,
+            endpoint_policy="literal",
+            anchor_frame=36.5,
+        )
+
+        self.assertEqual(obj.location, (0.0, 2.0, 0.0))
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

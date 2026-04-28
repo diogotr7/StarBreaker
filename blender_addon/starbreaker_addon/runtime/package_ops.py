@@ -574,6 +574,7 @@ def apply_light_state(state_name: str) -> int:
 
 _ANIMATION_MODES_PROP = "starbreaker_animation_modes"
 _ANIMATION_BIND_TRS_PROP = "starbreaker_animation_bind_trs"
+_FRAGMENT_ANIMATION_PREFIX = "fragment:"
 
 
 def available_package_animation_names(package: PackageBundle) -> list[str]:
@@ -594,15 +595,143 @@ def available_package_animation_items(package: PackageBundle) -> list[tuple[str,
         if _is_preferred_package_animation_name(str(clip.get("name", "")).strip())
     }
 
+    fragment_items: dict[tuple[str, str], tuple[int, str, str]] = {}
     items: list[tuple[str, str]] = []
     for clip in clips:
         clip_name = str(clip.get("name", "")).strip()
         if not clip_name:
             continue
+        variants = _fragment_animation_variants(clip)
+        if variants:
+            for key, display_name, specificity, dedupe_key in variants:
+                previous = fragment_items.get(dedupe_key)
+                if previous is None or specificity > previous[0]:
+                    fragment_items[dedupe_key] = (specificity, key, display_name)
+            continue
         if preferred_exact_names and clip_name not in preferred_exact_names:
             continue
         items.append((clip_name, _animation_display_name(clip)))
+    items.extend((key, display_name) for _, key, display_name in fragment_items.values())
     return items
+
+
+def _fragment_animation_key(clip_name: str, fragment_index: int) -> str:
+    return f"{_FRAGMENT_ANIMATION_PREFIX}{fragment_index}:{clip_name}"
+
+
+def _parse_fragment_animation_key(animation_name: str) -> tuple[int, str] | None:
+    if not animation_name.startswith(_FRAGMENT_ANIMATION_PREFIX):
+        return None
+    payload = animation_name[len(_FRAGMENT_ANIMATION_PREFIX) :]
+    raw_index, separator, clip_name = payload.partition(":")
+    if not separator or not clip_name:
+        return None
+    try:
+        return int(raw_index), clip_name
+    except ValueError:
+        return None
+
+
+def _fragment_animation_variants(clip: dict[str, Any]) -> list[tuple[str, str, int, tuple[str, str]]]:
+    clip_name = str(clip.get("name", "")).strip()
+    fragments = clip.get("fragments")
+    if not clip_name or not isinstance(fragments, list):
+        return []
+    variants: list[tuple[str, str, int, tuple[str, str]]] = []
+    for index, fragment in enumerate(fragments):
+        if not isinstance(fragment, dict):
+            continue
+        frag_tags = _fragment_tags(fragment, "frag_tags")
+        if not frag_tags:
+            continue
+        fragment_name = str(fragment.get("fragment", "")).strip()
+        tags = _fragment_tags(fragment, "tags")
+        scopes = fragment.get("scopes") if isinstance(fragment.get("scopes"), list) else []
+        display_parts = [fragment_name]
+        display_parts.extend(tag for tag in tags if tag.lower() != fragment_name.lower())
+        display_parts.extend(frag_tags)
+        display_name = " ".join(_humanize_fragment_part(part) for part in display_parts if part)
+        if not display_name:
+            display_name = _animation_display_name(clip)
+        specificity = len(tags) + len(scopes)
+        dedupe_key = (fragment_name.lower(), "+".join(tag.lower() for tag in frag_tags))
+        variants.append((_fragment_animation_key(clip_name, index), display_name, specificity, dedupe_key))
+    return variants
+
+
+def _fragment_tags(fragment: dict[str, Any], key: str) -> list[str]:
+    value = fragment.get(key)
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _humanize_fragment_part(value: str) -> str:
+    return value.replace("_", " ").replace("-", " ").title()
+
+
+def _fragment_reverse_playback(fragment: dict[str, Any] | None) -> bool:
+    if not isinstance(fragment, dict):
+        return False
+    animations = fragment.get("animations")
+    if not isinstance(animations, list):
+        return False
+    saw_animation = False
+    for animation in animations:
+        if not isinstance(animation, dict):
+            continue
+        saw_animation = True
+        speed = animation.get("speed", 1.0)
+        if not isinstance(speed, (int, float)) or float(speed) >= 0.0:
+            return False
+    return saw_animation
+
+
+def _fragment_endpoint_policy(fragment: dict[str, Any] | None, mode: str) -> str | None:
+    """Map a Mannequin fragment + snap mode to a transition state policy.
+
+    Each Mannequin transition fragment references a single CryEngine clip and
+    plays it either forward (``speed >= 0``) or in reverse (``speed < 0``).
+    The clip itself encodes a transition from one steady state ("start") to
+    another ("end"). We resolve start/end purely in clip-time:
+
+    * ``start`` = first clip sample (clip-time = 0).
+    * ``end`` = the per-channel "other endpoint": the last sample for
+      non-cyclic channels, or the mid-clip extreme for cyclic channels
+      (those whose first and last samples coincide, e.g. Scorpius front
+      landing-gear which is bound in the stowed pose and arcs back to it).
+
+    For a forward fragment, ``snap_first`` -> ``start`` and ``snap_last`` ->
+    ``end``. For a reverse-playback fragment (``speed = -1``), playback
+    starts at clip-end and finishes at clip-start, so the mapping flips:
+    ``snap_first`` -> ``end`` and ``snap_last`` -> ``start``.
+
+    Returns ``None`` for fragments that do not encode a transition (so the
+    caller falls back to the legacy bind-distance heuristic).
+    """
+
+    if not isinstance(fragment, dict):
+        return None
+    tags = {tag.lower() for key in ("frag_tags", "tags") for tag in _fragment_tags(fragment, key)}
+    if not tags:
+        return None
+    normalized_mode = mode.strip().lower()
+    if normalized_mode not in {"snap_first", "snap_last"}:
+        return None
+
+    transition_tags = {
+        "open", "close", "extend", "unstow", "stow",
+        "deploy", "retract",
+    }
+    if not (tags & transition_tags):
+        return None
+
+    reverse = not _positive_speed_fragment(fragment)
+    if normalized_mode == "snap_first":
+        return "transition_end" if reverse else "transition_start"
+    return "transition_start" if reverse else "transition_end"
 
 
 def _is_preferred_package_animation_name(name: str) -> bool:
@@ -710,9 +839,11 @@ def apply_animation_mode_to_package_root(
 ) -> int:
     """Apply one animation in one of: none, snap_first, snap_last, action."""
     package = _load_package_from_root(package_root)
-    clip = _find_animation_clip(package, animation_name)
-    if clip is None:
+    selection = _find_animation_selection(package, animation_name)
+    if selection is None:
         raise RuntimeError(f"Animation '{animation_name}' not found in package sidecar")
+    clip, fragment = selection
+    reverse_playback = _fragment_reverse_playback(fragment)
 
     normalized_mode = mode.strip().lower()
     if normalized_mode not in {"none", "snap_first", "snap_last", "action"}:
@@ -747,9 +878,27 @@ def apply_animation_mode_to_package_root(
                 other_clip = _find_animation_clip(package, other_name)
                 if other_clip is None:
                     continue
-                _apply_animation_mode_for_clip(context, package_root, package, other_clip, other_mode)
+                other_selection = _find_animation_selection(package, other_name)
+                other_fragment = other_selection[1] if other_selection is not None else None
+                _apply_animation_mode_for_clip(
+                    context,
+                    package_root,
+                    package,
+                    other_clip,
+                    other_mode,
+                    fragment=other_fragment,
+                    reverse_playback=_fragment_reverse_playback(other_fragment),
+                )
 
-    updated = _apply_animation_mode_for_clip(context, package_root, package, clip, normalized_mode)
+    updated = _apply_animation_mode_for_clip(
+        context,
+        package_root,
+        package,
+        clip,
+        normalized_mode,
+        fragment=fragment,
+        reverse_playback=reverse_playback,
+    )
 
     mode_map[animation_name] = normalized_mode
     package_root[_ANIMATION_MODES_PROP] = json.dumps(mode_map, separators=(",", ":"), sort_keys=True)
@@ -762,23 +911,46 @@ def _apply_animation_mode_for_clip(
     package: PackageBundle,
     clip: dict[str, Any],
     mode: str,
+    fragment: dict[str, Any] | None = None,
+    reverse_playback: bool = False,
 ) -> int:
     normalized_mode = mode.strip().lower()
     if normalized_mode == "none":
         return _restore_bind_pose(package_root)
     if normalized_mode in {"snap_first", "snap_last"}:
         frame_index = 0 if normalized_mode == "snap_first" else -1
-        endpoint_policy = _snap_endpoint_policy(str(clip.get("name", "")), normalized_mode)
-        updated = _apply_animation_pose(package_root, clip, frame_index, endpoint_policy)
+        endpoint_policy = _fragment_endpoint_policy(fragment, normalized_mode) or _snap_endpoint_policy(
+            str(clip.get("name", "")), normalized_mode
+        )
+        sample_frame_index = (-1 if frame_index == 0 else 0) if reverse_playback and endpoint_policy == "literal" else frame_index
+        cyclic_target_frame = _clip_cyclic_transition_target_frame(clip)
+        target_frame = cyclic_target_frame if normalized_mode == "snap_last" and not reverse_playback else None
+        updated = _apply_animation_pose(
+            package_root,
+            clip,
+            sample_frame_index,
+            endpoint_policy,
+            target_frame=target_frame,
+            anchor_frame=cyclic_target_frame,
+        )
         if updated == 0:
             paired = _paired_clip_for_snap(package, clip, frame_index)
             if paired is not None:
                 paired_clip, paired_frame_index = paired
                 paired_policy = _snap_endpoint_policy(str(paired_clip.get("name", "")), normalized_mode)
-                updated = _apply_animation_pose(package_root, paired_clip, paired_frame_index, paired_policy)
+                paired_cyclic_target_frame = _clip_cyclic_transition_target_frame(paired_clip)
+                paired_target_frame = paired_cyclic_target_frame if normalized_mode == "snap_last" else None
+                updated = _apply_animation_pose(
+                    package_root,
+                    paired_clip,
+                    paired_frame_index,
+                    paired_policy,
+                    target_frame=paired_target_frame,
+                    anchor_frame=paired_cyclic_target_frame,
+                )
         return updated
     if normalized_mode == "action":
-        return _insert_animation_action(context, package_root, clip)
+        return _insert_animation_action(context, package_root, clip, reverse_playback=reverse_playback)
     raise RuntimeError(f"Unsupported animation mode: {mode}")
 
 
@@ -831,14 +1003,81 @@ def _animation_display_name(clip: dict[str, Any]) -> str:
     return filename or shortened or raw_name
 
 
-def _find_animation_clip(package: PackageBundle, animation_name: str) -> dict[str, Any] | None:
+def _hydrate_animation_clip(package: PackageBundle, clip: dict[str, Any]) -> dict[str, Any]:
+    """Load the per-clip sidecar JSON on demand and merge `bones` into ``clip``.
+
+    Phase 35 split full clip bodies out of ``scene.json`` into separate
+    ``Packages/<entity>/animations/<clip>.json`` files. Index records in
+    ``scene.json`` carry only ``name``, ``fps``, ``frame_count``,
+    ``fragments`` and a ``sidecar`` reference; the heavy ``bones`` payload
+    lives in the sidecar. This helper lazy-loads the sidecar the first time
+    a clip is actually used and stores the result in-place on the clip
+    dict so subsequent lookups are O(1).
+
+    No-op if ``bones`` is already present (legacy/inline exports) or the
+    sidecar reference is missing/unresolvable.
+    """
+    if not isinstance(clip, dict):
+        return clip
+    if isinstance(clip.get("bones"), dict):
+        return clip
+    sidecar_rel = clip.get("sidecar")
+    if not isinstance(sidecar_rel, str) or not sidecar_rel.strip():
+        return clip
+    package_dir = package.scene_path.parent
+    candidate = package_dir / sidecar_rel
+    if not candidate.is_file():
+        resolved = package.resolve_path(sidecar_rel)
+        if resolved is None:
+            return clip
+        candidate = resolved
+    try:
+        with candidate.open("r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return clip
+    if not isinstance(payload, dict):
+        return clip
+    bones = payload.get("bones")
+    if isinstance(bones, dict):
+        clip["bones"] = bones
+    # Sidecar may also carry richer fragments / time arrays; only set keys
+    # that aren't already in the index record so the index stays
+    # authoritative for summary metadata.
+    for key, value in payload.items():
+        if key in ("name", "fps", "frame_count", "fragments", "sidecar"):
+            continue
+        clip.setdefault(key, value)
+    return clip
+
+
+def _find_animation_selection(package: PackageBundle, animation_name: str) -> tuple[dict[str, Any], dict[str, Any] | None] | None:
     target = animation_name.strip()
     if not target:
         return None
+    parsed_fragment = _parse_fragment_animation_key(target)
+    if parsed_fragment is not None:
+        fragment_index, clip_name = parsed_fragment
+        for clip in _animation_clips(package):
+            if str(clip.get("name", "")).strip() != clip_name:
+                continue
+            fragments = clip.get("fragments")
+            _hydrate_animation_clip(package, clip)
+            if isinstance(fragments, list) and 0 <= fragment_index < len(fragments):
+                fragment = fragments[fragment_index]
+                if isinstance(fragment, dict):
+                    return clip, fragment
+            return clip, None
     for clip in _animation_clips(package):
         if str(clip.get("name", "")).strip() == target:
-            return clip
+            _hydrate_animation_clip(package, clip)
+            return clip, None
     return None
+
+
+def _find_animation_clip(package: PackageBundle, animation_name: str) -> dict[str, Any] | None:
+    selection = _find_animation_selection(package, animation_name)
+    return selection[0] if selection is not None else None
 
 
 def _paired_clip_for_snap(
@@ -882,6 +1121,169 @@ def _snap_endpoint_policy(animation_name: str, mode: str) -> str:
     # always return literal.
     del animation_name, mode
     return "literal"
+
+
+def _channel_times(channel: dict[str, Any], key: str, count: int) -> list[float]:
+    raw = channel.get(key)
+    if isinstance(raw, list) and len(raw) == count:
+        times: list[float] = []
+        for value in raw:
+            if not isinstance(value, (int, float)):
+                break
+            times.append(float(value))
+        if len(times) == count:
+            return times
+    return [float(index) for index in range(count)]
+
+
+def _sample_nearest_time(values: list[Any], times: list[float], item_len: int, target_frame: float) -> list[Any] | None:
+    candidates: list[tuple[float, list[Any]]] = []
+    for index, value in enumerate(values):
+        if isinstance(value, list) and len(value) >= item_len and index < len(times):
+            candidates.append((abs(times[index] - target_frame), value))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item[0])[1]
+
+
+def _rotation_distance(a: list[Any], b: list[Any]) -> float:
+    dot = abs(float(a[0]) * float(b[0]) + float(a[1]) * float(b[1]) + float(a[2]) * float(b[2]) + float(a[3]) * float(b[3]))
+    dot = max(0.0, min(1.0, dot))
+    return 2.0 * math.acos(dot)
+
+
+def _position_distance(a: list[Any], b: list[Any]) -> float:
+    dx = float(a[0]) - float(b[0])
+    dy = float(a[1]) - float(b[1])
+    dz = float(a[2]) - float(b[2])
+    return (dx * dx + dy * dy + dz * dz) ** 0.5
+
+
+def _quat_mul(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return (
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    )
+
+
+def _quat_conj(q: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    return (q[0], -q[1], -q[2], -q[3])
+
+
+def _quat_align(reference: tuple[float, float, float, float], q: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """Return q (or -q) whichever has positive dot with reference (canonicalize hemisphere)."""
+    if reference[0] * q[0] + reference[1] * q[1] + reference[2] * q[2] + reference[3] * q[3] < 0.0:
+        return (-q[0], -q[1], -q[2], -q[3])
+    return q
+
+
+def _positive_speed_fragment(fragment: dict[str, Any]) -> bool:
+    animations = fragment.get("animations")
+    if not isinstance(animations, list):
+        return True
+    saw_animation = False
+    for animation in animations:
+        if not isinstance(animation, dict):
+            continue
+        saw_animation = True
+        speed = animation.get("speed", 1.0)
+        if not isinstance(speed, (int, float)) or float(speed) >= 0.0:
+            return True
+    return not saw_animation
+
+
+def _clip_has_transition_fragment(clip: dict[str, Any]) -> bool:
+    fragments = clip.get("fragments")
+    if not isinstance(fragments, list):
+        return False
+    transition_tags = {"open", "close", "deploy", "retract", "extend", "stow", "unstow"}
+    non_transition_tags = {"compress", "loop"}
+    for fragment in fragments:
+        if not isinstance(fragment, dict) or not _positive_speed_fragment(fragment):
+            continue
+        raw_tags: list[Any] = []
+        for key in ("frag_tags", "tags"):
+            value = fragment.get(key)
+            if isinstance(value, list):
+                raw_tags.extend(value)
+            elif isinstance(value, str):
+                raw_tags.append(value)
+        tags = {str(tag).strip().lower() for tag in raw_tags if str(tag).strip()}
+        if tags & transition_tags and not tags <= non_transition_tags:
+            return True
+    return False
+
+
+def _series_cyclic_target_time(
+    values: list[Any],
+    times: list[float],
+    item_len: int,
+    distance: Callable[[list[Any], list[Any]], float],
+    threshold: float,
+) -> tuple[bool, float | None]:
+    valid: list[tuple[list[Any], float]] = [
+        (value, times[index])
+        for index, value in enumerate(values)
+        if isinstance(value, list) and len(value) >= item_len and index < len(times)
+    ]
+    if len(valid) < 3:
+        return False, None
+    first = valid[0][0]
+    last = valid[-1][0]
+    distances = [(distance(first, value), time) for value, time in valid]
+    max_distance, target_time = max(distances, key=lambda item: item[0])
+    if max_distance <= threshold:
+        return False, None
+    endpoint_distance = distance(first, last)
+    if endpoint_distance <= max(max_distance * 0.4, threshold):
+        return True, target_time
+    return False, target_time
+
+
+def _clip_cyclic_transition_target_frame(clip: dict[str, Any]) -> float | None:
+    if not _clip_has_transition_fragment(clip):
+        return None
+    position_moving = 0
+    position_targets: list[float] = []
+    rotation_moving = 0
+    rotation_targets: list[float] = []
+    for channel in _normalized_bone_channels(clip).values():
+        positions = channel.get("position")
+        if isinstance(positions, list):
+            position_times = _channel_times(channel, "position_time", len(positions))
+            is_cyclic, target = _series_cyclic_target_time(
+                positions, position_times, 3, _position_distance, 0.05
+            )
+            if target is not None:
+                position_moving += 1
+                if is_cyclic:
+                    position_targets.append(target)
+        rotations = channel.get("rotation")
+        if isinstance(rotations, list):
+            rotation_times = _channel_times(channel, "rotation_time", len(rotations))
+            is_cyclic, target = _series_cyclic_target_time(
+                rotations, rotation_times, 4, _rotation_distance, 0.03
+            )
+            if target is not None:
+                rotation_moving += 1
+                if is_cyclic:
+                    rotation_targets.append(target)
+
+    if position_moving > 0:
+        moving_series = position_moving
+        cyclic_targets = position_targets
+    else:
+        moving_series = rotation_moving
+        cyclic_targets = rotation_targets
+
+    if moving_series == 0 or len(cyclic_targets) / moving_series < 0.5:
+        return None
+    cyclic_targets.sort()
+    return cyclic_targets[len(cyclic_targets) // 2]
 
 
 def _object_bone_hash(obj: bpy.types.Object) -> str:
@@ -1037,6 +1439,8 @@ def _apply_best_channel_transform(
     channel: dict[str, Any],
     frame_index: int,
     endpoint_policy: str,
+    target_frame: float | None = None,
+    anchor_frame: float | None = None,
 ) -> None:
     _restore_object_bind_pose(obj, bind_data)
 
@@ -1070,66 +1474,131 @@ def _apply_best_channel_transform(
         dz = decoded[2] - bind_loc[2]
         return (dx * dx + dy * dy + dz * dz) ** 0.5
 
+    def _channel_other_endpoint(
+        valid: list[list[Any]],
+        item_len: int,
+        distance: Callable[[list[Any], list[Any]], float],
+        threshold: float,
+    ) -> list[Any]:
+        """Return the channel's "opposite state" sample.
+
+        For a non-cyclic series the last sample is the opposite of the first.
+        For a cyclic series (first ≈ last) the opposite state lives mid-clip:
+        find the sample most distant from the first/last endpoint.
+        """
+
+        if len(valid) < 2:
+            return valid[-1] if valid else []
+        first = valid[0]
+        last = valid[-1]
+        if distance(first, last) > threshold:
+            return last
+        # Cyclic: pick the sample most distant from the shared endpoint.
+        return max(valid, key=lambda value: distance(first, value))
+
     def _select_sample(values: list[Any], item_len: int, scorer: Callable[[list[Any]], float]) -> list[Any] | None:
         valid: list[list[Any]] = [v for v in values if isinstance(v, list) and len(v) >= item_len]
         if not valid:
             return None
         if endpoint_policy == "literal":
             return valid[0] if frame_index == 0 else valid[-1]
-        scored = [(scorer(v), v) for v in valid]
+        if endpoint_policy == "transition_start":
+            return valid[0]
+        if endpoint_policy == "transition_end":
+            distance = _position_distance if item_len == 3 else _rotation_distance
+            threshold = 0.05 if item_len == 3 else 0.03
+            return _channel_other_endpoint(valid, item_len, distance, threshold)
         if endpoint_policy == "least_bind_error":
+            endpoint_candidates = [valid[0], valid[-1]] if len(valid) > 1 else valid
+            scored = [(scorer(v), v) for v in endpoint_candidates]
             return min(scored, key=lambda item: item[0])[1]
         if endpoint_policy == "most_bind_error":
+            scored = [(scorer(v), v) for v in valid]
             return max(scored, key=lambda item: item[0])[1]
         return valid[0] if frame_index == 0 else valid[-1]
 
     rotation_sample: list[Any] | None = None
     if isinstance(rotations, list) and rotations:
-        rotation_sample = _select_sample(rotations, 4, _rotation_score)
+        if target_frame is not None:
+            rotation_sample = _sample_nearest_time(
+                rotations, _channel_times(channel, "rotation_time", len(rotations)), 4, target_frame
+            )
+        else:
+            rotation_sample = _select_sample(rotations, 4, _rotation_score)
 
     position_sample: list[Any] | None = None
     if isinstance(positions, list) and positions:
-        position_sample = _select_sample(positions, 3, _position_score)
+        if target_frame is not None:
+            position_sample = _sample_nearest_time(
+                positions, _channel_times(channel, "position_time", len(positions)), 3, target_frame
+            )
+        else:
+            position_sample = _select_sample(positions, 3, _position_score)
 
     if rotation_sample is not None:
         obj.rotation_mode = "QUATERNION"
-        # Exporter writes animation rotations in Blender wxyz order.
-        obj.rotation_quaternion = (
+        rot_sample_q = (
             float(rotation_sample[0]),
             float(rotation_sample[1]),
             float(rotation_sample[2]),
             float(rotation_sample[3]),
         )
+        if endpoint_policy in {"transition_start", "transition_end"} and isinstance(rotations, list) and rotations:
+            # Anchor-relative composition (matches the position pathway).
+            # Clip channels are stored in a coordinate frame that has a fixed
+            # offset from the imported rest pose; the offset cancels out by
+            # composing `bind ⋅ (anchor⁻¹ ⋅ sample)`. The clip's two channel
+            # "states" are valid[0] and the per-channel opposite endpoint
+            # (last sample, or rotation-extreme mid-clip sample for cyclic
+            # channels). The state nearer to bind acts as the anchor.
+            valid_rots: list[list[Any]] = [v for v in rotations if isinstance(v, list) and len(v) >= 4]
+            if valid_rots:
+                other_rot = _channel_other_endpoint(valid_rots, 4, _rotation_distance, 0.03)
+                anchor_candidates = [valid_rots[0], other_rot]
+                anchor_rot_list = min(anchor_candidates, key=_rotation_score)
+                anchor_q = (
+                    float(anchor_rot_list[0]),
+                    float(anchor_rot_list[1]),
+                    float(anchor_rot_list[2]),
+                    float(anchor_rot_list[3]),
+                )
+                rot_sample_q = _quat_align(anchor_q, rot_sample_q)
+                delta = _quat_mul(_quat_conj(anchor_q), rot_sample_q)
+                rot_sample_q = _quat_mul(bind_rot, delta)
+        obj.rotation_quaternion = rot_sample_q
 
     if position_sample is not None and isinstance(positions, list) and positions:
-        # Source of truth: exporter writes sidecar positions in Blender local XYZ
-        # already (see crates/starbreaker-3d/src/animation.rs::clip_to_json).
-        # Anchor channel deltas to the clip endpoint (first or last keyframe)
-        # nearest bind, treating that endpoint as the "closed/reference" state.
-        # Picking from endpoints only — never mid-clip frames — matches the
-        # transition-pair semantics of CryEngine state-switching clips
-        # (closed↔open, retracted↔deployed). Mid-clip frames may arc through
-        # arbitrary geometry on the way (e.g. the Scorpius landing gear foot
-        # swings within ~0.5m of bind mid-deploy while both endpoints sit
-        # ~2.3m away); using `min` over all frames would pick that mid-arc
-        # frame as the anchor and produce a wildly wrong delta. This matches
-        # the anchor selection used by `_insert_animation_action` below.
+        # Anchor-relative composition (mirrors rotation pathway). Clip
+        # positions are in a fixed-offset coordinate frame relative to
+        # bind; composing `bind + (sample - anchor)` cancels the offset.
+        # Anchor candidates: valid[0] and the per-channel opposite endpoint
+        # (last sample, or mid-clip extreme for cyclic position channels).
+        # The candidate nearest to bind is the anchor.
         valid_positions: list[list[Any]] = [v for v in positions if isinstance(v, list) and len(v) >= 3]
         sample_decoded = _decode_animation_position(position_sample, "identity")
         if valid_positions:
-            first_decoded = _decode_animation_position(valid_positions[0], "identity")
-            last_decoded = _decode_animation_position(valid_positions[-1], "identity")
-            first_dist_sq = (
-                (first_decoded[0] - bind_loc[0]) ** 2
-                + (first_decoded[1] - bind_loc[1]) ** 2
-                + (first_decoded[2] - bind_loc[2]) ** 2
-            )
-            last_dist_sq = (
-                (last_decoded[0] - bind_loc[0]) ** 2
-                + (last_decoded[1] - bind_loc[1]) ** 2
-                + (last_decoded[2] - bind_loc[2]) ** 2
-            )
-            anchor_decoded = first_decoded if first_dist_sq <= last_dist_sq else last_decoded
+            if anchor_frame is not None:
+                anchor_target = _sample_nearest_time(
+                    positions, _channel_times(channel, "position_time", len(positions)), 3, anchor_frame
+                )
+                anchor_samples = [valid_positions[0], anchor_target or position_sample]
+            elif endpoint_policy in {"transition_start", "transition_end"}:
+                other = _channel_other_endpoint(
+                    valid_positions, 3, _position_distance, 0.05
+                )
+                anchor_samples = [valid_positions[0], other]
+            else:
+                anchor_samples = [valid_positions[0], valid_positions[-1]]
+
+            def _dist_sq(sample: list[Any]) -> float:
+                decoded = _decode_animation_position(sample, "identity")
+                return (
+                    (decoded[0] - bind_loc[0]) ** 2
+                    + (decoded[1] - bind_loc[1]) ** 2
+                    + (decoded[2] - bind_loc[2]) ** 2
+                )
+
+            anchor_decoded = _decode_animation_position(min(anchor_samples, key=_dist_sq), "identity")
             obj.location = (
                 bind_loc[0] + (sample_decoded[0] - anchor_decoded[0]),
                 bind_loc[1] + (sample_decoded[1] - anchor_decoded[1]),
@@ -1155,6 +1624,8 @@ def _apply_animation_pose(
     clip: dict[str, Any],
     frame_index: int,
     endpoint_policy: str = "literal",
+    target_frame: float | None = None,
+    anchor_frame: float | None = None,
 ) -> int:
     bones = _normalized_bone_channels(clip)
     if not bones:
@@ -1170,7 +1641,9 @@ def _apply_animation_pose(
         if bind_data is None:
             continue
 
-        _apply_best_channel_transform(obj, bind_data, channel, frame_index, endpoint_policy)
+        _apply_best_channel_transform(
+            obj, bind_data, channel, frame_index, endpoint_policy, target_frame, anchor_frame
+        )
         updated += 1
     return updated
 
@@ -1179,11 +1652,13 @@ def _insert_animation_action(
     context: bpy.types.Context,
     package_root: bpy.types.Object,
     clip: dict[str, Any],
+    reverse_playback: bool = False,
 ) -> int:
     bones = _normalized_bone_channels(clip)
     if not bones:
         return 0
     name = str(clip.get("name", "animation")) or "animation"
+    trim_frame = _clip_cyclic_transition_target_frame(clip)
 
     # Phase 24A: insert keyframes starting at the current scene frame so
     # multiple action-mode clips can chain naturally on the timeline. The
@@ -1223,13 +1698,25 @@ def _insert_animation_action(
 
         rotations = channel.get("rotation") if isinstance(channel.get("rotation"), list) else []
         positions = channel.get("position") if isinstance(channel.get("position"), list) else []
+        rotation_times = _channel_times(channel, "rotation_time", len(rotations))
+        position_times = _channel_times(channel, "position_time", len(positions))
+        channel_times = [*rotation_times, *position_times]
+        duration_frame = trim_frame if trim_frame is not None else max(channel_times, default=0.0)
+
+        def _action_frame(sample_time: float) -> float:
+            local_time = duration_frame - sample_time if reverse_playback else sample_time
+            return frame_offset + local_time
 
         if positions:
             bind_location = bind_data.get("location", obj.location)
             bind = (float(bind_location[0]), float(bind_location[1]), float(bind_location[2]))
 
             first = positions[0] if isinstance(positions[0], list) and len(positions[0]) >= 3 else None
-            last = positions[-1] if isinstance(positions[-1], list) and len(positions[-1]) >= 3 else None
+            last = (
+                _sample_nearest_time(positions, position_times, 3, trim_frame)
+                if trim_frame is not None
+                else positions[-1] if isinstance(positions[-1], list) and len(positions[-1]) >= 3 else None
+            )
             anchor: tuple[float, float, float] | None = None
             if first is not None and last is not None:
                 first_decoded = _decode_animation_position(first, "identity")
@@ -1248,6 +1735,9 @@ def _insert_animation_action(
 
             if anchor is not None:
                 for index, sample in enumerate(positions):
+                    sample_time = position_times[index] if index < len(position_times) else float(index)
+                    if trim_frame is not None and sample_time > trim_frame:
+                        continue
                     if isinstance(sample, list) and len(sample) >= 3:
                         sample_decoded = _decode_animation_position(sample, "identity")
                         obj.location = (
@@ -1255,9 +1745,12 @@ def _insert_animation_action(
                             bind[1] + (sample_decoded[1] - anchor[1]),
                             bind[2] + (sample_decoded[2] - anchor[2]),
                         )
-                        obj.keyframe_insert(data_path="location", frame=frame_offset + index)
+                        obj.keyframe_insert(data_path="location", frame=_action_frame(sample_time))
 
         for index, sample in enumerate(rotations):
+            sample_time = rotation_times[index] if index < len(rotation_times) else float(index)
+            if trim_frame is not None and sample_time > trim_frame:
+                continue
             if isinstance(sample, list) and len(sample) >= 4:
                 obj.rotation_quaternion = (
                     float(sample[0]),
@@ -1265,7 +1758,7 @@ def _insert_animation_action(
                     float(sample[2]),
                     float(sample[3]),
                 )
-                obj.keyframe_insert(data_path="rotation_quaternion", frame=frame_offset + index)
+                obj.keyframe_insert(data_path="rotation_quaternion", frame=_action_frame(sample_time))
 
         # Phase 24C: assign all fcurves on this action to the bone's group
         # so the Action editor renders a single collapsible group per bone.

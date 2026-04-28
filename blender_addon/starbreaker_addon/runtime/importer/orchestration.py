@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import bpy
-from mathutils import Euler, Matrix
+import mathutils
 
 from ..constants import (
     PACKAGE_ROOT_PREFIX,
@@ -436,7 +436,7 @@ class OrchestrationMixin:
                 no_rotation=record.no_rotation,
                 parent_world_matrix=parent_world_matrix,
             )
-            desired_rotation = Euler(tuple(math.radians(value) for value in record.offset_rotation), "XYZ").to_quaternion()
+            desired_rotation = mathutils.Euler(tuple(math.radians(value) for value in record.offset_rotation), "XYZ").to_quaternion()
             if parent_node is not None and record.no_rotation:
                 anchor.rotation_quaternion = parent_node.matrix_world.to_quaternion().inverted() @ desired_rotation
             else:
@@ -471,10 +471,11 @@ class OrchestrationMixin:
                 or abs(parent_local_quat.z) > 1e-4
             ):
                 force_neutralize = True
+        has_authored_offset_rotation = any(abs(value) > 1e-6 for value in record.offset_rotation)
         clones = self.instantiate_template(
             template,
             anchor,
-            neutralize_axis_root=parent_node is not None,
+            neutralize_axis_root=parent_node is not None and (force_neutralize or not has_authored_offset_rotation),
             force_neutralize_axis_root=force_neutralize,
         )
         self._apply_instance_metadata([anchor, *clones], record, effective_palette_id)
@@ -778,7 +779,7 @@ class OrchestrationMixin:
             clone = self._duplicate_object_tree(source, template.mesh_asset, mapping, link_collection)
             clone.parent = anchor
             if neutralize_root:
-                clone.matrix_local = Matrix.Identity(4)
+                clone.matrix_local = mathutils.Matrix.Identity(4)
                 needs_view_layer_update = True
             clones.append(clone)
         if needs_view_layer_update:
@@ -845,6 +846,8 @@ class OrchestrationMixin:
             "material_sidecar": effective_material_sidecar,
             "palette_id": record.palette_id,
         }, sort_keys=True)
+        port_flags = {part.strip().lower() for part in record.port_flags.split() if part.strip()}
+        hidden_by_port = "invisible" in port_flags
         for obj in objects:
             obj[PROP_SCENE_PATH] = str(self.package.scene_path)
             obj[PROP_EXPORT_ROOT] = str(self.package.export_root)
@@ -857,6 +860,10 @@ class OrchestrationMixin:
             if effective_palette_id is not None:
                 obj[PROP_PALETTE_ID] = effective_palette_id
             obj[PROP_INSTANCE_JSON] = serialized
+            if hidden_by_port:
+                obj.hide_viewport = True
+                obj.hide_render = True
+                obj.hide_set(True)
 
     def _create_package_root(self, palette_id: str | None = None) -> bpy.types.Object:
         package_root = bpy.data.objects.new(f"{PACKAGE_ROOT_PREFIX} {self.package.package_name}", None)

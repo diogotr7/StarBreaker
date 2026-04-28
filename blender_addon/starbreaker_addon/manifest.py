@@ -570,6 +570,8 @@ class SceneInstanceRecord:
     no_rotation: bool = False
     offset_position: Vec3 = (0.0, 0.0, 0.0)
     offset_rotation: Vec3 = (0.0, 0.0, 0.0)
+    detach_direction: Vec3 = (0.0, 0.0, 0.0)
+    port_flags: str = ""
     raw: JsonDict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -590,6 +592,8 @@ class SceneInstanceRecord:
             no_rotation=_as_bool(data.get("no_rotation")),
             offset_position=_float_tuple(data.get("offset_position"), 3),  # type: ignore[arg-type]
             offset_rotation=_float_tuple(data.get("offset_rotation"), 3),  # type: ignore[arg-type]
+            detach_direction=_float_tuple(data.get("detach_direction"), 3),  # type: ignore[arg-type]
+            port_flags=_as_str(data.get("port_flags")) or "",
             raw=data,
         )
 

@@ -46,6 +46,13 @@ pub struct AnimationClip {
     pub channels: Vec<BoneChannel>,
 }
 
+/// DataCore-declared Mannequin animation-controller sources for an entity.
+#[derive(Debug, Clone)]
+pub struct AnimationControllerSource {
+    pub animation_database: String,
+    pub animation_controller: String,
+}
+
 /// Animation data for a single bone.
 #[derive(Debug, Clone)]
 pub struct BoneChannel {
@@ -1098,12 +1105,15 @@ pub fn clip_to_json(clip: &AnimationClip) -> serde_json::Value {
         }
 
         let mut rotation_array = vec![];
+        let mut rotation_time_array = vec![];
         for keyframe in &channel.rotations {
             let q = cry_xyzw_to_blender_wxyz(keyframe.value);
             rotation_array.push(serde_json::json!([q[0], q[1], q[2], q[3]]));
+            rotation_time_array.push(serde_json::json!(keyframe.time));
         }
 
         let mut position_array = vec![];
+        let mut position_time_array = vec![];
         for keyframe in &channel.positions {
             let p = keyframe.value;
             // CryEngine Y-up → Blender Z-up axis swap: (x, y, z) → (x, -z, y).
@@ -1112,6 +1122,7 @@ pub fn clip_to_json(clip: &AnimationClip) -> serde_json::Value {
             // sides need to put CryEngine X into Blender X so that animation
             // deltas land in the same frame as the bone's bind position.
             position_array.push(serde_json::json!([p[0], -p[2], p[1]]));
+            position_time_array.push(serde_json::json!(keyframe.time));
         }
 
         let bone_key = format!("0x{:X}", channel.bone_hash);
@@ -1119,7 +1130,9 @@ pub fn clip_to_json(clip: &AnimationClip) -> serde_json::Value {
             "has_rotation": has_rotation,
             "has_position": has_position,
             "rotation": rotation_array,
+            "rotation_time": rotation_time_array,
             "position": position_array,
+            "position_time": position_time_array,
         });
     }
 
@@ -1145,6 +1158,326 @@ pub fn clip_to_json(clip: &AnimationClip) -> serde_json::Value {
 /// Convert a full database to a JSON array of animations.
 pub fn database_to_animations_json(db: &AnimationDatabase) -> serde_json::Value {
     serde_json::Value::Array(db.clips.iter().map(clip_to_json).collect())
+}
+
+/// Sanitize a clip name into a safe filename component.
+///
+/// Replaces characters outside `[A-Za-z0-9_.-]` with `_`. Used by the
+/// decomposed exporter to derive per-clip animation sidecar filenames
+/// under `Packages/<entity>/animations/<clip>.json`.
+pub fn sanitize_clip_filename(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return "clip".to_string();
+    }
+    let mut out = String::with_capacity(trimmed.len());
+    for ch in trimmed.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' || ch == '-' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "clip".to_string()
+    } else {
+        out
+    }
+}
+
+/// Split a fully-serialized animation clip into a lightweight index
+/// record (preserves `name`, `fps`, `frame_count`, `fragments`, etc.,
+/// and adds a `sidecar` reference) and a heavy sidecar body (the full
+/// clip including the `bones` keyframe arrays).
+///
+/// The exporter writes the sidecar body to a separate JSON file under
+/// `Packages/<entity>/animations/<clip>.json` so that the inline
+/// `scene.json` only carries an index. The Blender importer then loads
+/// the sidecar lazily when a clip is actually applied.
+///
+/// `sidecar_relative_path` is stored on the index record verbatim.
+pub fn split_clip_for_sidecar(
+    clip: &serde_json::Value,
+    sidecar_relative_path: &str,
+) -> (serde_json::Value, serde_json::Value) {
+    let mut index = clip.clone();
+    if let Some(map) = index.as_object_mut() {
+        map.remove("bones");
+        map.insert(
+            "sidecar".to_string(),
+            serde_json::Value::String(sidecar_relative_path.to_string()),
+        );
+    }
+    (index, clip.clone())
+}
+
+/// Attach Mannequin ADB fragment metadata to already-serialized animation clips.
+pub fn annotate_animation_fragments_json(
+    p4k: &starbreaker_p4k::MappedP4k,
+    clips: &mut [serde_json::Value],
+    source: &AnimationControllerSource,
+) -> Result<(), Error> {
+    let scopes = read_controller_fragment_scopes(p4k, &source.animation_controller);
+    let fragments_by_clip = read_mannequin_fragments_by_clip(p4k, &source.animation_database, &scopes)?;
+
+    for clip in clips.iter_mut() {
+        let Some(name) = clip.get("name").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let keys = clip_name_lookup_keys(name);
+        let mut fragments: Vec<serde_json::Value> = Vec::new();
+        for key in keys {
+            if let Some(values) = fragments_by_clip.get(&key) {
+                for fragment in values {
+                    if !fragments.iter().any(|existing| existing == fragment) {
+                        fragments.push(fragment.clone());
+                    }
+                }
+            }
+        }
+        if !fragments.is_empty() {
+            clip["fragments"] = serde_json::Value::Array(fragments);
+        }
+    }
+
+    Ok(())
+}
+
+fn read_mannequin_fragments_by_clip(
+    p4k: &starbreaker_p4k::MappedP4k,
+    animation_database: &str,
+    scopes: &HashMap<String, Vec<String>>,
+) -> Result<HashMap<String, Vec<serde_json::Value>>, Error> {
+    let path = mannequin_adb_p4k_path(animation_database);
+    let data = p4k
+        .entry_case_insensitive(&path)
+        .and_then(|entry| p4k.read(entry).ok())
+        .ok_or_else(|| Error::Other(format!("Cannot load Mannequin ADB: {path}")))?
+        .to_vec();
+    let xml = starbreaker_cryxml::from_bytes(&data)
+        .map_err(|error| Error::Other(format!("Mannequin ADB CryXml parse: {error:?}")))?;
+
+    let mut fragments = Vec::new();
+    collect_mannequin_fragments(&xml, xml.root(), None, false, scopes, &mut fragments);
+
+    let mut by_clip: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+    for fragment in fragments {
+        let animation_names = fragment
+            .get("animations")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|animation| animation.get("name").and_then(|value| value.as_str()))
+            .flat_map(clip_name_lookup_keys)
+            .collect::<Vec<_>>();
+        for key in animation_names {
+            by_clip.entry(key).or_default().push(fragment.clone());
+        }
+    }
+
+    Ok(by_clip)
+}
+
+fn read_controller_fragment_scopes(
+    p4k: &starbreaker_p4k::MappedP4k,
+    animation_controller: &str,
+) -> HashMap<String, Vec<String>> {
+    let path = mannequin_adb_p4k_path(animation_controller);
+    let Some(data) = p4k
+        .entry_case_insensitive(&path)
+        .and_then(|entry| p4k.read(entry).ok())
+        .map(|bytes| bytes.to_vec())
+    else {
+        return HashMap::new();
+    };
+    let Ok(xml) = starbreaker_cryxml::from_bytes(&data) else {
+        return HashMap::new();
+    };
+
+    let mut scopes = HashMap::new();
+    collect_controller_fragment_scopes(&xml, xml.root(), &mut scopes);
+    scopes
+}
+
+fn collect_controller_fragment_scopes(
+    xml: &starbreaker_cryxml::CryXml,
+    node: &starbreaker_cryxml::CryXmlNode,
+    scopes: &mut HashMap<String, Vec<String>>,
+) {
+    let tag = xml.node_tag(node);
+    if tag != "ControllerDef" && tag != "Tags" && tag != "Fragments" && tag != "FragmentDefs" {
+        let attrs = xml.node_attributes(node).collect::<HashMap<_, _>>();
+        if let Some(raw_scopes) = attrs.get("scopes") {
+            scopes.insert(tag.to_string(), split_tag_list(raw_scopes));
+        }
+    }
+    for child in xml.node_children(node) {
+        collect_controller_fragment_scopes(xml, child, scopes);
+    }
+}
+
+fn collect_mannequin_fragments(
+    xml: &starbreaker_cryxml::CryXml,
+    node: &starbreaker_cryxml::CryXmlNode,
+    current_fragment_group: Option<String>,
+    in_fragment_list: bool,
+    scopes: &HashMap<String, Vec<String>>,
+    out: &mut Vec<serde_json::Value>,
+) {
+    let tag = xml.node_tag(node);
+    let now_in_fragment_list = in_fragment_list || tag == "FragmentList";
+    let group = if now_in_fragment_list && tag != "FragmentList" && tag != "Fragment" {
+        Some(tag.to_string())
+    } else {
+        current_fragment_group
+    };
+
+    if tag == "Fragment" {
+        if let Some(fragment) = mannequin_fragment_json(xml, node, group.as_deref(), scopes) {
+            out.push(fragment);
+        }
+    }
+
+    for child in xml.node_children(node) {
+        collect_mannequin_fragments(xml, child, group.clone(), now_in_fragment_list, scopes, out);
+    }
+}
+
+fn mannequin_fragment_json(
+    xml: &starbreaker_cryxml::CryXml,
+    node: &starbreaker_cryxml::CryXmlNode,
+    group: Option<&str>,
+    scopes: &HashMap<String, Vec<String>>,
+) -> Option<serde_json::Value> {
+    let group = group.unwrap_or("");
+    let attrs = xml.node_attributes(node).collect::<HashMap<_, _>>();
+    let animations = collect_fragment_animations(xml, node);
+    if animations.is_empty() {
+        return None;
+    }
+    let procedurals = collect_fragment_procedurals(xml, node);
+
+    let mut fragment = serde_json::json!({
+        "fragment": group,
+        "guid": attrs.get("GUID").copied().unwrap_or_default(),
+        "tags": split_tag_list(attrs.get("Tags").copied().unwrap_or_default()),
+        "frag_tags": split_tag_list(attrs.get("FragTags").copied().unwrap_or_default()),
+        "blend_out_duration": parse_f32_attr(attrs.get("BlendOutDuration").copied()),
+        "option_weight": parse_f32_attr(attrs.get("OptionWeight").copied()),
+        "animations": animations,
+    });
+    if let Some(scope_list) = scopes.get(group) {
+        fragment["scopes"] = serde_json::json!(scope_list);
+    }
+    if !procedurals.is_empty() {
+        fragment["procedurals"] = serde_json::Value::Array(procedurals);
+    }
+    Some(fragment)
+}
+
+fn collect_fragment_animations(
+    xml: &starbreaker_cryxml::CryXml,
+    node: &starbreaker_cryxml::CryXmlNode,
+) -> Vec<serde_json::Value> {
+    let mut values = Vec::new();
+    for child in xml.node_children(node) {
+        if xml.node_tag(child) == "AnimLayer" {
+            let mut blend = serde_json::json!({});
+            for layer_child in xml.node_children(child) {
+                let child_tag = xml.node_tag(layer_child);
+                let attrs = xml.node_attributes(layer_child).collect::<HashMap<_, _>>();
+                if child_tag == "Blend" {
+                    blend = serde_json::json!({
+                        "exit_time": parse_f32_attr(attrs.get("ExitTime").copied()),
+                        "start_time": parse_f32_attr(attrs.get("StartTime").copied()),
+                        "duration": parse_f32_attr(attrs.get("Duration").copied()),
+                    });
+                } else if child_tag == "Animation" {
+                    let mut animation = serde_json::json!({
+                        "name": attrs.get("name").copied().unwrap_or_default(),
+                        "blend": blend,
+                    });
+                    if let Some(flags) = attrs.get("flags") {
+                        animation["flags"] = serde_json::json!(flags);
+                    }
+                    if let Some(speed) = parse_f32_attr(attrs.get("speed").copied()) {
+                        animation["speed"] = serde_json::json!(speed);
+                    }
+                    values.push(animation);
+                }
+            }
+        }
+        values.extend(collect_fragment_animations(xml, child));
+    }
+    values
+}
+
+fn collect_fragment_procedurals(
+    xml: &starbreaker_cryxml::CryXml,
+    node: &starbreaker_cryxml::CryXmlNode,
+) -> Vec<serde_json::Value> {
+    let mut values = Vec::new();
+    for child in xml.node_children(node) {
+        if xml.node_tag(child) == "Procedural" {
+            let attrs = xml.node_attributes(child).collect::<HashMap<_, _>>();
+            let mut params = serde_json::json!({});
+            for proc_child in xml.node_children(child) {
+                if xml.node_tag(proc_child) != "ProceduralParams" {
+                    continue;
+                }
+                for param in xml.node_children(proc_child) {
+                    let param_attrs = xml.node_attributes(param).collect::<HashMap<_, _>>();
+                    if let Some(value) = param_attrs.get("value") {
+                        params[xml.node_tag(param)] = serde_json::json!(value);
+                    }
+                }
+            }
+            values.push(serde_json::json!({
+                "type": attrs.get("type").copied().unwrap_or_default(),
+                "params": params,
+            }));
+        }
+        values.extend(collect_fragment_procedurals(xml, child));
+    }
+    values
+}
+
+fn mannequin_adb_p4k_path(path: &str) -> String {
+    let normalized = path.trim_start_matches("Data/").trim_start_matches("Data\\");
+    let with_prefix = if normalized.to_ascii_lowercase().starts_with("animations/")
+        || normalized.to_ascii_lowercase().starts_with("animations\\")
+    {
+        normalized.to_string()
+    } else {
+        format!("Animations/Mannequin/ADB/{normalized}")
+    };
+    format!("Data/{}", with_prefix).replace('/', "\\")
+}
+
+fn clip_name_lookup_keys(name: &str) -> Vec<String> {
+    let lower = name.trim().replace('\\', "/").to_ascii_lowercase();
+    let stem = lower
+        .rsplit_once('/')
+        .map(|(_, tail)| tail)
+        .unwrap_or(lower.as_str())
+        .trim_end_matches(".caf")
+        .to_string();
+    if stem == lower {
+        vec![lower]
+    } else {
+        vec![lower, stem]
+    }
+}
+
+fn split_tag_list(raw: &str) -> Vec<String> {
+    raw.split(|ch: char| ch == '+' || ch == '|' || ch == ',' || ch.is_whitespace())
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn parse_f32_attr(raw: Option<&str>) -> Option<f32> {
+    raw.and_then(|value| value.parse::<f32>().ok())
 }
 
 fn tokenize_for_match(input: &str) -> Vec<String> {
@@ -1421,26 +1754,26 @@ fn caf_anchored_remap(
         }
     }
 
-    // Step 3: clip-direction correction for named animations.
+    // NOTE: clip direction is *not* corrected here.
     //
-    // Empirical finding (Phase 24B / 23A): paired animation clips in the DBA
-    // are time-reversed relative to their event-name semantic. For example,
-    // `wings_deploy` is observed to start at ~63° rotation and end at ~5°
-    // (near bind), which is the *retract* direction. The companion
-    // `wings_retract` is the inverse. The chrparams labelling and DBA
-    // direction disagree.
+    // The previous Phase 24B implementation called `correct_clip_direction`,
+    // which inferred "expected" temporal direction from substrings of the
+    // clip name (`deploy`/`open`/`extend` vs. `retract`/`close`/`compress`)
+    // and reversed keyframe time when the bind-distance heuristic disagreed.
+    // That logic was both name-based (a forbidden hard-coding pattern in
+    // this codebase) and based on a wrong assumption — that the bind pose
+    // is always the "closed/retracted" state. For Scorpius wings the bind
+    // pose is the *deployed* state, so the heuristic reversed `wings_deploy`
+    // into a clip that ends in the retracted state, breaking snap-to-state.
     //
-    // We reverse keyframe time within a clip when the name keyword and the
-    // observed orientation disagree:
-    //   - `deploy`/`open`/`extend`  → expected end_frame_far_from_bind
-    //   - `retract`/`close`/`compress` → expected start_frame_far_from_bind
+    // Direction is now resolved on the addon side using authoritative
+    // Mannequin fragment metadata (`speed`, `frag_tags`) and per-channel
+    // cyclic detection. The exporter emits the clip with its authored
+    // keyframe order; whichever fragment references it provides the
+    // semantic mapping (Deploy/Retract/Open/Close, forward or `speed=-1`).
     //
-    // Only applied when there is a clear bind-distance asymmetry between
-    // first and last frames (>2x ratio AND at least one frame >5° rotation
-    // or >0.05m position).
-    for clip in named_clips.iter_mut() {
-        correct_clip_direction(clip);
-    }
+    // See `package_ops._fragment_endpoint_policy` and
+    // `_apply_best_channel_transform` for the consuming logic.
 
     named_clips
 }
@@ -1601,135 +1934,6 @@ pub fn caf_anchored_remap_decisions(
     }
 
     decisions
-}
-/// Returns the magnitude of "distance from bind" for a single keyframe entry.
-/// Bind = identity rotation (w=1, xyz=0) and zero position. Returns the
-/// rotation angle in radians plus position magnitude in meters.
-fn keyframe_bind_distance(
-    rot: Option<&[f32; 4]>,
-    pos: Option<&[f32; 3]>,
-) -> f64 {
-    let mut d = 0.0f64;
-    if let Some(q) = rot {
-        // Quaternion stored as CryEngine XYZW in the channel keyframe;
-        // the W component is at index 3.
-        let w = q[3].clamp(-1.0, 1.0) as f64;
-        d += 2.0 * w.abs().clamp(0.0, 1.0).acos();
-    }
-    if let Some(p) = pos {
-        let dx = p[0] as f64;
-        let dy = p[1] as f64;
-        let dz = p[2] as f64;
-        d += (dx * dx + dy * dy + dz * dz).sqrt();
-    }
-    d
-}
-
-fn correct_clip_direction(clip: &mut AnimationClip) {
-    // Determine expected direction from clip name.
-    let name_lower = clip.name.to_ascii_lowercase();
-    // "extend" matches before "retract" via substring; we check explicitly.
-    let expects_end_far = name_lower.contains("deploy")
-        || name_lower.contains("open")
-        || name_lower.contains("extend");
-    let expects_start_far = name_lower.contains("retract")
-        || name_lower.contains("close")
-        || name_lower.contains("compress");
-
-    if !(expects_end_far || expects_start_far) {
-        return; // No directional keyword.
-    }
-    // Per-channel SIGNED contribution: (last_bind_dist - first_bind_dist).
-    // Sum across channels gives the net direction. Position channels often
-    // store static offsets, so rotation is preferred; we fall back to
-    // position deltas when rotation has no signal.
-    let mut signed_total = 0.0f64;
-    let mut total_motion = 0.0f64;
-    for ch in &clip.channels {
-        let r0 = ch.rotations.first().map(|k| &k.value);
-        let r_n = ch.rotations.last().map(|k| &k.value);
-        if r0.is_none() || r_n.is_none() {
-            continue;
-        }
-        let d0 = keyframe_bind_distance(r0, None);
-        let d_n = keyframe_bind_distance(r_n, None);
-        signed_total += d_n - d0;
-        total_motion += (d_n - d0).abs();
-    }
-
-    if total_motion < 0.087 {
-        for ch in &clip.channels {
-            if ch.positions.len() < 2 {
-                continue;
-            }
-            let p0 = ch.positions.first().unwrap().value;
-            let p_n = ch.positions.last().unwrap().value;
-            let m0 = (p0[0].powi(2) + p0[1].powi(2) + p0[2].powi(2)).sqrt() as f64;
-            let m_n = (p_n[0].powi(2) + p_n[1].powi(2) + p_n[2].powi(2)).sqrt() as f64;
-            let delta = ((p_n[0] - p0[0]).powi(2)
-                + (p_n[1] - p0[1]).powi(2)
-                + (p_n[2] - p0[2]).powi(2))
-            .sqrt() as f64;
-            if delta > 0.01 {
-                signed_total += m_n - m0;
-                total_motion += delta;
-            }
-        }
-    }
-
-    if total_motion < 0.087 {
-        return; // Not enough motion to determine direction.
-    }
-
-    let directional_strength = signed_total.abs() / total_motion;
-    log::info!(
-        "[anim] direction-check '{}' signed={:.3} motion={:.3} strength={:.2}",
-        clip.name, signed_total, total_motion, directional_strength
-    );
-    if directional_strength < 0.30 {
-        return;
-    }
-
-    let actual_end_far = signed_total > 0.0;
-    let needs_reverse = if expects_end_far {
-        !actual_end_far
-    } else {
-        actual_end_far
-    };
-
-    if !needs_reverse {
-        return;
-    }
-
-    // Reverse keyframe time. We mirror times around the clip's max_time so
-    // the duration is preserved and frame 0 stays frame 0.
-    let mut max_time = 0.0f32;
-    for ch in &clip.channels {
-        for k in &ch.rotations {
-            max_time = max_time.max(k.time);
-        }
-        for k in &ch.positions {
-            max_time = max_time.max(k.time);
-        }
-    }
-
-    log::info!(
-        "[anim] reversing direction of clip '{}' signed={:.3} expects_end_far={}",
-        clip.name,
-        signed_total,
-        expects_end_far
-    );
-
-    for ch in clip.channels.iter_mut() {
-        for k in ch.rotations.iter_mut() {
-            k.time = max_time - k.time;
-        }
-        ch.rotations.reverse();
-        for k in ch.positions.iter_mut() {
-            k.time = max_time - k.time;
-        }
-        ch.positions.reverse();
-    }
 }
 
 pub fn extract_animations_for_skeleton_json(
@@ -1945,6 +2149,30 @@ mod bake_tests {
         assert_eq!(kf[0].as_f64().unwrap(), 1.0, "Blender X must be cry_x");
         assert_eq!(kf[1].as_f64().unwrap(), -3.0, "Blender Y must be -cry_z");
         assert_eq!(kf[2].as_f64().unwrap(), 2.0, "Blender Z must be cry_y");
+        let pos_times = entry["position_time"].as_array().unwrap();
+        assert_eq!(pos_times[0].as_f64().unwrap(), 0.0, "Position key time must survive JSON export");
+    }
+
+    #[test]
+    fn clip_to_json_preserves_rotation_times() {
+        let clip = AnimationClip {
+            name: "timed_clip".to_string(),
+            fps: 30.0,
+            channels: vec![BoneChannel {
+                bone_hash: 0xDEADBEEF,
+                rotations: vec![Keyframe {
+                    time: 12.5,
+                    value: [0.0, 0.0, 0.0, 1.0],
+                }],
+                positions: vec![],
+            }],
+        };
+
+        let json = clip_to_json(&clip);
+        let bones = json["bones"].as_object().unwrap();
+        let entry = bones.values().next().unwrap();
+        let rotation_times = entry["rotation_time"].as_array().unwrap();
+        assert_eq!(rotation_times[0].as_f64().unwrap(), 12.5);
     }
 
     #[test]
@@ -1962,6 +2190,49 @@ mod bake_tests {
         assert_eq!(blender[1], 1.0, "Blender X axis = cry_x axis");
         assert_eq!(blender[2], -3.0, "Blender Y axis = -cry_z axis");
         assert_eq!(blender[3], 2.0, "Blender Z axis = cry_y axis");
+    }
+
+    #[test]
+    fn sanitize_clip_filename_replaces_unsafe_chars() {
+        assert_eq!(sanitize_clip_filename("landing_gear_extend"), "landing_gear_extend");
+        assert_eq!(sanitize_clip_filename("Animations/canopy.caf"), "Animations_canopy.caf");
+        assert_eq!(sanitize_clip_filename("foo bar/baz\\qux"), "foo_bar_baz_qux");
+        assert_eq!(sanitize_clip_filename(""), "clip");
+        assert_eq!(sanitize_clip_filename("   "), "clip");
+        assert_eq!(sanitize_clip_filename("clip-1.0_v2"), "clip-1.0_v2");
+    }
+
+    #[test]
+    fn split_clip_for_sidecar_extracts_bones_and_records_sidecar() {
+        let clip = AnimationClip {
+            name: "landing_gear_extend".to_string(),
+            fps: 30.0,
+            channels: vec![BoneChannel {
+                bone_hash: 0xCAFEBABE,
+                rotations: vec![Keyframe { time: 0.0, value: [0.0, 0.0, 0.0, 1.0] }],
+                positions: vec![Keyframe { time: 0.0, value: [1.0, 2.0, 3.0] }],
+            }],
+        };
+        let mut full = clip_to_json(&clip);
+        // Mimic fragment annotation by adding a fragments key.
+        full["fragments"] = serde_json::json!([{"tags": "Deploy"}]);
+
+        let sidecar_rel = "animations/landing_gear_extend.json";
+        let (index, body) = split_clip_for_sidecar(&full, sidecar_rel);
+
+        // Index keeps lightweight metadata + sidecar reference, drops bones.
+        assert_eq!(index["name"].as_str().unwrap(), "landing_gear_extend");
+        assert_eq!(index["fps"].as_u64().unwrap(), 30);
+        assert!(index["frame_count"].is_number());
+        assert_eq!(index["sidecar"].as_str().unwrap(), sidecar_rel);
+        assert_eq!(index["fragments"], serde_json::json!([{"tags": "Deploy"}]));
+        assert!(index.get("bones").is_none(), "Index must not carry bones");
+
+        // Body is the full clip, including bones.
+        assert_eq!(body["name"].as_str().unwrap(), "landing_gear_extend");
+        assert!(body.get("bones").is_some(), "Sidecar body must carry bones");
+        let bones = body["bones"].as_object().unwrap();
+        assert_eq!(bones.len(), 1);
     }
 }
 

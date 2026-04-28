@@ -638,6 +638,7 @@ pub fn assemble_glb_with_loadout_with_progress(
         root_bones,
         root_skeleton_source_path,
     ) = export_entity_payload(db, p4k, record, &payload_opts)?;
+    let root_animation_controller = query_animation_controller_source(db, record);
     if let Some(palette) = root_palette.as_mut() {
         populate_palette_display_name(palette, &paint_display_names);
     }
@@ -720,6 +721,8 @@ pub fn assemble_glb_with_loadout_with_progress(
                         no_rotation: false,
                         offset_position: [0.0; 3],
                         offset_rotation: [0.0; 3],
+                        detach_direction: [0.0; 3],
+                        port_flags: String::new(),
                     });
                     log::info!("  landing gear '{gear_path}' → '{bone_name}', {verts} verts");
                 }
@@ -882,6 +885,7 @@ pub fn assemble_glb_with_loadout_with_progress(
                 available_palettes,
                 root_bones,
                 root_skeleton_source_path,
+                root_animation_controller,
                 children: child_payloads,
                 interiors: loaded_interiors,
                 paint_variants,
@@ -1239,6 +1243,8 @@ fn load_child_payloads(
                     no_rotation: spec.no_rotation,
                     offset_position: child.offset_position,
                     offset_rotation: child.offset_rotation,
+                    detach_direction: child.detach_direction,
+                    port_flags: child.port_flags.clone(),
                 })
             } else if child.nmc.is_some() {
                 Some(crate::types::EntityPayload {
@@ -1257,6 +1263,8 @@ fn load_child_payloads(
                     no_rotation: spec.no_rotation,
                     offset_position: child.offset_position,
                     offset_rotation: child.offset_rotation,
+                    detach_direction: child.detach_direction,
+                    port_flags: child.port_flags.clone(),
                 })
             } else {
                 None
@@ -1401,6 +1409,8 @@ pub fn resolve_loadout_meshes(
                         no_rotation: false,
                         offset_position: [0.0; 3],
                         offset_rotation: [0.0; 3],
+                        detach_direction: [0.0; 3],
+                        port_flags: String::new(),
                         nmc: None,
                         bones: Vec::new(),
                         has_geometry: wheel_has_geom,
@@ -1422,6 +1432,8 @@ pub fn resolve_loadout_meshes(
                 no_rotation: false,
                 offset_position: [0.0; 3],
                 offset_rotation: [0.0; 3],
+                detach_direction: [0.0; 3],
+                port_flags: String::new(),
                 nmc: None,
                 bones: Vec::new(),
                 has_geometry: part_has_geom,
@@ -1443,6 +1455,8 @@ pub fn resolve_loadout_meshes(
         no_rotation: false,
         offset_position: [0.0; 3],
         offset_rotation: [0.0; 3],
+        detach_direction: [0.0; 3],
+        port_flags: String::new(),
         nmc,
         bones,
         has_geometry,
@@ -1489,6 +1503,8 @@ fn resolve_children(
                     no_rotation: node.no_rotation,
                     offset_position: node.offset_position,
                     offset_rotation: node.offset_rotation,
+                    detach_direction: node.detach_direction,
+                    port_flags: node.port_flags.clone(),
                     nmc: None,
                     bones: Vec::new(),
                     has_geometry: false,
@@ -1510,6 +1526,8 @@ fn resolve_children(
                     no_rotation: node.no_rotation,
                     offset_position: node.offset_position,
                     offset_rotation: node.offset_rotation,
+                    detach_direction: node.detach_direction,
+                    port_flags: node.port_flags.clone(),
                     nmc: None,
                     bones: Vec::new(),
                     has_geometry: false,
@@ -1529,6 +1547,8 @@ fn resolve_children(
                     no_rotation: node.no_rotation,
                     offset_position: node.offset_position,
                     offset_rotation: node.offset_rotation,
+                    detach_direction: node.detach_direction,
+                    port_flags: node.port_flags.clone(),
                     nmc: None,
                     bones: Vec::new(),
                     has_geometry: false,
@@ -1572,6 +1592,8 @@ fn resolve_children(
                 no_rotation: node.no_rotation,
                 offset_position: node.offset_position,
                 offset_rotation: node.offset_rotation,
+                detach_direction: node.detach_direction,
+                port_flags: node.port_flags.clone(),
                 nmc,
                 bones: Vec::new(),
                 has_geometry,
@@ -4050,6 +4072,22 @@ fn get_value_string<'a>(val: &starbreaker_datacore::query::value::Value<'a>, nam
     None
 }
 
+fn query_animation_controller_source(
+    db: &Database,
+    record: &Record,
+) -> Option<crate::animation::AnimationControllerSource> {
+    let compiled = db
+        .compile_path::<Value>(record.struct_id(), "Components[SAnimationControllerParams]")
+        .ok()?;
+    let component = db.query_single::<Value>(&compiled, record).ok().flatten()?;
+    let animation_database = get_value_string(&component, "AnimationDatabase")?.to_string();
+    let animation_controller = get_value_string(&component, "AnimationController")?.to_string();
+    Some(crate::animation::AnimationControllerSource {
+        animation_database,
+        animation_controller,
+    })
+}
+
 /// Helper: get an array field from a DataCore Value.
 fn get_value_array<'v, 'a>(val: &'v starbreaker_datacore::query::value::Value<'a>, name: &str) -> Option<&'v Vec<starbreaker_datacore::query::value::Value<'a>>> {
     if let starbreaker_datacore::query::value::Value::Object { fields, .. } = val {
@@ -5584,6 +5622,8 @@ mod tests {
             no_rotation: false,
             offset_position: [0.0; 3],
             offset_rotation: [0.0; 3],
+            detach_direction: [0.0; 3],
+            port_flags: String::new(),
             nmc: with_nmc.then_some(crate::nmc::NodeMeshCombo {
                 nodes: Vec::new(),
                 material_indices: Vec::new(),
