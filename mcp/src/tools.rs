@@ -104,6 +104,18 @@ pub struct MtlSummaryRequest {
     pub path: String,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DbaDumpRequest {
+    #[schemars(description = "Path to a .dba or .caf file in P4k (case-insensitive, Data\\ prefix optional). May also be an absolute filesystem path.")]
+    pub path: String,
+    #[schemars(description = "Optional path to a .chr / .skin / .skinm skeleton used to resolve bone hashes to names. Same path resolution as 'path'.")]
+    pub skeleton: Option<String>,
+    #[schemars(description = "Filter clips by case-insensitive substring match on the clip metadata name.")]
+    pub filter: Option<String>,
+    #[schemars(description = "If true, include every keyframe per channel; otherwise only first/last samples are included. Default false.")]
+    pub all_keyframes: Option<bool>,
+}
+
 
 pub struct StarBreakerMcp {
     p4k_path: Option<std::path::PathBuf>,
@@ -198,6 +210,17 @@ impl StarBreakerMcp {
                     .and_then(|entry| self.p4k().read(entry).map_err(|e| format!("Error reading: {e}")))
             })
             .map_err(|e| format!("{e}"))
+    }
+
+    /// Read a file either from disk (if the path exists on disk) or
+    /// from P4k. Used by debug tools that may receive either an
+    /// extracted scratch file or a P4k-internal path.
+    fn read_p4k_or_disk(&self, path: &str) -> Result<Vec<u8>, String> {
+        let direct = std::path::Path::new(path);
+        if direct.is_file() {
+            return std::fs::read(direct).map_err(|e| format!("disk read failed: {e}"));
+        }
+        self.read_p4k_file(path)
     }
 
     /// Find any record by GUID or name substring.
@@ -777,6 +800,52 @@ impl StarBreakerMcp {
         }
 
         out
+    }
+
+    #[tool(description = "Inspect a CryEngine animation database (.dba) or compressed animation file (.caf). Returns structured JSON: clip metadata (name, fps, frame_count, channel_count) and per-channel bone hashes plus first/last keyframe samples. Provide a 'skeleton' path to resolve bone hashes to names. Replaces the legacy `starbreaker dba dump` CLI.")]
+    fn dba_dump(&self, Parameters(req): Parameters<DbaDumpRequest>) -> String {
+        let bytes = match self.read_p4k_or_disk(&req.path) {
+            Ok(b) => b,
+            Err(e) => return e,
+        };
+        let db = if req.path.to_ascii_lowercase().ends_with(".caf") {
+            match starbreaker_3d::animation::parse_caf(&bytes) {
+                Ok(db) => db,
+                Err(e) => return format!("parse_caf failed for {}: {e}", req.path),
+            }
+        } else {
+            match starbreaker_3d::animation::parse_dba(&bytes) {
+                Ok(db) => db,
+                Err(e) => return format!("parse_dba failed for {}: {e}", req.path),
+            }
+        };
+        let mut hash_to_name: std::collections::HashMap<u32, String> =
+            std::collections::HashMap::new();
+        if let Some(skel_path) = req.skeleton.as_ref() {
+            match self.read_p4k_or_disk(skel_path) {
+                Ok(sb) => {
+                    if let Some(bones) = starbreaker_3d::skeleton::parse_skeleton(&sb) {
+                        for bone in &bones {
+                            hash_to_name.insert(
+                                starbreaker_3d::animation::bone_name_hash(&bone.name),
+                                bone.name.clone(),
+                            );
+                        }
+                    }
+                }
+                Err(e) => return format!("Failed to read skeleton '{skel_path}': {e}"),
+            }
+        }
+        let value = starbreaker_3d::animation::dump_database_to_json(
+            &db,
+            &hash_to_name,
+            req.filter.as_deref(),
+            req.all_keyframes.unwrap_or(false),
+        );
+        match serde_json::to_string_pretty(&value) {
+            Ok(s) => s,
+            Err(e) => format!("serialize failed: {e}"),
+        }
     }
 
 }

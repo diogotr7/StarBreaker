@@ -1160,6 +1160,89 @@ pub fn database_to_animations_json(db: &AnimationDatabase) -> serde_json::Value 
     serde_json::Value::Array(db.clips.iter().map(clip_to_json).collect())
 }
 
+/// Structured dump of an animation database for diagnostic / debug
+/// tooling. Returns a JSON value with one entry per clip listing
+/// channel counts, frame counts, per-channel bone hashes (resolved to
+/// names when `hash_to_name` provides them), and either first/last
+/// keyframe samples or the full keyframe stream depending on
+/// `all_keyframes`.
+///
+/// Used by the StarBreaker MCP `dba_dump` tool. Replaces the previous
+/// `starbreaker dba dump` CLI subcommand (Phase 36).
+pub fn dump_database_to_json(
+    db: &AnimationDatabase,
+    hash_to_name: &std::collections::HashMap<u32, String>,
+    filter: Option<&str>,
+    all_keyframes: bool,
+) -> serde_json::Value {
+    let filter_lc = filter.map(|f| f.to_ascii_lowercase());
+    let mut clips_out: Vec<serde_json::Value> = Vec::new();
+    for (idx, clip) in db.clips.iter().enumerate() {
+        if let Some(needle) = filter_lc.as_ref() {
+            if !clip.name.to_ascii_lowercase().contains(needle) {
+                continue;
+            }
+        }
+        let frame_count = clip
+            .channels
+            .iter()
+            .map(|ch| ch.rotations.len().max(ch.positions.len()))
+            .max()
+            .unwrap_or(0);
+        let mut channels_out: Vec<serde_json::Value> = Vec::with_capacity(clip.channels.len());
+        for ch in &clip.channels {
+            let bone_name = hash_to_name.get(&ch.bone_hash).cloned();
+            let mut channel_value = serde_json::json!({
+                "bone_hash": format!("0x{:08X}", ch.bone_hash),
+                "bone_name": bone_name,
+                "rotation_count": ch.rotations.len(),
+                "position_count": ch.positions.len(),
+            });
+            if all_keyframes {
+                channel_value["rotations"] = serde_json::Value::Array(
+                    ch.rotations.iter().map(|kf| serde_json::json!({
+                        "time": kf.time,
+                        "value": kf.value,
+                    })).collect(),
+                );
+                channel_value["positions"] = serde_json::Value::Array(
+                    ch.positions.iter().map(|kf| serde_json::json!({
+                        "time": kf.time,
+                        "value": kf.value,
+                    })).collect(),
+                );
+            } else {
+                if let (Some(first), Some(last)) = (ch.rotations.first(), ch.rotations.last()) {
+                    channel_value["rotation_first"] =
+                        serde_json::json!({"time": first.time, "value": first.value});
+                    channel_value["rotation_last"] =
+                        serde_json::json!({"time": last.time, "value": last.value});
+                }
+                if let (Some(first), Some(last)) = (ch.positions.first(), ch.positions.last()) {
+                    channel_value["position_first"] =
+                        serde_json::json!({"time": first.time, "value": first.value});
+                    channel_value["position_last"] =
+                        serde_json::json!({"time": last.time, "value": last.value});
+                }
+            }
+            channels_out.push(channel_value);
+        }
+        clips_out.push(serde_json::json!({
+            "index": idx,
+            "name": clip.name,
+            "fps": clip.fps,
+            "channel_count": clip.channels.len(),
+            "frame_count": frame_count,
+            "channels": channels_out,
+        }));
+    }
+    serde_json::json!({
+        "clip_count": db.clips.len(),
+        "skeleton_bones_resolved": hash_to_name.len(),
+        "clips": clips_out,
+    })
+}
+
 /// Sanitize a clip name into a safe filename component.
 ///
 /// Replaces characters outside `[A-Za-z0-9_.-]` with `_`. Used by the

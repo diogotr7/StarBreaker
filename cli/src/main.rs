@@ -1,7 +1,6 @@
 mod chf;
 mod common;
 mod cryxml;
-mod dba;
 mod dcb;
 mod dds;
 mod entity;
@@ -138,11 +137,6 @@ enum Command {
         #[command(subcommand)]
         command: wwise::WwiseCommand,
     },
-    /// Animation database (DBA/CAF) inspection
-    Dba {
-        #[command(subcommand)]
-        command: dba::DbaCommand,
-    },
     /// NMC (Node Mesh Combo) chunk inspection from `.cga` / `.cgf` files
     Nmc {
         #[command(subcommand)]
@@ -179,7 +173,6 @@ fn main() {
         Command::Glb { command } => command.run(),
         Command::Chf { command } => command.run(),
         Command::Wwise { command } => command.run(),
-        Command::Dba { command } => command.run(),
         Command::Nmc { command } => command.run(),
     };
 
