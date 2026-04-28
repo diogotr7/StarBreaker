@@ -758,8 +758,20 @@ fn read_snorm_full_positions(
         .collect())
 }
 
-/// SNORM packed positions: 24-byte header + variable u16 per active channel.
-/// Inactive channels have `scale == FLT_MAX` and use `offset` directly.
+/// SNORM packed positions: 24-byte header (scale Vec3 + offset Vec3) followed
+/// by **planar (axis-major)** u16 streams — one contiguous `count × u16` array
+/// per active axis, in axis order (X, Y, Z, skipping inactive). Inactive
+/// channels (`scale == FLT_MAX`) use `offset` directly.
+///
+/// Layout for `active = [false, true, true]`, `count = 44`:
+///
+///     [Y0..Y43 as 88 bytes][Z0..Z43 as 88 bytes]
+///
+/// The earlier interleaved (key-major) decode happened to produce correct
+/// results for single-active-axis channels (where planar ≡ interleaved), but
+/// catastrophically misaligned multi-axis channels — see Phase 45 in
+/// `docs/StarBreaker/todo.md` for the Scorpius `wings_deploy` /
+/// `Wing_Grabber_Main_Bottom_Right` evidence.
 fn read_snorm_packed_positions(
     data: &[u8],
     offset: usize,
@@ -779,27 +791,36 @@ fn read_snorm_packed_positions(
         scale[1].abs() < FLT_MAX_SENTINEL,
         scale[2].abs() < FLT_MAX_SENTINEL,
     ];
-    let bytes_per_key: usize = active.iter().filter(|&&a| a).count() * 2;
+    let n_active = active.iter().filter(|&&a| a).count();
+    let total_bytes = count * n_active * 2;
     let data_start = offset + 24;
-    if bytes_per_key > 0 && data_start + count * bytes_per_key > data.len() {
+    if total_bytes > 0 && data_start + total_bytes > data.len() {
         return Err(Error::Other(format!(
             "SNORM packed positions overflow at 0x{offset:x}"
         )));
     }
 
+    // Per-axis planar offsets: axis `ch` starts at `data_start + axis_idx * count * 2`
+    // where `axis_idx` is the active-axis ordinal (0..n_active).
+    let mut axis_starts: [usize; 3] = [0; 3];
+    {
+        let mut next = data_start;
+        for ch in 0..3 {
+            if active[ch] {
+                axis_starts[ch] = next;
+                next += count * 2;
+            }
+        }
+    }
+
     Ok((0..count)
         .map(|i| {
-            let o = data_start + i * bytes_per_key;
             let mut pos = pos_offset;
-            let mut byte_offset = 0;
             for ch in 0..3 {
                 if active[ch] {
-                    let uv = u16::from_le_bytes([
-                        data[o + byte_offset],
-                        data[o + byte_offset + 1],
-                    ]);
+                    let o = axis_starts[ch] + i * 2;
+                    let uv = u16::from_le_bytes([data[o], data[o + 1]]);
                     pos[ch] = uv as f32 * scale[ch] + pos_offset[ch];
-                    byte_offset += 2;
                 }
             }
             pos
@@ -2612,6 +2633,91 @@ mod bake_tests {
                 .unwrap(),
             "override"
         );
+    }
+
+    /// Phase 45 regression: SNORM-packed (`0xC2`) position channels with two
+    /// active axes use **planar (axis-major)** layout, not interleaved
+    /// (key-major). The decoder previously produced correct results only for
+    /// single-active-axis channels (where planar ≡ interleaved); multi-axis
+    /// channels (e.g. `Wing_Grabber_Main_Bottom_Right` in Scorpius
+    /// `wings_deploy`) were catastrophically misaligned, causing
+    /// `BR[i] ≈ BL[2*i]` for the first 22 keys and a flatline thereafter.
+    /// See [`docs/StarBreaker/todo.md`] Phase 45 for the byte-level evidence.
+    #[test]
+    fn snorm_packed_two_active_axes_uses_planar_layout() {
+        // Synthesize a 4-key channel with X inactive (FLT_MAX), Y and Z
+        // active. Planar layout: [Y0,Y1,Y2,Y3 as 8 bytes][Z0,Z1,Z2,Z3 as 8
+        // bytes]. With Y u16s = [0, 1000, 2000, 3000] and Z u16s =
+        // [10000, 20000, 30000, 40000], scale_y=1.0, scale_z=0.001, the
+        // expected decoded last key is (offset_x, 3000.0+offset_y,
+        // 40.0+offset_z). If the old interleaved decode were used, the last
+        // key would consume bytes 24..28 (= Z stream bytes 0..4) and produce
+        // a totally different value pair.
+        let mut bytes = Vec::new();
+        // 24-byte header: scale Vec3 + offset Vec3
+        bytes.extend_from_slice(&f32::MAX.to_le_bytes()); // scale_x = FLT_MAX (inactive)
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());   // scale_y = 1.0
+        bytes.extend_from_slice(&0.001f32.to_le_bytes()); // scale_z = 0.001
+        bytes.extend_from_slice(&100.0f32.to_le_bytes()); // offset_x = 100
+        bytes.extend_from_slice(&200.0f32.to_le_bytes()); // offset_y = 200
+        bytes.extend_from_slice(&300.0f32.to_le_bytes()); // offset_z = 300
+        // Planar Y stream (4 keys × u16):
+        for v in [0u16, 1000, 2000, 3000] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        // Planar Z stream (4 keys × u16):
+        for v in [10000u16, 20000, 30000, 40000] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+
+        let positions = read_snorm_packed_positions(&bytes, 0, 4).expect("decode");
+        assert_eq!(positions.len(), 4);
+        // X is inactive — value is the offset directly.
+        for p in &positions {
+            assert_eq!(p[0], 100.0, "X must equal offset for inactive axis");
+        }
+        // Y values: u16 * 1.0 + 200
+        let expected_y = [200.0, 1200.0, 2200.0, 3200.0];
+        // Z values: u16 * 0.001 + 300
+        let expected_z = [310.0, 320.0, 330.0, 340.0];
+        for i in 0..4 {
+            assert!(
+                (positions[i][1] - expected_y[i]).abs() < 1e-3,
+                "Y[{i}] = {} (want {})",
+                positions[i][1],
+                expected_y[i]
+            );
+            assert!(
+                (positions[i][2] - expected_z[i]).abs() < 1e-3,
+                "Z[{i}] = {} (want {})",
+                positions[i][2],
+                expected_z[i]
+            );
+        }
+    }
+
+    /// Single-active-axis `0xC2` channels must continue to decode identically
+    /// to the pre-Phase-45 behaviour (planar ≡ interleaved when n_active=1).
+    #[test]
+    fn snorm_packed_single_active_axis_unchanged() {
+        let mut bytes = Vec::new();
+        // X and Z inactive, Y active.
+        bytes.extend_from_slice(&f32::MAX.to_le_bytes());
+        bytes.extend_from_slice(&2.0f32.to_le_bytes()); // scale_y = 2.0
+        bytes.extend_from_slice(&f32::MAX.to_le_bytes());
+        bytes.extend_from_slice(&(-5.0f32).to_le_bytes()); // offset_x = -5
+        bytes.extend_from_slice(&10.0f32.to_le_bytes());   // offset_y = 10
+        bytes.extend_from_slice(&7.0f32.to_le_bytes());    // offset_z = 7
+        for v in [0u16, 100, 200, 300] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let positions = read_snorm_packed_positions(&bytes, 0, 4).expect("decode");
+        let expected_y = [10.0, 210.0, 410.0, 610.0];
+        for i in 0..4 {
+            assert_eq!(positions[i][0], -5.0);
+            assert_eq!(positions[i][2], 7.0);
+            assert!((positions[i][1] - expected_y[i]).abs() < 1e-3);
+        }
     }
 }
 
