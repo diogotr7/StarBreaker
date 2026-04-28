@@ -30,7 +30,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import {
@@ -46,6 +45,7 @@ import {
   applySCBasisToObject,
   buildLight,
   buildMaterial,
+  clearMobiGlasMaterials,
   findSubmaterialIndexForGlbName,
   getMaterialMetrics,
   hologramMaterials,
@@ -56,6 +56,7 @@ import {
   resolveContractPath,
   setDebugFallbackMode,
   stripCryEngineZUp,
+  updateMobiGlasTime,
   type LightRecord,
   type MaterialBuildMetrics,
   type MaterialSidecar,
@@ -67,6 +68,12 @@ import {
   type SubmaterialRecord,
 } from "../lib/decomposed-loader";
 import { MaterialInspector, type PickHit } from "./material-inspector";
+import { FlightCamHud } from "./flight-cam-hud";
+import { useFlightCamera, type FlightCamHandle } from "../lib/flight-camera";
+import {
+  captureScreenshot,
+  formatScreenshotFilename,
+} from "../lib/screenshot";
 
 /**
  * Live diagnostic overrides applied to the scene after construction.
@@ -140,6 +147,11 @@ interface Props {
   onPaints?: (variants: PaintVariant[]) => void;
   /** Display under the toolbar, optional. */
   onStatus?: (text: string) => void;
+  /** Fired when the flight camera handle is ready (and again with
+   *  null on unmount). The parent uses this to render the projection-
+   *  mode picker inside its top-right toolbar instead of letting it
+   *  collide with the toolbar's own controls. */
+  onFlightCamReady?: (handle: FlightCamHandle | null) => void;
 }
 
 /** Per-mesh binding so we can rebuild materials in place when the
@@ -195,18 +207,28 @@ export function SceneViewer({
   diagnostics = DEFAULT_DIAGNOSTIC_SETTINGS,
   onPaints,
   onStatus,
+  onFlightCamReady,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stateRef = useRef<{
     renderer: THREE.WebGLRenderer;
     scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
-    controls: OrbitControls;
     sceneRoot: THREE.Group;
     groundMesh: THREE.Mesh;
     gridHelper: THREE.GridHelper;
     animId: number;
   } | null>(null);
+
+  // Flight-camera wiring. The hook reads these refs once its effect runs
+  // (which is after the bootstrap effect below populates them, since
+  // effects fire top-down inside one component). Until then the handle
+  // is null; the HUD and the reset-on-load effect short-circuit cleanly
+  // on null.
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  const flightCamRef = useRef<FlightCamHandle | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -323,13 +345,14 @@ export function SceneViewer({
       100000,
     );
     camera.position.set(60, 30, 60);
-
-    const controls = new OrbitControls(camera, renderer.domElement);
-    // Damping is off: it caused post-release momentum (rotate/pan kept moving
-    // after mouseup) and forced the render loop to keep producing frames while
-    // the velocity decayed. Render-on-demand for the always-on animate loop is
-    // a separate follow-up (the loop at `animate()` still ticks every frame).
-    controls.enableDamping = false;
+    // Publish the bootstrapped objects so `useFlightCamera` (which runs its
+    // effect after this one) can attach. The hook owns the per-frame input
+    // loop that previously belonged to OrbitControls; the render loop below
+    // just calls `renderer.render(scene, camera)` and trusts the hook to
+    // keep the camera transform current.
+    rendererRef.current = renderer;
+    cameraRef.current = camera;
+    sceneRef.current = scene;
 
     // Fallback lighting so the model is visible even before scene lights
     // load. The IBL below provides most of the ambient/diffuse fill via
@@ -423,7 +446,7 @@ export function SceneViewer({
     // Perf instrumentation. Logged every 2s; grep `[perf]` in the console.
     // Strip when render-on-demand lands.
     const PERF_LOG_INTERVAL_MS = 2000;
-    const perfWindow: { frameMs: number; renderMs: number; controlsMs: number }[] = [];
+    const perfWindow: { frameMs: number; renderMs: number }[] = [];
     let lastFrameTs = performance.now();
     let lastLogTs = lastFrameTs;
     // Renderer GPU info: use UNMASKED_VENDOR/RENDERER via WEBGL_debug_renderer_info
@@ -441,10 +464,6 @@ export function SceneViewer({
       const frameMs = frameStart - lastFrameTs;
       lastFrameTs = frameStart;
 
-      const ctrlStart = performance.now();
-      controls.update();
-      const ctrlEnd = performance.now();
-
       // Tick hologram materials' `time` uniform so the scanline /
       // shimmer animation runs. The `hologramMaterials` array is
       // populated by `buildHologramMaterial` per package load; we
@@ -454,24 +473,32 @@ export function SceneViewer({
         const u = hologramMaterials[i].uniforms.time;
         if (u) u.value = elapsedSec;
       }
+      // Same lifecycle for MobiGlas-style materials, which use a
+      // separate Set registry rather than the array used by holograms.
+      updateMobiGlasTime(elapsedSec);
 
-      renderer.render(scene, camera);
+      const renderStart = performance.now();
+      // Render with whichever camera the flight cam currently exposes
+      // (perspective, orthographic, or oblique). Until the flight-cam
+      // hook attaches on the next effect pass, `flightCamRef.current`
+      // is null and we fall back to the perspective camera so the very
+      // first frame still renders.
+      const activeCam = flightCamRef.current?.getActiveCamera() ?? camera;
+      renderer.render(scene, activeCam);
       const renderEnd = performance.now();
 
       perfWindow.push({
         frameMs,
-        renderMs: renderEnd - ctrlEnd,
-        controlsMs: ctrlEnd - ctrlStart,
+        renderMs: renderEnd - renderStart,
       });
 
       if (renderEnd - lastLogTs >= PERF_LOG_INTERVAL_MS) {
         const n = perfWindow.length;
         if (n > 0) {
-          let sumFrame = 0, sumRender = 0, sumControls = 0, maxRender = 0;
+          let sumFrame = 0, sumRender = 0, maxRender = 0;
           for (const s of perfWindow) {
             sumFrame += s.frameMs;
             sumRender += s.renderMs;
-            sumControls += s.controlsMs;
             if (s.renderMs > maxRender) maxRender = s.renderMs;
           }
           const avgFrame = sumFrame / n;
@@ -482,7 +509,6 @@ export function SceneViewer({
           console.log(
             `[perf] fps=${fps.toFixed(1)} frame_avg=${avgFrame.toFixed(2)}ms ` +
               `render_avg=${(sumRender / n).toFixed(2)}ms render_max=${maxRender.toFixed(2)}ms ` +
-              `controls_avg=${(sumControls / n).toFixed(3)}ms ` +
               `draw_calls=${info.render.calls} tris=${info.render.triangles} ` +
               `textures=${info.memory.textures} geometries=${info.memory.geometries} ` +
               `programs=${info.programs?.length ?? 0}${heap} samples=${n}`,
@@ -498,7 +524,6 @@ export function SceneViewer({
       renderer,
       scene,
       camera,
-      controls,
       sceneRoot,
       groundMesh: ground,
       gridHelper: grid,
@@ -543,7 +568,17 @@ export function SceneViewer({
       const rect = renderer.domElement.getBoundingClientRect();
       ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       ndc.y = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
-      raycaster.setFromCamera(ndc, camera);
+      // Read the active camera per-pick so raycasting tracks projection
+      // mode without coupling the flight cam to the picker. THREE's
+      // Raycaster.setFromCamera handles PerspectiveCamera and the
+      // built-in OrthographicCamera natively. The oblique mode
+      // post-multiplies a custom shear onto the ortho's
+      // projectionMatrix; setFromCamera builds rays from
+      // projectionMatrixInverse, which the hook keeps in sync, so the
+      // ray direction reflects the sheared view. Picker accuracy in
+      // oblique mode has not been visually validated yet.
+      const pickCam = flightCamRef.current?.getActiveCamera() ?? camera;
+      raycaster.setFromCamera(ndc, pickCam);
       // Intersect against the scene root (the model). Skip the ground
       // mesh — its hits are noise for material inspection. recursive
       // = true walks the whole subtree.
@@ -580,10 +615,10 @@ export function SceneViewer({
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       renderer.domElement.removeEventListener("pointerup", onPointerUp);
       cancelAnimationFrame(animId);
-      controls.dispose();
       // Release the IBL render target and the ground mesh's geometry /
       // material; created once at init so they live as long as the
-      // renderer does.
+      // renderer does. The flight-cam hook owns its own dispose path
+      // (its effect cleanup runs alongside this one).
       pmremGenerator.dispose();
       envTexture.dispose();
       groundGeometry.dispose();
@@ -592,9 +627,73 @@ export function SceneViewer({
       if (renderer.domElement.parentElement === container) {
         container.removeChild(renderer.domElement);
       }
+      rendererRef.current = null;
+      cameraRef.current = null;
+      sceneRef.current = null;
       stateRef.current = null;
     };
   }, []);
+
+  // Attach the flight camera. Runs after the bootstrap effect populated
+  // the renderer/camera/scene refs above, on the same mount pass. Stays
+  // null on the first render (refs are still null), then resolves to a
+  // stable handle once the hook's effect has installed listeners.
+  const flightCam = useFlightCamera({ rendererRef, cameraRef, sceneRef });
+  useEffect(() => {
+    flightCamRef.current = flightCam;
+  }, [flightCam]);
+
+  // Hand the flight-cam handle up to the parent so it can host the
+  // projection-mode picker in its top-right toolbar (the in-canvas
+  // standalone slot collided with the Livery + Style + Settings strip).
+  useEffect(() => {
+    onFlightCamReady?.(flightCam);
+    return () => {
+      onFlightCamReady?.(null);
+    };
+  }, [flightCam, onFlightCamReady]);
+
+  // F9 captures a high-resolution screenshot through the active camera.
+  // Listener lives on `window` so capture works regardless of which
+  // child element holds focus, except for typing targets where F9 is
+  // suppressed to avoid surprise captures while a text field is active.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.code !== "F9") return;
+      const ae = document.activeElement;
+      const tag = ae?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      e.preventDefault();
+      const scene = sceneRef.current;
+      const baseRenderer = rendererRef.current;
+      const camera =
+        flightCamRef.current?.getActiveCamera() ?? cameraRef.current;
+      if (!scene || !baseRenderer || !camera) return;
+      const projectionMode = flightCamRef.current?.getState().projectionMode;
+      const filename = formatScreenshotFilename(
+        packageInfo.package_name ?? null,
+        new Date(),
+      );
+      captureScreenshot({
+        scene,
+        camera,
+        baseRenderer,
+        filename,
+        projectionMode,
+        onProgress: (phase, info) => {
+          console.info(
+            `[screenshot] phase=${phase}${info ? ` ${info}` : ""}`,
+          );
+        },
+      }).catch((err) => {
+        console.error("[screenshot] handler caught:", err);
+      });
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [packageInfo.package_name]);
 
   // Rebuild exterior bindings against either the variant's substitute
   // sidecar (`palette_id !== null && variant.exterior_material_sidecar`)
@@ -821,6 +920,7 @@ export function SceneViewer({
         // resources. The new package will repopulate as its hologram
         // materials are built.
         hologramMaterials.length = 0;
+        clearMobiGlasMaterials();
         const textureCache = textureCacheRef.current;
         activeStyleRef.current = renderStyle;
 
@@ -1370,7 +1470,7 @@ export function SceneViewer({
             if (!framedOnce) {
               framedOnce = true;
               state.sceneRoot.updateMatrixWorld(true);
-              fitCamera(state.camera, state.controls, state.sceneRoot);
+              flightCamRef.current?.resetToScene(state.sceneRoot);
             }
 
             // Sidecar + textures run in parallel with the next mesh.
@@ -1437,7 +1537,7 @@ export function SceneViewer({
         // the initial bounds.
         state.sceneRoot.updateMatrixWorld(true);
         if (!framedOnce) {
-          fitCamera(state.camera, state.controls, state.sceneRoot);
+          flightCamRef.current?.resetToScene(state.sceneRoot);
         }
 
         // Emit a single summary line with all phase deltas so the bottleneck
@@ -1850,6 +1950,7 @@ export function SceneViewer({
           </p>
         </div>
       )}
+      <FlightCamHud handle={flightCam} />
       <MaterialInspector
         hits={pickHits}
         selectedHitIndex={selectedHitIndex}
@@ -2011,27 +2112,6 @@ function clearObject(obj: THREE.Object3D): void {
     });
     obj.remove(child);
   }
-}
-
-function fitCamera(
-  camera: THREE.PerspectiveCamera,
-  controls: OrbitControls,
-  object: THREE.Object3D,
-): void {
-  const box = new THREE.Box3().setFromObject(object);
-  if (box.isEmpty()) return;
-  const center = box.getCenter(new THREE.Vector3());
-  const size = box.getSize(new THREE.Vector3()).length();
-  if (size <= 0 || !Number.isFinite(size)) return;
-  controls.target.copy(center);
-  const fov = camera.fov * (Math.PI / 180);
-  const distance = (size / (2 * Math.tan(fov / 2))) * 1.4;
-  const direction = new THREE.Vector3(1, 0.6, 1).normalize();
-  camera.position.copy(center.clone().add(direction.multiplyScalar(distance)));
-  camera.near = Math.max(size / 1000, 0.05);
-  camera.far = size * 100;
-  camera.updateProjectionMatrix();
-  controls.update();
 }
 
 function guessMime(path: string): string {

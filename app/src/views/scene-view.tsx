@@ -53,6 +53,8 @@ import {
   type SceneExportOpts,
 } from "../lib/commands";
 import { SceneViewer, DEFAULT_DIAGNOSTIC_SETTINGS } from "../components/scene-viewer";
+import { ProjectionModePicker } from "../components/projection-mode-picker";
+import type { FlightCamHandle } from "../lib/flight-camera";
 import {
   RENDER_STYLES,
   type PaintVariant,
@@ -500,6 +502,13 @@ export function SceneView() {
   // exporter's stable identifier; null means "default (as-baked)".
   const [paintVariants, setPaintVariants] = useState<PaintVariant[]>([]);
   const [livery, setLivery] = useState<string | null>(null);
+
+  // Flight-camera handle the SceneViewer publishes upward so we can
+  // host the projection-mode picker in the top-right toolbar instead
+  // of having it free-float inside the canvas (where it collided with
+  // the Livery + Style + Settings strip).
+  const [flightCamHandle, setFlightCamHandle] =
+    useState<FlightCamHandle | null>(null);
 
   // User-tunable viewer settings (collapsible panel in the bottom-right
   // of the viewer pane). New settings extend `ViewerSettings`; the panel
@@ -1153,6 +1162,7 @@ export function SceneView() {
                   Settings is inline here so it sits immediately right of
                   Style and the dropdown grows downward from the button. */}
               <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
+                <ProjectionModePicker handle={flightCamHandle} embedded />
                 {paintVariants.length > 0 && (
                   <label className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-bg-alt/90 border border-border text-xs text-text-sub shadow">
                     <span className="text-text-faint">Livery</span>
@@ -1209,6 +1219,7 @@ export function SceneView() {
                 livery={livery}
                 onPaints={setPaintVariants}
                 onStatus={setStatus}
+                onFlightCamReady={setFlightCamHandle}
               />
             </>
           )}

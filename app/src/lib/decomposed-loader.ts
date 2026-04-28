@@ -627,7 +627,8 @@ export type RenderStyle =
   | "opaque"
   | "metallic"
   | "glass"
-  | "holographic";
+  | "holographic"
+  | "mobiglas";
 
 export const RENDER_STYLES: { value: RenderStyle; label: string }[] = [
   { value: "textured", label: "Textured" },
@@ -635,6 +636,7 @@ export const RENDER_STYLES: { value: RenderStyle; label: string }[] = [
   { value: "metallic", label: "Metallic" },
   { value: "glass", label: "Glass" },
   { value: "holographic", label: "Holographic" },
+  { value: "mobiglas", label: "MobiGlas" },
 ];
 
 /** Stable cache key for a (submaterial, style) pair. Two instances of the
@@ -1527,8 +1529,17 @@ export function buildMaterial(
   // submaterials so a Mustang in Metallic style still reads as the painted
   // hull colour rather than reverting to the diagnostic grey.
   if (style !== "textured") {
+    const styledMaterial = buildStyledMaterial(name, family, style, submaterial);
+    // MobiGlas returns a ShaderMaterial with a `baseColor` Vector3 uniform.
+    // Wire it into the same DBG-toggle path holograms use so the diagnostic
+    // override functions consistently across all hologram-style materials.
+    if (style === "mobiglas") {
+      styledMaterial.userData.fallbackKind = FALLBACK_KINDS.HOLOGRAM_STUB;
+      tagOriginalColor(styledMaterial);
+      applyDebugFallbackToMaterial(styledMaterial);
+    }
     return {
-      material: buildStyledMaterial(name, family, style, submaterial),
+      material: styledMaterial,
       texturePromises: [],
     };
   }
@@ -1732,6 +1743,137 @@ function buildHologramMaterial(
   return { material, texturePromises: [] };
 }
 
+// ────────────────────────────────────────────────────────────
+// MobiGlas render style
+// ────────────────────────────────────────────────────────────
+
+/** Vertex stage for the MobiGlas style: emits view-space normal and
+ *  view direction so the fragment stage can compute Fresnel. The
+ *  instancing branch keeps it valid when the loader stamps geometry
+ *  with InstancedMesh; the non-instancing branch is the common path. */
+const MOBIGLAS_VERTEX_SHADER = /* glsl */ `
+  varying vec3 vNormal;
+  varying vec3 vViewDir;
+  void main() {
+    #ifdef USE_INSTANCING
+      vec4 mvPos = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+      vNormal = normalize(normalMatrix * mat3(instanceMatrix) * normal);
+    #else
+      vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+      vNormal = normalize(normalMatrix * normal);
+    #endif
+    vViewDir = normalize(-mvPos.xyz);
+    gl_Position = projectionMatrix * mvPos;
+  }
+`;
+
+/** Fragment stage for the MobiGlas style: rim brightening from Fresnel
+ *  combined with a screen-space scanline pattern and a gentle time-driven
+ *  shimmer. Output uses additive blending so the surface reads as
+ *  emissive holographic glass rather than as a lit material. */
+const MOBIGLAS_FRAGMENT_SHADER = /* glsl */ `
+  uniform float time;
+  uniform vec3 baseColor;
+  varying vec3 vNormal;
+  varying vec3 vViewDir;
+  void main() {
+    float fresnel = pow(1.0 - abs(dot(vNormal, vViewDir)), 2.5);
+    float scanline = 0.85 + 0.15 * sin(gl_FragCoord.y * 2.0);
+    float shimmer = 0.95 + 0.05 * sin(time * 3.0 + gl_FragCoord.x * 0.1);
+    vec3 color = baseColor * (0.15 + fresnel * 0.6) * scanline * shimmer;
+    float alpha = (0.08 + fresnel * 0.5) * scanline;
+    gl_FragColor = vec4(color, alpha);
+  }
+`;
+
+/** Result of biasing an arbitrary input colour toward the MobiGlas
+ *  cyan-blue palette. Pure function so the render-style colour math is
+ *  testable without instantiating a Three.js material. The input is an
+ *  RGB hex; the output is a triplet in the 0..1 range. */
+export function blendTowardCyan(inputColorHex: number): {
+  r: number;
+  g: number;
+  b: number;
+} {
+  const input = new THREE.Color(inputColorHex);
+  const hsl = { h: 0, s: 0, l: 0 };
+  input.getHSL(hsl);
+  const TARGET_HUE = 0.52;
+  const HUE_BLEND = 0.15;
+  const TARGET_SATURATION = 0.7;
+  const TARGET_LIGHTNESS = 0.55;
+  // Hue interpolation is on the linear hue line (no shortest-path wrap).
+  // The source uses the same form; matching it keeps the visual identical.
+  const blendedHue = TARGET_HUE + (hsl.h - TARGET_HUE) * HUE_BLEND;
+  const out = new THREE.Color().setHSL(
+    blendedHue,
+    TARGET_SATURATION,
+    TARGET_LIGHTNESS,
+  );
+  return { r: out.r, g: out.g, b: out.b };
+}
+
+/** Live MobiGlas materials whose `time` uniform must be advanced once
+ *  per animation frame. Materials register themselves on construction
+ *  and the scene-viewer's animate loop calls `updateMobiGlasTime` with
+ *  the elapsed-seconds value. The set is cleared per scene load so
+ *  orphaned materials from prior packages don't accumulate. */
+const mobiGlasMaterials: Set<THREE.ShaderMaterial> = new Set();
+
+/** Advance the `time` uniform on every registered MobiGlas material.
+ *  Called once per frame from the scene-viewer animate loop. */
+export function updateMobiGlasTime(elapsedSec: number): void {
+  for (const mat of mobiGlasMaterials) {
+    const u = mat.uniforms.time;
+    if (u) u.value = elapsedSec;
+  }
+}
+
+/** Drop every registered MobiGlas material. Called when the scene is
+ *  rebuilt so the per-frame tick doesn't touch ShaderMaterials whose
+ *  underlying GPU resources have been disposed. */
+export function clearMobiGlasMaterials(): void {
+  mobiGlasMaterials.clear();
+}
+
+/** True when a material is currently in the live MobiGlas set. Exists
+ *  for tests; production code should use the lifecycle helpers. */
+export function isMobiGlasMaterialRegistered(
+  material: THREE.ShaderMaterial,
+): boolean {
+  return mobiGlasMaterials.has(material);
+}
+
+/** Construct a MobiGlas ShaderMaterial. The input colour is biased
+ *  toward cyan-blue so a wide variety of starting tints all read as
+ *  the same holographic family. Returns the material plus a deregister
+ *  callback the caller may invoke when the material is being disposed
+ *  outside the standard scene-load lifecycle. */
+export function makeMobiGlasMaterial(inputColorHex: number): {
+  material: THREE.ShaderMaterial;
+  unregister: () => void;
+} {
+  const blended = blendTowardCyan(inputColorHex);
+  const baseColorVec = new THREE.Vector3(blended.r, blended.g, blended.b);
+  const material = new THREE.ShaderMaterial({
+    uniforms: {
+      time: { value: 0.0 },
+      baseColor: { value: baseColorVec },
+    },
+    vertexShader: MOBIGLAS_VERTEX_SHADER,
+    fragmentShader: MOBIGLAS_FRAGMENT_SHADER,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+  mobiGlasMaterials.add(material);
+  const unregister = (): void => {
+    mobiGlasMaterials.delete(material);
+  };
+  return { material, unregister };
+}
+
 /** Layer / LayerBlend_V2: same backbone as HardSurface but the
  *  `layer_manifest` may publish multiple wear/damage layers. SD's
  *  `layered_wear` template blends Primary + Wear via a per-pixel mask;
@@ -1914,6 +2056,11 @@ function buildStyledMaterial(
         opacity: 0.35,
         depthWrite: false,
       });
+    case "mobiglas": {
+      const result = makeMobiGlasMaterial(baseColour.getHex());
+      result.material.name = name;
+      return result.material;
+    }
     case "holographic":
     default:
       return new THREE.MeshBasicMaterial({
