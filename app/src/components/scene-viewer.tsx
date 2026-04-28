@@ -156,6 +156,10 @@ interface Props {
    *  mode picker inside its top-right toolbar instead of letting it
    *  collide with the toolbar's own controls. */
   onFlightCamReady?: (handle: FlightCamHandle | null) => void;
+  /** H key handler. The parent owns the pivot-orb visibility setting,
+   *  so the binding flips a parent-side state rather than mutating
+   *  anything on this component. Optional; if omitted, H is a no-op. */
+  onTogglePivotOrb?: () => void;
 }
 
 /** Per-mesh binding so we can rebuild materials in place when the
@@ -212,7 +216,14 @@ export function SceneViewer({
   onPaints,
   onStatus,
   onFlightCamReady,
+  onTogglePivotOrb,
 }: Props) {
+  // Mirror the latest togglePivotOrb prop into a ref so the keydown
+  // listener (registered once on mount with empty deps) always calls
+  // the current callback. Without the ref, the listener captures the
+  // first value and ignores later prop changes.
+  const togglePivotOrbRef = useRef<(() => void) | undefined>(onTogglePivotOrb);
+  togglePivotOrbRef.current = onTogglePivotOrb;
   const containerRef = useRef<HTMLDivElement>(null);
   const stateRef = useRef<{
     renderer: THREE.WebGLRenderer;
@@ -722,7 +733,7 @@ export function SceneViewer({
         { code: e.code, repeat: e.repeat },
         flightCamRef.current,
         sceneRoot,
-        () => setHudVisible((v) => !v),
+        () => togglePivotOrbRef.current?.(),
       );
       if (handled) e.preventDefault();
     };

@@ -60,7 +60,17 @@ import {
   type LoadSceneResponse,
 } from "../lib/commands";
 import { FlightCamHud } from "./flight-cam-hud";
-import { useFlightCamera, type FlightCamHandle } from "../lib/flight-camera";
+import {
+  dispatchViewerHotkey,
+  useFlightCamera,
+  type FlightCamHandle,
+} from "../lib/flight-camera";
+import {
+  applyRenderStyleToScene,
+  clearMobiGlasMaterials,
+  updateMobiGlasTime,
+  type RenderStyle,
+} from "../lib/render-styles";
 
 /**
  * Diffuse map intensity scalar. Engine intensity values for SOC lights
@@ -101,17 +111,34 @@ export interface SocSceneViewerProps {
   response: LoadSceneResponse;
   /** Optional status callback (e.g. for the toolbar). */
   onStatus?: (text: string) => void;
-  /** Optional progress callback for the asset-protocol GLB fetch.
-   *  Receives a fraction in [0, 1] derived from the underlying
-   *  `XMLHttpRequest.onprogress` event; when the response is not
-   *  `Content-Length`-tagged the fraction stays at the previous
-   *  value rather than oscillating. */
-  onLoadProgress?: (fraction: number, message: string) => void;
+  /** Render style to apply to all materials in the scene. Driven by
+   *  the shared `<ViewerToolbar>` Style dropdown. Switching is
+   *  in-place: a per-mesh material swap walks the loaded GLB and
+   *  builds the stylised variant; the original material is preserved
+   *  on `mesh.userData` so flipping back to "textured" restores
+   *  fidelity without a reload. */
+  renderStyle?: RenderStyle;
+  /** Optional callback for the unified progress reporter. Called from
+   *  the GLB fetch (`fetch` phase) and the texture decode loop
+   *  (`decode` phase) so the parent's <ProgressOverlay> stays up
+   *  through the whole load -- not just the backend portion. */
+  onPhaseProgress?: (
+    id: "fetch" | "decode",
+    patch: Partial<{ fraction: number | null; detail: string }>,
+  ) => void;
+  /** Called once textures are resolved and the camera has framed the
+   *  scene -- the user can now interact. Lets the parent close the
+   *  unified progress overlay. */
+  onLoadComplete?: () => void;
   /** Optional callback invoked once the flight-camera handle resolves.
    *  The parent uses this to host the projection-mode picker in its
    *  toolbar (mirrors the ship viewer). Called with `null` on
    *  unmount. */
   onFlightCamReady?: (handle: FlightCamHandle | null) => void;
+  /** H key handler. The parent owns the pivot-orb visibility setting,
+   *  so the binding flips a parent-side state rather than mutating
+   *  anything on this component. Optional; if omitted, H is a no-op. */
+  onTogglePivotOrb?: () => void;
 }
 
 interface TextureResolutionStats {
@@ -123,9 +150,17 @@ interface TextureResolutionStats {
 export function SocSceneViewer({
   response,
   onStatus,
-  onLoadProgress,
+  renderStyle = "textured",
+  onPhaseProgress,
+  onLoadComplete,
   onFlightCamReady,
+  onTogglePivotOrb,
 }: SocSceneViewerProps) {
+  // Mirror the latest togglePivotOrb prop into a ref so the keydown
+  // listener (registered once on mount with empty deps) always calls
+  // the current callback. Same pattern as the Ships viewer.
+  const togglePivotOrbRef = useRef<(() => void) | undefined>(onTogglePivotOrb);
+  togglePivotOrbRef.current = onTogglePivotOrb;
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Refs published by the bootstrap effect so `useFlightCamera` (which
@@ -146,6 +181,12 @@ export function SocSceneViewer({
     textures: TextureResolutionStats;
   } | null>(null);
   const generationRef = useRef(0);
+  // Mirror `renderStyle` into a ref so the scene-load effect can read
+  // the current value without listing it in its dep array. Otherwise
+  // toggling the Style dropdown would re-run the entire load (fetch +
+  // texture decode all over again) instead of just swapping materials.
+  const renderStyleRef = useRef<RenderStyle>(renderStyle);
+  renderStyleRef.current = renderStyle;
 
   // ── Three.js bootstrap (runs once) ────────────────────────────────
   useEffect(() => {
@@ -204,9 +245,15 @@ export function SocSceneViewer({
     scene.add(sceneRoot);
     sceneRootRef.current = sceneRoot;
 
+    // Clock for the MobiGlas shader's `time` uniform. The
+    // `updateMobiGlasTime` registry walk is a no-op when no MobiGlas
+    // material is registered, so we tick it unconditionally rather
+    // than gating on the current render style.
+    const clock = new THREE.Clock();
     let animId = 0;
     const animate = () => {
       animId = requestAnimationFrame(animate);
+      updateMobiGlasTime(clock.getElapsedTime());
       // Render with whichever camera the flight cam currently exposes
       // (perspective, orthographic, or oblique). Until the flight-cam
       // hook attaches on the next effect pass, `flightCamRef.current`
@@ -262,21 +309,27 @@ export function SocSceneViewer({
     };
   }, [flightCam, onFlightCamReady]);
 
-  // F9 captures a high-resolution screenshot through the active camera.
-  // Listener lives on `window` so capture works regardless of which
-  // child element holds focus, except for typing targets where F9 is
-  // suppressed to avoid surprise captures while a text field is active.
+  // Top-level viewer shortcuts: R reframes, H toggles the pivot orb,
+  // Numpad 0-5 snap to view presets. Same dispatch table the Ships
+  // viewer uses (`dispatchViewerHotkey` in flight-camera.ts), so the
+  // two surfaces stay in lockstep. Listener on `window` so it fires
+  // regardless of focus, except for typing targets.
+  //
+  // F9 (high-res screenshot) is intentionally NOT bound here -- the
+  // capture helper is package-aware and only the Ships viewer wires
+  // it today. A SOC-flavoured screenshot path is on the C7+ backlog.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.code !== "F9") return;
       const ae = document.activeElement;
       const tag = ae?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
-      // The decomposed scene viewer owns the screenshot helper; the
-      // SOC viewer does not bring its own copy. F9 here is a no-op
-      // hook for symmetry; if the user wants captures of SOC scenes,
-      // the existing screenshot capture path can be wired in a future
-      // iteration. For now, do nothing rather than throw.
+      const handled = dispatchViewerHotkey(
+        { code: e.code, repeat: e.repeat },
+        flightCamRef.current,
+        sceneRootRef.current,
+        () => togglePivotOrbRef.current?.(),
+      );
+      if (handled) e.preventDefault();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
@@ -295,8 +348,11 @@ export function SocSceneViewer({
 
     // Clear previous scene children. Do not strip the basis rotation
     // from sceneRoot itself -- that lives on the root and persists
-    // across loads.
+    // across loads. Also drop any MobiGlas materials registered by a
+    // prior load so the per-frame `time` tick does not touch
+    // disposed GPU resources.
     clearChildren(sceneRoot);
+    clearMobiGlasMaterials();
 
     void (async () => {
       const t0 = performance.now();
@@ -335,11 +391,12 @@ export function SocSceneViewer({
               if (gen !== generationRef.current) return;
               if (event.lengthComputable && event.total > 0) {
                 const fraction = Math.min(1, event.loaded / event.total);
-                onLoadProgress?.(
+                onPhaseProgress?.("fetch", {
                   fraction,
-                  `Fetching GLB ${(event.loaded / 1024 / 1024).toFixed(0)} ` +
+                  detail:
+                    `Fetching GLB ${(event.loaded / 1024 / 1024).toFixed(0)} ` +
                     `/ ${(event.total / 1024 / 1024).toFixed(0)} MiB`,
-                );
+                });
               }
             },
             (err) => reject(err),
@@ -347,6 +404,10 @@ export function SocSceneViewer({
         });
         if (gen !== generationRef.current) return;
         const tFetch1 = performance.now();
+        // Mark fetch complete so the unified overlay advances to the
+        // decode phase. Setting `fraction: 1` lets the bar fill to the
+        // fetch phase's full weight share.
+        onPhaseProgress?.("fetch", { fraction: 1 });
 
         // Count what came in. The fetch + parse pair is reported as
         // a single `parse_ms` for continuity with prior iterations'
@@ -374,12 +435,38 @@ export function SocSceneViewer({
 
         // Resolve textures in the background. Materials render with
         // the placeholder white until each resolves, then swap in.
+        // Per-texture progress is forwarded to the unified overlay's
+        // `decode` phase so the bar continues to move during what is
+        // typically the dominant wall-clock phase on big maps.
         onStatus?.("Resolving textures...");
         const texStats = await resolveAllTextures(
           gltf.scene,
           response.placement_count,
+          (resolved, failed, total) => {
+            if (gen !== generationRef.current) return;
+            const done = resolved + failed;
+            const fraction = total > 0 ? Math.min(1, done / total) : 1;
+            onPhaseProgress?.("decode", {
+              fraction,
+              detail: `Resolving textures ${done} / ${total}`,
+            });
+          },
         );
         if (gen !== generationRef.current) return;
+        // Make sure the final state is reported even when total === 0
+        // (no userData-tagged textures), where the per-tick callback
+        // never fires.
+        onPhaseProgress?.("decode", { fraction: 1 });
+
+        // Apply the active render style (textured / mobiglas / metallic
+        // / opaque / glass / holographic). For the textured default
+        // this is a no-op; for the others it walks every mesh and
+        // swaps materials. The MobiGlas variant registers itself with
+        // the per-frame time tick we set up in the bootstrap effect.
+        // Read from the ref so a style change while the load was in
+        // flight still picks up the latest value -- and so the load
+        // effect does not depend on `renderStyle` in its deps.
+        applyRenderStyleToScene(sceneRoot, renderStyleRef.current);
 
         // Hand framing to the flight cam. It walks the scene root's
         // AABB itself and positions the camera + orbit pivot. Until
@@ -393,6 +480,9 @@ export function SocSceneViewer({
           lights: counts.lights,
           textures: texStats,
         });
+        // Tell the parent the load is fully done so it can dismiss
+        // the unified progress overlay.
+        onLoadComplete?.();
         const t1 = performance.now();
         onStatus?.(
           `Loaded ${meshCount} meshes / ${counts.lights} lights ` +
@@ -410,7 +500,19 @@ export function SocSceneViewer({
         onStatus?.(`Load failed: ${msg}`);
       }
     })();
-  }, [response, onStatus, onLoadProgress]);
+  }, [response, onStatus, onPhaseProgress, onLoadComplete]);
+
+  // Apply render-style changes WITHOUT rebuilding the scene. Skips the
+  // first run after a fresh load (the load effect itself applies the
+  // current style); subsequent runs handle live toggles from the Style
+  // dropdown. Also fires on initial mount when there's no scene yet --
+  // the early-out keeps that as a no-op.
+  useEffect(() => {
+    const sceneRoot = sceneRootRef.current;
+    if (!sceneRoot) return;
+    if (sceneRoot.children.length === 0) return;
+    applyRenderStyleToScene(sceneRoot, renderStyle);
+  }, [renderStyle]);
 
   return (
     <div className="relative w-full h-full">
@@ -503,6 +605,7 @@ function applyLightIntensityScale(root: THREE.Object3D) {
 async function resolveAllTextures(
   root: THREE.Object3D,
   _placementCount: number,
+  onTick?: (resolved: number, failed: number, total: number) => void,
 ): Promise<TextureResolutionStats> {
   const cache = new Map<string, Promise<THREE.Texture | null>>();
   const stats: TextureResolutionStats = { resolved: 0, total: 0, failed: 0 };
@@ -521,6 +624,20 @@ async function resolveAllTextures(
     }
   });
 
+  // Pre-compute totals so the tick callback can report a stable
+  // denominator from the very first tick. Without this the bar would
+  // jump as new tasks are discovered mid-resolve.
+  for (const material of materials) {
+    const userData = (
+      material as unknown as { userData?: Record<string, unknown> }
+    ).userData;
+    if (typeof userData?.diffuse_texture_path === "string") stats.total += 1;
+    if (typeof userData?.normal_texture_path === "string") stats.total += 1;
+  }
+  // Initial tick so the overlay shows 0 / N immediately rather than
+  // waiting for the first resolve to land.
+  onTick?.(0, 0, stats.total);
+
   const tasks: Promise<void>[] = [];
 
   for (const material of materials) {
@@ -530,7 +647,6 @@ async function resolveAllTextures(
     const normalPath = userData?.normal_texture_path;
 
     if (typeof diffusePath === "string" && diffusePath.length > 0) {
-      stats.total += 1;
       tasks.push(
         loadTextureCached(cache, diffusePath, "diffuse").then((tex) => {
           const standard = material as THREE.MeshStandardMaterial;
@@ -549,12 +665,12 @@ async function resolveAllTextures(
             standard.needsUpdate = true;
             stats.failed += 1;
           }
+          onTick?.(stats.resolved, stats.failed, stats.total);
         }),
       );
     }
 
     if (typeof normalPath === "string" && normalPath.length > 0) {
-      stats.total += 1;
       tasks.push(
         loadTextureCached(cache, normalPath, "normal").then((tex) => {
           const standard = material as THREE.MeshStandardMaterial;
@@ -567,6 +683,7 @@ async function resolveAllTextures(
           } else {
             stats.failed += 1;
           }
+          onTick?.(stats.resolved, stats.failed, stats.total);
         }),
       );
     }

@@ -127,12 +127,21 @@ export interface FlightCamHandle {
    *  orthographic camera in "orthographic" or "oblique". The returned
    *  reference is stable across frames; only its matrices update. */
   getActiveCamera(): THREE.Camera;
+  /** Show or hide the pivot orb. Off by default; users opt in via the
+   *  Settings panel toggle. The orb still updates its position every
+   *  frame so toggling on does not require a frame for it to appear. */
+  setPivotOrbVisible(visible: boolean): void;
 }
 
 // ---------- Public constants ----------
 
 export const SPEED_MIN = 0.05;
-export const SPEED_MAX = 50;
+// Map scenes (Exec Hangar, asteroid bases) span tens of thousands of units;
+// the previous 50 cap maxed out around ~1500 units/sec which is too slow to
+// traverse them. 500 gives ~15k units/sec at 60fps -- enough to cross a
+// multi-km scene in a few seconds while still letting smaller ships use the
+// low end of the curve. Wheel-up still clamps at this value.
+export const SPEED_MAX = 500;
 export const SPEED_STEP = 1.15;
 export const FOV_MIN = 10;
 export const FOV_MAX = 120;
@@ -395,14 +404,16 @@ export function viewPresetForKeyCode(code: string): ViewPreset | null {
 }
 
 /** Top-level dispatch for the SceneViewer keyboard shortcuts that
- *  affect the flight camera or the HUD. Pure (no DOM, no THREE), so
- *  the routing table is unit-testable.
+ *  affect the flight camera or the toolbar settings. Pure (no DOM, no
+ *  THREE), so the routing table is unit-testable.
  *
  *  Behaviour:
  *  - `R`           => calls `handle.resetToScene(sceneRoot)`. The
  *                     repeat flag is ignored (held R refreshes).
- *  - `H`           => calls `toggleHud()`. Suppressed on `repeat` so a
- *                     held H does not strobe.
+ *  - `H`           => calls `togglePivotOrb()`. Suppressed on `repeat`
+ *                     so a held H does not strobe. Was previously
+ *                     bound to "toggle HUD"; the HUD now has its own
+ *                     in-panel hide button instead.
  *  - `Numpad0..5`  => calls `handle.setView(preset, sceneRoot)`.
  *                     Suppressed on `repeat`.
  *  - anything else => returns `false` (caller decides).
@@ -413,7 +424,7 @@ export function dispatchViewerHotkey(
   e: { code: string; repeat: boolean },
   handle: Pick<FlightCamHandle, "resetToScene" | "setView"> | null,
   sceneRoot: THREE.Object3D | null,
-  toggleHud: () => void,
+  togglePivotOrb: () => void,
 ): boolean {
   if (e.code === "KeyR") {
     if (handle && sceneRoot) handle.resetToScene(sceneRoot);
@@ -421,7 +432,7 @@ export function dispatchViewerHotkey(
   }
   if (e.code === "KeyH") {
     if (e.repeat) return true;
-    toggleHud();
+    togglePivotOrb();
     return true;
   }
   const preset = viewPresetForKeyCode(e.code);
@@ -692,6 +703,10 @@ export function useFlightCamera(args: HookArgs): FlightCamHandle | null {
     const orb = new THREE.Mesh(orbGeom, orbMat);
     orb.name = "flight_cam_pivot";
     orb.renderOrder = 1000;
+    // Default OFF. The orb is a debug-style affordance most users do
+    // not want visible all the time; opt in via Settings -> "Show
+    // pivot orb".
+    orb.visible = false;
     scene.add(orb);
 
     // Subscriptions: at most one fire per RAF tick.
@@ -1033,6 +1048,9 @@ export function useFlightCamera(args: HookArgs): FlightCamHandle | null {
       },
       getActiveCamera(): THREE.Camera {
         return state.projectionMode === "perspective" ? camera : ortho;
+      },
+      setPivotOrbVisible(visible: boolean): void {
+        orb.visible = visible;
       },
     };
     setHandle(h);

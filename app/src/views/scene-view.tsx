@@ -18,17 +18,13 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
 import {
   Box,
-  ChevronDown,
-  ChevronUp,
   FolderOpen,
   RotateCw,
   CheckCircle2,
   Search,
-  Settings,
   Trash2,
   X,
 } from "lucide-react";
@@ -58,16 +54,18 @@ import {
   type SocpakDirEntry,
 } from "../lib/commands";
 import { SocpakTree } from "../components/socpak-tree";
-import { SceneViewer, DEFAULT_DIAGNOSTIC_SETTINGS } from "../components/scene-viewer";
+import { SceneViewer } from "../components/scene-viewer";
 import { SocSceneViewer } from "../components/soc-scene-viewer";
-import { ProjectionModePicker } from "../components/projection-mode-picker";
-import type { FlightCamHandle } from "../lib/flight-camera";
+import { ProgressOverlay } from "../components/progress-overlay";
 import {
-  RENDER_STYLES,
-  type PaintVariant,
-  type RenderStyle,
-} from "../lib/decomposed-loader";
-import type { DiagnosticSettings } from "../components/scene-viewer";
+  DEFAULT_VIEWER_SETTINGS,
+  type ViewerSettings,
+} from "../components/settings-panel";
+import { ViewerToolbar } from "../components/viewer-toolbar";
+import type { FlightCamHandle } from "../lib/flight-camera";
+import { type PaintVariant } from "../lib/decomposed-loader";
+import { type RenderStyle } from "../lib/render-styles";
+import { useProgressReporter } from "../lib/progress-reporter";
 
 /**
  * Format a byte count as a short human string. Falls back to bytes for
@@ -105,12 +103,6 @@ function packageInfoFromDir(packageDir: string): DecomposedPackageInfo {
   };
 }
 
-interface BusyState {
-  entityName: string;
-  fraction: number;
-  stage: string;
-}
-
 /**
  * Root prefix for the Maps tab tree. Socpaks live almost exclusively
  * under `Data\ObjectContainers\` -- starting elsewhere would surface
@@ -129,22 +121,14 @@ const MAPS_ROOT_PREFIX = "Data\\ObjectContainers\\";
 const MAP_FALLBACK_PATH =
   "Data\\ObjectContainers\\PU\\loc\\mod\\pyro\\asteroid_base\\ext\\ab_final_set\\ab_pyro_final_set_dungeon_executive-001.socpak";
 
-interface SocBusyState {
-  socpakPath: string;
-  fraction: number;
-  stage: string;
-  message: string;
-}
-
 /**
  * Translate a SOC scene-load progress event into a [0,1] fraction
- * for the loading bar. Phase weights are tuned to the observed
- * Exec Hangar timings on a cold cache (~12s total): compose ~5%,
- * resolve ~85%, emit ~8%, cache_write ~2%. Within each phase the
- * fraction is `current/total` linearly, so the resolve phase shows
- * fine-grained progress as meshes resolve.
+ * for the backend phase of the unified progress overlay. Phase weights
+ * inside the backend step are tuned to observed Exec Hangar timings on
+ * a cold cache: compose ~5%, resolve ~85%, emit ~8%, cache_write ~2%.
+ * Within each sub-phase the fraction is `current/total` linearly.
  */
-function computeSocFraction(
+function computeSocBackendFraction(
   phase: string,
   current: number,
   total: number,
@@ -164,379 +148,6 @@ function computeSocFraction(
   }
 }
 
-/**
- * User-tunable viewer settings. This is intentionally a flat object so
- * adding new fields is one line per setting; the `SettingsPanel` below
- * renders rows declaratively from the state shape so growing the surface
- * is a localised edit, not a structural one.
- *
- * Future fields land here (e.g. `showGrid`, `showAxes`, `bgColor`,
- * `exposure`, etc.). When a field is added, plumb it through the
- * `SceneViewer` Props and add a matching row in `SettingsPanel`.
- */
-interface ViewerSettings {
-  showGroundPlane: boolean;
-  showGrid: boolean;
-  groundPlaneColor: [number, number, number];
-  diagnostics: DiagnosticSettings;
-}
-
-const DEFAULT_VIEWER_SETTINGS: ViewerSettings = {
-  showGroundPlane: false,
-  showGrid: false,
-  groundPlaneColor: [128, 128, 128],
-  diagnostics: { ...DEFAULT_DIAGNOSTIC_SETTINGS },
-};
-
-/**
- * Floating, collapsible settings overlay anchored to the top-right of
- * the viewer pane, immediately right of the Style/Livery controls.
- * Starts collapsed (button only). Clicking the button toggles the
- * body open/closed. The body grows downward from the button.
- */
-function SettingsPanel({
-  settings,
-  onChange,
-}: {
-  settings: ViewerSettings;
-  onChange: (patch: Partial<ViewerSettings>) => void;
-}) {
-  const [open, setOpen] = useState(false);
-
-  // Guard: merge defaults so that missing fields (e.g. after a store
-  // hydration against an older settings shape) never produce undefined
-  // values reaching .toFixed() in the slider rows -- which is the root
-  // cause of the expand-crash reported after the slider additions.
-  const diag: DiagnosticSettings = { ...DEFAULT_DIAGNOSTIC_SETTINGS, ...settings.diagnostics };
-  const groundColor: [number, number, number] = settings.groundPlaneColor ?? DEFAULT_VIEWER_SETTINGS.groundPlaneColor;
-
-  const patchDiag = useCallback(
-    (patch: Partial<DiagnosticSettings>) => {
-      onChange({ diagnostics: { ...DEFAULT_DIAGNOSTIC_SETTINGS, ...settings.diagnostics, ...patch } });
-    },
-    [onChange, settings.diagnostics],
-  );
-
-  const patchGroundColor = useCallback(
-    (channel: 0 | 1 | 2, val: number) => {
-      const base = settings.groundPlaneColor ?? DEFAULT_VIEWER_SETTINGS.groundPlaneColor;
-      const next: [number, number, number] = [...base] as [number, number, number];
-      next[channel] = val;
-      onChange({ groundPlaneColor: next });
-    },
-    [onChange, settings.groundPlaneColor],
-  );
-
-  const resetAll = useCallback(() => {
-    onChange({ diagnostics: { ...DEFAULT_DIAGNOSTIC_SETTINGS } });
-  }, [onChange]);
-
-  return (
-    <div className="relative z-10">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-bg-alt/90 border border-border text-xs text-text-sub hover:text-text hover:bg-bg-alt shadow transition-colors cursor-pointer select-none"
-        title={open ? "Collapse settings" : "Expand settings"}
-        aria-label={open ? "Collapse settings panel" : "Expand settings panel"}
-      >
-        <Settings size={14} strokeWidth={1.75} />
-        <span>Settings</span>
-        {open ? (
-          <ChevronDown size={12} strokeWidth={1.75} />
-        ) : (
-          <ChevronUp size={12} strokeWidth={1.75} />
-        )}
-      </button>
-      {open && (
-        <div
-          className="absolute top-full right-0 mt-1.5 w-[280px] max-h-[70vh] overflow-y-auto bg-bg-alt/95 border border-border rounded-md shadow-lg p-3 flex flex-col gap-3 backdrop-blur-sm"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <SettingsSection title="Display">
-            <SettingsToggleRow
-              label="Show ground plane"
-              checked={settings.showGroundPlane ?? DEFAULT_VIEWER_SETTINGS.showGroundPlane}
-              onChange={(v) => onChange({ showGroundPlane: v })}
-            />
-            <SettingsToggleRow
-              label="Show grid"
-              checked={settings.showGrid ?? DEFAULT_VIEWER_SETTINGS.showGrid}
-              onChange={(v) => onChange({ showGrid: v })}
-            />
-          </SettingsSection>
-
-          <SettingsSection title="Ground Plane Color">
-            <SettingsSliderRow
-              label="R"
-              value={groundColor[0]}
-              min={0}
-              max={255}
-              step={1}
-              displayDecimals={0}
-              onChange={(v) => patchGroundColor(0, v)}
-            />
-            <SettingsSliderRow
-              label="G"
-              value={groundColor[1]}
-              min={0}
-              max={255}
-              step={1}
-              displayDecimals={0}
-              onChange={(v) => patchGroundColor(1, v)}
-            />
-            <SettingsSliderRow
-              label="B"
-              value={groundColor[2]}
-              min={0}
-              max={255}
-              step={1}
-              displayDecimals={0}
-              onChange={(v) => patchGroundColor(2, v)}
-            />
-          </SettingsSection>
-
-          <SettingsSection title="Render Tuning">
-            <SettingsSliderRow
-              label="envMapIntensity"
-              value={diag.envMapIntensity}
-              min={0}
-              max={2}
-              step={0.05}
-              onChange={(v) => patchDiag({ envMapIntensity: v })}
-            />
-            <SettingsSliderRow
-              label="Tone map exposure"
-              value={diag.toneMappingExposure}
-              min={0}
-              max={3}
-              step={0.05}
-              onChange={(v) => patchDiag({ toneMappingExposure: v })}
-            />
-            <SettingsSliderRow
-              label="Metalness"
-              value={diag.metalness}
-              min={0}
-              max={1}
-              step={0.01}
-              onChange={(v) => patchDiag({ metalness: v })}
-            />
-            <SettingsCheckboxSliderRow
-              label="Roughness"
-              value={diag.roughness}
-              min={0}
-              max={1}
-              step={0.01}
-              enabled={diag.roughnessOverrideEnabled}
-              onEnabledChange={(v) => patchDiag({ roughnessOverrideEnabled: v })}
-              onChange={(v) => patchDiag({ roughness: v })}
-            />
-            <SettingsSliderRow
-              label="Clearcoat"
-              value={diag.clearcoat}
-              min={0}
-              max={1}
-              step={0.05}
-              onChange={(v) => patchDiag({ clearcoat: v })}
-            />
-          </SettingsSection>
-
-          <SettingsSection title="Scene Lights">
-            <SettingsSliderRow
-              label="Ambient intensity"
-              value={diag.ambientIntensity}
-              min={0}
-              max={2}
-              step={0.05}
-              onChange={(v) => patchDiag({ ambientIntensity: v })}
-            />
-            <SettingsSliderRow
-              label="Directional intensity"
-              value={diag.directionalIntensity}
-              min={0}
-              max={5}
-              step={0.1}
-              onChange={(v) => patchDiag({ directionalIntensity: v })}
-            />
-            <SettingsSliderRow
-              label="Headlight intensity"
-              value={diag.headlightIntensity}
-              min={0}
-              max={5}
-              step={0.1}
-              onChange={(v) => patchDiag({ headlightIntensity: v })}
-            />
-          </SettingsSection>
-
-          <SettingsSection title="Color Path">
-            <SettingsSliderRow
-              label="Color saturation"
-              value={diag.colorSaturation}
-              min={0}
-              max={2}
-              step={0.05}
-              onChange={(v) => patchDiag({ colorSaturation: v })}
-            />
-          </SettingsSection>
-
-          <button
-            onClick={resetAll}
-            className="mt-1 w-full py-1.5 rounded-md text-xs font-medium bg-surface hover:bg-surface-hi text-text-sub hover:text-text transition-colors cursor-pointer"
-            title="Reset all sliders to defaults"
-          >
-            Reset all
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * A labeled group inside the settings panel. Sections give the panel
- * structure as it grows -- display, lighting, gizmos, performance, etc.
- * each get their own section. The label is small-caps to keep visual
- * weight low; rows inside carry the legible labels.
- */
-function SettingsSection({
-  title,
-  children,
-}: {
-  title: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <div className="text-[10px] uppercase tracking-wider text-text-faint font-medium">
-        {title}
-      </div>
-      <div className="flex flex-col gap-1">{children}</div>
-    </div>
-  );
-}
-
-/**
- * A single boolean-toggle row. Future row variants (dropdown, slider,
- * color) follow the same shape so sections compose declaratively. The
- * whole row is the click target; the checkbox is decorative on the
- * right so the layout reads like a settings list rather than a form.
- */
-function SettingsToggleRow({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <label className="flex items-center justify-between gap-3 px-1.5 py-1 rounded text-xs text-text-sub hover:bg-surface/40 cursor-pointer select-none">
-      <span>{label}</span>
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="accent-accent cursor-pointer"
-      />
-    </label>
-  );
-}
-
-/**
- * A labeled slider row. Shows "label: X.XX" on the left and a range
- * input filling the row. Live-applies on every `input` event.
- * `displayDecimals` controls how many decimal places to show in the
- * value badge (default 2); pass 0 for integer-valued sliders like RGB.
- */
-function SettingsSliderRow({
-  label,
-  value,
-  min,
-  max,
-  step,
-  displayDecimals = 2,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  displayDecimals?: number;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-0.5 px-1.5 py-1">
-      <div className="flex items-center justify-between text-xs text-text-sub select-none">
-        <span>{label}</span>
-        <span className="tabular-nums text-text-faint">{value.toFixed(displayDecimals)}</span>
-      </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        className="w-full accent-accent cursor-pointer"
-      />
-    </div>
-  );
-}
-
-/**
- * A slider row that has a checkbox guard. The slider is disabled (and
- * visually dimmed) when `enabled` is false, so the user must opt-in
- * before the value takes effect. Used for the roughness override which
- * defaults to unchecked ("don't override").
- */
-function SettingsCheckboxSliderRow({
-  label,
-  value,
-  min,
-  max,
-  step,
-  enabled,
-  onEnabledChange,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  enabled: boolean;
-  onEnabledChange: (v: boolean) => void;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <div className={`flex flex-col gap-0.5 px-1.5 py-1 ${enabled ? "" : "opacity-60"}`}>
-      <div className="flex items-center justify-between text-xs text-text-sub select-none">
-        <label className="flex items-center gap-1.5 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) => onEnabledChange(e.target.checked)}
-            className="accent-accent cursor-pointer"
-          />
-          <span>{label}</span>
-        </label>
-        <span className="tabular-nums text-text-faint">{value.toFixed(2)}</span>
-      </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        disabled={!enabled}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        className="w-full accent-accent cursor-pointer disabled:cursor-not-allowed"
-      />
-    </div>
-  );
-}
-
 export function SceneView() {
   // Source list: the union of "discovered DataCore entities" and any
   // externally-mounted packages from the escape-hatch picker.
@@ -549,8 +160,36 @@ export function SceneView() {
 
   const [active, setActive] = useState<DecomposedPackageInfo | null>(null);
   const [activeEntityName, setActiveEntityName] = useState<string | null>(null);
-  const [busy, setBusy] = useState<BusyState | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // Unified progress reporter. Both the Ships export pipeline and the
+  // SOC scene-load pipeline drive this same reporter; the
+  // <ProgressOverlay> renders one bar over many phases. The reporter
+  // owns the phase array; handlers update phases by id. See
+  // `lib/progress-reporter.ts`.
+  //
+  // CRITICAL: do NOT depend on the whole `progress` object in
+  // `useCallback` deps below -- destructure the four mutating
+  // callbacks (which are stable across renders) and depend on those
+  // individually. The reporter's identity changes whenever its phases
+  // state updates, and listing it in deps cascades through every
+  // callback that consumes it -- which then re-creates downstream
+  // props on every progress tick. The previous shape of this code
+  // re-fired SocSceneViewer's load effect on every tick, spawning
+  // overlapping GLTF fetches and saturating Tauri's IPC channel until
+  // the renderer locked up.
+  const progress = useProgressReporter();
+  const {
+    begin: progressBegin,
+    update: progressUpdate,
+    advance: progressAdvance,
+    reset: progressReset,
+  } = progress;
+  // Track which entity / socpak the active progress run belongs to so
+  // late events from prior runs don't leak into the current overlay.
+  const activeRunRef = useRef<{ kind: "ships" | "soc"; key: string } | null>(
+    null,
+  );
   const [status, setStatus] = useState<string>("");
   // Presentation mode for materials. Switching is in-place; the scene
   // is not re-loaded.
@@ -574,11 +213,11 @@ export function SceneView() {
   // socpak through `loadSceneToGltf`, which composes many zones,
   // resolves meshes/materials, and writes a single GLB to the scene
   // cache. The `socResponse` carries the cache path + AABB the
-  // SocSceneViewer needs to render and frame. SocBusyState tracks
-  // progress events while the load is in flight.
+  // SocSceneViewer needs to render and frame. Load progress flows
+  // through the unified `progress` reporter above (3 phases:
+  // backend / fetch / decode).
   const [socResponse, setSocResponse] = useState<LoadSceneResponse | null>(null);
   const [socActivePath, setSocActivePath] = useState<string | null>(null);
-  const [socBusy, setSocBusy] = useState<SocBusyState | null>(null);
   const [socError, setSocError] = useState<string | null>(null);
   // Flight-camera handle published by the SocSceneViewer. Hosted in
   // the Maps tab toolbar via `<ProjectionModePicker>`.
@@ -607,6 +246,13 @@ export function SceneView() {
   );
   const updateSettings = useCallback((patch: Partial<ViewerSettings>) => {
     setViewerSettings((prev) => ({ ...prev, ...patch }));
+  }, []);
+
+  // H key handler. Both viewer surfaces forward to this so the binding
+  // stays in lockstep with the Settings panel's "Show pivot orb"
+  // toggle.
+  const togglePivotOrb = useCallback(() => {
+    setViewerSettings((prev) => ({ ...prev, showPivotOrb: !prev.showPivotOrb }));
   }, []);
 
   // Fast Preview toggle. When enabled, the exporter skips interior
@@ -695,6 +341,19 @@ export function SceneView() {
     refreshEntities();
   }, [refreshEntities]);
 
+  // Push the pivot-orb visibility setting onto whichever flight cam
+  // is currently mounted. Two effects (one per surface) so the call
+  // does not fire against a stale handle when the user switches tabs.
+  // The orb is hidden by default at construction in the flight-cam
+  // hook itself, so this is a noop when the setting is at its
+  // default until the user opts in.
+  useEffect(() => {
+    flightCamHandle?.setPivotOrbVisible(viewerSettings.showPivotOrb);
+  }, [flightCamHandle, viewerSettings.showPivotOrb]);
+  useEffect(() => {
+    socFlightCamHandle?.setPivotOrbVisible(viewerSettings.showPivotOrb);
+  }, [socFlightCamHandle, viewerSettings.showPivotOrb]);
+
   // Reset livery and paint-variant list whenever the active package
   // changes. The SceneViewer publishes the new ship's paints via
   // `onPaints` once its scene loads; the dropdown stays empty in the
@@ -706,16 +365,17 @@ export function SceneView() {
   }, [active?.package_dir]);
 
   // Subscribe to scene export events for the lifetime of the view.
+  // Progress and completion drive the unified reporter so the export
+  // shares the same overlay as SOC loads.
   useEffect(() => {
     let cancelled = false;
     const unlisteners: Array<() => void> = [];
 
     onSceneExportProgress((p) => {
       if (cancelled) return;
-      setBusy((prev) => {
-        if (!prev || prev.entityName !== p.entity_name) return prev;
-        return { ...prev, fraction: p.fraction, stage: p.stage };
-      });
+      const run = activeRunRef.current;
+      if (!run || run.kind !== "ships" || run.key !== p.entity_name) return;
+      progressUpdate("export", { fraction: p.fraction, detail: p.stage });
     }).then((unlisten) => {
       if (cancelled) unlisten();
       else unlisteners.push(unlisten);
@@ -723,15 +383,19 @@ export function SceneView() {
 
     onSceneExportDone((r) => {
       if (cancelled) return;
-      setBusy((prev) => {
-        if (!prev || prev.entityName !== r.entity_name) return prev;
-        return null;
-      });
+      const run = activeRunRef.current;
+      if (!run || run.kind !== "ships" || run.key !== r.entity_name) return;
+
       if (r.error) {
+        progressReset();
+        activeRunRef.current = null;
         setActionError(`Export failed: ${r.error}`);
         return;
       }
       if (r.package_dir) {
+        progressAdvance("export");
+        progressReset();
+        activeRunRef.current = null;
         // Refresh the entity list so the cached badge updates, and
         // bump the toolbar stats since a new slot just landed.
         refreshEntities();
@@ -748,7 +412,7 @@ export function SceneView() {
       cancelled = true;
       for (const fn of unlisteners) fn();
     };
-  }, [refreshEntities, refreshCacheStats]);
+  }, [refreshEntities, refreshCacheStats, progressUpdate, progressAdvance, progressReset]);
 
   // Mount the SocpakTree only after the Maps tab is first opened. The
   // tree fires its own root listing on mount, so we want that single
@@ -794,21 +458,19 @@ export function SceneView() {
   }, [activeCategory, socpakIndex, socpakIndexError]);
 
   // Subscribe to SOC scene-load progress events. Translates the
-  // backend's `(phase, current, total, message)` into a single
-  // fraction for the loading bar. Phase weights are deliberately
-  // skewed: resolve dominates wall-clock (~80% of a cold load on
-  // Exec Hangar), so it gets the bulk of the bar.
+  // backend's `(phase, current, total, message)` into the unified
+  // reporter's "backend" phase. The fetch + decode phases are owned
+  // by the SocSceneViewer and update the reporter directly via the
+  // callbacks the parent passes down.
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     onSceneLoadProgress((p) => {
       if (cancelled) return;
-      const fraction = computeSocFraction(p.phase, p.current, p.total);
-      const stage = p.phase.charAt(0).toUpperCase() + p.phase.slice(1);
-      setSocBusy((prev) => {
-        if (!prev) return prev;
-        return { ...prev, fraction, stage, message: p.message };
-      });
+      const run = activeRunRef.current;
+      if (!run || run.kind !== "soc") return;
+      const fraction = computeSocBackendFraction(p.phase, p.current, p.total);
+      progressUpdate("backend", { fraction, detail: p.message || p.phase });
     }).then((u) => {
       if (cancelled) u();
       else unlisten = u;
@@ -817,7 +479,7 @@ export function SceneView() {
       cancelled = true;
       if (unlisten) unlisten();
     };
-  }, []);
+  }, [progressUpdate]);
 
   // Tear down the pending two-click confirmation timer when the view
   // unmounts so the timeout doesn't fire against a stale setState.
@@ -925,19 +587,25 @@ export function SceneView() {
         if (gen !== generationRef.current) return;
         setActive(null);
         setActiveEntityName(entity.entity_name);
-        setBusy({
-          entityName: entity.entity_name,
-          fraction: 0,
-          stage: "Starting export...",
-        });
+        activeRunRef.current = { kind: "ships", key: entity.entity_name };
+        progressBegin([
+          {
+            id: "export",
+            label: `Exporting ${entity.entity_name}`,
+            weight: 1,
+            fraction: 0,
+            detail: "Starting export...",
+          },
+        ]);
         await startSceneExport(entity.entity_name, opts);
       } catch (err) {
         if (gen !== generationRef.current) return;
-        setBusy(null);
+        progressReset();
+        activeRunRef.current = null;
         setActionError(err instanceof Error ? err.message : String(err));
       }
     },
-    [opts, refreshCacheStats],
+    [opts, refreshCacheStats, progressBegin, progressReset],
   );
 
   const handleCancel = useCallback(async () => {
@@ -946,44 +614,83 @@ export function SceneView() {
     } catch (err) {
       console.error("Cancel failed:", err);
     }
-    setBusy(null);
+    progressReset();
+    activeRunRef.current = null;
     generationRef.current++;
-  }, []);
+  }, [progressReset]);
 
-  const launchMap = useCallback(async (socpakPath: string) => {
-    setSocError(null);
-    setActionError(null);
-    setSocActivePath(socpakPath);
-    setSocResponse(null);
-    setSocBusy({
-      socpakPath,
-      fraction: 0,
-      stage: "Starting",
-      message: "Reading socpak...",
-    });
-    try {
-      const response = await loadSceneToGltf(socpakPath);
-      // If the user navigated away mid-load, drop the result.
-      setSocActivePath((current) => {
-        if (current !== socpakPath) return current;
-        setSocResponse(response);
-        setSocBusy(null);
-        console.log(
-          `[soc-load] cache_hit=${response.cache_hit} ` +
-            `meshes=${response.mesh_count} placements=${response.placement_count} ` +
-            `lights=${response.light_count} materials=${response.materials_resolved}/` +
-            `${response.materials_resolved + response.materials_default} ` +
-            `glb_bytes=${response.glb_bytes} ` +
-            `dropped=${response.dropped_placements} failed_meshes=${response.failed_mesh_paths}`,
-        );
-        return current;
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setSocError(msg);
-      setSocBusy(null);
-    }
-  }, []);
+  const launchMap = useCallback(
+    async (socpakPath: string) => {
+      setSocError(null);
+      setActionError(null);
+      setSocActivePath(socpakPath);
+      // CRITICAL: do NOT clear socResponse here. The previous version
+      // unmounted SocSceneViewer between loads, which threw away the
+      // decode work for the prior scene and forced a full re-walk on
+      // every click. More importantly, dropping it via setState here
+      // and then setting it again 100ms later (cache-hit path) caused
+      // SocSceneViewer to mount, run its load effect, then unmount,
+      // then re-mount -- the load effect's clearChildren() during the
+      // brief mount window left the renderer in a half-built state
+      // that downstream renders couldn't recover from on big maps.
+      // Setting socResponse to the new value below replaces the prop
+      // in-place, which triggers the load effect once, cleanly.
+      activeRunRef.current = { kind: "soc", key: socpakPath };
+      // Three phases for a SOC load. Weights are based on observed
+      // wall-clock on Exec Hangar (cold cache): backend ~10s, fetch
+      // ~1-2s on local disk, decode ~50s and dominates -- so the
+      // aggregate bar moves at a steady visible pace through the
+      // whole load instead of jumping to ~95% the moment the backend
+      // returns and then sitting there for nearly a minute.
+      progressBegin([
+        {
+          id: "backend",
+          label: "Composing scene",
+          weight: 30,
+          fraction: 0,
+          detail: "Reading socpak...",
+        },
+        {
+          id: "fetch",
+          label: "Fetching GLB",
+          weight: 10,
+          fraction: null,
+        },
+        {
+          id: "decode",
+          label: "Resolving textures",
+          weight: 60,
+          fraction: null,
+        },
+      ]);
+      try {
+        const response = await loadSceneToGltf(socpakPath);
+        // If the user navigated away mid-load, drop the result.
+        setSocActivePath((current) => {
+          if (current !== socpakPath) return current;
+          // Backend phase is done; SocSceneViewer will drive fetch +
+          // decode through the reporter directly.
+          progressAdvance("backend");
+          setSocResponse(response);
+          console.info(
+            `[soc-load] cache_hit=${response.cache_hit} ` +
+              `meshes=${response.mesh_count} placements=${response.placement_count} ` +
+              `lights=${response.light_count} materials=${response.materials_resolved}/` +
+              `${response.materials_resolved + response.materials_default} ` +
+              `glb_bytes=${response.glb_bytes} ` +
+              `dropped=${response.dropped_placements} failed_meshes=${response.failed_mesh_paths}`,
+          );
+          return current;
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setSocError(msg);
+        progressReset();
+        activeRunRef.current = null;
+      }
+    },
+    [progressBegin, progressAdvance, progressReset],
+  );
 
   /** Bridge `SocpakTree`'s leaf-click event to the existing load flow. */
   const handleTreeLeafClick = useCallback(
@@ -1005,8 +712,37 @@ export function SceneView() {
     // reacting to in-flight events; the backend keeps building so
     // the user does not have to repeat the wait on the next click.
     setSocActivePath(null);
-    setSocBusy(null);
-  }, []);
+    progressReset();
+    activeRunRef.current = null;
+  }, [progressReset]);
+
+  /** Reporter callback handed to `<SocSceneViewer>` so it can update
+   *  the fetch + decode phases of the unified progress overlay. We
+   *  pass the reporter's `update` directly; the child is trusted to
+   *  pass the right phase id ("fetch" or "decode"). */
+  const updateSocPhase = useCallback(
+    (
+      id: "fetch" | "decode",
+      patch: Partial<{ fraction: number | null; detail: string }>,
+    ) => {
+      // Guard: if the user has navigated away mid-load the reporter
+      // has been reset; this update would otherwise re-introduce a
+      // phantom phase. Keying on activeRunRef rather than reporter
+      // state since reporter.phases isn't read here for stability.
+      if (!activeRunRef.current || activeRunRef.current.kind !== "soc") return;
+      progressUpdate(id, patch);
+    },
+    [progressUpdate],
+  );
+
+  /** Called by `<SocSceneViewer>` when it has finished loading the
+   *  scene (decode complete, materials applied, framing reset). Closes
+   *  the overlay. */
+  const handleSocLoadComplete = useCallback(() => {
+    if (!activeRunRef.current || activeRunRef.current.kind !== "soc") return;
+    progressReset();
+    activeRunRef.current = null;
+  }, [progressReset]);
 
   // Escape hatch: pick an external decomposed root.
   const handleOpenExternal = async () => {
@@ -1223,7 +959,9 @@ export function SceneView() {
             {filtered.map((entity) => {
               const isActive = activeEntityName === entity.entity_name;
               const isBusy =
-                busy !== null && busy.entityName === entity.entity_name;
+                activeRunRef.current?.kind === "ships" &&
+                activeRunRef.current.key === entity.entity_name &&
+                progress.active;
               return (
                 <div
                   key={entity.entity_name}
@@ -1280,49 +1018,42 @@ export function SceneView() {
 
         {/* ── Right pane: viewer / progress ── */}
         <div className="flex-1 relative overflow-hidden min-w-0">
+          {/* Unified progress overlay -- driven by the reporter, used by
+              both Ships exports and SOC scene loads. Stays up across
+              backend / fetch / decode phases so the user has continuous
+              feedback during a multi-stage load. */}
+          {progress.active && (
+            <ProgressOverlay
+              title={
+                activeRunRef.current?.kind === "ships"
+                  ? `Exporting ${activeRunRef.current.key}`
+                  : "Loading scene"
+              }
+              phases={progress.phases}
+              onCancel={
+                activeRunRef.current?.kind === "ships"
+                  ? handleCancel
+                  : handleSocCancel
+              }
+              cancelTitle={
+                activeRunRef.current?.kind === "ships"
+                  ? undefined
+                  : "Stop tracking the load. The backend keeps building so the next click reuses cached output."
+              }
+            />
+          )}
+
           {/* SOC scene-package mode: dedicated viewer for the Maps tab.
               Renders a self-contained GLB emitted by `loadSceneToGltf`
               instead of a decomposed-export package. */}
           {activeCategory === "Maps" && (
             <>
-              {socError && !socBusy && (
+              {socError && !progress.active && (
                 <div className="absolute top-3 right-3 z-10 max-w-md bg-danger/15 border border-danger/30 text-danger text-xs px-3 py-2 rounded-md font-mono break-words shadow">
                   {socError}
                 </div>
               )}
-              {socBusy && (
-                <div className="absolute inset-0 z-10 bg-bg/85 backdrop-blur-sm flex items-center justify-center">
-                  <div className="w-[420px] bg-bg-alt border border-border rounded-lg p-6 flex flex-col gap-4 shadow-lg">
-                    <h3 className="text-sm font-semibold text-text">
-                      Loading scene
-                    </h3>
-                    <div className="flex flex-col gap-1.5">
-                      <div className="w-full bg-surface rounded-full h-2 overflow-hidden">
-                        <div
-                          className="bg-accent h-full rounded-full transition-all duration-300"
-                          style={{ width: `${Math.min(socBusy.fraction, 1) * 100}%` }}
-                        />
-                      </div>
-                      <div className="flex items-center justify-between text-[11px] text-text-dim">
-                        <span className="truncate">
-                          {socBusy.message || socBusy.stage || "Working..."}
-                        </span>
-                        <span className="tabular-nums">
-                          {Math.round(socBusy.fraction * 100)}%
-                        </span>
-                      </div>
-                    </div>
-                    <button
-                      onClick={handleSocCancel}
-                      className="w-full py-2 rounded-md text-xs font-medium bg-danger/15 text-danger hover:bg-danger/25 transition-colors cursor-pointer"
-                      title="Stop tracking the load. The backend keeps building so the next click reuses cached output."
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
-              {!socResponse && !socBusy && (
+              {!socResponse && !progress.active && (
                 <div className="absolute inset-0 flex items-center justify-center">
                   <div className="max-w-md text-center px-6">
                     <Box
@@ -1342,16 +1073,22 @@ export function SceneView() {
               )}
               {socResponse && (
                 <>
-                  {/* Top-right toolbar: projection-mode picker hosted by
-                      the parent so it lives in the same flex row as the
-                      ship viewer's controls. */}
-                  <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
-                    <ProjectionModePicker handle={socFlightCamHandle} embedded />
-                  </div>
+                  <ViewerToolbar
+                    flightCamHandle={socFlightCamHandle}
+                    renderStyle={renderStyle}
+                    onRenderStyleChange={setRenderStyle}
+                    settings={viewerSettings}
+                    onSettingsChange={updateSettings}
+                    kind="soc"
+                  />
                   <SocSceneViewer
                     response={socResponse}
                     onStatus={setStatus}
                     onFlightCamReady={setSocFlightCamHandle}
+                    renderStyle={renderStyle}
+                    onPhaseProgress={updateSocPhase}
+                    onLoadComplete={handleSocLoadComplete}
+                    onTogglePivotOrb={togglePivotOrb}
                   />
                 </>
               )}
@@ -1359,45 +1096,13 @@ export function SceneView() {
           )}
 
           {/* Decomposed-export mode: existing scene-viewer pipeline. */}
-          {activeCategory !== "Maps" && actionError && !busy && (
+          {activeCategory !== "Maps" && actionError && !progress.active && (
             <div className="absolute top-3 right-3 z-10 max-w-md bg-danger/15 border border-danger/30 text-danger text-xs px-3 py-2 rounded-md font-mono break-words shadow">
               {actionError}
             </div>
           )}
 
-          {activeCategory !== "Maps" && busy && (
-            <div className="absolute inset-0 z-10 bg-bg/85 backdrop-blur-sm flex items-center justify-center">
-              <div className="w-[420px] bg-bg-alt border border-border rounded-lg p-6 flex flex-col gap-4 shadow-lg">
-                <h3 className="text-sm font-semibold text-text">
-                  Exporting {busy.entityName}
-                </h3>
-                <div className="flex flex-col gap-1.5">
-                  <div className="w-full bg-surface rounded-full h-2 overflow-hidden">
-                    <div
-                      className="bg-accent h-full rounded-full transition-all duration-300"
-                      style={{ width: `${Math.min(busy.fraction, 1) * 100}%` }}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between text-[11px] text-text-dim">
-                    <span className="truncate">
-                      {busy.stage || "Working..."}
-                    </span>
-                    <span className="tabular-nums">
-                      {Math.round(busy.fraction * 100)}%
-                    </span>
-                  </div>
-                </div>
-                <button
-                  onClick={handleCancel}
-                  className="w-full py-2 rounded-md text-xs font-medium bg-danger/15 text-danger hover:bg-danger/25 transition-colors cursor-pointer"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-
-          {activeCategory !== "Maps" && !active && !busy && (
+          {activeCategory !== "Maps" && !active && !progress.active && (
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="max-w-md text-center px-6">
                 <Box
@@ -1418,57 +1123,49 @@ export function SceneView() {
 
           {activeCategory !== "Maps" && active && (
             <>
-              {/* Top-right control strip: Livery + Style + Settings.
-                  Settings is inline here so it sits immediately right of
-                  Style and the dropdown grows downward from the button. */}
-              <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
-                <ProjectionModePicker handle={flightCamHandle} embedded />
-                {paintVariants.length > 0 && (
-                  <label className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-bg-alt/90 border border-border text-xs text-text-sub shadow">
-                    <span className="text-text-faint">Livery</span>
-                    <select
-                      value={livery ?? ""}
-                      onChange={(e) =>
-                        setLivery(e.target.value === "" ? null : e.target.value)
-                      }
-                      className="bg-transparent outline-none text-text cursor-pointer"
-                    >
-                      <option value="" className="bg-bg-alt text-text">
-                        Default
-                      </option>
-                      {paintVariants.map((v) => (
-                        <option
-                          key={v.palette_id}
-                          value={v.palette_id}
-                          className="bg-bg-alt text-text"
-                        >
-                          {v.display_name ??
-                            v.subgeometry_tag ??
-                            v.palette_id}
+              <ViewerToolbar
+                flightCamHandle={flightCamHandle}
+                renderStyle={renderStyle}
+                onRenderStyleChange={setRenderStyle}
+                settings={viewerSettings}
+                onSettingsChange={updateSettings}
+                kind="ships"
+                leadingSlot={
+                  paintVariants.length > 0 ? (
+                    <label className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-bg-alt/90 border border-border text-xs text-text-sub shadow">
+                      <span className="text-text-faint">Livery</span>
+                      <select
+                        value={livery ?? ""}
+                        // Blur after selection so arrow keys go back
+                        // to orbiting the camera instead of cycling
+                        // the dropdown options.
+                        onChange={(e) => {
+                          setLivery(
+                            e.target.value === "" ? null : e.target.value,
+                          );
+                          e.currentTarget.blur();
+                        }}
+                        className="bg-transparent outline-none text-text cursor-pointer"
+                      >
+                        <option value="" className="bg-bg-alt text-text">
+                          Default
                         </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-                <label className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-bg-alt/90 border border-border text-xs text-text-sub shadow">
-                  <span className="text-text-faint">Style</span>
-                  <select
-                    value={renderStyle}
-                    onChange={(e) => setRenderStyle(e.target.value as RenderStyle)}
-                    className="bg-transparent outline-none text-text cursor-pointer"
-                  >
-                    {RENDER_STYLES.map((opt) => (
-                      <option key={opt.value} value={opt.value} className="bg-bg-alt text-text">
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <SettingsPanel
-                  settings={viewerSettings}
-                  onChange={updateSettings}
-                />
-              </div>
+                        {paintVariants.map((v) => (
+                          <option
+                            key={v.palette_id}
+                            value={v.palette_id}
+                            className="bg-bg-alt text-text"
+                          >
+                            {v.display_name ??
+                              v.subgeometry_tag ??
+                              v.palette_id}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null
+                }
+              />
               <SceneViewer
                 packageInfo={active}
                 renderStyle={renderStyle}
@@ -1480,6 +1177,7 @@ export function SceneView() {
                 onPaints={setPaintVariants}
                 onStatus={setStatus}
                 onFlightCamReady={setFlightCamHandle}
+                onTogglePivotOrb={togglePivotOrb}
               />
             </>
           )}

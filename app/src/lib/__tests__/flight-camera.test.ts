@@ -775,7 +775,7 @@ describe("dispatchViewerHotkey", () => {
     expect(toggled).toBe(0);
   });
 
-  it("KeyH toggles HUD on first press but not on repeat", () => {
+  it("KeyH toggles pivot orb on first press but not on repeat", () => {
     const m = makeMockHandle();
     const root = new THREE.Object3D();
     let toggled = 0;

@@ -47,7 +47,12 @@ export function ProjectionModePicker({ handle, embedded = false }: Props) {
       <span className="text-text-faint">Projection</span>
       <select
         value={snapshot.projectionMode}
-        onChange={(e) => handle.setProjectionMode(e.target.value as ProjectionMode)}
+        // Blur after selection so arrow keys go back to orbiting the
+        // camera instead of cycling the dropdown options.
+        onChange={(e) => {
+          handle.setProjectionMode(e.target.value as ProjectionMode);
+          e.currentTarget.blur();
+        }}
         className="bg-transparent outline-none text-text cursor-pointer"
       >
         {PROJECTION_MODES.map((m) => (
