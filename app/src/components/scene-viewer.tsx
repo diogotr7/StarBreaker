@@ -68,7 +68,8 @@ import {
   type SubmaterialRecord,
 } from "../lib/decomposed-loader";
 import { MaterialInspector, type PickHit } from "./material-inspector";
-import { FlightCamHud } from "./flight-cam-hud";
+import { SceneInfoPanel } from "./scene-info-panel";
+import { NavWidget } from "./nav-widget";
 import {
   dispatchViewerHotkey,
   useFlightCamera,
@@ -273,11 +274,6 @@ export function SceneViewer({
   const [debugFallbacks, setDebugFallbacks] = useState(false);
   const activeDebugRef = useRef(false);
 
-  // Combined bottom-right panel (flight-cam HUD + scene-load metrics)
-  // visibility. Hidden state collapses both sections to a tiny
-  // re-expand affordance so the canvas reclaims that screen real
-  // estate. Toggled by the H key and the in-panel button below.
-  const [hudVisible, setHudVisible] = useState(true);
 
   // Persistent caches scoped to the current scene load. The bindings
   // list lets us rebuild materials in place when the render style
@@ -1945,34 +1941,17 @@ export function SceneViewer({
           <p className="text-xs text-text-dim mt-1 font-mono break-all">{error}</p>
         </div>
       )}
-      {/* Combined bottom-right panel: flight-cam HUD readout (top
-          section) + scene-load metrics (below the divider). A single
-          show/hide toggle (button + H key) collapses the whole panel
-          to a tiny re-expand affordance so the canvas reclaims the
-          screen real estate. The metrics block is only rendered while
-          stats is non-null and there is no load error. */}
-      {!error && (hudVisible ? (
-        <div
-          className="absolute bottom-2 right-2 z-10 max-w-md rounded-md bg-bg-alt/95 border border-border shadow"
-        >
-          <div className="flex items-start justify-between gap-2 px-3 py-1.5">
-            <FlightCamHud handle={flightCam} embedded />
-            <button
-              type="button"
-              onClick={() => setHudVisible(false)}
-              title="Hide stats panel (H)"
-              aria-label="Hide stats panel"
-              className="text-[10px] px-1.5 py-0.5 rounded border border-border bg-bg/50 text-text-sub hover:bg-bg/80 hover:text-text font-mono shrink-0"
-            >
-              hide
-            </button>
-          </div>
-          {stats && (
-            <div className="border-t border-border px-3 py-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-xs text-text-sub font-mono">
-                  {stats.instances} parts &middot; {stats.interiors} interiors &middot; {stats.lights} lights
-                </p>
+      {/* Bottom-right column: on-screen nav widget on top, scene-info
+          panel below. Both panels render embedded so the wrapper can
+          stack them with a small gap. */}
+      {!error && (
+        <div className="absolute bottom-2 right-2 z-10 flex flex-col items-end gap-2">
+          <NavWidget flightCamHandle={flightCam} />
+          <SceneInfoPanel
+            flightCamHandle={flightCam}
+            embedded
+            actions={
+              stats ? (
                 <button
                   type="button"
                   className={`text-[10px] px-2 py-0.5 rounded border font-mono ${
@@ -1981,57 +1960,55 @@ export function SceneViewer({
                       : "bg-bg/50 border-border text-text-sub hover:bg-bg/80"
                   }`}
                   onClick={() => setDebugFallbacks((v) => !v)}
-                  title="Recolour fallback / stand-in materials with diagnostic neons (cyan = heuristic primary, green = no palette, red = unknown family, yellow = hologram, magenta-violet = screen, pink = skin)"
                 >
                   {debugFallbacks ? "DBG ON" : "DBG"}
                 </button>
-              </div>
-              <p className="text-[11px] text-text-dim font-mono mt-1">
-                mats {stats.metrics.totalBuilt}
-                {(() => {
-                  const fams = Object.entries(stats.metrics.byFamily)
-                    .sort((a, b) => b[1] - a[1])
-                    .slice(0, 4)
-                    .map(([k, v]) => `${k}=${v}`)
-                    .join(" ");
-                  return fams ? ` (${fams})` : "";
-                })()}
-              </p>
-              <p className="text-[11px] text-text-dim font-mono">
-                tex {stats.metrics.diffuseTextureSuccess}/
-                {stats.metrics.diffuseTextureSuccess + stats.metrics.diffuseTextureMiss}
-                {" "}&middot; tint {stats.metrics.paletteTintApplied}
-                {stats.metrics.paletteHeuristicPrimaryFallback > 0
-                  ? ` (+${stats.metrics.paletteHeuristicPrimaryFallback} heur)`
-                  : ""}
-                {stats.metrics.paletteTintMissing > 0
-                  ? ` -${stats.metrics.paletteTintMissing} miss`
-                  : ""}
-              </p>
-              <p className="text-[11px] text-text-dim font-mono">
-                cc {stats.metrics.clearCoatFired}
-                {" "}&middot; sysB {stats.metrics.systemBFired}
-                {" "}&middot; sysA {stats.metrics.systemAFired}
-                {" "}&middot; ddna {stats.metrics.ddnaRoughnessHooked}
-                {" "}&middot; pom {stats.metrics.pomHooked}
-                {stats.metrics.dirtOverlayHooked > 0
-                  ? ` &middot; dirt ${stats.metrics.dirtOverlayHooked}`
-                  : ""}
-              </p>
-            </div>
-          )}
+              ) : undefined
+            }
+            actionsTitle="Recolour fallback / stand-in materials with diagnostic neons (cyan = heuristic primary, green = no palette, red = unknown family, yellow = hologram, magenta-violet = screen, pink = skin)"
+          >
+            {stats && (
+              <>
+                <p className="text-xs text-text-sub font-mono">
+                  {stats.instances} parts &middot; {stats.interiors} interiors &middot; {stats.lights} lights
+                </p>
+                <p className="text-[11px] text-text-dim font-mono mt-1">
+                  mats {stats.metrics.totalBuilt}
+                  {(() => {
+                    const fams = Object.entries(stats.metrics.byFamily)
+                      .sort((a, b) => b[1] - a[1])
+                      .slice(0, 4)
+                      .map(([k, v]) => `${k}=${v}`)
+                      .join(" ");
+                    return fams ? ` (${fams})` : "";
+                  })()}
+                </p>
+                <p className="text-[11px] text-text-dim font-mono">
+                  tex {stats.metrics.diffuseTextureSuccess}/
+                  {stats.metrics.diffuseTextureSuccess + stats.metrics.diffuseTextureMiss}
+                  {" "}&middot; tint {stats.metrics.paletteTintApplied}
+                  {stats.metrics.paletteHeuristicPrimaryFallback > 0
+                    ? ` (+${stats.metrics.paletteHeuristicPrimaryFallback} heur)`
+                    : ""}
+                  {stats.metrics.paletteTintMissing > 0
+                    ? ` -${stats.metrics.paletteTintMissing} miss`
+                    : ""}
+                </p>
+                <p className="text-[11px] text-text-dim font-mono">
+                  cc {stats.metrics.clearCoatFired}
+                  {" "}&middot; sysB {stats.metrics.systemBFired}
+                  {" "}&middot; sysA {stats.metrics.systemAFired}
+                  {" "}&middot; ddna {stats.metrics.ddnaRoughnessHooked}
+                  {" "}&middot; pom {stats.metrics.pomHooked}
+                  {stats.metrics.dirtOverlayHooked > 0
+                    ? ` &middot; dirt ${stats.metrics.dirtOverlayHooked}`
+                    : ""}
+                </p>
+              </>
+            )}
+          </SceneInfoPanel>
         </div>
-      ) : (
-        <button
-          type="button"
-          onClick={() => setHudVisible(true)}
-          title="Show stats panel (H)"
-          aria-label="Show stats panel"
-          className="absolute bottom-2 right-2 z-10 text-[10px] px-2 py-1 rounded border border-border bg-bg-alt/90 text-text-sub hover:bg-bg-alt hover:text-text font-mono shadow"
-        >
-          show stats
-        </button>
-      ))}
+      )}
       <MaterialInspector
         hits={pickHits}
         selectedHitIndex={selectedHitIndex}

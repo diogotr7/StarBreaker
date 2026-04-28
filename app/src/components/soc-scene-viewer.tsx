@@ -59,12 +59,17 @@ import {
   sceneGlbAssetUrl,
   type LoadSceneResponse,
 } from "../lib/commands";
-import { FlightCamHud } from "./flight-cam-hud";
+import { SceneInfoPanel } from "./scene-info-panel";
+import { NavWidget } from "./nav-widget";
 import {
   dispatchViewerHotkey,
   useFlightCamera,
   type FlightCamHandle,
 } from "../lib/flight-camera";
+import {
+  captureScreenshot,
+  formatScreenshotFilename,
+} from "../lib/screenshot";
 import {
   applyRenderStyleToScene,
   clearMobiGlasMaterials,
@@ -139,6 +144,11 @@ export interface SocSceneViewerProps {
    *  so the binding flips a parent-side state rather than mutating
    *  anything on this component. Optional; if omitted, H is a no-op. */
   onTogglePivotOrb?: () => void;
+  /** Slug used as the screenshot filename prefix when F9 fires. The
+   *  Ships viewer derives this from the package name; for SOC scenes
+   *  the parent passes the socpak path tail (without `.socpak`).
+   *  Falls back to "soc_scene" when not provided. */
+  screenshotSlug?: string;
 }
 
 interface TextureResolutionStats {
@@ -155,6 +165,7 @@ export function SocSceneViewer({
   onLoadComplete,
   onFlightCamReady,
   onTogglePivotOrb,
+  screenshotSlug,
 }: SocSceneViewerProps) {
   // Mirror the latest togglePivotOrb prop into a ref so the keydown
   // listener (registered once on mount with empty deps) always calls
@@ -187,6 +198,11 @@ export function SocSceneViewer({
   // texture decode all over again) instead of just swapping materials.
   const renderStyleRef = useRef<RenderStyle>(renderStyle);
   renderStyleRef.current = renderStyle;
+  // Mirror screenshotSlug into a ref so the F9 keydown handler always
+  // reads the latest socpak slug without forcing the listener to
+  // re-register on every parent render.
+  const screenshotSlugRef = useRef<string | undefined>(screenshotSlug);
+  screenshotSlugRef.current = screenshotSlug;
 
   // ── Three.js bootstrap (runs once) ────────────────────────────────
   useEffect(() => {
@@ -310,19 +326,45 @@ export function SocSceneViewer({
   }, [flightCam, onFlightCamReady]);
 
   // Top-level viewer shortcuts: R reframes, H toggles the pivot orb,
-  // Numpad 0-5 snap to view presets. Same dispatch table the Ships
-  // viewer uses (`dispatchViewerHotkey` in flight-camera.ts), so the
-  // two surfaces stay in lockstep. Listener on `window` so it fires
-  // regardless of focus, except for typing targets.
-  //
-  // F9 (high-res screenshot) is intentionally NOT bound here -- the
-  // capture helper is package-aware and only the Ships viewer wires
-  // it today. A SOC-flavoured screenshot path is on the C7+ backlog.
+  // Numpad 0-5 snap to view presets, F9 captures a high-res
+  // screenshot. Same dispatch + capture path the Ships viewer uses,
+  // so the two surfaces stay in lockstep. Listener on `window` so it
+  // fires regardless of focus, except for typing targets.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       const ae = document.activeElement;
       const tag = ae?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
+      // F9 first -- not part of dispatchViewerHotkey because it
+      // needs the THREE refs that only this component owns.
+      if (e.code === "F9") {
+        e.preventDefault();
+        const scene = sceneRef.current;
+        const baseRenderer = rendererRef.current;
+        const camera =
+          flightCamRef.current?.getActiveCamera() ?? cameraRef.current;
+        if (!scene || !baseRenderer || !camera) return;
+        const projectionMode = flightCamRef.current?.getState().projectionMode;
+        const filename = formatScreenshotFilename(
+          screenshotSlugRef.current ?? "soc_scene",
+          new Date(),
+        );
+        captureScreenshot({
+          scene,
+          camera,
+          baseRenderer,
+          filename,
+          projectionMode,
+          onProgress: (phase, info) => {
+            console.info(
+              `[screenshot] phase=${phase}${info ? ` ${info}` : ""}`,
+            );
+          },
+        }).catch((err) => {
+          console.error("[screenshot] handler caught:", err);
+        });
+        return;
+      }
       const handled = dispatchViewerHotkey(
         { code: e.code, repeat: e.repeat },
         flightCamRef.current,
@@ -522,26 +564,30 @@ export function SocSceneViewer({
           {error}
         </div>
       )}
-      {stats && (
-        <div className="absolute bottom-3 left-3 z-10 bg-bg-alt/90 border border-border text-xs text-text-sub px-3 py-1.5 rounded-md shadow font-mono tabular-nums">
-          {stats.meshes} meshes / {stats.nodes} nodes
-          {" / lights "}
-          {stats.lights}
-          {response.lights_dropped > 0
-            ? `/${stats.lights + response.lights_dropped}`
-            : ""}
-          {" / "}
-          {stats.textures.resolved}/{stats.textures.total} textures
-          {response.materials_resolved > 0 || response.materials_default > 0 ? (
-            <>
-              {" / "}
-              materials {response.materials_resolved}/
-              {response.materials_resolved + response.materials_default}
-            </>
-          ) : null}
-        </div>
-      )}
-      <FlightCamHud handle={flightCam} />
+      <div className="absolute bottom-2 right-2 z-10 flex flex-col items-end gap-2">
+        <NavWidget flightCamHandle={flightCam} />
+        <SceneInfoPanel flightCamHandle={flightCam} embedded>
+          {stats && (
+            <p className="text-xs text-text-sub font-mono tabular-nums">
+              {stats.meshes} meshes &middot; {stats.nodes} nodes &middot;{" "}
+              {stats.lights}
+              {response.lights_dropped > 0
+                ? `/${stats.lights + response.lights_dropped}`
+                : ""}{" "}
+              lights &middot; {stats.textures.resolved}/{stats.textures.total}{" "}
+              textures
+              {(response.materials_resolved > 0 ||
+                response.materials_default > 0) && (
+                <>
+                  {" "}
+                  &middot; materials {response.materials_resolved}/
+                  {response.materials_resolved + response.materials_default}
+                </>
+              )}
+            </p>
+          )}
+        </SceneInfoPanel>
+      </div>
     </div>
   );
 }

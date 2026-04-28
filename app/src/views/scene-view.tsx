@@ -85,6 +85,16 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(digits)} ${units[idx]}`;
 }
 
+/** Derive a short slug from a socpak path for screenshot filenames.
+ *  Strips the directory prefix and the `.socpak` extension; falls back
+ *  to "soc_scene" when the input is null. */
+function socpakSlug(socpakPath: string | null): string {
+  if (!socpakPath) return "soc_scene";
+  const normalised = socpakPath.replace(/\\/g, "/");
+  const tail = normalised.split("/").pop() ?? socpakPath;
+  return tail.replace(/\.socpak$/i, "");
+}
+
 /** Synthesize a DecomposedPackageInfo from a package_dir path. */
 function packageInfoFromDir(packageDir: string): DecomposedPackageInfo {
   // Pull out the trailing folder name as the package name and walk back
@@ -263,13 +273,23 @@ export function SceneView() {
   // ship; flipping the toggle re-runs `listSceneEntities` so the
   // "cached" badges reflect the chosen slot.
   const [fastPreview, setFastPreview] = useState(false);
+  // Show WIP toggle. When enabled, listSceneEntities also returns
+  // CIG-internal / in-development entities (Mauler, Idris, Javelin,
+  // Starlifter A2, plus 400+ NPC variants and derelicts). The list
+  // grows from ~80 ships to ~500. WIP entries get an [WIP] badge in
+  // the row. Default OFF -- most users want the player-flyable
+  // roster only. Toggling re-runs listSceneEntities; does not
+  // affect the export cache key (these flags only filter the LIST,
+  // not the export bytes).
+  const [showWip, setShowWip] = useState(false);
 
   const opts: SceneExportOpts = useMemo(
     () => ({
       ...DEFAULT_SCENE_EXPORT_OPTS,
       include_interior: !fastPreview,
+      include_wip: showWip,
     }),
-    [fastPreview],
+    [fastPreview, showWip],
   );
 
   // Track in-flight export so progress events from older runs don't
@@ -799,6 +819,26 @@ export function SceneView() {
           />
           Fast preview (skip interiors)
         </label>
+        <label
+          className={`
+            flex items-center gap-2 px-2.5 py-1.5 rounded-md
+            text-xs cursor-pointer transition-colors select-none
+            ${
+              showWip
+                ? "bg-primary/15 text-text"
+                : "bg-surface hover:bg-surface-hi text-text-sub hover:text-text"
+            }
+          `}
+          title="Also list CIG-internal / in-development entities (Mauler, Idris-M, Javelin, Starlifter A2, plus NPC variants and derelicts). The list grows from ~80 to ~500 entries; WIP entries get a [WIP] badge."
+        >
+          <input
+            type="checkbox"
+            checked={showWip}
+            onChange={(e) => setShowWip(e.target.checked)}
+            className="accent-accent cursor-pointer"
+          />
+          Show WIP
+        </label>
         {cache && (
           <span
             className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-surface text-text-sub text-xs select-none"
@@ -980,8 +1020,18 @@ export function SceneView() {
                   title={entity.entity_name}
                 >
                   <div className="flex-1 min-w-0">
-                    <div className="truncate">
-                      {entity.display_name ?? entity.entity_name}
+                    <div className="truncate flex items-center gap-1.5">
+                      <span className="truncate">
+                        {entity.display_name ?? entity.entity_name}
+                      </span>
+                      {entity.is_wip && (
+                        <span
+                          className="shrink-0 text-[9px] font-mono uppercase tracking-wider px-1 py-0.5 rounded bg-warning/20 text-warning border border-warning/30"
+                          title="inclusionMode != ReadyToInclude in DataCore. WIP capital ship, NPC variant, derelict, or mission objective. Export may produce a partial mesh or placeholder textures."
+                        >
+                          WIP
+                        </span>
+                      )}
                     </div>
                     {entity.display_name && (
                       <div className="truncate text-[10px] text-text-faint">
@@ -1089,6 +1139,7 @@ export function SceneView() {
                     onPhaseProgress={updateSocPhase}
                     onLoadComplete={handleSocLoadComplete}
                     onTogglePivotOrb={togglePivotOrb}
+                    screenshotSlug={socpakSlug(socActivePath)}
                   />
                 </>
               )}

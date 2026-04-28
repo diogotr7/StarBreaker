@@ -275,6 +275,18 @@ pub struct SceneExportOpts {
     pub include_interior: bool,
     pub include_lights: bool,
     pub include_nodraw: bool,
+    /// When true, the entity list returned by `list_scene_entities`
+    /// also includes records flagged `inclusionMode = "DoNotInclude"`
+    /// (and other non-`ReadyToInclude` values). These are CIG-internal
+    /// or in-development entities -- WIP capital ships, NPC variants,
+    /// derelicts, mission objectives. They are tagged `is_wip: true`
+    /// in the DTO so the UI can mark them. Defaults to false (current
+    /// behaviour: only ship the player-flyable roster).
+    ///
+    /// Does NOT participate in the export cache key -- this is purely
+    /// a list filter.
+    #[serde(default)]
+    pub include_wip: bool,
 }
 
 impl Default for SceneExportOpts {
@@ -288,6 +300,7 @@ impl Default for SceneExportOpts {
             include_interior: true,
             include_lights: true,
             include_nodraw: false,
+            include_wip: false,
         }
     }
 }
@@ -375,6 +388,13 @@ pub struct SceneEntityDto {
     pub category: String,
     /// True if a previous export with the same options is on disk.
     pub cached: bool,
+    /// True when this entity's `inclusionMode != "ReadyToInclude"` --
+    /// it only appears in the list because the caller passed
+    /// `include_wip = true`. The frontend renders a [WIP] badge so
+    /// users know the entity is not officially flyable; export still
+    /// works and may produce a partial mesh / placeholder textures.
+    #[serde(default)]
+    pub is_wip: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -531,11 +551,20 @@ pub async fn list_scene_entities(
                 continue;
             };
 
-            // Skip non-player variants — same rule as the 3D Export tab.
-            let is_npc_or_internal = inclusion_compiled.as_ref()
-                .and_then(|c| db.query_single::<Value>(c, record).ok().flatten())
-                .is_some_and(|v| matches!(v, Value::Enum(s) if s != "ReadyToInclude"));
-            if is_npc_or_internal {
+            // Skip non-player variants by default. When `include_wip`
+            // is set, keep them but flag with `is_wip = true` so the
+            // UI can render a [WIP] badge. The filter still drops
+            // records with no `EAEntityDataParams` at all (those are
+            // CIG-internal entities that pre-date the inclusion-mode
+            // tagging system) -- the `Some` arm only fires when the
+            // record carries an explicit non-`ReadyToInclude` value.
+            let inclusion_value = inclusion_compiled.as_ref()
+                .and_then(|c| db.query_single::<Value>(c, record).ok().flatten());
+            let is_wip = matches!(
+                &inclusion_value,
+                Some(Value::Enum(s)) if *s != "ReadyToInclude"
+            );
+            if is_wip && !opts.include_wip {
                 continue;
             }
 
@@ -561,6 +590,7 @@ pub async fn list_scene_entities(
                 display_name,
                 category: category.to_string(),
                 cached,
+                is_wip,
             });
         }
 

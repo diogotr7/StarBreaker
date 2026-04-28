@@ -5,10 +5,12 @@
 //
 // The keymap is the source of truth; if `flight-camera.ts` adds or
 // changes a binding, update this file to match. Bindings live in:
-//   - flight-camera.ts: WASDQE movement, IJKL/UO look, Arrow orbit,
-//     [/] cart, Numpad +/- FoV, Numpad 0-5 view presets, P projection
-//     cycle, R reframe, H HUD toggle, mouse buttons, wheel speed.
-//   - scene-viewer.tsx (Ships): F9 screenshot capture.
+//   - flight-camera.ts: WASDQE translation, IJKL/UO rotation, Arrow
+//     orbit, [/] cart, Numpad +/- FoV, Numpad 0-5 view presets, P
+//     projection cycle, R reframe, H pivot-orb toggle, mouse buttons,
+//     wheel speed.
+//   - scene-viewer.tsx (Ships) + soc-scene-viewer.tsx (Maps):
+//     F9 screenshot capture.
 
 import { useState } from "react";
 import { ChevronDown, ChevronUp, HelpCircle } from "lucide-react";
@@ -26,37 +28,38 @@ interface ControlGroup {
   items: Array<{ keys: string; description: string; note?: string }>;
 }
 
-function buildGroups(kind: ViewerSurfaceKind): ControlGroup[] {
+function buildGroups(_kind: ViewerSurfaceKind): ControlGroup[] {
   return [
     {
-      title: "Move",
+      title: "Translate camera (3 linear DOF)",
       items: [
-        { keys: "W A S D", description: "Forward / left / back / right" },
-        { keys: "Q E", description: "Down / up" },
-        { keys: "[ ]", description: "Cart out / in (along look direction)" },
+        { keys: "W S", description: "Translate fore / aft" },
+        { keys: "A D", description: "Translate port / starboard" },
+        { keys: "Q E", description: "Translate ventral / dorsal" },
+        { keys: "[ ]", description: "Dolly aft / fore (axial; pivot stays put)" },
       ],
     },
     {
-      title: "Look",
+      title: "Rotate camera (3 angular DOF)",
       items: [
         { keys: "I K", description: "Pitch up / down" },
-        { keys: "J L", description: "Yaw left / right" },
-        { keys: "U O", description: "Roll left / right" },
+        { keys: "J L", description: "Yaw port / starboard" },
+        { keys: "U O", description: "Roll port / starboard" },
       ],
     },
     {
-      title: "Orbit",
+      title: "Slew about pivot (2 angular DOF)",
       items: [
-        { keys: "Arrows", description: "Swing around the pivot point" },
+        { keys: "Arrows", description: "Pitch / yaw the camera around the fixed pivot" },
       ],
     },
     {
       title: "Mouse",
       items: [
-        { keys: "Left drag", description: "Pan in screen space" },
-        { keys: "Right drag", description: "Orbit around the pivot" },
-        { keys: "Middle drag", description: "Look without moving the pivot" },
-        { keys: "Wheel", description: "Adjust movement speed (not zoom)" },
+        { keys: "Left drag", description: "Translate in image plane (pan)" },
+        { keys: "Right drag", description: "Slew about pivot" },
+        { keys: "Middle drag", description: "Rotate camera in place (pivot follows)" },
+        { keys: "Wheel", description: "Adjust motion speed (not zoom)" },
       ],
     },
     {
@@ -76,11 +79,7 @@ function buildGroups(kind: ViewerSurfaceKind): ControlGroup[] {
       title: "UI",
       items: [
         { keys: "H", description: "Toggle the orange pivot orb" },
-        {
-          keys: "F9",
-          description: "Capture high-resolution screenshot",
-          note: kind === "soc" ? "Ships viewer only today" : undefined,
-        },
+        { keys: "F9", description: "Capture high-resolution screenshot" },
       ],
     },
   ];

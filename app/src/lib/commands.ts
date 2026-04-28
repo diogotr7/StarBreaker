@@ -571,6 +571,11 @@ export interface SceneExportOpts {
   include_interior: boolean;
   include_lights: boolean;
   include_nodraw: boolean;
+  /** When true, `listSceneEntities` also returns CIG-internal /
+   *  in-development entities (inclusionMode != "ReadyToInclude").
+   *  These get tagged `is_wip: true` in the DTO so the UI marks them.
+   *  Does not affect the export cache key. */
+  include_wip: boolean;
 }
 
 /** Defaults used when the user hasn't tweaked anything. Match Rust side. */
@@ -582,6 +587,7 @@ export const DEFAULT_SCENE_EXPORT_OPTS: SceneExportOpts = {
   include_interior: true,
   include_lights: true,
   include_nodraw: false,
+  include_wip: false,
 };
 
 export interface SceneEntityDto {
@@ -589,6 +595,11 @@ export interface SceneEntityDto {
   display_name: string | null;
   category: string;
   cached: boolean;
+  /** True when the entity is flagged `inclusionMode != "ReadyToInclude"`
+   *  in the DataCore -- WIP capital ships, NPC variants, derelicts,
+   *  mission objectives. Only present when the caller passed
+   *  `include_wip = true`. The UI renders a [WIP] badge for these. */
+  is_wip: boolean;
 }
 
 export interface SceneCachePath {

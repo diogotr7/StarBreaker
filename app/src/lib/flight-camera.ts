@@ -131,6 +131,15 @@ export interface FlightCamHandle {
    *  Settings panel toggle. The orb still updates its position every
    *  frame so toggling on does not require a frame for it to appear. */
   setPivotOrbVisible(visible: boolean): void;
+  /** Wheel-equivalent: nudge moveSpeed by one step. `direction = 1`
+   *  speeds up (matches scroll-up / wheel-deltaY < 0), `-1` slows
+   *  down. Used by the on-screen nav widget so mobile / remote
+   *  sessions can adjust speed without a physical wheel. */
+  nudgeMoveSpeed(direction: 1 | -1): void;
+  /** Single-step FoV adjust. `direction = 1` widens FoV, `-1`
+   *  narrows. Mirrors the NumpadAdd / NumpadSubtract bindings so the
+   *  on-screen nav widget can drive them too. */
+  nudgeFov(direction: 1 | -1): void;
 }
 
 // ---------- Public constants ----------
@@ -942,6 +951,18 @@ export function useFlightCamera(args: HookArgs): FlightCamHandle | null {
           camera.far = dist * 100;
           camera.updateProjectionMatrix();
         }
+        // Scale the WASDQE move-speed proportional to scene size. Without
+        // this, big maps (Exec Hangar at km-scale) feel like W and S
+        // "don't work" -- a 0.5 unit/frame translation at the default
+        // moveSpeed=1.0 is imperceptible against a 5000 unit AABB. The
+        // chosen ratio (dist / 100) gives ~50 units/frame at SOC scale
+        // and ~0.4 units/frame for a small ship, both of which feel
+        // responsive without being uncontrollable. Wheel-up still scales
+        // it further, wheel-down still slows it down.
+        if (Number.isFinite(dist) && dist > 0) {
+          const auto = dist / 100;
+          state.moveSpeed = Math.min(SPEED_MAX, Math.max(SPEED_MIN, auto));
+        }
         markDirty();
       },
       focusOnPoint(target: THREE.Vector3, distance?: number): void {
@@ -1051,6 +1072,19 @@ export function useFlightCamera(args: HookArgs): FlightCamHandle | null {
       },
       setPivotOrbVisible(visible: boolean): void {
         orb.visible = visible;
+      },
+      nudgeMoveSpeed(direction: 1 | -1): void {
+        // adjustMoveSpeed reads the sign of the deltaY: negative
+        // speeds up, positive slows down. Match that convention.
+        const deltaY = direction === 1 ? -100 : 100;
+        state.moveSpeed = adjustMoveSpeed(state.moveSpeed, deltaY);
+        markDirty();
+      },
+      nudgeFov(direction: 1 | -1): void {
+        state.fov = clampFov(state.fov + direction);
+        camera.fov = state.fov;
+        camera.updateProjectionMatrix();
+        markDirty();
       },
     };
     setHandle(h);
