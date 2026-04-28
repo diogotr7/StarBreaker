@@ -1752,11 +1752,15 @@ def _insert_animation_action(
     name = str(clip.get("name", "animation")) or "animation"
     trim_frame = _clip_cyclic_transition_target_frame(clip)
 
-    # Phase 24A: insert keyframes starting at the current scene frame so
-    # multiple action-mode clips can chain naturally on the timeline. The
-    # caller (UI button "Insert") sets the playhead at the desired anchor.
-    scene = context.scene if context is not None else bpy.context.scene
-    frame_offset = int(scene.frame_current) if scene is not None else 0
+    # Phase 46.2: anchor inserted keyframes at frame 1 by default. Earlier
+    # versions used the current scene playhead so multiple action-mode
+    # clips could chain naturally on the timeline, but in practice the
+    # per-clip NLA strip (added in Phase 46) is the proper UI gesture for
+    # time-shifting blocks: the user grabs the strip and drags it. Using
+    # the playhead as an implicit anchor surprised users who scrubbed the
+    # timeline and then re-applied a clip and saw it land at frame 76 (or
+    # wherever they had stopped).
+    frame_offset = 1
 
     updated = 0
     for obj in _iter_candidate_bone_objects(package_root):
