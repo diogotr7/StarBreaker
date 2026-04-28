@@ -566,21 +566,72 @@ fn read_time_keys(
                 })
                 .collect())
         }
-        // 8-byte header (start u16 + end u16 + marker u32), interpolate linearly
+        // Per-frame keyframe bitmap. Header: start u16, end u16, then a
+        // bitmap of (end - start + 1) bits stored LSB-first per byte. Each
+        // set bit at index `b` indicates a keyframe at frame `start + b`.
+        // The bitmap's first 4 bytes were historically misread as an opaque
+        // u32 "marker" and the keys were instead stretched uniformly across
+        // [start..end], which produced spurious asymmetric stagger between
+        // channels with different keyframe counts (Phase 47).
+        //
+        // The total number of set bits must equal `count`. We trust the
+        // bitmap; if the count disagrees we fall back to uniform stretch.
         0x02 | 0x42 => {
-            if offset + 8 > data.len() {
+            if offset + 4 > data.len() {
                 return Err(Error::Other(format!(
                     "Time header overflow at 0x{offset:x}"
                 )));
             }
-            let start = u16::from_le_bytes([data[offset], data[offset + 1]]) as f32;
-            let end = u16::from_le_bytes([data[offset + 2], data[offset + 3]]) as f32;
-            if count <= 1 {
-                return Ok(vec![start]);
+            let start = u16::from_le_bytes([data[offset], data[offset + 1]]) as u32;
+            let end = u16::from_le_bytes([data[offset + 2], data[offset + 3]]) as u32;
+            if end < start {
+                return Err(Error::Other(format!(
+                    "Time bitmap end {end} < start {start} at 0x{offset:x}"
+                )));
             }
-            Ok((0..count)
-                .map(|i| start + (end - start) * i as f32 / (count - 1) as f32)
-                .collect())
+            if count == 0 {
+                return Ok(Vec::new());
+            }
+            let bit_count = (end - start + 1) as usize;
+            let byte_count = bit_count.div_ceil(8);
+            let bitmap_start = offset + 4;
+            if bitmap_start + byte_count > data.len() {
+                return Err(Error::Other(format!(
+                    "Time bitmap overflow at 0x{offset:x} (need {byte_count} bytes)"
+                )));
+            }
+            let mut times = Vec::with_capacity(count);
+            let total_set: u32 = (0..byte_count)
+                .map(|i| data[bitmap_start + i].count_ones())
+                .sum();
+            if total_set as usize != count {
+                log::warn!(
+                    "Time bitmap at 0x{offset:x} has {total_set} set bits but count={count}; \
+                     falling back to uniform stretch over [{start}..{end}]"
+                );
+                if count == 1 {
+                    return Ok(vec![start as f32]);
+                }
+                let s = start as f32;
+                let e = end as f32;
+                return Ok((0..count)
+                    .map(|i| s + (e - s) * i as f32 / (count - 1) as f32)
+                    .collect());
+            }
+            'outer: for byte_idx in 0..byte_count {
+                let b = data[bitmap_start + byte_idx];
+                for bit_idx in 0..8 {
+                    let frame = byte_idx * 8 + bit_idx;
+                    if frame >= bit_count {
+                        break 'outer;
+                    }
+                    if (b >> bit_idx) & 1 == 1 {
+                        times.push((start as usize + frame) as f32);
+                    }
+                }
+            }
+            debug_assert_eq!(times.len(), count);
+            Ok(times)
         }
         _ => {
             log::warn!(
@@ -2801,6 +2852,59 @@ mod bake_tests {
             0,
             "channels with unresolved hashes must be excluded when bone_filter is set"
         );
+    }
+
+    #[test]
+    fn time_format_0x42_decodes_per_frame_keyframe_bitmap() {
+        // Phase 47: time format 0x02/0x42 is a per-frame keyframe bitmap of
+        // (end - start + 1) bits, LSB-first per byte. Each set bit at index
+        // `b` indicates a keyframe at frame `start + b`. The first 4 bytes
+        // of the bitmap occupy the slot historically misread as a u32
+        // "marker"; the rest follows immediately after.
+        //
+        // Sample below is the Scorpius `wings_deploy.caf` Top-Right wing
+        // mechanism (bone hash 0x5F3AF303). num_rot = 24, end = 75, so the
+        // bitmap is 76 bits = 10 bytes. Byte sequence (incl. start/end u16
+        // pair) verified empirically by `dump_dba_time_stream` against the
+        // shipped Scorpius DBA.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // start
+        bytes.extend_from_slice(&75u16.to_le_bytes()); // end
+        // 10 bytes of bitmap, LSB-first per byte:
+        bytes.extend_from_slice(&[
+            0xa5, 0x92, 0x72, 0x8a, // first 4 bytes (was the "marker")
+            0x25, 0x59, 0x0a, 0x00, 0x00, 0x08, // remaining 6 bytes
+        ]);
+
+        let times = read_time_keys(&bytes, 0, 24, 0x8242).expect("decode bitmap");
+        assert_eq!(times.len(), 24, "expected 24 keys, got {}", times.len());
+        // Verify a few: first set bit in 0xa5 (= 1010 0101 LSB-first) is
+        // bit 0 → frame 0, then bit 2 → frame 2, bit 5 → frame 5, bit 7
+        // → frame 7.
+        assert_eq!(times[0], 0.0);
+        assert_eq!(times[1], 2.0);
+        assert_eq!(times[2], 5.0);
+        assert_eq!(times[3], 7.0);
+        // Last key must reach frame 75 (the end of the bitmap), since
+        // 0x08 in byte 9 has bit 3 set → frame 9*8+3 = 75.
+        assert_eq!(*times.last().unwrap(), 75.0);
+    }
+
+    #[test]
+    fn time_format_0x42_count_mismatch_falls_back_to_uniform() {
+        // If the encoded bitmap's set-bit count disagrees with the
+        // controller's `num_rot_keys`, fall back to uniform stretch so the
+        // export still yields something playable. We do NOT silently
+        // truncate or pad.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&7u16.to_le_bytes());
+        bytes.extend_from_slice(&[0xff]); // 8 bits set → 8 keys
+        let times = read_time_keys(&bytes, 0, 5, 0x0042).expect("decode");
+        assert_eq!(times.len(), 5);
+        // Uniform fallback: 0, 1.75, 3.5, 5.25, 7.0
+        assert!((times[0] - 0.0).abs() < 1e-5);
+        assert!((times[4] - 7.0).abs() < 1e-5);
     }
 }
 
