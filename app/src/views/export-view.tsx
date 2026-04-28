@@ -40,6 +40,7 @@ export function ExportView() {
   const includeLights = useExportStore((s) => s.includeLights);
   const overwriteExistingAssets = useExportStore((s) => s.overwriteExistingAssets);
   const includeNodraw = useExportStore((s) => s.includeNodraw);
+  const includeAnimations = useExportStore((s) => s.includeAnimations);
   const threads = useExportStore((s) => s.threads);
   const outputDir = useExportStore((s) => s.outputDir);
   const setLod = useExportStore((s) => s.setLod);
@@ -51,6 +52,7 @@ export function ExportView() {
   const setIncludeLights = useExportStore((s) => s.setIncludeLights);
   const setOverwriteExistingAssets = useExportStore((s) => s.setOverwriteExistingAssets);
   const setIncludeNodraw = useExportStore((s) => s.setIncludeNodraw);
+  const setIncludeAnimations = useExportStore((s) => s.setIncludeAnimations);
   const setThreads = useExportStore((s) => s.setThreads);
   const setOutputDir = useExportStore((s) => s.setOutputDir);
 
@@ -153,6 +155,7 @@ export function ExportView() {
       threads,
       overwrite_existing_assets: overwriteExistingAssets,
       include_nodraw: includeNodraw,
+      include_animations: includeAnimations,
     };
     setExporting(true);
     setProgress(
@@ -541,6 +544,17 @@ export function ExportView() {
               />
               <span className="text-xs text-text-sub group-hover:text-text transition-colors">
                 Include lights
+              </span>
+            </label>
+            <label className="flex items-center gap-2.5 cursor-pointer group">
+              <input
+                type="checkbox"
+                checked={includeAnimations}
+                onChange={(e) => setIncludeAnimations(e.target.checked)}
+                className="accent-accent w-3.5 h-3.5 rounded"
+              />
+              <span className="text-xs text-text-sub group-hover:text-text transition-colors">
+                Include animations
               </span>
             </label>
           </div>
