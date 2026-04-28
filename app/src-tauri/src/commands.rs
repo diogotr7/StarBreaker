@@ -1348,3 +1348,79 @@ pub fn extract_p4k_file(
 
     Ok(())
 }
+
+/// Write a JSON diagnostic capture under the app's data directory.
+///
+/// `subdir` is a single-segment subdirectory under the app data dir
+/// (created if absent). `filename` is the bare filename with extension
+/// (no path separators). Returns the absolute path of the written file.
+///
+/// Path is always resolved under `app_data_dir()`; arbitrary paths are
+/// rejected. Used by the "Save JSON" buttons in the material inspector.
+#[tauri::command]
+pub fn write_diag_file(
+    app: AppHandle,
+    subdir: String,
+    filename: String,
+    content: String,
+) -> Result<String, AppError> {
+    use tauri::Manager;
+
+    if subdir.contains('/')
+        || subdir.contains('\\')
+        || subdir.contains("..")
+        || subdir.is_empty()
+    {
+        return Err(AppError::Internal(
+            "subdir must be a single-segment name with no separators".into(),
+        ));
+    }
+    if filename.contains('/') || filename.contains('\\') || filename.contains('\0') {
+        return Err(AppError::Internal(
+            "filename must not contain path separators".into(),
+        ));
+    }
+
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::Internal(format!("app_data_dir: {e}")))?;
+    let dir_path = base.join(&subdir);
+    std::fs::create_dir_all(&dir_path)?;
+
+    let file_path = dir_path.join(&filename);
+    std::fs::write(&file_path, content.as_bytes())?;
+
+    Ok(file_path.to_string_lossy().into_owned())
+}
+
+/// List filenames in a subdirectory of the app data dir.
+///
+/// Returns an empty list if the directory does not exist.
+/// Used by the "Save JSON" button to find the highest existing counter.
+#[tauri::command]
+pub fn list_diag_dir(app: AppHandle, subdir: String) -> Vec<String> {
+    use tauri::Manager;
+
+    if subdir.contains('/')
+        || subdir.contains('\\')
+        || subdir.contains("..")
+        || subdir.is_empty()
+    {
+        return Vec::new();
+    }
+
+    let base = match app.path().app_data_dir() {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let dir_path = base.join(&subdir);
+
+    match std::fs::read_dir(&dir_path) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}

@@ -1132,22 +1132,20 @@ pub fn extract_mtl_name(data: &[u8]) -> Option<String> {
 
 /// Decode a CrCh `MtlName` chunk's raw payload into the asset's MTL path.
 ///
-/// Layout matches the Lumberyard `CryHeaders.h` / `CGFLoader.cpp`
-/// definitions for the legacy CryEngine MtlName chunk: a fixed 128-byte
-/// null-terminated `char` name at a version-dependent offset within the
-/// payload.
+/// Layout: a fixed 128-byte null-terminated `char` name at a
+/// version-dependent offset within the chunk payload.
 ///
 /// Two chunk versions are observed in current content:
 ///   - **0x0800** — fixed 408-byte struct. Name at offset `0x08` (after
-///     `i32 nFlags` and `i32 nFlags2`).
+///     two `i32` flag fields).
 ///   - **0x0802** — variable-length, fixed 132-byte header. Name at
 ///     offset `0x00` — flags were dropped from the header.
 ///
 /// For an unknown version the offset-0 layout is used as a fallback;
 /// it's the dominant case in current content. The fallback is benign
-/// for an unrecognised 0x0800-style chunk because nFlags is almost
-/// always all-zero, so the decode produces an empty string and the
-/// caller treats that as "no MtlName".
+/// for an unrecognised 0x0800-style chunk because the prefixed flag
+/// fields are almost always all-zero, so the decode produces an empty
+/// string and the caller treats that as "no MtlName".
 ///
 /// Backslashes in the stored path are normalised to forward slashes to
 /// match the canonicalisation the rest of the pipeline uses.

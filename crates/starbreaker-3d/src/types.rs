@@ -387,7 +387,7 @@ pub struct EntityPayload {
     /// Unique per-export instance id for this child placement. The root
     /// entity is reserved id 0; every distinct child placement gets a
     /// fresh monotonic id even when several share the same `entity_name`
-    /// (e.g. paired weapon mounts on a hardpoint pair). Lets downstream
+    /// (e.g. two Mount_Gimbal_S1_NoSafety mounts on a Nox). Lets downstream
     /// consumers disambiguate sibling placements that the authored
     /// entity name alone cannot.
     pub instance_id: u32,

@@ -264,6 +264,8 @@ fn main() {
             decomposed_commands::clear_all_scene_cache,
             decomposed_commands::cache_stats,
             decomposed_commands::prune_stale_cache,
+            commands::write_diag_file,
+            commands::list_diag_dir,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

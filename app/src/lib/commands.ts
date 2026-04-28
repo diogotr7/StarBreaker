@@ -727,3 +727,26 @@ export function onSceneExportDone(
 
 // ── Diagnostic file capture ──
 
+/**
+ * Write a JSON diagnostic capture under the app's data directory.
+ * `subdir` is a single-segment subdirectory under the app data dir
+ * (created if absent); `filename` is the bare filename with extension.
+ * Returns the absolute path of the written file.
+ */
+export async function writeDiagFile(
+  subdir: string,
+  filename: string,
+  content: string,
+): Promise<string> {
+  return timedInvoke<string>("write_diag_file", { subdir, filename, content });
+}
+
+/**
+ * List filenames in a subdirectory of the app data dir. Empty if the
+ * subdirectory doesn't exist. Used to compute the next auto-increment
+ * counter for capture filenames.
+ */
+export async function listDiagDir(subdir: string): Promise<string[]> {
+  return timedInvoke<string[]>("list_diag_dir", { subdir });
+}
+

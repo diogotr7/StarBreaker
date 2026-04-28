@@ -951,9 +951,9 @@ export function SceneView() {
               <>
                 <div className="px-3 py-2 border-b border-border/60">
                   <p className="text-[11px] text-text-dim leading-relaxed">
-                    Multi-zone scene rendering. Each archetype below maps to a
-                    class of socpak content; loading is a future feature once
-                    the multi-zone scene parser lands.
+                    Multi-zone scene rendering. Loadable once the SOC-chunk
+                    scene parser lands. Each archetype below maps to a class
+                    of socpak content the engine renders today.
                   </p>
                 </div>
                 {[

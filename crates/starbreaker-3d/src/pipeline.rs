@@ -3524,6 +3524,11 @@ fn resolve_material(
     p4k_geom_path: &str,
     metadata_bytes: Option<&[u8]>,
 ) -> Option<mtl::MtlFile> {
+    // Observability: every call logs which path won (debug) or where it
+    // failed (warn). Tagged `[mtl-resolve]` so users can grep by mesh and
+    // see where GLB/sidecar drift originates. The log line is truthful
+    // about all three signals: was metadata present, did MtlName extract,
+    // did the resolved path load.
     let datacore_p4k = if datacore_material_path.is_empty() {
         String::new()
     } else {
@@ -3538,12 +3543,29 @@ fn resolve_material(
             let mtl_p4k_path = resolve_mtl_p4k_path(&mtl_name, p4k_geom_path);
             if let Some(mtl) = try_load_mtl(p4k, &mtl_p4k_path) {
                 log::debug!(
-                    "resolve_material: mtlname mesh={p4k_geom_path} mtl='{mtl_p4k_path}' submats={}",
+                    "[mtl-resolve] WIN-mtlname mesh={p4k_geom_path} \
+                     mtl_name='{mtl_name}' resolved='{mtl_p4k_path}' \
+                     datacore='{datacore_p4k}' submats={}",
                     mtl.materials.len(),
                 );
                 return Some(mtl);
             }
+            log::warn!(
+                "[mtl-resolve] mtlname-load-failed mesh={p4k_geom_path} \
+                 mtl_name='{mtl_name}' resolved='{mtl_p4k_path}' \
+                 (chunk extracted but MTL did not load) datacore='{datacore_p4k}'"
+            );
+        } else {
+            log::warn!(
+                "[mtl-resolve] mtlname-extract-none mesh={p4k_geom_path} \
+                 (metadata present but extract_mtl_name returned None) \
+                 datacore='{datacore_p4k}'"
+            );
         }
+    } else {
+        log::warn!(
+            "[mtl-resolve] no-metadata mesh={p4k_geom_path} datacore='{datacore_p4k}'"
+        );
     }
 
     // 2. Fall back to the DataCore-supplied path when no MtlName chunk
@@ -3551,14 +3573,21 @@ fn resolve_material(
     if !datacore_material_path.is_empty() {
         if let Some(mtl) = try_load_mtl(p4k, &datacore_p4k) {
             log::debug!(
-                "resolve_material: datacore mesh={p4k_geom_path} mtl='{datacore_p4k}' submats={}",
+                "[mtl-resolve] WIN-datacore mesh={p4k_geom_path} \
+                 datacore='{datacore_p4k}' submats={}",
                 mtl.materials.len(),
             );
             return Some(mtl);
         }
+        log::warn!(
+            "[mtl-resolve] datacore-load-failed mesh={p4k_geom_path} \
+             datacore='{datacore_p4k}'"
+        );
     }
 
-    log::debug!("resolve_material: no MTL resolved mesh={p4k_geom_path}");
+    log::warn!(
+        "[mtl-resolve] FAILED mesh={p4k_geom_path} datacore='{datacore_p4k}'"
+    );
     None
 }
 
@@ -5373,10 +5402,11 @@ mod tests {
 
     #[test]
     fn collect_child_payload_specs_assigns_unique_instance_ids_to_paired_siblings() {
-        // Two `Mount_Gimbal_S1_NoSafety` siblings on different hardpoints.
-        // Each carries one `laser` grandchild, and both grandchildren share
-        // the literal `entity_name = "laser"`. Without unique ids a
-        // downstream consumer cannot tell which laser hangs off which mount.
+        // Two `Mount_Gimbal_S1_NoSafety` siblings on different hardpoints
+        // (mirrors the Nox bug). Each carries one `laser` grandchild, and
+        // both grandchildren share the literal `entity_name = "laser"`.
+        // Without unique ids the loader cannot tell which laser hangs off
+        // which mount.
         let mount_left = resolved_node(
             "Mount_Gimbal_S1_NoSafety",
             "hardpoint_weapon_left",

@@ -19,6 +19,7 @@ server, export pipeline). Blender-addon-specific guidance lives in
 - `app/` — Tauri + React app (see `tasks.json` for build tasks).
 - `docs/` — in-repo reference: export contract, material authoring,
   shader family inventory.
+- `exports/` - (contents excluded via .gitignore) Temp folder for exports
 
 ## Building
 

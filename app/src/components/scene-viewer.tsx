@@ -66,6 +66,7 @@ import {
   type SceneManifest,
   type SubmaterialRecord,
 } from "../lib/decomposed-loader";
+import { MaterialInspector, type PickHit } from "./material-inspector";
 
 /**
  * Live diagnostic overrides applied to the scene after construction.
@@ -220,6 +221,13 @@ export function SceneViewer({
     metrics: MaterialBuildMetrics;
   } | null>(null);
   const generationRef = useRef(0);
+  // Picker state. `pickHits` is the ordered list of meshes intersected
+  // by the camera ray on the most recent left-click; `selectedHitIndex`
+  // is the row currently expanded into the details panel. Both are
+  // reset to empty/null when the panel's close button is pressed or a
+  // new scene is loaded.
+  const [pickHits, setPickHits] = useState<PickHit[]>([]);
+  const [selectedHitIndex, setSelectedHitIndex] = useState<number | null>(null);
   // Debug-fallback mode: when on, the loader recolours fallback /
   // stand-in material paths into distinct neons so the user can
   // visually identify which case is firing on each surface. Toggling
@@ -506,8 +514,71 @@ export function SceneViewer({
     });
     ro.observe(container);
 
+    // Picker: detect a no-drag left click on the canvas, raycast
+    // through the cursor, and surface the ordered hit list to the
+    // inspector panel. Listening at pointerdown/up rather than "click"
+    // lets us keep the down-position and disambiguate pick from
+    // orbit-drag without fighting OrbitControls.
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    let downX = 0;
+    let downY = 0;
+    let downT = 0;
+    const onPointerDown = (e: PointerEvent): void => {
+      if (e.button !== 0) return;
+      downX = e.clientX;
+      downY = e.clientY;
+      downT = performance.now();
+    };
+    const onPointerUp = (e: PointerEvent): void => {
+      if (e.button !== 0) return;
+      const dx = e.clientX - downX;
+      const dy = e.clientY - downY;
+      const dt = performance.now() - downT;
+      // 5px / 350ms thresholds: large enough that a relaxed click
+      // registers, small enough that an orbit drag never triggers
+      // a pick. Tuned to feel like a "tap" rather than a click.
+      if (dx * dx + dy * dy > 25) return;
+      if (dt > 350) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      ndc.y = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
+      raycaster.setFromCamera(ndc, camera);
+      // Intersect against the scene root (the model). Skip the ground
+      // mesh — its hits are noise for material inspection. recursive
+      // = true walks the whole subtree.
+      const hits = raycaster.intersectObject(sceneRoot, true);
+      const bindings = bindingsRef.current;
+      const bindingByMesh = new Map<THREE.Mesh, MaterialBinding>();
+      for (const b of bindings) bindingByMesh.set(b.mesh, b);
+      const pickList: PickHit[] = [];
+      let idx = 0;
+      for (const hit of hits) {
+        // Only meshes carry materials; lines/points etc. would never
+        // bind to a SubmaterialRecord, and the user wouldn't be
+        // clicking those for material info.
+        if (!(hit.object instanceof THREE.Mesh)) continue;
+        const binding = bindingByMesh.get(hit.object);
+        pickList.push({
+          hitIndex: idx++,
+          distance: hit.distance,
+          mesh: hit.object,
+          point: hit.point.clone(),
+          submaterial: binding?.submaterial ?? null,
+          sidecarKey: binding?.sidecarKey ?? null,
+          defaultSidecarKey: binding?.defaultSidecarKey ?? null,
+        });
+      }
+      setPickHits(pickList);
+      setSelectedHitIndex(pickList.length > 0 ? 0 : null);
+    };
+    renderer.domElement.addEventListener("pointerdown", onPointerDown);
+    renderer.domElement.addEventListener("pointerup", onPointerUp);
+
     return () => {
       ro.disconnect();
+      renderer.domElement.removeEventListener("pointerdown", onPointerDown);
+      renderer.domElement.removeEventListener("pointerup", onPointerUp);
       cancelAnimationFrame(animId);
       controls.dispose();
       // Release the IBL render target and the ground mesh's geometry /
@@ -669,6 +740,8 @@ export function SceneViewer({
     setError(null);
     setStats(null);
     setProgress(null);
+    setPickHits([]);
+    setSelectedHitIndex(null);
     resetMaterialMetrics();
 
     // Clear previous scene. The basis rotation lives on the sceneRoot
@@ -1777,6 +1850,17 @@ export function SceneViewer({
           </p>
         </div>
       )}
+      <MaterialInspector
+        hits={pickHits}
+        selectedHitIndex={selectedHitIndex}
+        onSelectHit={setSelectedHitIndex}
+        onClose={() => {
+          setPickHits([]);
+          setSelectedHitIndex(null);
+        }}
+        packageSlug={packageInfo.package_name}
+        liveryState={livery ?? "nolivery"}
+      />
     </div>
   );
 }
