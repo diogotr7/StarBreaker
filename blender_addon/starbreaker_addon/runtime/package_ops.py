@@ -1883,20 +1883,22 @@ def _insert_animation_action(
                 except Exception:
                     continue
 
-        # Phase 46: set explicit BEZIER interpolation on every inserted
-        # keyframe. The CryEngine source data is sparse (~24-35 keys for a
-        # 47-frame wing-deploy animation), and Blender's keyframe_insert()
-        # honours the user-pref default which may be CONSTANT or LINEAR
-        # depending on the install. Linear interpolation between sparse
-        # keys produces the visible "judder" the user reported on
-        # asymmetric multi-bone deployments. BEZIER + AUTO_CLAMPED handles
-        # easing automatically and matches the smooth in-engine playback.
+        # Phase 46: force LINEAR interpolation on every inserted keyframe
+        # to faithfully reproduce CryEngine's runtime playback. CryEngine
+        # interpolates compressed channels linearly (position lerp, rotation
+        # quaternion slerp) between adjacent keys; Blender's
+        # keyframe_insert() default depends on the user pref and is often
+        # BEZIER, which adds easing that the engine does not produce.
+        # CONSTANT (also a possible default) produces visible step-judder.
+        # LINEAR matches engine semantics exactly: per-component linear
+        # interpolation on quaternion fcurves approximates slerp closely
+        # enough that the cumulative rotation remains correct, and the
+        # source data is dense enough (~24-35 keys for a 75-frame clip)
+        # that residual lerp-vs-slerp drift is invisible.
         for fcurve in _action_fcurves(action):
             try:
                 for keyframe in fcurve.keyframe_points:
-                    keyframe.interpolation = "BEZIER"
-                    keyframe.handle_left_type = "AUTO_CLAMPED"
-                    keyframe.handle_right_type = "AUTO_CLAMPED"
+                    keyframe.interpolation = "LINEAR"
                 fcurve.update()
             except Exception:
                 continue
