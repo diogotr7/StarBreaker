@@ -816,13 +816,14 @@ fn read_snorm_full_positions(
 ///
 /// Layout for `active = [false, true, true]`, `count = 44`:
 ///
-///     [Y0..Y43 as 88 bytes][Z0..Z43 as 88 bytes]
+/// ```text
+/// [Y0..Y43 as 88 bytes][Z0..Z43 as 88 bytes]
+/// ```
 ///
 /// The earlier interleaved (key-major) decode happened to produce correct
 /// results for single-active-axis channels (where planar ≡ interleaved), but
-/// catastrophically misaligned multi-axis channels — see Phase 45 in
-/// `docs/StarBreaker/todo.md` for the Scorpius `wings_deploy` /
-/// `Wing_Grabber_Main_Bottom_Right` evidence.
+/// catastrophically misaligned multi-axis channels (Scorpius `wings_deploy` /
+/// `Wing_Grabber_Main_Bottom_Right` was the canonical regression case).
 fn read_snorm_packed_positions(
     data: &[u8],
     offset: usize,
