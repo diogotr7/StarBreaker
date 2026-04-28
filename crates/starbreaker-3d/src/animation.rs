@@ -1319,9 +1319,11 @@ pub fn dump_database_to_json(
     db: &AnimationDatabase,
     hash_to_name: &std::collections::HashMap<u32, String>,
     filter: Option<&str>,
+    bone_filter: Option<&str>,
     all_keyframes: bool,
 ) -> serde_json::Value {
     let filter_lc = filter.map(|f| f.to_ascii_lowercase());
+    let bone_filter_lc = bone_filter.map(|f| f.to_ascii_lowercase());
     let mut clips_out: Vec<serde_json::Value> = Vec::new();
     for (idx, clip) in db.clips.iter().enumerate() {
         if let Some(needle) = filter_lc.as_ref() {
@@ -1338,6 +1340,19 @@ pub fn dump_database_to_json(
         let mut channels_out: Vec<serde_json::Value> = Vec::with_capacity(clip.channels.len());
         for ch in &clip.channels {
             let bone_name = hash_to_name.get(&ch.bone_hash).cloned();
+            // Bone-name filter: when set, skip channels whose resolved name
+            // doesn't contain the substring (case-insensitive). Channels with
+            // unresolved hashes are skipped when a bone filter is active so the
+            // output is unambiguous.
+            if let Some(needle) = bone_filter_lc.as_ref() {
+                let matches = bone_name
+                    .as_ref()
+                    .map(|n| n.to_ascii_lowercase().contains(needle))
+                    .unwrap_or(false);
+                if !matches {
+                    continue;
+                }
+            }
             let mut channel_value = serde_json::json!({
                 "bone_hash": format!("0x{:08X}", ch.bone_hash),
                 "bone_name": bone_name,
@@ -2718,6 +2733,74 @@ mod bake_tests {
             assert_eq!(positions[i][2], 7.0);
             assert!((positions[i][1] - expected_y[i]).abs() < 1e-3);
         }
+    }
+
+    #[test]
+    fn dump_database_bone_filter_excludes_unmatched_and_unresolved() {
+        // Build a minimal in-memory database with three bones to validate
+        // that `bone_filter` keeps only resolved channels whose name
+        // contains the substring (case-insensitive).
+        let wing_left_hash = bone_name_hash("Wing_Mechanism_Bottom_Left");
+        let wing_right_hash = bone_name_hash("Wing_Mechanism_Bottom_Right");
+        let other_hash = bone_name_hash("Some_Other_Bone");
+        let unresolved_hash: u32 = 0xDEADBEEF;
+
+        let make_ch = |hash: u32| BoneChannel {
+            bone_hash: hash,
+            rotations: vec![Keyframe { time: 0.0, value: [0.0, 0.0, 0.0, 1.0] }],
+            positions: vec![],
+            rot_format_flags: 0,
+            pos_format_flags: 0,
+        };
+
+        let db = AnimationDatabase {
+            clips: vec![AnimationClip {
+                name: "wings_deploy".to_string(),
+                fps: 30.0,
+                channels: vec![
+                    make_ch(wing_left_hash),
+                    make_ch(wing_right_hash),
+                    make_ch(other_hash),
+                    make_ch(unresolved_hash),
+                ],
+            }],
+        };
+        let mut hash_to_name = std::collections::HashMap::new();
+        hash_to_name.insert(wing_left_hash, "Wing_Mechanism_Bottom_Left".to_string());
+        hash_to_name.insert(wing_right_hash, "Wing_Mechanism_Bottom_Right".to_string());
+        hash_to_name.insert(other_hash, "Some_Other_Bone".to_string());
+
+        // No bone_filter: all 4 channels pass through.
+        let no_filter =
+            dump_database_to_json(&db, &hash_to_name, None, None, false);
+        assert_eq!(no_filter["clips"][0]["channels"].as_array().unwrap().len(), 4);
+
+        // bone_filter="wing_mechanism" (case-insensitive): only the two wings.
+        let wings =
+            dump_database_to_json(&db, &hash_to_name, None, Some("wing_mechanism"), false);
+        let chans = wings["clips"][0]["channels"].as_array().unwrap();
+        assert_eq!(chans.len(), 2);
+        for ch in chans {
+            assert!(ch["bone_name"]
+                .as_str()
+                .unwrap()
+                .to_ascii_lowercase()
+                .contains("wing_mechanism"));
+        }
+
+        // bone_filter without a skeleton (empty hash_to_name) excludes everything.
+        let no_skel = dump_database_to_json(
+            &db,
+            &std::collections::HashMap::new(),
+            None,
+            Some("wing_mechanism"),
+            false,
+        );
+        assert_eq!(
+            no_skel["clips"][0]["channels"].as_array().unwrap().len(),
+            0,
+            "channels with unresolved hashes must be excluded when bone_filter is set"
+        );
     }
 }
 

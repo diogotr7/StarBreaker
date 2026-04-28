@@ -108,10 +108,12 @@ pub struct MtlSummaryRequest {
 pub struct DbaDumpRequest {
     #[schemars(description = "Path to a .dba or .caf file in P4k (case-insensitive, Data\\ prefix optional). May also be an absolute filesystem path.")]
     pub path: String,
-    #[schemars(description = "Optional path to a .chr / .skin / .skinm skeleton used to resolve bone hashes to names. Same path resolution as 'path'.")]
+    #[schemars(description = "Optional path to a .chr / .skin / .skinm skeleton used to resolve bone hashes to names. Same path resolution as 'path'. Required for bone_filter to work.")]
     pub skeleton: Option<String>,
-    #[schemars(description = "Filter clips by case-insensitive substring match on the clip metadata name.")]
+    #[schemars(description = "Filter CLIPS by case-insensitive substring match on the clip metadata name (e.g. 'wings_deploy'). Independent of bone_filter.")]
     pub filter: Option<String>,
+    #[schemars(description = "Filter CHANNELS by case-insensitive substring match on the resolved bone name (e.g. 'Wing_Mechanism'). Requires `skeleton` to be set; channels with unresolved hashes are excluded when this is active.")]
+    pub bone_filter: Option<String>,
     #[schemars(description = "If true, include every keyframe per channel; otherwise only first/last samples are included. Default false.")]
     pub all_keyframes: Option<bool>,
 }
@@ -810,7 +812,7 @@ impl StarBreakerMcp {
         out
     }
 
-    #[tool(description = "Inspect a CryEngine animation database (.dba) or compressed animation file (.caf). Returns structured JSON: clip metadata (name, fps, frame_count, channel_count) and per-channel bone hashes plus first/last keyframe samples. Provide a 'skeleton' path to resolve bone hashes to names. Replaces the legacy `starbreaker dba dump` CLI.")]
+    #[tool(description = "Inspect a CryEngine animation database (.dba) or compressed animation file (.caf). Returns structured JSON: clip metadata (name, fps, frame_count, channel_count) and per-channel bone hashes plus first/last keyframe samples (or full keyframe arrays with all_keyframes=true). Provide `skeleton` to resolve bone hashes to names; combine with `bone_filter` to drill down to a small set of channels (e.g. wings, landing gear). Use `filter` for clip-name filtering. Replaces the legacy `starbreaker dba dump` CLI.")]
     fn dba_dump(&self, Parameters(req): Parameters<DbaDumpRequest>) -> String {
         let bytes = match self.read_p4k_or_disk(&req.path) {
             Ok(b) => b,
@@ -848,6 +850,7 @@ impl StarBreakerMcp {
             &db,
             &hash_to_name,
             req.filter.as_deref(),
+            req.bone_filter.as_deref(),
             req.all_keyframes.unwrap_or(false),
         );
         match serde_json::to_string_pretty(&value) {
