@@ -6,6 +6,7 @@ mod commands;
 mod datacore_commands;
 mod decomposed_commands;
 mod error;
+mod scene_commands;
 mod state;
 mod ui_sink;
 
@@ -266,6 +267,11 @@ fn main() {
             decomposed_commands::prune_stale_cache,
             commands::write_diag_file,
             commands::list_diag_dir,
+            scene_commands::load_scene_to_gltf,
+            scene_commands::read_scene_glb,
+            scene_commands::enumerate_scenes,
+            scene_commands::list_socpak_dir_cmd,
+            scene_commands::list_all_socpaks_cmd,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

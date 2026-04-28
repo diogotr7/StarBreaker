@@ -21,7 +21,14 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPLOCALDATA/scene_cache/**",
+          "$APPLOCALDATA\\scene_cache\\**"
+        ]
+      }
     }
   },
   "bundle": {
