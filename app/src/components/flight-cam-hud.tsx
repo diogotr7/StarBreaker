@@ -24,9 +24,15 @@ function formatVec(v: THREE.Vector3): string {
 
 interface Props {
   handle: FlightCamHandle | null;
+  /** When true, render only the inline readout `<p>` without the
+   *  absolute-positioned wrapper div. Used by `SceneViewer`'s combined
+   *  bottom-right panel, which provides its own layout chrome. Defaults
+   *  to false (legacy free-floating layout) so existing call sites and
+   *  tests stay unchanged. */
+  embedded?: boolean;
 }
 
-export function FlightCamHud({ handle }: Props) {
+export function FlightCamHud({ handle, embedded = false }: Props) {
   const [snapshot, setSnapshot] = useState<Readonly<FlightCamState> | null>(null);
 
   useEffect(() => {
@@ -42,21 +48,27 @@ export function FlightCamHud({ handle }: Props) {
   const pitch = (euler.x * RAD_TO_DEG).toFixed(0);
   const roll = (euler.z * RAD_TO_DEG).toFixed(0);
 
+  const readout = (
+    <p className="text-[11px] text-text-sub font-mono whitespace-nowrap">
+      pos: {formatVec(snapshot.pos)}
+      {"   "}
+      yaw {yaw} deg pitch {pitch} deg roll {roll} deg
+      {"   "}
+      speed {snapshot.moveSpeed.toFixed(2)}x
+      {"   "}
+      fov {snapshot.fov.toFixed(0)} deg
+      {"   "}
+      proj {PROJ_LABEL[snapshot.projectionMode]}
+    </p>
+  );
+
+  if (embedded) return readout;
+
   return (
     <div
       className="absolute bottom-2 right-2 px-3 py-1.5 rounded-md bg-bg-alt/90 border border-border z-10 pointer-events-none"
     >
-      <p className="text-[11px] text-text-sub font-mono whitespace-nowrap">
-        pos: {formatVec(snapshot.pos)}
-        {"   "}
-        yaw {yaw} deg pitch {pitch} deg roll {roll} deg
-        {"   "}
-        speed {snapshot.moveSpeed.toFixed(2)}x
-        {"   "}
-        fov {snapshot.fov.toFixed(0)} deg
-        {"   "}
-        proj {PROJ_LABEL[snapshot.projectionMode]}
-      </p>
+      {readout}
     </div>
   );
 }

@@ -12,15 +12,23 @@ import {
   applyOrbitAroundTarget,
   applyOrbitFromTarget,
   clampFov,
+  computeFramingDistance,
+  dispatchViewerHotkey,
   FOV_MAX,
   FOV_MIN,
+  FRAMING_FALLBACK_DISTANCE,
   getCameraDirections,
+  PRESET_FILL_FRACTION,
   rotateCameraLocal,
   SPEED_MAX,
   SPEED_MIN,
   SPEED_STEP,
   syncOrbitTargetToView,
+  viewPresetForKeyCode,
+  viewPresetOffset,
+  type FlightCamHandle,
   type FlightCamState,
+  type ViewPreset,
 } from "../flight-camera";
 
 const EPS = 1e-6;
@@ -546,5 +554,305 @@ describe("constants", () => {
     expect(FOV_MIN).toBeGreaterThan(0);
     expect(FOV_MAX).toBeLessThanOrEqual(180);
     expect(FOV_MIN).toBeLessThan(FOV_MAX);
+  });
+  it("has PRESET_FILL_FRACTION in (0, 1]", () => {
+    expect(PRESET_FILL_FRACTION).toBeGreaterThan(0);
+    expect(PRESET_FILL_FRACTION).toBeLessThanOrEqual(1);
+  });
+  it("has FRAMING_FALLBACK_DISTANCE > 0", () => {
+    expect(FRAMING_FALLBACK_DISTANCE).toBeGreaterThan(0);
+  });
+});
+
+describe("computeFramingDistance", () => {
+  it("frames a 100-unit cube at 45deg FoV / 16:9 / 80% fill at the expected distance", () => {
+    // extent_max = 100. vfov = 45deg. dV = 50 / tan(22.5deg).
+    // hfov  = 2 * atan(tan(22.5deg) * 16/9). dH = 50 / tan(hfov/2).
+    // For aspect > 1, hfov > vfov => tan(hfov/2) > tan(vfov/2) => dH < dV.
+    // So dist = dV / 0.8.
+    const aspect = 16 / 9;
+    const fov = 45;
+    const min = new THREE.Vector3(-50, -50, -50);
+    const max = new THREE.Vector3(50, 50, 50);
+    const d = computeFramingDistance(min, max, fov, aspect, 0.8);
+    const vfov = (fov * Math.PI) / 180;
+    const dV = (100 / 2) / Math.tan(vfov / 2);
+    const expected = dV / 0.8;
+    expect(d).toBeCloseTo(expected, 3);
+    // Sanity: ~150-152 for these inputs.
+    expect(d).toBeGreaterThan(140);
+    expect(d).toBeLessThan(160);
+  });
+
+  it("uses the larger of dV and dH so neither axis crops", () => {
+    // For a tall narrow viewport (aspect < 1), hfov < vfov so dH > dV;
+    // the function should pick dH.
+    const aspect = 0.5;
+    const fov = 60;
+    const min = new THREE.Vector3(-1, -1, -1);
+    const max = new THREE.Vector3(1, 1, 1);
+    const d = computeFramingDistance(min, max, fov, aspect, 1.0);
+    const vfov = (fov * Math.PI) / 180;
+    const hfov = 2 * Math.atan(Math.tan(vfov / 2) * aspect);
+    const dV = 1 / Math.tan(vfov / 2);
+    const dH = 1 / Math.tan(hfov / 2);
+    expect(d).toBeCloseTo(Math.max(dV, dH), 5);
+    expect(d).toBeGreaterThanOrEqual(dV);
+  });
+
+  it("handles a flat panel (one extent == 0) without producing NaN", () => {
+    // Panel: 100 wide in X, 0 thick in Y, 50 deep in Z. extent_max = 100.
+    const min = new THREE.Vector3(-50, 0, -25);
+    const max = new THREE.Vector3(50, 0, 25);
+    const d = computeFramingDistance(min, max, 45, 16 / 9, 0.8);
+    expect(Number.isFinite(d)).toBe(true);
+    expect(d).toBeGreaterThan(0);
+  });
+
+  it("returns the fallback distance when the AABB is degenerate (min == max)", () => {
+    const p = new THREE.Vector3(5, 5, 5);
+    const d = computeFramingDistance(p, p, 45, 16 / 9, 0.8);
+    expect(d).toBe(FRAMING_FALLBACK_DISTANCE);
+  });
+
+  it("treats viewportAspect <= 0 as 1 to avoid singular hfov", () => {
+    const min = new THREE.Vector3(-1, -1, -1);
+    const max = new THREE.Vector3(1, 1, 1);
+    const d = computeFramingDistance(min, max, 45, 0, 0.8);
+    expect(Number.isFinite(d)).toBe(true);
+    expect(d).toBeGreaterThan(0);
+  });
+
+  it("treats fillFraction <= 0 as PRESET_FILL_FRACTION", () => {
+    const min = new THREE.Vector3(-1, -1, -1);
+    const max = new THREE.Vector3(1, 1, 1);
+    const dBad = computeFramingDistance(min, max, 45, 1, 0);
+    const dDefault = computeFramingDistance(min, max, 45, 1, PRESET_FILL_FRACTION);
+    expect(dBad).toBeCloseTo(dDefault, 5);
+  });
+
+  it("scales linearly with the largest extent", () => {
+    const small = computeFramingDistance(
+      new THREE.Vector3(-1, -1, -1),
+      new THREE.Vector3(1, 1, 1),
+      60,
+      1,
+      1,
+    );
+    const big = computeFramingDistance(
+      new THREE.Vector3(-10, -10, -10),
+      new THREE.Vector3(10, 10, 10),
+      60,
+      1,
+      1,
+    );
+    // Same FoV / aspect / fill, just 10x extent => 10x distance.
+    expect(big / small).toBeCloseTo(10, 5);
+  });
+});
+
+describe("viewPresetOffset", () => {
+  it("overhead places camera directly above target on +Y", () => {
+    const off = viewPresetOffset("overhead", 50);
+    expect(off.x).toBeCloseTo(0, 5);
+    expect(off.z).toBeCloseTo(0, 5);
+    expect(off.y).toBeCloseTo(50, 5);
+  });
+
+  it("side places camera along +X at y == 0", () => {
+    const off = viewPresetOffset("side", 30);
+    expect(off.x).toBeCloseTo(30, 5);
+    expect(off.y).toBeCloseTo(0, 5);
+    expect(off.z).toBeCloseTo(0, 5);
+  });
+
+  it("fore places camera along +Z; aft along -Z; mirror image", () => {
+    const fore = viewPresetOffset("fore", 20);
+    const aft = viewPresetOffset("aft", 20);
+    expect(fore.z).toBeCloseTo(20, 5);
+    expect(aft.z).toBeCloseTo(-20, 5);
+    expect(fore.x).toBeCloseTo(0, 5);
+    expect(aft.x).toBeCloseTo(0, 5);
+  });
+
+  it("perspective places camera in +X / +Y / +Z octant at half-distance per axis", () => {
+    const off = viewPresetOffset("perspective", 40);
+    // 3/4 view: each component is dist * 0.5.
+    expect(off.x).toBeCloseTo(20, 5);
+    expect(off.y).toBeCloseTo(20, 5);
+    expect(off.z).toBeCloseTo(20, 5);
+  });
+
+  it("perspective2 differs from perspective by a sign flip on X", () => {
+    const p1 = viewPresetOffset("perspective", 40);
+    const p2 = viewPresetOffset("perspective2", 40);
+    expect(p2.x).toBeCloseTo(-p1.x, 5);
+    // Y and Z stay the same so the camera ends up 90deg around the
+    // vertical axis from the perspective preset.
+    expect(p2.y).toBeCloseTo(p1.y, 5);
+    expect(p2.z).toBeCloseTo(p1.z, 5);
+  });
+
+  it("preserves length close to dist for axial presets", () => {
+    // Axial presets (overhead / side / fore / aft) sit at exactly `dist`
+    // from the origin so the camera-to-target distance == dist.
+    expect(viewPresetOffset("overhead", 17).length()).toBeCloseTo(17, 5);
+    expect(viewPresetOffset("side", 17).length()).toBeCloseTo(17, 5);
+    expect(viewPresetOffset("fore", 17).length()).toBeCloseTo(17, 5);
+    expect(viewPresetOffset("aft", 17).length()).toBeCloseTo(17, 5);
+  });
+});
+
+describe("viewPresetForKeyCode", () => {
+  it("maps Numpad0..5 to the expected presets", () => {
+    expect(viewPresetForKeyCode("Numpad0")).toBe("overhead");
+    expect(viewPresetForKeyCode("Numpad1")).toBe("perspective2");
+    expect(viewPresetForKeyCode("Numpad2")).toBe("side");
+    expect(viewPresetForKeyCode("Numpad3")).toBe("fore");
+    expect(viewPresetForKeyCode("Numpad4")).toBe("aft");
+    expect(viewPresetForKeyCode("Numpad5")).toBe("perspective");
+  });
+
+  it("returns null for unbound codes", () => {
+    expect(viewPresetForKeyCode("KeyR")).toBeNull();
+    expect(viewPresetForKeyCode("KeyH")).toBeNull();
+    expect(viewPresetForKeyCode("Numpad6")).toBeNull();
+    expect(viewPresetForKeyCode("Digit0")).toBeNull();
+    expect(viewPresetForKeyCode("")).toBeNull();
+  });
+});
+
+describe("dispatchViewerHotkey", () => {
+  function makeMockHandle(): {
+    handle: Pick<FlightCamHandle, "resetToScene" | "setView">;
+    resetCalls: THREE.Object3D[];
+    setViewCalls: { preset: ViewPreset; root: THREE.Object3D }[];
+  } {
+    const resetCalls: THREE.Object3D[] = [];
+    const setViewCalls: { preset: ViewPreset; root: THREE.Object3D }[] = [];
+    return {
+      handle: {
+        resetToScene(root) {
+          resetCalls.push(root);
+        },
+        setView(preset, root) {
+          setViewCalls.push({ preset, root });
+        },
+      },
+      resetCalls,
+      setViewCalls,
+    };
+  }
+
+  it("KeyR triggers handle.resetToScene with the provided sceneRoot", () => {
+    const m = makeMockHandle();
+    const root = new THREE.Object3D();
+    let toggled = 0;
+    const handled = dispatchViewerHotkey(
+      { code: "KeyR", repeat: false },
+      m.handle,
+      root,
+      () => { toggled += 1; },
+    );
+    expect(handled).toBe(true);
+    expect(m.resetCalls.length).toBe(1);
+    expect(m.resetCalls[0]).toBe(root);
+    expect(m.setViewCalls.length).toBe(0);
+    expect(toggled).toBe(0);
+  });
+
+  it("KeyR with a null handle is a no-op but still claims the event", () => {
+    const root = new THREE.Object3D();
+    let toggled = 0;
+    const handled = dispatchViewerHotkey(
+      { code: "KeyR", repeat: false },
+      null,
+      root,
+      () => { toggled += 1; },
+    );
+    // Still handled (caller will preventDefault); just nothing to call.
+    expect(handled).toBe(true);
+    expect(toggled).toBe(0);
+  });
+
+  it("KeyH toggles HUD on first press but not on repeat", () => {
+    const m = makeMockHandle();
+    const root = new THREE.Object3D();
+    let toggled = 0;
+    const handled = dispatchViewerHotkey(
+      { code: "KeyH", repeat: false },
+      m.handle,
+      root,
+      () => { toggled += 1; },
+    );
+    expect(handled).toBe(true);
+    expect(toggled).toBe(1);
+
+    // Repeat event must not re-fire the toggle (held H should not strobe).
+    const handled2 = dispatchViewerHotkey(
+      { code: "KeyH", repeat: true },
+      m.handle,
+      root,
+      () => { toggled += 1; },
+    );
+    expect(handled2).toBe(true);
+    expect(toggled).toBe(1);
+  });
+
+  it("Numpad0 triggers handle.setView('overhead', sceneRoot)", () => {
+    const m = makeMockHandle();
+    const root = new THREE.Object3D();
+    const handled = dispatchViewerHotkey(
+      { code: "Numpad0", repeat: false },
+      m.handle,
+      root,
+      () => {},
+    );
+    expect(handled).toBe(true);
+    expect(m.setViewCalls.length).toBe(1);
+    expect(m.setViewCalls[0].preset).toBe("overhead");
+    expect(m.setViewCalls[0].root).toBe(root);
+  });
+
+  it("Numpad presets ignore repeat events", () => {
+    const m = makeMockHandle();
+    const root = new THREE.Object3D();
+    const handled = dispatchViewerHotkey(
+      { code: "Numpad2", repeat: true },
+      m.handle,
+      root,
+      () => {},
+    );
+    expect(handled).toBe(true);
+    expect(m.setViewCalls.length).toBe(0);
+  });
+
+  it("returns false for unbound codes (caller preserves default behaviour)", () => {
+    const m = makeMockHandle();
+    const root = new THREE.Object3D();
+    let toggled = 0;
+    const handled = dispatchViewerHotkey(
+      { code: "KeyZ", repeat: false },
+      m.handle,
+      root,
+      () => { toggled += 1; },
+    );
+    expect(handled).toBe(false);
+    expect(m.resetCalls.length).toBe(0);
+    expect(m.setViewCalls.length).toBe(0);
+    expect(toggled).toBe(0);
+  });
+
+  it("KeyR with null sceneRoot is a no-op but still handled", () => {
+    const m = makeMockHandle();
+    const handled = dispatchViewerHotkey(
+      { code: "KeyR", repeat: false },
+      m.handle,
+      null,
+      () => {},
+    );
+    expect(handled).toBe(true);
+    // No call placed because there is no sceneRoot to frame.
+    expect(m.resetCalls.length).toBe(0);
   });
 });

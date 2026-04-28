@@ -182,8 +182,8 @@ interface ViewerSettings {
 }
 
 const DEFAULT_VIEWER_SETTINGS: ViewerSettings = {
-  showGroundPlane: true,
-  showGrid: true,
+  showGroundPlane: false,
+  showGrid: false,
   groundPlaneColor: [128, 128, 128],
   diagnostics: { ...DEFAULT_DIAGNOSTIC_SETTINGS },
 };

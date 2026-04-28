@@ -69,7 +69,11 @@ import {
 } from "../lib/decomposed-loader";
 import { MaterialInspector, type PickHit } from "./material-inspector";
 import { FlightCamHud } from "./flight-cam-hud";
-import { useFlightCamera, type FlightCamHandle } from "../lib/flight-camera";
+import {
+  dispatchViewerHotkey,
+  useFlightCamera,
+  type FlightCamHandle,
+} from "../lib/flight-camera";
 import {
   captureScreenshot,
   formatScreenshotFilename,
@@ -257,6 +261,12 @@ export function SceneViewer({
   // that resolved correctly stay normal-coloured either way.
   const [debugFallbacks, setDebugFallbacks] = useState(false);
   const activeDebugRef = useRef(false);
+
+  // Combined bottom-right panel (flight-cam HUD + scene-load metrics)
+  // visibility. Hidden state collapses both sections to a tiny
+  // re-expand affordance so the canvas reclaims that screen real
+  // estate. Toggled by the H key and the in-panel button below.
+  const [hudVisible, setHudVisible] = useState(true);
 
   // Persistent caches scoped to the current scene load. The bindings
   // list lets us rebuild materials in place when the render style
@@ -694,6 +704,33 @@ export function SceneViewer({
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [packageInfo.package_name]);
+
+  // R reframes the camera to the current sceneRoot. Numpad 0-5 snap to
+  // named view presets (overhead / perspective2 / side / fore / aft /
+  // perspective). H toggles the combined HUD + stats panel. The
+  // dispatch table lives in `dispatchViewerHotkey` so it stays unit-
+  // testable without a DOM. Listener lives on `window` so it fires
+  // regardless of which child element holds focus, except for typing
+  // targets where the binding is suppressed.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      const ae = document.activeElement;
+      const tag = ae?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      const sceneRoot = stateRef.current?.sceneRoot ?? null;
+      const handled = dispatchViewerHotkey(
+        { code: e.code, repeat: e.repeat },
+        flightCamRef.current,
+        sceneRoot,
+        () => setHudVisible((v) => !v),
+      );
+      if (handled) e.preventDefault();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
 
   // Rebuild exterior bindings against either the variant's substitute
   // sidecar (`palette_id !== null && variant.exterior_material_sidecar`)
@@ -1897,60 +1934,93 @@ export function SceneViewer({
           <p className="text-xs text-text-dim mt-1 font-mono break-all">{error}</p>
         </div>
       )}
-      {stats && !error && (
-        <div className="absolute bottom-2 left-2 px-3 py-1.5 rounded-md bg-bg-alt/90 border border-border z-10 max-w-md">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-xs text-text-sub font-mono">
-              {stats.instances} parts &middot; {stats.interiors} interiors &middot; {stats.lights} lights
-            </p>
+      {/* Combined bottom-right panel: flight-cam HUD readout (top
+          section) + scene-load metrics (below the divider). A single
+          show/hide toggle (button + H key) collapses the whole panel
+          to a tiny re-expand affordance so the canvas reclaims the
+          screen real estate. The metrics block is only rendered while
+          stats is non-null and there is no load error. */}
+      {!error && (hudVisible ? (
+        <div
+          className="absolute bottom-2 right-2 z-10 max-w-md rounded-md bg-bg-alt/95 border border-border shadow"
+        >
+          <div className="flex items-start justify-between gap-2 px-3 py-1.5">
+            <FlightCamHud handle={flightCam} embedded />
             <button
               type="button"
-              className={`text-[10px] px-2 py-0.5 rounded border font-mono ${
-                debugFallbacks
-                  ? "bg-accent/20 border-accent text-text"
-                  : "bg-bg/50 border-border text-text-sub hover:bg-bg/80"
-              }`}
-              onClick={() => setDebugFallbacks((v) => !v)}
-              title="Recolour fallback / stand-in materials with diagnostic neons (cyan = heuristic primary, green = no palette, red = unknown family, yellow = hologram, magenta-violet = screen, pink = skin)"
+              onClick={() => setHudVisible(false)}
+              title="Hide stats panel (H)"
+              aria-label="Hide stats panel"
+              className="text-[10px] px-1.5 py-0.5 rounded border border-border bg-bg/50 text-text-sub hover:bg-bg/80 hover:text-text font-mono shrink-0"
             >
-              {debugFallbacks ? "DBG ON" : "DBG"}
+              hide
             </button>
           </div>
-          <p className="text-[11px] text-text-dim font-mono mt-1">
-            mats {stats.metrics.totalBuilt}
-            {(() => {
-              const fams = Object.entries(stats.metrics.byFamily)
-                .sort((a, b) => b[1] - a[1])
-                .slice(0, 4)
-                .map(([k, v]) => `${k}=${v}`)
-                .join(" ");
-              return fams ? ` (${fams})` : "";
-            })()}
-          </p>
-          <p className="text-[11px] text-text-dim font-mono">
-            tex {stats.metrics.diffuseTextureSuccess}/
-            {stats.metrics.diffuseTextureSuccess + stats.metrics.diffuseTextureMiss}
-            {" "}&middot; tint {stats.metrics.paletteTintApplied}
-            {stats.metrics.paletteHeuristicPrimaryFallback > 0
-              ? ` (+${stats.metrics.paletteHeuristicPrimaryFallback} heur)`
-              : ""}
-            {stats.metrics.paletteTintMissing > 0
-              ? ` -${stats.metrics.paletteTintMissing} miss`
-              : ""}
-          </p>
-          <p className="text-[11px] text-text-dim font-mono">
-            cc {stats.metrics.clearCoatFired}
-            {" "}&middot; sysB {stats.metrics.systemBFired}
-            {" "}&middot; sysA {stats.metrics.systemAFired}
-            {" "}&middot; ddna {stats.metrics.ddnaRoughnessHooked}
-            {" "}&middot; pom {stats.metrics.pomHooked}
-            {stats.metrics.dirtOverlayHooked > 0
-              ? ` · dirt ${stats.metrics.dirtOverlayHooked}`
-              : ""}
-          </p>
+          {stats && (
+            <div className="border-t border-border px-3 py-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-text-sub font-mono">
+                  {stats.instances} parts &middot; {stats.interiors} interiors &middot; {stats.lights} lights
+                </p>
+                <button
+                  type="button"
+                  className={`text-[10px] px-2 py-0.5 rounded border font-mono ${
+                    debugFallbacks
+                      ? "bg-accent/20 border-accent text-text"
+                      : "bg-bg/50 border-border text-text-sub hover:bg-bg/80"
+                  }`}
+                  onClick={() => setDebugFallbacks((v) => !v)}
+                  title="Recolour fallback / stand-in materials with diagnostic neons (cyan = heuristic primary, green = no palette, red = unknown family, yellow = hologram, magenta-violet = screen, pink = skin)"
+                >
+                  {debugFallbacks ? "DBG ON" : "DBG"}
+                </button>
+              </div>
+              <p className="text-[11px] text-text-dim font-mono mt-1">
+                mats {stats.metrics.totalBuilt}
+                {(() => {
+                  const fams = Object.entries(stats.metrics.byFamily)
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 4)
+                    .map(([k, v]) => `${k}=${v}`)
+                    .join(" ");
+                  return fams ? ` (${fams})` : "";
+                })()}
+              </p>
+              <p className="text-[11px] text-text-dim font-mono">
+                tex {stats.metrics.diffuseTextureSuccess}/
+                {stats.metrics.diffuseTextureSuccess + stats.metrics.diffuseTextureMiss}
+                {" "}&middot; tint {stats.metrics.paletteTintApplied}
+                {stats.metrics.paletteHeuristicPrimaryFallback > 0
+                  ? ` (+${stats.metrics.paletteHeuristicPrimaryFallback} heur)`
+                  : ""}
+                {stats.metrics.paletteTintMissing > 0
+                  ? ` -${stats.metrics.paletteTintMissing} miss`
+                  : ""}
+              </p>
+              <p className="text-[11px] text-text-dim font-mono">
+                cc {stats.metrics.clearCoatFired}
+                {" "}&middot; sysB {stats.metrics.systemBFired}
+                {" "}&middot; sysA {stats.metrics.systemAFired}
+                {" "}&middot; ddna {stats.metrics.ddnaRoughnessHooked}
+                {" "}&middot; pom {stats.metrics.pomHooked}
+                {stats.metrics.dirtOverlayHooked > 0
+                  ? ` &middot; dirt ${stats.metrics.dirtOverlayHooked}`
+                  : ""}
+              </p>
+            </div>
+          )}
         </div>
-      )}
-      <FlightCamHud handle={flightCam} />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setHudVisible(true)}
+          title="Show stats panel (H)"
+          aria-label="Show stats panel"
+          className="absolute bottom-2 right-2 z-10 text-[10px] px-2 py-1 rounded border border-border bg-bg-alt/90 text-text-sub hover:bg-bg-alt hover:text-text font-mono shadow"
+        >
+          show stats
+        </button>
+      ))}
       <MaterialInspector
         hits={pickHits}
         selectedHitIndex={selectedHitIndex}
