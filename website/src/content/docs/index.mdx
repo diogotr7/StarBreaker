@@ -1,0 +1,50 @@
+---
+title: StarBreaker
+description: Star Citizen data extraction and 3D export toolkit
+template: splash
+hero:
+  tagline: Extract, inspect, and export Star Citizen game data — ships, interiors, DataCore records, audio, and textures.
+  actions:
+    - text: Download for Windows
+      link: https://github.com/diogotr7/StarBreaker/releases/latest
+      icon: external
+      variant: primary
+    - text: Read the docs
+      link: /getting-started/install/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/diogotr7/StarBreaker
+      icon: external
+      variant: minimal
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## What it does
+
+<CardGrid>
+  <LinkCard
+    title="3D export"
+    href="/wiki/exporting-ships/"
+    description="Export ships and interiors to glTF with material reconstruction, paint palettes, and item-port attachments resolved."
+  />
+  <LinkCard
+    title="DataCore browser"
+    href="/reference/cli/"
+    description="Query EntityClassDefinitions, loadouts, tint palettes, and any record type by name or GUID."
+  />
+  <LinkCard
+    title="P4k tools"
+    href="/wiki/p4k-format/"
+    description="Browse, extract, and decode CryXML, DDS textures, and Wwise audio straight from Data.p4k."
+  />
+  <LinkCard
+    title="Blender addon"
+    href="/wiki/exporting-ships/#importing-into-blender"
+    description="Import decomposed exports directly into Blender with material slots wired up to Star Citizen's shader families."
+  />
+</CardGrid>
+
+## Screenshots
+
+_Coming soon — drop PNGs in `src/assets/screenshots/` and reference them here._

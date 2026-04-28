@@ -1,0 +1,12 @@
+/* Brand accent — adjust once a logo/palette exists */
+:root {
+	--sl-color-accent-low: #1a1f3a;
+	--sl-color-accent: #6366f1;
+	--sl-color-accent-high: #c7d2fe;
+}
+
+:root[data-theme='light'] {
+	--sl-color-accent-low: #e0e7ff;
+	--sl-color-accent: #4f46e5;
+	--sl-color-accent-high: #312e81;
+}
