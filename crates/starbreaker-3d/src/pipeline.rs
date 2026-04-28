@@ -4072,7 +4072,7 @@ fn get_value_string<'a>(val: &starbreaker_datacore::query::value::Value<'a>, nam
     None
 }
 
-fn query_animation_controller_source(
+pub fn query_animation_controller_source(
     db: &Database,
     record: &Record,
 ) -> Option<crate::animation::AnimationControllerSource> {

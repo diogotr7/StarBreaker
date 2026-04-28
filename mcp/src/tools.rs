@@ -116,6 +116,14 @@ pub struct DbaDumpRequest {
     pub all_keyframes: Option<bool>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MannequinDumpRequest {
+    #[schemars(description = "Entity name (substring match, uses shortest match) used to resolve the entity's SAnimationControllerParams.AnimationDatabase and AnimationController paths.")]
+    pub entity: String,
+    #[schemars(description = "Optional case-insensitive substring filter against fragment group name, GUID, or animation name.")]
+    pub filter: Option<String>,
+}
+
 
 pub struct StarBreakerMcp {
     p4k_path: Option<std::path::PathBuf>,
@@ -842,6 +850,31 @@ impl StarBreakerMcp {
             req.filter.as_deref(),
             req.all_keyframes.unwrap_or(false),
         );
+        match serde_json::to_string_pretty(&value) {
+            Ok(s) => s,
+            Err(e) => format!("serialize failed: {e}"),
+        }
+    }
+
+    #[tool(description = "Dump the Mannequin Animation Database (ADB) plus its companion ControllerDef for an entity. Returns structured JSON listing every Mannequin Fragment with group name, GUID, tags, FragTags, BlendOutDuration, OptionWeight, animations, scopes (resolved from the ControllerDef), and procedurals. Use to inspect fragment-scope metadata for animation troubleshooting (Phase 37). Note: the ADB has no per-bone blend-mode flag; use dba_dump's `rot_format_flags`/`pos_format_flags` for per-bone CAF metadata.")]
+    fn mannequin_dump(&self, Parameters(req): Parameters<MannequinDumpRequest>) -> String {
+        let db = self.db();
+        let record = match self.find_entity(&db, &req.entity) {
+            Some(r) => r,
+            None => return format!("No entity matching '{}'", req.entity),
+        };
+        let source = match starbreaker_3d::query_animation_controller_source(&db, record) {
+            Some(s) => s,
+            None => return format!("Entity '{}' has no SAnimationControllerParams", req.entity),
+        };
+        let value = match starbreaker_3d::animation::dump_mannequin_adb_to_json(
+            self.p4k(),
+            &source,
+            req.filter.as_deref(),
+        ) {
+            Ok(v) => v,
+            Err(e) => return format!("dump_mannequin_adb_to_json failed: {e}"),
+        };
         match serde_json::to_string_pretty(&value) {
             Ok(s) => s,
             Err(e) => format!("serialize failed: {e}"),

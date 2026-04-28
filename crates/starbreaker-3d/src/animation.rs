@@ -62,6 +62,14 @@ pub struct BoneChannel {
     pub rotations: Vec<Keyframe<[f32; 4]>>,
     /// Position keyframes (time in frames, XYZ).
     pub positions: Vec<Keyframe<[f32; 3]>>,
+    /// Raw 16-bit `rot_format_flags` from the CAF/DBA controller entry.
+    /// Currently understood as the rotation-keyframe encoding format
+    /// (e.g. quaternion compression). Captured verbatim so debug
+    /// tooling can hunt for additive/override bits (Phase 37).
+    pub rot_format_flags: u16,
+    /// Raw 16-bit `pos_format_flags` from the CAF/DBA controller
+    /// entry. Captured verbatim alongside `rot_format_flags`.
+    pub pos_format_flags: u16,
 }
 
 /// A single keyframe with time and value.
@@ -415,6 +423,8 @@ fn parse_single_block(
             bone_hash: bone_hashes[i],
             rotations,
             positions,
+            rot_format_flags: ctrl.rot_format_flags,
+            pos_format_flags: ctrl.pos_format_flags,
         });
     }
 
@@ -1197,6 +1207,8 @@ pub fn dump_database_to_json(
                 "bone_name": bone_name,
                 "rotation_count": ch.rotations.len(),
                 "position_count": ch.positions.len(),
+                "rot_format_flags": format!("0x{:04X}", ch.rot_format_flags),
+                "pos_format_flags": format!("0x{:04X}", ch.pos_format_flags),
             });
             if all_keyframes {
                 channel_value["rotations"] = serde_json::Value::Array(
@@ -1535,6 +1547,78 @@ fn mannequin_adb_p4k_path(path: &str) -> String {
         format!("Animations/Mannequin/ADB/{normalized}")
     };
     format!("Data/{}", with_prefix).replace('/', "\\")
+}
+
+/// Structured dump of a Mannequin ADB plus its companion ControllerDef
+/// XML for diagnostic / debug tooling. Returns a JSON value with one
+/// entry per Mannequin Fragment containing `fragment` (group name),
+/// `guid`, `tags`, `frag_tags`, `blend_out_duration`, `option_weight`,
+/// `animations`, `scopes` (resolved from the ControllerDef), and any
+/// `procedurals`. Used by the StarBreaker MCP `mannequin_dump` tool.
+///
+/// Phase 37 conclusion: ADB fragment metadata is captured at
+/// fragment scope only — there is no per-bone blend-mode flag.
+/// CAF/DBA `Controller` chunks expose `rot_format_flags` and
+/// `pos_format_flags` per bone (now visible via `dba_dump`), but
+/// these encode keyframe compression format, not additive/override
+/// blend mode. Both are surfaced via MCP so empirical inspection can
+/// be done from agent sessions; the canonical fallback when neither
+/// distinguishes a bone is the geometric convex-hull test (Phase 38).
+pub fn dump_mannequin_adb_to_json(
+    p4k: &starbreaker_p4k::MappedP4k,
+    source: &AnimationControllerSource,
+    filter: Option<&str>,
+) -> Result<serde_json::Value, Error> {
+    let scopes = read_controller_fragment_scopes(p4k, &source.animation_controller);
+    let adb_path = mannequin_adb_p4k_path(&source.animation_database);
+    let data = p4k
+        .entry_case_insensitive(&adb_path)
+        .and_then(|entry| p4k.read(entry).ok())
+        .ok_or_else(|| Error::Other(format!("Cannot load Mannequin ADB: {adb_path}")))?
+        .to_vec();
+    let xml = starbreaker_cryxml::from_bytes(&data)
+        .map_err(|error| Error::Other(format!("Mannequin ADB CryXml parse: {error:?}")))?;
+    let mut fragments = Vec::new();
+    collect_mannequin_fragments(&xml, xml.root(), None, false, &scopes, &mut fragments);
+
+    let filter_lc = filter.map(|f| f.to_ascii_lowercase());
+    let filtered: Vec<serde_json::Value> = fragments
+        .into_iter()
+        .filter(|f| {
+            let Some(needle) = filter_lc.as_ref() else {
+                return true;
+            };
+            // Match against fragment group name, GUID, or any animation name.
+            if let Some(group) = f.get("fragment").and_then(|v| v.as_str()) {
+                if group.to_ascii_lowercase().contains(needle) {
+                    return true;
+                }
+            }
+            if let Some(guid) = f.get("guid").and_then(|v| v.as_str()) {
+                if guid.to_ascii_lowercase().contains(needle) {
+                    return true;
+                }
+            }
+            if let Some(anims) = f.get("animations").and_then(|v| v.as_array()) {
+                for a in anims {
+                    if let Some(n) = a.get("name").and_then(|v| v.as_str()) {
+                        if n.to_ascii_lowercase().contains(needle) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "animation_database": source.animation_database,
+        "animation_controller": source.animation_controller,
+        "adb_path": adb_path,
+        "fragment_count": filtered.len(),
+        "fragments": filtered,
+    }))
 }
 
 fn clip_name_lookup_keys(name: &str) -> Vec<String> {
@@ -2221,6 +2305,8 @@ mod bake_tests {
                     time: 0.0,
                     value: [1.0, 2.0, 3.0],
                 }],
+                rot_format_flags: 0,
+                pos_format_flags: 0,
             }],
         };
 
@@ -2248,6 +2334,8 @@ mod bake_tests {
                     value: [0.0, 0.0, 0.0, 1.0],
                 }],
                 positions: vec![],
+                rot_format_flags: 0,
+                pos_format_flags: 0,
             }],
         };
 
@@ -2294,6 +2382,8 @@ mod bake_tests {
                 bone_hash: 0xCAFEBABE,
                 rotations: vec![Keyframe { time: 0.0, value: [0.0, 0.0, 0.0, 1.0] }],
                 positions: vec![Keyframe { time: 0.0, value: [1.0, 2.0, 3.0] }],
+                rot_format_flags: 0,
+                pos_format_flags: 0,
             }],
         };
         let mut full = clip_to_json(&clip);
