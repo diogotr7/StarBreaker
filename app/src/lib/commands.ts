@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 /**
@@ -722,6 +722,223 @@ export function onSceneExportDone(
 ): Promise<UnlistenFn> {
   return listen<SceneExportDone>("scene-export-done", (event) => {
     callback(event.payload);
+  });
+}
+
+// ── SOC scene loader (Maps tab) ──
+
+/**
+ * Response payload for `loadSceneToGltf`. Mirrors the Rust
+ * `LoadSceneResponse` struct; the GLB is materialised on disk under
+ * `%LOCALAPPDATA%/app.starbreaker/scene_cache/<key>/scene.glb`,
+ * with a sibling `manifest.json` carrying the same summary fields.
+ */
+export interface LoadSceneResponse {
+  glb_path: string;
+  manifest_path: string;
+  cache_hit: boolean;
+  mesh_count: number;
+  placement_count: number;
+  /** Lights actually present in the GLB (after the renderer-friendly cap). */
+  light_count: number;
+  /** Lights skipped because the cap was reached. `light_count + lights_dropped`
+   *  equals the total light count in the source SOC scene. */
+  lights_dropped: number;
+  aabb_min: [number, number, number] | null;
+  aabb_max: [number, number, number] | null;
+  glb_bytes: number;
+  dropped_placements: number;
+  failed_mesh_paths: number;
+  materials_resolved: number;
+  materials_default: number;
+}
+
+/**
+ * Walk a top-level socpak's child graph, resolve every brush mesh
+ * against the loaded P4k, and emit a single self-contained `.glb`.
+ * The cache is keyed on (socpak_path, max_depth, p4k_identity,
+ * contract_version) so subsequent calls with the same arguments
+ * return the cached file without re-emitting. `max_depth` defaults
+ * to 4 — sufficient for the observed assembly / interior / module
+ * hierarchies.
+ */
+export async function loadSceneToGltf(
+  socpakPath: string,
+  maxDepth?: number,
+): Promise<LoadSceneResponse> {
+  return timedInvoke<LoadSceneResponse>("load_scene_to_gltf", {
+    socpakPath,
+    maxDepth: maxDepth ?? null,
+  });
+}
+
+/**
+ * Progress event payload from `load_scene_to_gltf`. Phases progress
+ * through compose -> resolve -> emit -> cache_write. Throttled to
+ * roughly 10 Hz on the backend.
+ */
+export interface SceneLoadProgress {
+  phase: "compose" | "resolve" | "emit" | "cache_write";
+  current: number;
+  total: number;
+  message: string;
+}
+
+/** Listen for SOC scene load progress events. */
+export function onSceneLoadProgress(
+  callback: (progress: SceneLoadProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<SceneLoadProgress>("scene-load-progress", (event) => {
+    callback(event.payload);
+  });
+}
+
+/**
+ * Read a SOC scene GLB from the cache and return its bytes.
+ *
+ * Deprecated: shipping a 200+ MB GLB across the IPC channel as a
+ * `number[]` blew up the WebView with `STATUS_BREAKPOINT` once the
+ * payload fell back to `postMessage` (each byte serialises to a
+ * decimal string + comma, inflating ~272 MB to ~800 MB of JSON before
+ * the browser parses it back into a `Uint8Array`). The viewer now
+ * builds an `asset://` URL via {@link sceneGlbAssetUrl} and lets
+ * Three.js's GLTFLoader fetch the file directly through the webview's
+ * own HTTP path, which avoids both the marshalling cost and the
+ * blocking parse on the renderer thread.
+ *
+ * Kept exported because the Rust command is still registered (it has
+ * a path-validation guard that would otherwise be unreachable test
+ * surface); a future caller that needs the bytes in JS can still use
+ * it. Do not call it for files larger than a few megabytes.
+ */
+export async function readSceneGlb(glbPath: string): Promise<ArrayBuffer> {
+  const bytes = await timedInvoke<number[]>("read_scene_glb", { glbPath });
+  return new Uint8Array(bytes).buffer;
+}
+
+/**
+ * Convert a cached SOC scene GLB path on disk into an `asset://` URL
+ * the webview can load directly with `fetch` / `GLTFLoader.load`. The
+ * asset protocol is gated by the `assetProtocol.scope` in
+ * `tauri.conf.json`; the only paths it accepts are children of
+ * `$APPLOCALDATA/scene_cache/`, which matches the cache root the
+ * `load_scene_to_gltf` command writes to.
+ *
+ * `convertFileSrc` is a pure path-mangling function (no IPC round
+ * trip), so this is cheap to call on every render.
+ */
+export function sceneGlbAssetUrl(glbPath: string): string {
+  return convertFileSrc(glbPath, "asset");
+}
+
+// ── Scene catalog (Maps tab list) ──
+
+/**
+ * One catalog entry surfaced to the Maps tab. Mirrors the Rust
+ * `SceneCatalogEntryDto` -- one root socpak that the user can pick
+ * to load through `loadSceneToGltf`.
+ *
+ * `source_kind` is a snake_case string so the backend can introduce
+ * new provenance variants without forcing a TypeScript-side enum
+ * bump. Today every entry is `"graph_root"` (in-degree-zero in the
+ * socpak reference graph).
+ */
+export interface SceneCatalogEntry {
+  path: string;
+  display_name: string;
+  /**
+   * Count of socpaks transitively reachable through `<Child>` refs.
+   * Useful as a rough complexity hint; leaf modules report 0,
+   * assemblies report a few, multi-zone hangars report dozens.
+   */
+  sub_zone_count: number;
+  source_kind: "graph_root" | "other" | string;
+}
+
+/**
+ * Walk the loaded P4k for socpak scene roots. Returns the entries
+ * sorted alphabetically by display name. The first call is slow
+ * (cold enumeration; ~5-15 seconds against HOTFIX) and subsequent
+ * calls hit the on-disk cache under
+ * `%LOCALAPPDATA%/app.starbreaker/scene_catalog/`.
+ *
+ * `channel` is reserved for future channel-switching without a
+ * full P4k reload; the current backend ignores it and operates on
+ * the active loaded P4k.
+ *
+ * Note: as of the lazy directory tree iteration, the Maps tab no
+ * longer drives off this command -- it calls {@link listSocpakDir}
+ * one prefix at a time. The wrapper is kept here for opt-in callers
+ * (smoke tests, fallback paths, future "search globally" affordances)
+ * that still want the full in-degree-zero set.
+ */
+export async function enumerateScenes(
+  channel?: string,
+): Promise<SceneCatalogEntry[]> {
+  return timedInvoke<SceneCatalogEntry[]>("enumerate_scenes", {
+    channel: channel ?? null,
+  });
+}
+
+// ── Lazy socpak directory tree (Maps tab) ──
+
+/**
+ * One node in the socpak directory tree. Either a subdirectory the
+ * caller can expand by passing `path` back into {@link listSocpakDir},
+ * or a `.socpak` file the caller can hand to {@link loadSceneToGltf}.
+ *
+ * The Rust command emits `kind` as a snake_case string so future kinds
+ * can land without forcing a TypeScript-side enum bump.
+ */
+export interface SocpakDirEntry {
+  /**
+   * Full p4k path. For directories this is the prefix to expand,
+   * terminated with a trailing backslash. For socpak files this is
+   * the full file path that {@link loadSceneToGltf} consumes.
+   */
+  path: string;
+  /** Last path segment, suitable for direct rendering. */
+  display_name: string;
+  kind: "directory" | "socpak_file";
+  /**
+   * For directories: count of immediate subdir + `.socpak` children.
+   * For socpak files: file size in bytes (compressed on-disk size).
+   */
+  size_or_count: number;
+}
+
+/**
+ * List the immediate children of a p4k directory prefix as
+ * directories + `.socpak` files. Used by the Maps tab to expand
+ * one tree branch on click rather than paying the multi-second cost
+ * of a full socpak-graph traversal.
+ *
+ * `prefix` may use forward or back slashes and may or may not have a
+ * trailing separator -- the backend normalises both.
+ */
+export async function listSocpakDir(
+  prefix: string,
+): Promise<SocpakDirEntry[]> {
+  return timedInvoke<SocpakDirEntry[]>("list_socpak_dir_cmd", { prefix });
+}
+
+/**
+ * Walk the loaded p4k once and return the path of every `.socpak` file
+ * under `searchRoots` (defaults to `["Data/ObjectContainers/"]`). Used
+ * by the Maps tab to seed a global search index so the user can find a
+ * scene without expanding the right tree branch first.
+ *
+ * Cold call: a few hundred ms against the live archive. Cached call: a
+ * JSON read off `%LOCALAPPDATA%/app.starbreaker/scene_index/`. The
+ * cache key folds in the loaded p4k's identity (mtime + size), so a
+ * channel switch or post-update file replacement invalidates stale
+ * slots automatically.
+ */
+export async function listAllSocpaks(
+  searchRoots?: string[],
+): Promise<string[]> {
+  return timedInvoke<string[]>("list_all_socpaks_cmd", {
+    searchRoots: searchRoots ?? null,
   });
 }
 

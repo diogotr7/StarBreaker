@@ -41,18 +41,25 @@ import {
   DECOMPOSED_CONTRACT_VERSION,
   DEFAULT_SCENE_EXPORT_OPTS,
   getSceneCachePath,
+  listAllSocpaks,
   listDecomposedPackages,
   listSceneEntities,
+  loadSceneToGltf,
   onSceneExportDone,
   onSceneExportProgress,
+  onSceneLoadProgress,
   pruneStaleCache,
   startSceneExport,
   type CacheStats,
   type DecomposedPackageInfo,
+  type LoadSceneResponse,
   type SceneEntityDto,
   type SceneExportOpts,
+  type SocpakDirEntry,
 } from "../lib/commands";
+import { SocpakTree } from "../components/socpak-tree";
 import { SceneViewer, DEFAULT_DIAGNOSTIC_SETTINGS } from "../components/scene-viewer";
+import { SocSceneViewer } from "../components/soc-scene-viewer";
 import { ProjectionModePicker } from "../components/projection-mode-picker";
 import type { FlightCamHandle } from "../lib/flight-camera";
 import {
@@ -102,6 +109,59 @@ interface BusyState {
   entityName: string;
   fraction: number;
   stage: string;
+}
+
+/**
+ * Root prefix for the Maps tab tree. Socpaks live almost exclusively
+ * under `Data\ObjectContainers\` -- starting elsewhere would surface
+ * directories the composer cannot load. Backslash-terminated to
+ * match the format the lazy listing returns.
+ */
+const MAPS_ROOT_PREFIX = "Data\\ObjectContainers\\";
+
+/**
+ * Hardcoded fallback used only when the lazy root listing errors
+ * (P4k not loaded, command rejected, IPC failure). Keeps the Maps
+ * tab clickable instead of leaving the user staring at a permanent
+ * error state. The Executive Hangar path is the reference scene we
+ * know loads end-to-end.
+ */
+const MAP_FALLBACK_PATH =
+  "Data\\ObjectContainers\\PU\\loc\\mod\\pyro\\asteroid_base\\ext\\ab_final_set\\ab_pyro_final_set_dungeon_executive-001.socpak";
+
+interface SocBusyState {
+  socpakPath: string;
+  fraction: number;
+  stage: string;
+  message: string;
+}
+
+/**
+ * Translate a SOC scene-load progress event into a [0,1] fraction
+ * for the loading bar. Phase weights are tuned to the observed
+ * Exec Hangar timings on a cold cache (~12s total): compose ~5%,
+ * resolve ~85%, emit ~8%, cache_write ~2%. Within each phase the
+ * fraction is `current/total` linearly, so the resolve phase shows
+ * fine-grained progress as meshes resolve.
+ */
+function computeSocFraction(
+  phase: string,
+  current: number,
+  total: number,
+): number {
+  const within = total > 0 ? Math.min(1, Math.max(0, current / total)) : 0;
+  switch (phase) {
+    case "compose":
+      return 0.0 + within * 0.05;
+    case "resolve":
+      return 0.05 + within * 0.85;
+    case "emit":
+      return 0.9 + within * 0.08;
+    case "cache_write":
+      return 0.98 + within * 0.02;
+    default:
+      return within;
+  }
 }
 
 /**
@@ -510,6 +570,35 @@ export function SceneView() {
   const [flightCamHandle, setFlightCamHandle] =
     useState<FlightCamHandle | null>(null);
 
+  // SOC scene state (Maps tab). The Maps tab loads a top-level
+  // socpak through `loadSceneToGltf`, which composes many zones,
+  // resolves meshes/materials, and writes a single GLB to the scene
+  // cache. The `socResponse` carries the cache path + AABB the
+  // SocSceneViewer needs to render and frame. SocBusyState tracks
+  // progress events while the load is in flight.
+  const [socResponse, setSocResponse] = useState<LoadSceneResponse | null>(null);
+  const [socActivePath, setSocActivePath] = useState<string | null>(null);
+  const [socBusy, setSocBusy] = useState<SocBusyState | null>(null);
+  const [socError, setSocError] = useState<string | null>(null);
+  // Flight-camera handle published by the SocSceneViewer. Hosted in
+  // the Maps tab toolbar via `<ProjectionModePicker>`.
+  const [socFlightCamHandle, setSocFlightCamHandle] =
+    useState<FlightCamHandle | null>(null);
+
+  // Maps tab now uses the lazy `SocpakTree` component, which manages
+  // its own per-branch state. We only track tab-level mount lifecycle
+  // here.
+  const [mapsMounted, setMapsMounted] = useState(false);
+  // Global socpak path index. Populated lazily on the first Maps tab
+  // activation via `listAllSocpaks` and held for the rest of the
+  // session. The lazy tree's branch-by-branch filter cannot find a
+  // path the user has not yet expanded; this index drives the "search
+  // everywhere" mode in `SocpakTree` so a typed query matches across
+  // the entire archive. Null while loading; the tree falls back to
+  // local-branch filtering until the index lands.
+  const [socpakIndex, setSocpakIndex] = useState<string[] | null>(null);
+  const [socpakIndexError, setSocpakIndexError] = useState<string | null>(null);
+
   // User-tunable viewer settings (collapsible panel in the bottom-right
   // of the viewer pane). New settings extend `ViewerSettings`; the panel
   // renders rows from the state shape so adding one is local.
@@ -661,6 +750,75 @@ export function SceneView() {
     };
   }, [refreshEntities, refreshCacheStats]);
 
+  // Mount the SocpakTree only after the Maps tab is first opened. The
+  // tree fires its own root listing on mount, so we want that single
+  // backend call to fire once -- on entry to the tab -- not repeatedly
+  // as React re-renders the parent. Once mounted, switching away and
+  // back keeps the tree (and its loaded-branch cache) intact.
+  useEffect(() => {
+    if (activeCategory === "Maps" && !mapsMounted) {
+      setMapsMounted(true);
+    }
+  }, [activeCategory, mapsMounted]);
+
+  // Kick off the global socpak path index in parallel with the lazy
+  // tree's first paint. `listAllSocpaks` is cached on disk by p4k
+  // identity so the second-launch path is a JSON read; the cold path
+  // is a few hundred ms of linear scan. We deliberately do NOT block
+  // the tree on this -- the user can browse / click leaves while the
+  // index loads. Once it lands, the tree's search input switches to
+  // global mode automatically.
+  useEffect(() => {
+    if (activeCategory !== "Maps") return;
+    if (socpakIndex !== null) return;
+    if (socpakIndexError !== null) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const paths = await listAllSocpaks();
+        if (cancelled) return;
+        setSocpakIndex(paths);
+      } catch (err) {
+        if (cancelled) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        setSocpakIndexError(msg);
+        // Do not surface as a blocking error -- the lazy tree still
+        // works without the index. Log so a missing index is visible
+        // in the dev tools.
+        console.warn("list_all_socpaks_cmd failed:", msg);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCategory, socpakIndex, socpakIndexError]);
+
+  // Subscribe to SOC scene-load progress events. Translates the
+  // backend's `(phase, current, total, message)` into a single
+  // fraction for the loading bar. Phase weights are deliberately
+  // skewed: resolve dominates wall-clock (~80% of a cold load on
+  // Exec Hangar), so it gets the bulk of the bar.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    onSceneLoadProgress((p) => {
+      if (cancelled) return;
+      const fraction = computeSocFraction(p.phase, p.current, p.total);
+      const stage = p.phase.charAt(0).toUpperCase() + p.phase.slice(1);
+      setSocBusy((prev) => {
+        if (!prev) return prev;
+        return { ...prev, fraction, stage, message: p.message };
+      });
+    }).then((u) => {
+      if (cancelled) u();
+      else unlisten = u;
+    });
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   // Tear down the pending two-click confirmation timer when the view
   // unmounts so the timeout doesn't fire against a stale setState.
   useEffect(() => {
@@ -790,6 +948,64 @@ export function SceneView() {
     }
     setBusy(null);
     generationRef.current++;
+  }, []);
+
+  const launchMap = useCallback(async (socpakPath: string) => {
+    setSocError(null);
+    setActionError(null);
+    setSocActivePath(socpakPath);
+    setSocResponse(null);
+    setSocBusy({
+      socpakPath,
+      fraction: 0,
+      stage: "Starting",
+      message: "Reading socpak...",
+    });
+    try {
+      const response = await loadSceneToGltf(socpakPath);
+      // If the user navigated away mid-load, drop the result.
+      setSocActivePath((current) => {
+        if (current !== socpakPath) return current;
+        setSocResponse(response);
+        setSocBusy(null);
+        console.log(
+          `[soc-load] cache_hit=${response.cache_hit} ` +
+            `meshes=${response.mesh_count} placements=${response.placement_count} ` +
+            `lights=${response.light_count} materials=${response.materials_resolved}/` +
+            `${response.materials_resolved + response.materials_default} ` +
+            `glb_bytes=${response.glb_bytes} ` +
+            `dropped=${response.dropped_placements} failed_meshes=${response.failed_mesh_paths}`,
+        );
+        return current;
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setSocError(msg);
+      setSocBusy(null);
+    }
+  }, []);
+
+  /** Bridge `SocpakTree`'s leaf-click event to the existing load flow. */
+  const handleTreeLeafClick = useCallback(
+    (entry: SocpakDirEntry) => {
+      void launchMap(entry.path);
+    },
+    [launchMap],
+  );
+
+  /** Click handler for the fallback Executive Hangar entry. */
+  const handleFallbackClick = useCallback(() => {
+    void launchMap(MAP_FALLBACK_PATH);
+  }, [launchMap]);
+
+  const handleSocCancel = useCallback(() => {
+    // No backend cancel hook for `load_scene_to_gltf` yet -- the load
+    // runs as a single `spawn_blocking` task that owns its work
+    // through completion. Clearing local state stops the UI from
+    // reacting to in-flight events; the backend keeps building so
+    // the user does not have to repeat the wait on the next click.
+    setSocActivePath(null);
+    setSocBusy(null);
   }, []);
 
   // Escape hatch: pick an external decomposed root.
@@ -954,93 +1170,57 @@ export function SceneView() {
             </button>
           </div>
 
-          {/* Entity list (or Maps placeholder) */}
+          {/* Entity list (or Maps tree). The Maps tab uses a separate
+              flex column so SocpakTree can own its own scroll region;
+              the entity list keeps the legacy single-scroll layout. */}
+          {activeCategory === "Maps" ? (
+            <div className="flex-1 flex flex-col min-h-0">
+              <div className="px-3 py-2 border-b border-border/60 shrink-0">
+                <p className="text-[11px] text-text-dim leading-relaxed">
+                  Browse the p4k object-container tree. Click a folder to
+                  expand it; click a `.socpak` to load the scene. Cold
+                  loads take ~10 seconds; cached loads are instant.
+                </p>
+              </div>
+              {mapsMounted && (
+                <SocpakTree
+                  rootPrefix={MAPS_ROOT_PREFIX}
+                  onLeafClick={handleTreeLeafClick}
+                  activePath={socActivePath}
+                  globalIndex={socpakIndex}
+                />
+              )}
+              {/* Always-visible escape hatch to the reference Exec Hangar
+                  scene, in case the tree errors or the user wants the
+                  one-click path that worked in the prior catalog UI. */}
+              <div className="px-3 py-2 border-t border-border/60 shrink-0">
+                <button
+                  onClick={handleFallbackClick}
+                  className="w-full text-left text-[10px] text-text-faint hover:text-text-sub transition-colors"
+                  title={MAP_FALLBACK_PATH}
+                >
+                  Open Executive Hangar (reference scene)
+                </button>
+              </div>
+            </div>
+          ) : (
           <div className="flex-1 overflow-y-auto">
-            {activeCategory === "Maps" && (
-              <>
-                <div className="px-3 py-2 border-b border-border/60">
-                  <p className="text-[11px] text-text-dim leading-relaxed">
-                    Multi-zone scene rendering. Loadable once the SOC-chunk
-                    scene parser lands. Each archetype below maps to a class
-                    of socpak content the engine renders today.
-                  </p>
-                </div>
-                {[
-                  {
-                    name: "Ship interiors",
-                    desc: "Full inhabitable interiors (Polaris, Carrack, 890 Jump). 5-zone modular composition.",
-                  },
-                  {
-                    name: "Hangars",
-                    desc: "Single-pad, XL, and executive hangars across Stanton + Pyro. Per-faction dressing.",
-                  },
-                  {
-                    name: "Prison facilities",
-                    desc: "Klescher hub + cave routes. Multi-room interconnected layout.",
-                  },
-                  {
-                    name: "Mining caves",
-                    desc: "Rock-cracker caverns and FPS-spec caves. Procedural stone with detail decals.",
-                  },
-                  {
-                    name: "Surface outposts",
-                    desc: "Planetside bunkers, drug labs, derelict shacks. Small modular footprint.",
-                  },
-                  {
-                    name: "Modular habitations",
-                    desc: "EZ Hab assemblies, Triggerfish, Good Doctor. Multi-level recursive containers.",
-                  },
-                  {
-                    name: "Derelict stations",
-                    desc: "Wreck interiors with damage states. Larger zone counts.",
-                  },
-                ].map((archetype) => (
-                  <div
-                    key={archetype.name}
-                    className="group flex items-start gap-2 px-3 py-2 text-xs cursor-not-allowed
-                               text-text-faint border-l-2 border-l-transparent
-                               opacity-60"
-                    title={`${archetype.name} -- not yet loadable`}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="truncate text-text-dim">
-                        {archetype.name}
-                      </div>
-                      <div className="text-[10px] text-text-faint leading-snug mt-0.5">
-                        {archetype.desc}
-                      </div>
-                    </div>
-                    <span className="text-[9px] uppercase tracking-wide text-text-faint shrink-0 mt-0.5">
-                      future
-                    </span>
-                  </div>
-                ))}
-                <div className="px-3 py-3 border-t border-border/60 mt-1">
-                  <p className="text-[10px] text-text-faint leading-relaxed">
-                    Future feature: SOC chunk parsing
-                    (brushes / entities / visareas), zone transform
-                    composition, and InstancedMesh batching for multi-zone
-                    scene loading.
-                  </p>
-                </div>
-              </>
-            )}
-            {activeCategory !== "Maps" && entitiesLoading && (
+            {entitiesLoading && (
               <div className="px-4 py-6 text-xs text-text-dim">
                 Scanning DataCore...
               </div>
             )}
-            {activeCategory !== "Maps" && entitiesError && (
+            {entitiesError && (
               <div className="px-4 py-3 text-xs text-danger break-words">
                 {entitiesError}
               </div>
             )}
-            {activeCategory !== "Maps" && !entitiesLoading && !entitiesError && filtered.length === 0 && (
+            {!entitiesLoading && !entitiesError && filtered.length === 0 && (
               <div className="px-4 py-6 text-xs text-text-dim">
                 No matches.
               </div>
             )}
-            {activeCategory !== "Maps" && filtered.map((entity) => {
+            {filtered.map((entity) => {
               const isActive = activeEntityName === entity.entity_name;
               const isBusy =
                 busy !== null && busy.entityName === entity.entity_name;
@@ -1095,17 +1275,97 @@ export function SceneView() {
               );
             })}
           </div>
+          )}
         </div>
 
         {/* ── Right pane: viewer / progress ── */}
         <div className="flex-1 relative overflow-hidden min-w-0">
-          {actionError && !busy && (
+          {/* SOC scene-package mode: dedicated viewer for the Maps tab.
+              Renders a self-contained GLB emitted by `loadSceneToGltf`
+              instead of a decomposed-export package. */}
+          {activeCategory === "Maps" && (
+            <>
+              {socError && !socBusy && (
+                <div className="absolute top-3 right-3 z-10 max-w-md bg-danger/15 border border-danger/30 text-danger text-xs px-3 py-2 rounded-md font-mono break-words shadow">
+                  {socError}
+                </div>
+              )}
+              {socBusy && (
+                <div className="absolute inset-0 z-10 bg-bg/85 backdrop-blur-sm flex items-center justify-center">
+                  <div className="w-[420px] bg-bg-alt border border-border rounded-lg p-6 flex flex-col gap-4 shadow-lg">
+                    <h3 className="text-sm font-semibold text-text">
+                      Loading scene
+                    </h3>
+                    <div className="flex flex-col gap-1.5">
+                      <div className="w-full bg-surface rounded-full h-2 overflow-hidden">
+                        <div
+                          className="bg-accent h-full rounded-full transition-all duration-300"
+                          style={{ width: `${Math.min(socBusy.fraction, 1) * 100}%` }}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-text-dim">
+                        <span className="truncate">
+                          {socBusy.message || socBusy.stage || "Working..."}
+                        </span>
+                        <span className="tabular-nums">
+                          {Math.round(socBusy.fraction * 100)}%
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleSocCancel}
+                      className="w-full py-2 rounded-md text-xs font-medium bg-danger/15 text-danger hover:bg-danger/25 transition-colors cursor-pointer"
+                      title="Stop tracking the load. The backend keeps building so the next click reuses cached output."
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+              {!socResponse && !socBusy && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="max-w-md text-center px-6">
+                    <Box
+                      size={48}
+                      strokeWidth={1.5}
+                      className="mx-auto text-text-dim mb-3 opacity-40"
+                    />
+                    <h3 className="text-base font-medium text-text mb-2">
+                      Pick a scene
+                    </h3>
+                    <p className="text-sm text-text-sub">
+                      Choose a map from the list. Cold loads take a few
+                      seconds; cached loads are instant.
+                    </p>
+                  </div>
+                </div>
+              )}
+              {socResponse && (
+                <>
+                  {/* Top-right toolbar: projection-mode picker hosted by
+                      the parent so it lives in the same flex row as the
+                      ship viewer's controls. */}
+                  <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
+                    <ProjectionModePicker handle={socFlightCamHandle} embedded />
+                  </div>
+                  <SocSceneViewer
+                    response={socResponse}
+                    onStatus={setStatus}
+                    onFlightCamReady={setSocFlightCamHandle}
+                  />
+                </>
+              )}
+            </>
+          )}
+
+          {/* Decomposed-export mode: existing scene-viewer pipeline. */}
+          {activeCategory !== "Maps" && actionError && !busy && (
             <div className="absolute top-3 right-3 z-10 max-w-md bg-danger/15 border border-danger/30 text-danger text-xs px-3 py-2 rounded-md font-mono break-words shadow">
               {actionError}
             </div>
           )}
 
-          {busy && (
+          {activeCategory !== "Maps" && busy && (
             <div className="absolute inset-0 z-10 bg-bg/85 backdrop-blur-sm flex items-center justify-center">
               <div className="w-[420px] bg-bg-alt border border-border rounded-lg p-6 flex flex-col gap-4 shadow-lg">
                 <h3 className="text-sm font-semibold text-text">
@@ -1137,7 +1397,7 @@ export function SceneView() {
             </div>
           )}
 
-          {!active && !busy && (
+          {activeCategory !== "Maps" && !active && !busy && (
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="max-w-md text-center px-6">
                 <Box
@@ -1156,7 +1416,7 @@ export function SceneView() {
             </div>
           )}
 
-          {active && (
+          {activeCategory !== "Maps" && active && (
             <>
               {/* Top-right control strip: Livery + Style + Settings.
                   Settings is inline here so it sits immediately right of

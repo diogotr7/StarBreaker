@@ -13,6 +13,7 @@ pub mod mtl;
 pub mod nmc;
 pub(crate) mod pipeline;
 pub mod skeleton;
+pub mod soc;
 pub(crate) mod socpak;
 pub mod types;
 
