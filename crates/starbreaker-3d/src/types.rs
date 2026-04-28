@@ -213,7 +213,17 @@ fn split_rigid_weighted_submeshes(
         }
 
         let rigid_ratio = rigid_triangles as f32 / triangle_count as f32;
-        if !valid || grouped_indices.len() <= 1 || rigid_ratio < 0.9 {
+        // Phase 47.4: previously bailed when `grouped_indices.len() <= 1`,
+        // but a submesh whose triangles all belong to a single dominant
+        // joint (e.g. an un-skinned residual housing geometry that the
+        // .skin authored as `node_parent_index = 0` (root) but whose
+        // BoneMap12 entries all point to a single articulated bone) must
+        // still be reassigned to that joint, otherwise it stays static
+        // at the CHR root while its owning bone animates. The split loop
+        // below handles len == 1 correctly (it just emits one rebuilt
+        // submesh with `node_parent_index = joint`); only `!valid` and
+        // `rigid_ratio < 0.9` (truly soft-skinned) need to bail.
+        if !valid || grouped_indices.is_empty() || rigid_ratio < 0.9 {
             let mut original = submesh.clone();
             original.first_index = rebuilt_indices.len() as u32;
             original.num_indices = source_indices.len() as u32;
@@ -751,5 +761,73 @@ mod tests {
         assert_eq!(mesh.submeshes[0].num_indices, 3);
         assert_eq!(mesh.submeshes[1].num_indices, 3);
         assert_eq!(mesh.indices, vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    /// Phase 47.4: a submesh whose `node_parent_index = 0` (root) but
+    /// whose triangle vertices all map to a single non-root bone via
+    /// BoneMap12 must be re-assigned to that bone — otherwise the mesh
+    /// stays static at the CHR root while its owning bone animates.
+    /// Previously the function bailed when `grouped_indices.len() <= 1`,
+    /// keeping the original (root-parented) submesh.
+    #[test]
+    fn build_mesh_reassigns_single_joint_root_submesh_to_owning_bone() {
+        let skin = SkinMesh {
+            flags: 0,
+            info: MeshInfo {
+                flags2: 5,
+                num_vertices: 3,
+                num_indices: 3,
+                num_submeshes: 1,
+                model_min: [0.0, 0.0, 0.0],
+                model_max: [1.0, 1.0, 1.0],
+                min_bound: [0.0, 0.0, 0.0],
+                max_bound: [1.0, 1.0, 1.0],
+                extra_count: 0,
+            },
+            submeshes: vec![SubMeshDescriptor {
+                mat_id: 0,
+                node_parent_index: 0, // authored at root
+                first_index: 0,
+                num_indices: 3,
+                first_vertex: 0,
+                page_base: 0,
+                num_vertices: 3,
+                radius: 1.0,
+                center: [0.5, 0.5, 0.5],
+                unknown0: 0,
+                unknown1: 0,
+            }],
+            extra_words: Vec::new(),
+            streams: DataStreams {
+                positions: PositionData::Float(vec![
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                ]),
+                uvs: Vec::new(),
+                secondary_uvs: None,
+                indices: vec![0, 1, 2],
+                // All vertices weighted to bone 7 — so the submesh's
+                // owning bone is 7, not 0.
+                bone_maps: Some(vec![
+                    BoneMap12 { joint_indices: [7, 0, 0, 0], weights: [255, 0, 0, 0] },
+                    BoneMap12 { joint_indices: [7, 0, 0, 0], weights: [255, 0, 0, 0] },
+                    BoneMap12 { joint_indices: [7, 0, 0, 0], weights: [255, 0, 0, 0] },
+                ]),
+                colors: None,
+                tangents: None,
+                normals: None,
+            },
+        };
+
+        let materials = vec![MaterialName { name: "m".into() }];
+        let mesh = build_mesh(&skin, &materials);
+
+        assert_eq!(mesh.submeshes.len(), 1);
+        assert_eq!(
+            mesh.submeshes[0].node_parent_index, 7,
+            "single-joint submesh should be reassigned from root (0) to owning bone (7)"
+        );
+        assert_eq!(mesh.submeshes[0].num_indices, 3);
     }
 }
