@@ -257,6 +257,37 @@ class AnimationPoseTests(unittest.TestCase):
         for axis, (got, want) in enumerate(zip(obj.location, expected)):
             self.assertAlmostEqual(got, want, places=5, msg=f"axis {axis}")
 
+    def test_override_blend_mode_uses_sample_verbatim(self) -> None:
+        """Phase 38 override path. When the per-bone `blend_mode` is
+        marked as `override` (CHR-bind sits outside the AABB of CAF
+        position samples), the addon must use the sampled position
+        verbatim and ignore the bind. The canonical real-world case
+        is Scorpius `BONE_Front_Landing_Gear_Foot`, whose CHR-bind is
+        ~1.81m off any clip sample. With the additive pathway that
+        bone lands far off the gear; with the override pathway it
+        lands at the sample exactly.
+        """
+        bind = (10.0, 0.0, 0.0)
+        sample = [3.5, 1.25, -0.75]
+        obj = self._make_object("BONE_Front_Landing_Gear_Foot", bind)
+        channel = {
+            "rotation": [[1.0, 0.0, 0.0, 0.0]],
+            "position": [sample],
+            "blend_mode": "override",
+        }
+        self.package_ops._apply_best_channel_transform(
+            obj,
+            self._bind_data(bind),
+            channel,
+            frame_index=0,
+            endpoint_policy="transition_end",
+        )
+        for axis, (got, want) in enumerate(zip(obj.location, sample)):
+            self.assertAlmostEqual(
+                got, want, places=5,
+                msg=f"axis {axis}: override mode must use sample verbatim",
+            )
+
     def test_endpoint_policy_literal_picks_first_at_frame_zero(self) -> None:
         obj = self._make_object("Wing_Rotator_Top_Right", _TOP_RIGHT_BIND)
         channel = {

@@ -1543,7 +1543,15 @@ def _apply_best_channel_transform(
             float(rotation_sample[2]),
             float(rotation_sample[3]),
         )
-        if endpoint_policy in {"transition_start", "transition_end"} and isinstance(rotations, list) and rotations:
+        blend_mode = str(channel.get("blend_mode") or "").lower()
+        if blend_mode == "override":
+            # Override mode (Phase 38): the exporter classified this bone's
+            # CHR-bind as outside the AABB of all CAF position samples, which
+            # means the clip authors meant the channel to *replace* the bind
+            # pose rather than ride on top of it. Use the sampled rotation
+            # verbatim — no anchor-relative composition.
+            obj.rotation_quaternion = rot_sample_q
+        elif endpoint_policy in {"transition_start", "transition_end"} and isinstance(rotations, list) and rotations:
             # Anchor-relative composition (matches the position pathway).
             # Clip channels are stored in a coordinate frame that has a fixed
             # offset from the imported rest pose; the offset cancels out by
@@ -1568,6 +1576,15 @@ def _apply_best_channel_transform(
         obj.rotation_quaternion = rot_sample_q
 
     if position_sample is not None and isinstance(positions, list) and positions:
+        sample_decoded = _decode_animation_position(position_sample, "identity")
+        blend_mode = str(channel.get("blend_mode") or "").lower()
+        if blend_mode == "override":
+            # Override mode (Phase 38): use the sampled position verbatim.
+            # The CHR-bind is outside the AABB of CAF samples, so anchor-
+            # relative composition would land the bone in the wrong place
+            # (canonical example: Scorpius BONE_Front_Landing_Gear_Foot).
+            obj.location = sample_decoded
+            return
         # Anchor-relative composition (mirrors rotation pathway). Clip
         # positions are in a fixed-offset coordinate frame relative to
         # bind; composing `bind + (sample - anchor)` cancels the offset.
@@ -1575,7 +1592,6 @@ def _apply_best_channel_transform(
         # (last sample, or mid-clip extreme for cyclic position channels).
         # The candidate nearest to bind is the anchor.
         valid_positions: list[list[Any]] = [v for v in positions if isinstance(v, list) and len(v) >= 3]
-        sample_decoded = _decode_animation_position(position_sample, "identity")
         if valid_positions:
             if anchor_frame is not None:
                 anchor_target = _sample_nearest_time(

@@ -1170,6 +1170,121 @@ pub fn database_to_animations_json(db: &AnimationDatabase) -> serde_json::Value 
     serde_json::Value::Array(db.clips.iter().map(clip_to_json).collect())
 }
 
+/// Per-bone animation blend mode, derived from the geometric
+/// relationship between the bone's CHR-bind position and the AABB
+/// of all CAF clip samples that touch the bone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoneBlendMode {
+    /// Bind sits inside (or coincident with) the CAF sample AABB —
+    /// the clip is interpreted as additive on top of bind. This is
+    /// the default and matches the addon's anchor-relative
+    /// composition path (`bind ⋅ (anchor⁻¹ ⋅ sample)`).
+    Additive,
+    /// Bind sits strictly outside the CAF sample AABB on at least one
+    /// axis — the clip is interpreted as an override. The addon
+    /// should use the sampled pose verbatim (`result = sample`)
+    /// instead of composing it on top of bind.
+    Override,
+}
+
+impl BoneBlendMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BoneBlendMode::Additive => "additive",
+            BoneBlendMode::Override => "override",
+        }
+    }
+}
+
+/// Classify each bone's animation blend mode by testing whether the
+/// CHR-bind local position sits inside the AABB of the bone's CAF
+/// position samples across **all** clips. A bone with no position
+/// samples or no bind entry is omitted from the result (the addon
+/// defaults to additive).
+///
+/// Containment is strict on each axis: bind is "outside" if any
+/// component is < min or > max with no epsilon. This is data-grounded
+/// — the only inputs are the CHR-bind position and the CAF sample
+/// stream — and uses no heuristics, name lookups, or absolute-unit
+/// thresholds.
+///
+/// Both inputs are interpreted in raw CryEngine local-space (the
+/// same convention as `BoneChannel.positions` and
+/// `crate::skeleton::Bone::local_position`); no axis swap is
+/// applied.
+pub fn classify_bone_blend_modes(
+    clips: &[AnimationClip],
+    binds: &std::collections::HashMap<u32, [f32; 3]>,
+) -> std::collections::HashMap<u32, BoneBlendMode> {
+    // Build per-bone AABB from all CAF position samples.
+    let mut bbox: std::collections::HashMap<u32, ([f32; 3], [f32; 3])> =
+        std::collections::HashMap::new();
+    for clip in clips {
+        for ch in &clip.channels {
+            if ch.positions.is_empty() {
+                continue;
+            }
+            let entry = bbox.entry(ch.bone_hash).or_insert_with(|| {
+                let p = ch.positions[0].value;
+                (p, p)
+            });
+            for kf in &ch.positions {
+                let p = kf.value;
+                for axis in 0..3 {
+                    if p[axis] < entry.0[axis] {
+                        entry.0[axis] = p[axis];
+                    }
+                    if p[axis] > entry.1[axis] {
+                        entry.1[axis] = p[axis];
+                    }
+                }
+            }
+        }
+    }
+    let mut out = std::collections::HashMap::new();
+    for (hash, (min, max)) in &bbox {
+        let Some(bind) = binds.get(hash) else {
+            continue;
+        };
+        let outside = (0..3).any(|axis| bind[axis] < min[axis] || bind[axis] > max[axis]);
+        out.insert(
+            *hash,
+            if outside { BoneBlendMode::Override } else { BoneBlendMode::Additive },
+        );
+    }
+    out
+}
+
+/// Inject a `blend_mode` field into every clip's per-bone entry of
+/// the JSON produced by [`database_to_animations_json`]. Bones
+/// without an entry in `modes` are left untouched (the addon
+/// defaults to additive).
+pub fn annotate_animations_json_with_blend_modes(
+    clips_json: &mut serde_json::Value,
+    modes: &std::collections::HashMap<u32, BoneBlendMode>,
+) {
+    let Some(arr) = clips_json.as_array_mut() else {
+        return;
+    };
+    for clip in arr.iter_mut() {
+        let Some(bones) = clip.get_mut("bones").and_then(|v| v.as_object_mut()) else {
+            continue;
+        };
+        for (key, value) in bones.iter_mut() {
+            // bone_key is "0xHEX" — parse back to u32.
+            let Some(stripped) = key.strip_prefix("0x").or(Some(key)) else { continue };
+            let Ok(hash) = u32::from_str_radix(stripped, 16) else { continue };
+            let Some(mode) = modes.get(&hash) else { continue };
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "blend_mode".to_string(),
+                    serde_json::Value::String(mode.as_str().to_string()),
+                );
+            }
+        }
+    }
+}
+
 /// Structured dump of an animation database for diagnostic / debug
 /// tooling. Returns a JSON value with one entry per clip listing
 /// channel counts, frame counts, per-channel bone hashes (resolved to
@@ -2211,7 +2326,17 @@ pub fn extract_animations_for_skeleton_json(
             include_unmatched_dba_blocks,
             allow_bone_subset_fallback,
         );
-        return Ok(Some(database_to_animations_json(&AnimationDatabase { clips })));
+        // Phase 38 (deferred): a per-bone CAF blend-mode classifier was
+        // attempted here using AABB-of-CAF-samples vs CHR-bind containment.
+        // Empirically the test inverts the additive/override split (over-
+        // marks stationary tracks as override). Phase 37 confirmed neither
+        // CAF Controller flags nor Mannequin ADB carry the bit. The
+        // `BoneBlendMode` enum, `classify_bone_blend_modes` helper, and
+        // `annotate_animations_json_with_blend_modes` helper remain as
+        // latent infrastructure for a future data-grounded discriminator;
+        // the addon's runtime override path consumes the field when set.
+        let value = database_to_animations_json(&AnimationDatabase { clips });
+        return Ok(Some(value));
     }
 
     // Fallback for chrparams that reference per-clip CAF files directly.
@@ -2406,6 +2531,87 @@ mod bake_tests {
         assert!(body.get("bones").is_some(), "Sidecar body must carry bones");
         let bones = body["bones"].as_object().unwrap();
         assert_eq!(bones.len(), 1);
+    }
+
+    #[test]
+    fn classify_bone_blend_modes_marks_outlier_bones_override() {
+        // additive bone: bind sits inside the AABB of CAF samples.
+        let additive_hash = 0xAAAA_AAAA_u32;
+        // override bone: bind is far outside the AABB on at least one axis.
+        let override_hash = 0xBBBB_BBBB_u32;
+        // bone with no position samples — must be omitted from result.
+        let unsampled_hash = 0xCCCC_CCCC_u32;
+
+        let clips = vec![AnimationClip {
+            name: "deploy".to_string(),
+            fps: 30.0,
+            channels: vec![
+                BoneChannel {
+                    bone_hash: additive_hash,
+                    rotations: vec![],
+                    positions: vec![
+                        Keyframe { time: 0.0, value: [0.0, 0.0, 0.0] },
+                        Keyframe { time: 1.0, value: [1.0, 1.0, 1.0] },
+                    ],
+                    rot_format_flags: 0,
+                    pos_format_flags: 0,
+                },
+                BoneChannel {
+                    bone_hash: override_hash,
+                    rotations: vec![],
+                    positions: vec![
+                        Keyframe { time: 0.0, value: [10.0, 0.0, 0.0] },
+                        Keyframe { time: 1.0, value: [11.0, 1.0, 0.0] },
+                    ],
+                    rot_format_flags: 0,
+                    pos_format_flags: 0,
+                },
+                BoneChannel {
+                    bone_hash: unsampled_hash,
+                    rotations: vec![Keyframe {
+                        time: 0.0,
+                        value: [0.0, 0.0, 0.0, 1.0],
+                    }],
+                    positions: vec![],
+                    rot_format_flags: 0,
+                    pos_format_flags: 0,
+                },
+            ],
+        }];
+
+        let mut binds = std::collections::HashMap::new();
+        // Additive bind sits inside the AABB.
+        binds.insert(additive_hash, [0.5_f32, 0.5, 0.5]);
+        // Override bind sits 8m off the AABB on X.
+        binds.insert(override_hash, [2.0_f32, 0.0, 0.0]);
+        // Unsampled bone has a bind but no samples — must be omitted.
+        binds.insert(unsampled_hash, [0.0_f32, 0.0, 0.0]);
+
+        let modes = classify_bone_blend_modes(&clips, &binds);
+        assert_eq!(modes.get(&additive_hash), Some(&BoneBlendMode::Additive));
+        assert_eq!(modes.get(&override_hash), Some(&BoneBlendMode::Override));
+        assert!(
+            !modes.contains_key(&unsampled_hash),
+            "Bones without position samples must not be classified"
+        );
+
+        // Round-trip through the JSON annotator.
+        let mut clips_json =
+            database_to_animations_json(&AnimationDatabase { clips: clips.clone() });
+        annotate_animations_json_with_blend_modes(&mut clips_json, &modes);
+        let bones = clips_json[0]["bones"].as_object().unwrap();
+        assert_eq!(
+            bones[&format!("0x{additive_hash:X}")]["blend_mode"]
+                .as_str()
+                .unwrap(),
+            "additive"
+        );
+        assert_eq!(
+            bones[&format!("0x{override_hash:X}")]["blend_mode"]
+                .as_str()
+                .unwrap(),
+            "override"
+        );
     }
 }
 
