@@ -288,6 +288,81 @@ class AnimationPoseTests(unittest.TestCase):
                 msg=f"axis {axis}: override mode must use sample verbatim",
             )
 
+    # ---- Phase 39: layered-Action helpers ---------------------------
+
+    def test_action_fcurves_handles_legacy_action(self) -> None:
+        """Pre-Blender-4.4 Actions expose `Action.fcurves` directly.
+        The helper must return that collection unchanged.
+        """
+        legacy_fcurves = ["fc_loc_x", "fc_loc_y", "fc_loc_z", "fc_quat_w"]
+        action = types.SimpleNamespace(fcurves=legacy_fcurves)
+        result = self.package_ops._action_fcurves(action)
+        self.assertEqual(result, legacy_fcurves)
+
+    def test_action_fcurves_walks_layered_channelbag(self) -> None:
+        """Blender 5.1 Actions have no `Action.fcurves`; fcurves live on
+        `action.layers[*].strips[*].channelbag(slot).fcurves`. The helper
+        must enumerate them via the layered API.
+        """
+        slot = object()
+        cb_fcurves = ["fc_loc_x", "fc_loc_y", "fc_quat_w"]
+        channelbag = types.SimpleNamespace(fcurves=cb_fcurves)
+        strip = types.SimpleNamespace(
+            channelbag=lambda s, ensure=False: channelbag if s is slot else None
+        )
+        layer = types.SimpleNamespace(strips=[strip])
+        action = types.SimpleNamespace(layers=[layer], slots=[slot])
+        # Make sure attempting to access `.fcurves` does NOT yield the
+        # legacy attribute.
+        self.assertFalse(hasattr(action, "fcurves"))
+        result = self.package_ops._action_fcurves(action)
+        self.assertEqual(result, cb_fcurves)
+
+    def test_action_groups_collection_returns_layered_channelbag_groups(self) -> None:
+        """The Phase 39 regression: `Action.groups` is removed in Blender
+        5.1 and grouping must come from the layered channelbag instead.
+        Looking up `action.groups` directly used to abort the Insert
+        Action loop after the first bone; the helper must transparently
+        return the channelbag's groups collection.
+        """
+
+        class _Groups:
+            def __init__(self) -> None:
+                self._items: dict[str, object] = {}
+
+            def get(self, name: str) -> object | None:
+                return self._items.get(name)
+
+            def new(self, name: str) -> object:
+                grp = object()
+                self._items[name] = grp
+                return grp
+
+        cb_groups = _Groups()
+        slot = object()
+        channelbag = types.SimpleNamespace(groups=cb_groups)
+        strip = types.SimpleNamespace(
+            channelbag=lambda s, ensure=False: channelbag if s is slot else None
+        )
+        layer = types.SimpleNamespace(strips=[strip])
+        action = types.SimpleNamespace(layers=[layer], slots=[slot])
+        self.assertFalse(hasattr(action, "groups"))
+        result = self.package_ops._action_groups_collection(action)
+        self.assertIs(result, cb_groups)
+        # The helper must support the regular Insert-Action call sequence:
+        # caller does `groups.get(name)` → falsy → `groups.new(name)`.
+        self.assertIsNone(result.get("BoneA"))
+        new_group = result.new("BoneA")
+        self.assertIs(result.get("BoneA"), new_group)
+
+    def test_action_groups_collection_returns_none_when_no_data(self) -> None:
+        """A freshly-created layered Action with no keyframes inserted
+        yet has no slots/channelbags. The helper must return None
+        instead of raising — callers then skip grouping silently.
+        """
+        action = types.SimpleNamespace(layers=[], slots=[])
+        self.assertIsNone(self.package_ops._action_groups_collection(action))
+
     def test_endpoint_policy_literal_picks_first_at_frame_zero(self) -> None:
         obj = self._make_object("Wing_Rotator_Top_Right", _TOP_RIGHT_BIND)
         channel = {

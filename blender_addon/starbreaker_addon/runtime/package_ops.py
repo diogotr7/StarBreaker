@@ -1664,6 +1664,82 @@ def _apply_animation_pose(
     return updated
 
 
+def _action_fcurves(action: Any) -> list[Any]:
+    """Return all fcurves on `action`, supporting both the legacy
+    `Action.fcurves` collection (Blender ≤4.3) and the layered
+    `action.layers[*].strips[*].channelbag(slot).fcurves` storage
+    introduced in Blender 4.4 (and now exclusive in 5.1+).
+
+    Returns an empty list if neither storage is reachable.
+    """
+
+    legacy = getattr(action, "fcurves", None)
+    if legacy is not None:
+        try:
+            return list(legacy)
+        except Exception:
+            return []
+    out: list[Any] = []
+    layers = getattr(action, "layers", None) or []
+    slots = getattr(action, "slots", None) or []
+    for layer in layers:
+        strips = getattr(layer, "strips", None) or []
+        for strip in strips:
+            for slot in slots:
+                try:
+                    channelbag = strip.channelbag(slot)
+                except Exception:
+                    continue
+                if channelbag is None:
+                    continue
+                cb_fcurves = getattr(channelbag, "fcurves", None)
+                if cb_fcurves is None:
+                    continue
+                try:
+                    out.extend(cb_fcurves)
+                except Exception:
+                    continue
+    return out
+
+
+def _action_groups_collection(action: Any) -> Any:
+    """Return a groups-like collection (with `.get(name)` and
+    `.new(name)`) for `action`, supporting both legacy Actions
+    (Blender ≤4.3) and the layered-action API (Blender 4.4+ /
+    5.1+). Returns None if no channelbag is reachable yet.
+
+    On layered Actions a channelbag for the first available slot is
+    used; the collection only exists once at least one keyframe has
+    been inserted via `obj.keyframe_insert`, so callers must defer
+    grouping until after their keyframe pass.
+    """
+
+    legacy = getattr(action, "groups", None)
+    if legacy is not None:
+        return legacy
+    layers = getattr(action, "layers", None) or []
+    slots = getattr(action, "slots", None) or []
+    for layer in layers:
+        strips = getattr(layer, "strips", None) or []
+        for strip in strips:
+            for slot in slots:
+                try:
+                    channelbag = strip.channelbag(slot, ensure=True)
+                except TypeError:
+                    try:
+                        channelbag = strip.channelbag(slot)
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+                if channelbag is None:
+                    continue
+                cb_groups = getattr(channelbag, "groups", None)
+                if cb_groups is not None:
+                    return cb_groups
+    return None
+
+
 def _insert_animation_action(
     context: bpy.types.Context,
     package_root: bpy.types.Object,
@@ -1707,10 +1783,14 @@ def _insert_animation_action(
         action = bpy.data.actions.new(name=action_name)
         obj.animation_data.action = action
         group_name = obj.name
-        try:
-            action.groups.new(group_name)
-        except Exception:
-            pass
+        # Phase 39: defer group creation until after keyframes are
+        # inserted. On Blender 5.1+ a freshly-created Action has no
+        # layers/strips/slots/channelbags until the first keyframe is
+        # inserted, and the legacy `Action.groups` collection has been
+        # removed. Looking up `action.groups` before keyframes exist
+        # would raise AttributeError mid-loop and abort all subsequent
+        # bones (this is the regression that left only the first bone
+        # animated when running Insert Action on Wings Deploy).
 
         rotations = channel.get("rotation") if isinstance(channel.get("rotation"), list) else []
         positions = channel.get("position") if isinstance(channel.get("position"), list) else []
@@ -1776,24 +1856,51 @@ def _insert_animation_action(
                 )
                 obj.keyframe_insert(data_path="rotation_quaternion", frame=_action_frame(sample_time))
 
-        # Phase 24C: assign all fcurves on this action to the bone's group
-        # so the Action editor renders a single collapsible group per bone.
-        bone_group = action.groups.get(group_name)
+        # Phase 24C / Phase 39: assign all fcurves on this action to the
+        # bone's group so the Action editor renders a single collapsible
+        # group per bone. On Blender 5.1+ both `Action.groups` and
+        # `Action.fcurves` are removed in favor of the layered-action
+        # API (`action.layers[*].strips[*].channelbag(slot)`); the
+        # helpers `_action_groups_collection` and `_action_fcurves`
+        # transparently support both storage models.
+        groups_collection = _action_groups_collection(action)
+        bone_group = None
+        if groups_collection is not None:
+            try:
+                bone_group = groups_collection.get(group_name)
+            except Exception:
+                bone_group = None
+            if bone_group is None:
+                try:
+                    bone_group = groups_collection.new(group_name)
+                except Exception:
+                    bone_group = None
         if bone_group is not None:
-            for fcurve in action.fcurves:
-                if fcurve.group is None:
-                    fcurve.group = bone_group
+            for fcurve in _action_fcurves(action):
+                try:
+                    if fcurve.group is None:
+                        fcurve.group = bone_group
+                except Exception:
+                    continue
 
         # Phase 24C: push the per-object action onto a per-clip NLA track so
         # the Action stays editable and multiple clips don't overwrite each
         # other on the timeline.
         anim = obj.animation_data
-        if anim is not None and action.frame_range[1] > action.frame_range[0]:
+        try:
+            frame_range_low, frame_range_high = action.frame_range
+            has_range = float(frame_range_high) > float(frame_range_low)
+        except Exception:
+            has_range = False
+        if anim is not None and has_range:
             track = anim.nla_tracks.get(name)
             if track is None:
                 track = anim.nla_tracks.new()
                 track.name = name
-            strip_start = int(action.frame_range[0])
+            try:
+                strip_start = int(action.frame_range[0])
+            except Exception:
+                strip_start = int(frame_offset)
             try:
                 strip = track.strips.new(name=name, start=strip_start, action=action)
                 strip.name = name
