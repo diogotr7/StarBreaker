@@ -108,7 +108,7 @@ pub struct MtlSummaryRequest {
 pub struct DbaDumpRequest {
     #[schemars(description = "Path to a .dba or .caf file in P4k (case-insensitive, Data\\ prefix optional). May also be an absolute filesystem path.")]
     pub path: String,
-    #[schemars(description = "Optional path to a .chr / .skin / .skinm skeleton used to resolve bone hashes to names. Same path resolution as 'path'. Required for bone_filter to work.")]
+    #[schemars(description = "Optional path to a rig source used to resolve bone hashes to names. Accepts either a .chr / .skin / .skinm skeleton (CompiledBones chunk) OR a .cga / .cgam scene-graph file (NMC chunk — used by ships like the Scorpius whose main body has no CHR). Same path resolution as 'path'. Required for bone_filter to work.")]
     pub skeleton: Option<String>,
     #[schemars(description = "Filter CLIPS by case-insensitive substring match on the clip metadata name (e.g. 'wings_deploy'). Independent of bone_filter.")]
     pub filter: Option<String>,
@@ -812,7 +812,7 @@ impl StarBreakerMcp {
         out
     }
 
-    #[tool(description = "Inspect a CryEngine animation database (.dba) or compressed animation file (.caf). Returns structured JSON: clip metadata (name, fps, frame_count, channel_count) and per-channel bone hashes plus first/last keyframe samples (or full keyframe arrays with all_keyframes=true). Provide `skeleton` to resolve bone hashes to names; combine with `bone_filter` to drill down to a small set of channels (e.g. wings, landing gear). Use `filter` for clip-name filtering. Replaces the legacy `starbreaker dba dump` CLI.")]
+    #[tool(description = "Inspect a CryEngine animation database (.dba) or compressed animation file (.caf). Returns structured JSON: clip metadata (name, fps, frame_count, channel_count) and per-channel bone hashes plus first/last keyframe samples (or full keyframe arrays with all_keyframes=true). Provide `skeleton` to resolve bone hashes to names — accepts either a CHR skeleton (CompiledBones) or a CGA/CGAM scene graph (NMC nodes) for ships whose main body has no CHR; combine with `bone_filter` to drill down to a small set of channels (e.g. wings, landing gear). Use `filter` for clip-name filtering. Replaces the legacy `starbreaker dba dump` CLI.")]
     fn dba_dump(&self, Parameters(req): Parameters<DbaDumpRequest>) -> String {
         let bytes = match self.read_p4k_or_disk(&req.path) {
             Ok(b) => b,
@@ -834,13 +834,17 @@ impl StarBreakerMcp {
         if let Some(skel_path) = req.skeleton.as_ref() {
             match self.read_p4k_or_disk(skel_path) {
                 Ok(sb) => {
-                    if let Some(bones) = starbreaker_3d::skeleton::parse_skeleton(&sb) {
-                        for bone in &bones {
+                    if let Some(names) = starbreaker_3d::skeleton::parse_rig_node_names(&sb) {
+                        for name in &names {
                             hash_to_name.insert(
-                                starbreaker_3d::animation::bone_name_hash(&bone.name),
-                                bone.name.clone(),
+                                starbreaker_3d::animation::bone_name_hash(name),
+                                name.clone(),
                             );
                         }
+                    } else {
+                        return format!(
+                            "Skeleton '{skel_path}' has no CompiledBones (CHR) or NMC (CGA/CGAM) chunk; cannot resolve bone names"
+                        );
                     }
                 }
                 Err(e) => return format!("Failed to read skeleton '{skel_path}': {e}"),

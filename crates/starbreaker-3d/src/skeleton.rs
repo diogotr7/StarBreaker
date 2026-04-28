@@ -87,6 +87,34 @@ impl RawQuatTrans {
     }
 }
 
+/// Resolve a list of rig-like node names from a CryEngine asset, trying
+/// the CHR `CompiledBones` chunk first and falling back to the CGA/CGAM
+/// NMC scene-graph node names.
+///
+/// CHR files (skeletons used by skinned meshes) expose names through
+/// `parse_skeleton`. CGA/CGAM files (rigid scene graphs, e.g. Scorpius main
+/// body) have no CompiledBones — their bone-equivalent names live in the
+/// NMC chunk as scene-graph node names. Both name sources hash to the same
+/// 32-bit space used by `.dba` channel hashes, so either can be used to
+/// resolve animation channels by name.
+///
+/// Returns `None` if neither chunk is present or parseable. Order is
+/// preserved from the source (bone order for CHR, node order for NMC) so
+/// callers that care about stable output get deterministic results.
+pub fn parse_rig_node_names(data: &[u8]) -> Option<Vec<String>> {
+    if let Some(bones) = parse_skeleton(data) {
+        if !bones.is_empty() {
+            return Some(bones.into_iter().map(|b| b.name).collect());
+        }
+    }
+    if let Some((nodes, _)) = crate::nmc::parse_nmc_full(data) {
+        if !nodes.is_empty() {
+            return Some(nodes.into_iter().map(|n| n.name).collect());
+        }
+    }
+    None
+}
+
 /// Parse the CompiledBones chunk from a `.chr` skeleton file.
 ///
 /// Returns `None` if the file can't be parsed or has no CompiledBones chunk.
