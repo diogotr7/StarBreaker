@@ -338,7 +338,8 @@ export interface SubmaterialRecord {
   /** Per-submaterial palette tint baked by the exporter (HardSurface only).
    *  Null for non-tinted submaterials. When `assigned_channel` resolves to
    *  one of `entries`, the matching `tint_color` is multiplied with the
-   *  diffuse map (`final_albedo = tint_color × diffuse_sample`). */
+   *  diffuse map per the standard CryEngine HardSurface compositing rule
+   *  (`final_albedo = tint_color * diffuse_sample`). */
   tint_palette?: SubmaterialPalette | null;
   /** Palette-channel routing for layered HardSurface submaterials.
    *  `material_channel` is the channel this submaterial as a whole reads
@@ -1178,11 +1179,12 @@ interface MaterialShaderHooks {
   pomHeightMap?: THREE.Texture;
   pomScale?: number;
   dirtOverlayMap?: THREE.Texture;
-  /** Fresnel-blended secondary/tertiary palette colours used by the
-   *  iridescent paint variants. Activated when the submat's source MTL
-   *  filename ends in `_i` (gated upstream in
-   *  `buildHardSurfaceMaterial`). Mirrors the Fresnel-blend node group
-   *  used by the Blender importer. */
+  /** System B iridescence: selects between two palette colours
+   *  (`secondary` / `entryB` and `tertiary` / `entryC`) by Fresnel
+   *  weight `pow(1 - NdotV, 5)`. Activated when the submat's source
+   *  MTL filename ends in `_i` (gated upstream in
+   *  `buildHardSurfaceMaterial`). Approximates the engine's iridescent
+   *  paint shader for shimmerscale and similar two-tone variants. */
   systemBSecondary?: THREE.Color;
   systemBTertiary?: THREE.Color;
 }
@@ -1218,8 +1220,9 @@ function applyShaderHooks(
     }
 
     // POM: parallax occlusion ray-march replaces the standard map UV
-    // lookup with a height-displaced one. 16 sample steps is a
-    // reasonable cost/quality balance for typical hull-detail surfaces.
+    // lookup with a height-displaced one. Step count of 16 balances
+    // visual smoothness against the per-pixel sample cost; tune via
+    // heightScale.
     if (hooks.pomHeightMap) {
       const heightScale = hooks.pomScale ?? 0.015;
       shader.uniforms.pomHeightMap = { value: hooks.pomHeightMap };
@@ -1292,10 +1295,10 @@ function applyShaderHooks(
       );
     }
 
-    // Iridescent paint: Fresnel-weighted blend between secondary
-    // (entryB) and tertiary (entryC) palette colours. Mirrors the
-    // Fresnel-blend approach used by the Blender importer. The weight
-    // `pow(1 - NdotV, 5)` is a standard Schlick-style approximation.
+    // System B iridescence: Fresnel-weighted blend between secondary
+    // (entryB) and tertiary (entryC) palette colours;
+    // `pow(1 - NdotV, 5)` is a Schlick-style approximation of the
+    // engine's angular response.
     //
     // Caller pre-sets `material.color = white(0xffffff)` so the
     // existing `<color_fragment>` and `<map_fragment>` paths leave
@@ -1447,14 +1450,16 @@ function recordHardSurfaceBuild(
 }
 
 /** Detect whether a submaterial's source MTL is the `_i` iridescent
- *  variant (e.g. shimmerscale paints, two-tone variants). When the
- *  exporter emits `<stem>:<base>` blender_material_name strings, the
- *  stem mirrors the source MTL filename minus `.mtl`, so a hull that
- *  references `<paint>_i.mtl` shows up here as `<paint>_i:<submat>`.
+ *  variant (Aurora shimmerscale, 600i wavy, Starlancer two-tone).
+ *  When the exporter writes `<stem>:<base>` blender_material_name
+ *  strings, the stem mirrors the source MTL filename minus `.mtl`,
+ *  so a hull that references `<paint>_i.mtl` shows up here as
+ *  `<paint>_i:<submat>`.
  *
  *  The detection is intentionally narrow: only the trailing
  *  underscore-i in the stem position triggers, so panels named with
- *  embedded `_i` don't false-positive. */
+ *  embedded `_i` (e.g. some hypothetical `_iris_panel`) don't
+ *  false-positive. */
 function isSystemBIridescent(submaterial: SubmaterialRecord): boolean {
   const blenderName = submaterial.blender_material_name ?? "";
   const colonIdx = blenderName.indexOf(":");
@@ -1648,14 +1653,15 @@ function buildScreenMaterial(
 }
 
 /** Hologram / HologramCIG / Shield_Holo: animated translucent shader
- *  with Fresnel-driven rim brightening and scanlines. The shader needs
- *  per-frame `time` updates; we attach an updater so the scene-viewer's
- *  animate loop can tick all hologram materials.
+ *  with Fresnel-driven rim brightening and scanlines. The shader
+ *  needs per-frame `time` updates; we attach an updater so the
+ *  scene-viewer's animate loop can tick all hologram materials.
  *
- *  This is a simple unlit-emissive + angular-fresnel approximation;
- *  the source format's hologram shader does more (scrolling noise,
- *  edge iridescence, fresnel-modulated transparency), but this reads
- *  as "hologram" in practice and is much closer than a flat fill. */
+ *  Simple unlit-emissive plus angular-Fresnel approximation of the
+ *  engine's hologram shader. Does not yet implement scrolling noise,
+ *  edge iridescence, or fresnel-modulated transparency. Reads as
+ *  "hologram" in side-by-side comparisons with the in-game look. Far
+ *  closer than the prior `MeshBasicMaterial` flat fill. */
 const HOLOGRAM_VERTEX_SHADER = /* glsl */ `
   varying vec3 vNormal;
   varying vec3 vViewDir;
@@ -1989,18 +1995,19 @@ function paletteChannelHasIridescence(
  *
  *  When the sidecar carries a `tint_palette` with a resolved
  *  `assigned_channel`, the channel's `tint_color` is set on
- *  `material.color` and the standard `final_albedo = tint × diffuse`
- *  composition falls out of MeshStandardMaterial's per-fragment colour
- *  × map multiplication automatically — no custom shader required.
+ *  `material.color` and the standard CryEngine HardSurface compositing
+ *  rule (`final_albedo = tint_color * diffuse_sample`) falls out of
+ *  MeshStandardMaterial's per-fragment colour × map multiplication
+ *  automatically — no custom shader required.
  *
  *  When the routed palette channel encodes iridescence (per
  *  `paletteChannelHasIridescence`), this builds a `MeshPhysicalMaterial`
- *  with iridescence + sheen rather than a `MeshStandardMaterial`, so
- *  angle-shift paints (e.g. iridescent `_i.mtl` variants) get the
- *  tertiary palette spec_color blended toward at grazing angles.
- *  Three.js's built-in `iridescence` is thin-film, which combined with
- *  `sheen` driven by the spec_color gives a reasonable approximation
- *  of the in-engine look without a custom shader.
+ *  with iridescence + sheen rather than a `MeshStandardMaterial`.
+ *  Angle-shift paints (the `_i.mtl` variant) get the tertiary palette
+ *  spec_color blended toward at grazing angles. Three.js's built-in
+ *  `iridescence` is thin-film and not exactly what CryEngine does,
+ *  but combined with `sheen` driven by the spec_color it gives a
+ *  visible angular shift that approximates the engine.
  *
  *  Layered HardSurface submaterials publish their visible diffuse/normal
  *  pair via `layer_manifest` rather than `texture_slots`, because the
@@ -2019,12 +2026,10 @@ function buildHardSurfaceMaterial(
   const paletteEntry = resolvePaletteEntry(submaterial);
   const paletteEntries = submaterial.tint_palette?.entries ?? [];
 
-  // System B iridescence (synthesis_priority_actions.md S3): the actual
-  // CryEngine shimmerscale mechanism. Source MTL ending in `_i.mtl`
-  // routes through a Fresnel blend between secondary (entryB) and
-  // tertiary (entryC) palette colours — NOT thin-film. The Fresnel
-  // injection lives in `applyShaderHooks`; here we just gate the
-  // material construction.
+  // System B iridescence: source MTL ending in `_i.mtl` routes through
+  // a Fresnel blend between secondary (entryB) and tertiary (entryC)
+  // palette colours — NOT thin-film. The Fresnel injection lives in
+  // `applyShaderHooks`; here we just gate the material construction.
   const isSystemB = isSystemBIridescent(submaterial);
   const sysBSecondary = isSystemB
     ? rgbFromEntry(findEntry(paletteEntries, "secondary"))
@@ -2035,21 +2040,18 @@ function buildHardSurfaceMaterial(
   const useSystemB = isSystemB && sysBSecondary !== null && sysBTertiary !== null;
 
   // System A (thin-film) — kept narrow, only fires when System B is
-  // not active and the explicit %IRIDESCENCE flag or SD's chromatic-
-  // spec heuristic both point at it.
+  // not active and the explicit %IRIDESCENCE flag or the
+  // chromatic-spec heuristic both point at it.
   const isSystemA =
     !useSystemB &&
     (submaterial.decoded_feature_flags?.has_iridescence === true ||
       paletteChannelHasIridescence(paletteEntries, channelName));
 
-  // ClearCoat (synthesis_priority_actions.md S1): bit 1 of the engine's
-  // GBuffer ShadingModelId. "Used on majority of ship exterior paint."
-  // The exact SShaderGen permutation bit is an open RE question, so we
-  // apply the heuristic: any HardSurface that resolves a palette tint
-  // gets a clear coat — that includes both the routed-channel case and
-  // the heuristic primary-fallback in resolvePaletteEntry, which covers
-  // the chassis paint panels Aurora's main hull (Panel_LF_Paint_*,
-  // Tile_*, Trim_*) leaves with assigned_channel = null. Bare-metal /
+  // ClearCoat: used on the majority of ship exterior paint. Heuristic:
+  // any HardSurface that resolves a palette tint gets a clear coat —
+  // that includes both the routed-channel case and the heuristic
+  // primary-fallback in `resolvePaletteEntry`, which covers chassis
+  // paint panels left with `assigned_channel = null`. Bare-metal /
   // no-palette submaterials skip ClearCoat. System B materials skip it
   // because the Fresnel-blend already provides the angular highlight;
   // double-stacking ClearCoat over System B would mute the colour shift.
@@ -2119,8 +2121,11 @@ function buildHardSurfaceMaterial(
           metalness: useSystemB ? 0.4 : isSystemA ? 0.3 : 0.15,
           roughness: useSystemB ? 0.45 : isSystemA ? 0.4 : 0.55,
           // ClearCoat: a thin reflective layer on top of the base BSDF.
-          // Conservative defaults — proper ClearCoat shading model
-          // resolution from PublicParams is a follow-up.
+          // CryEngine's ClearCoatBlend shading model does roughly this
+          // with a fixed thin-coat IOR. Active on most painted hulls;
+          // off for System B (the Fresnel mix is the angular response)
+          // and bare metals. The 0.5 default is conservative; a richer
+          // ClearCoat port would read PublicParams.ClearCoatBlend.
           clearcoat: wantsClearCoat ? 0.5 : 0.0,
           clearcoatRoughness: wantsClearCoat ? 0.1 : 0.0,
           // System A thin-film — narrow path now; System B is the
@@ -2151,14 +2156,16 @@ function buildHardSurfaceMaterial(
           roughness: 0.7,
         });
   if (paletteEntry?.glossiness != null) {
-    // Glossiness is the inverse of roughness. When provided we honour
-    // it directly; the alpha-derived DDNA roughness path below still
-    // runs and modulates per-pixel.
+    // Glossiness is the inverse of roughness. When provided we honour it
+    // directly; the alpha-derived DDNA roughness path below still runs
+    // and modulates per-pixel.
     material.roughness = THREE.MathUtils.clamp(1.0 - paletteEntry.glossiness, 0.0, 1.0);
   }
   material.userData.fallbackKind = fallbackKind;
   tagOriginalColor(material);
-  // Default IBL intensity; tune per-scene via the Settings panel slider.
+  // Default IBL intensity. The constructor already sets sensible
+  // per-shader-family metalness; spec-routed metalness comes from
+  // texture binding below.
   material.envMapIntensity = 1.0;
   applyDebugFallbackToMaterial(material);
   const texturePromises: Promise<void>[] = [];
@@ -2204,7 +2211,10 @@ function buildHardSurfaceMaterial(
         }
         material.needsUpdate = true;
       } else if (isSpecularRole(role)) {
-        // Spec maps drive metalness on the standard PBR path.
+        // CryEngine spec_color textures are routed as metalnessMap on
+        // MeshStandardMaterial. The constructor's metalness baseline
+        // (0.1 for bare-metal, 0.3-0.4 for paint families) is treated
+        // as a multiplier the map can drive up to 1.0 per-pixel.
         material.metalnessMap = tex;
         material.needsUpdate = true;
       } else if (isEmissiveRole(role)) {
@@ -2239,10 +2249,10 @@ function buildHardSurfaceMaterial(
 
   const hadTextureSlots = texturePromises.length > 0;
 
-  // LayerBlend no-palette fallback: when a LayerBlend submaterial has no
-  // tint_palette and no synthesised slots, bind the first layer_manifest
-  // diffuse so the surface at least carries its authored base color.
-  // Full multi-layer LayerBlend with edge-wear masks is a follow-up.
+  // LayerBlend submaterials with no tint_palette have no synthesised
+  // slots; bind the first layer's diffuse so the surface at least
+  // carries its authored base colour. Full multi-layer LayerBlend with
+  // edge-wear masks and per-layer normal blending is future work.
   if (fallbackKind === FALLBACK_KINDS.HARDSURFACE_NO_PALETTE) {
     const layers = submaterial.layer_manifest ?? [];
     const layerWithDiff = layers.find((l) => l.diffuse_export_path);
