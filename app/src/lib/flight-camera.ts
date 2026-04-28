@@ -62,6 +62,27 @@ export const PROJECTION_MODES: readonly ProjectionMode[] = [
   "oblique",
 ] as const;
 
+/** Named camera presets bound to the Numpad keys. The presets all aim
+ *  at the scene centroid; only the camera position differs. Distance is
+ *  computed from the scene AABB by `computeFramingDistance` so the model
+ *  fills ~`PRESET_FILL_FRACTION` of the viewport. */
+export type ViewPreset =
+  | "overhead"
+  | "perspective2"
+  | "side"
+  | "fore"
+  | "aft"
+  | "perspective";
+
+export const VIEW_PRESETS: readonly ViewPreset[] = [
+  "overhead",
+  "perspective2",
+  "side",
+  "fore",
+  "aft",
+  "perspective",
+] as const;
+
 export interface FlightCamState {
   pos: THREE.Vector3;
   quat: THREE.Quaternion;
@@ -96,6 +117,11 @@ export interface FlightCamHandle {
   cycleProjectionMode(): void;
   /** Set projection mode directly. Bound to the dropdown selector. */
   setProjectionMode(mode: ProjectionMode): void;
+  /** Snap to a named preset framing the given sceneRoot. Position is
+   *  computed from the scene AABB (centred on the centroid) at a
+   *  distance that fills `PRESET_FILL_FRACTION` of the viewport, looking
+   *  at the centroid. No damping; the swap is instant. */
+  setView(preset: ViewPreset, sceneRoot: THREE.Object3D): void;
   /** Read the camera the renderer / picker should use this frame. Returns
    *  the perspective camera in "perspective" mode and the internal
    *  orthographic camera in "orthographic" or "oblique". The returned
@@ -110,6 +136,13 @@ export const SPEED_MAX = 50;
 export const SPEED_STEP = 1.15;
 export const FOV_MIN = 10;
 export const FOV_MAX = 120;
+
+/** Fraction of the viewport's narrowest dimension the framed AABB should
+ *  cover. 0.8 = leave ~10% margin on every side of the entity. Shared by
+ *  `resetToScene` and `setView` so R and the Numpad keys agree on scale. */
+export const PRESET_FILL_FRACTION = 0.8;
+/** Fallback distance when the scene AABB is empty or degenerate. */
+export const FRAMING_FALLBACK_DISTANCE = 80;
 
 /** Per-frame translation magnitude = PAN_BASE * moveSpeed. */
 const PAN_BASE = 0.5;
@@ -300,6 +333,146 @@ export function applyObliqueShear(
 export function nextProjectionMode(current: ProjectionMode): ProjectionMode {
   const i = PROJECTION_MODES.indexOf(current);
   return PROJECTION_MODES[(i + 1) % PROJECTION_MODES.length];
+}
+
+/** Compute the camera distance that frames an AABB at the given
+ *  perspective FoV so the entity fills `fillFraction` of the viewport's
+ *  narrowest dimension.
+ *
+ *  The dominant axis is the largest of the three AABB extents; we fit
+ *  THAT extent into both the vertical and horizontal half-FoVs and take
+ *  the larger of the two distances so neither axis crops. The result is
+ *  divided by `fillFraction` to back the camera away an extra step,
+ *  leaving a margin (fillFraction = 0.8 => ~10% margin per side).
+ *
+ *  Edge cases:
+ *  - Degenerate AABB (extent_max <= 0) returns FRAMING_FALLBACK_DISTANCE
+ *    instead of dividing by zero.
+ *  - viewportAspect <= 0 is treated as 1 (square viewport) so we don't
+ *    produce a negative or NaN horizontal half-FoV.
+ *  - fillFraction <= 0 is treated as PRESET_FILL_FRACTION so a caller
+ *    that fat-fingers the argument still gets a finite distance.
+ */
+export function computeFramingDistance(
+  aabbMin: THREE.Vector3,
+  aabbMax: THREE.Vector3,
+  fovDegrees: number,
+  viewportAspect: number,
+  fillFraction: number,
+): number {
+  const dx = aabbMax.x - aabbMin.x;
+  const dy = aabbMax.y - aabbMin.y;
+  const dz = aabbMax.z - aabbMin.z;
+  const extent_max = Math.max(dx, dy, dz);
+  if (!Number.isFinite(extent_max) || extent_max <= 0) {
+    return FRAMING_FALLBACK_DISTANCE;
+  }
+  const aspect = viewportAspect > 0 && Number.isFinite(viewportAspect) ? viewportAspect : 1;
+  const fill = fillFraction > 0 ? fillFraction : PRESET_FILL_FRACTION;
+  const vfov = (fovDegrees * Math.PI) / 180;
+  const hfov = 2 * Math.atan(Math.tan(vfov / 2) * aspect);
+  const dV = (extent_max / 2) / Math.tan(vfov / 2);
+  const dH = (extent_max / 2) / Math.tan(hfov / 2);
+  return Math.max(dV, dH) / fill;
+}
+
+/** Map a keyboard event `code` to the matching `ViewPreset`. Returns
+ *  null for codes that are not bound to a preset. The mapping mirrors
+ *  the kaboos-loot Numpad layout: Numpad0 = overhead, Numpad1 =
+ *  perspective2, Numpad2 = side, Numpad3 = fore, Numpad4 = aft,
+ *  Numpad5 = perspective. Pure helper so the dispatch table is
+ *  testable without a DOM. */
+export function viewPresetForKeyCode(code: string): ViewPreset | null {
+  switch (code) {
+    case "Numpad0": return "overhead";
+    case "Numpad1": return "perspective2";
+    case "Numpad2": return "side";
+    case "Numpad3": return "fore";
+    case "Numpad4": return "aft";
+    case "Numpad5": return "perspective";
+    default: return null;
+  }
+}
+
+/** Top-level dispatch for the SceneViewer keyboard shortcuts that
+ *  affect the flight camera or the HUD. Pure (no DOM, no THREE), so
+ *  the routing table is unit-testable.
+ *
+ *  Behaviour:
+ *  - `R`           => calls `handle.resetToScene(sceneRoot)`. The
+ *                     repeat flag is ignored (held R refreshes).
+ *  - `H`           => calls `toggleHud()`. Suppressed on `repeat` so a
+ *                     held H does not strobe.
+ *  - `Numpad0..5`  => calls `handle.setView(preset, sceneRoot)`.
+ *                     Suppressed on `repeat`.
+ *  - anything else => returns `false` (caller decides).
+ *
+ *  Returns `true` if the event matched a binding (caller should call
+ *  preventDefault); `false` otherwise. */
+export function dispatchViewerHotkey(
+  e: { code: string; repeat: boolean },
+  handle: Pick<FlightCamHandle, "resetToScene" | "setView"> | null,
+  sceneRoot: THREE.Object3D | null,
+  toggleHud: () => void,
+): boolean {
+  if (e.code === "KeyR") {
+    if (handle && sceneRoot) handle.resetToScene(sceneRoot);
+    return true;
+  }
+  if (e.code === "KeyH") {
+    if (e.repeat) return true;
+    toggleHud();
+    return true;
+  }
+  const preset = viewPresetForKeyCode(e.code);
+  if (preset) {
+    if (e.repeat) return true;
+    if (handle && sceneRoot) handle.setView(preset, sceneRoot);
+    return true;
+  }
+  return false;
+}
+
+/** World-space camera offset (relative to the look target, in Y-up
+ *  Three.js basis) for each named preset. `dist` is the framing distance
+ *  computed by `computeFramingDistance`. The returned vector should be
+ *  added to the look target to get the camera's world position.
+ *
+ *  Conventions used here (matching kaboos-loot's setView, then mapped
+ *  from kaboos's Z-up basis to Three.js Y-up by swapping y<->z and
+ *  flipping signs where needed so visual semantics match):
+ *  - overhead: directly above the target, looking down. Camera at
+ *    (0, +dist, 0), since up = +Y.
+ *  - side:     to the +X side at the target's height.
+ *  - fore:     in front (kaboos uses cy - d for "fore"). In Y-up basis
+ *    we treat +Z toward the viewer as "fore", so camera at (0, 0, +dist).
+ *  - aft:      behind (-Z).
+ *  - perspective: 3/4 view above + side, looking at target. Kaboos
+ *    placed it at (cx + off, cy - off, cz + off); in Y-up that maps to
+ *    (+off, +off, +off) so the camera sits in the +X / +Y / +Z octant.
+ *  - perspective2: rotated 90 degrees from perspective; we negate X so
+ *    the camera ends up in the -X / +Y / +Z octant.
+ *
+ *  All of these aim at the (caller-provided) target, so the returned
+ *  offset only encodes direction + distance; the look quaternion is
+ *  derived from it via Matrix4.lookAt at call time.
+ */
+export function viewPresetOffset(preset: ViewPreset, dist: number): THREE.Vector3 {
+  const off = dist * 0.5;
+  switch (preset) {
+    case "overhead":
+      return new THREE.Vector3(0, dist, 0);
+    case "side":
+      return new THREE.Vector3(dist, 0, 0);
+    case "fore":
+      return new THREE.Vector3(0, 0, dist);
+    case "aft":
+      return new THREE.Vector3(0, 0, -dist);
+    case "perspective":
+      return new THREE.Vector3(off, off, off);
+    case "perspective2":
+      return new THREE.Vector3(-off, off, off);
+  }
 }
 
 /** Per-frame step from a set of held key codes. Returns a NEW state and a
@@ -719,29 +892,35 @@ export function useFlightCamera(args: HookArgs): FlightCamHandle | null {
       resetToScene(sceneRoot: THREE.Object3D): void {
         sceneRoot.updateMatrixWorld(true);
         const box = new THREE.Box3().setFromObject(sceneRoot);
-        let center: THREE.Vector3;
+        // Orbit target is fixed at world origin (per the project's view
+        // convention for ship exports, which are emitted centred near
+        // origin). The framing distance is sized from the AABB so the
+        // entity fills PRESET_FILL_FRACTION of the viewport.
+        const target = new THREE.Vector3(0, 0, 0);
         let dist: number;
         if (box.isEmpty()) {
-          center = new THREE.Vector3(0, 0, 0);
-          dist = 80;
+          dist = FRAMING_FALLBACK_DISTANCE;
         } else {
-          center = box.getCenter(new THREE.Vector3());
-          const size = box.getSize(new THREE.Vector3()).length();
-          if (!Number.isFinite(size) || size <= 0) {
-            dist = 80;
-          } else {
-            const fovRad = state.fov * Math.PI / 180;
-            dist = Math.max((size / (2 * Math.tan(fovRad / 2))) * 1.1, 10);
-          }
+          const w = renderer.domElement.clientWidth || 1;
+          const h = renderer.domElement.clientHeight || 1;
+          dist = computeFramingDistance(
+            box.min,
+            box.max,
+            state.fov,
+            w / h,
+            PRESET_FILL_FRACTION,
+          );
         }
-        // Default vantage: above the centroid looking down -Z toward it,
-        // with world-up = +Y. lookAt produces a right-handed basis.
-        state.pos.set(center.x, center.y, center.z + dist);
+        // Default vantage: 3/4 view in the +X / +Y / +Z octant, looking
+        // back at the origin. Direction is normalised then scaled by
+        // dist so the camera's distance to target equals dist.
+        const dir = new THREE.Vector3(1, 0.6, 1).normalize();
+        state.pos.copy(target).addScaledVector(dir, dist);
         const m = new THREE.Matrix4();
-        m.lookAt(state.pos, center, new THREE.Vector3(0, 1, 0));
+        m.lookAt(state.pos, target, new THREE.Vector3(0, 1, 0));
         state.quat.setFromRotationMatrix(m);
-        state.orbitDist = dist;
-        orbitTarget.copy(center);
+        state.orbitDist = state.pos.distanceTo(target);
+        orbitTarget.copy(target);
         // Also tighten near/far so the depth precision matches the ship size.
         if (Number.isFinite(dist) && dist > 0) {
           camera.near = Math.max(dist / 1000, 0.05);
@@ -809,6 +988,47 @@ export function useFlightCamera(args: HookArgs): FlightCamHandle | null {
         if (state.projectionMode === mode) return;
         state.projectionMode = mode;
         applyProjection();
+        markDirty();
+      },
+      setView(preset: ViewPreset, sceneRoot: THREE.Object3D): void {
+        sceneRoot.updateMatrixWorld(true);
+        const box = new THREE.Box3().setFromObject(sceneRoot);
+        const target = box.isEmpty()
+          ? new THREE.Vector3(0, 0, 0)
+          : box.getCenter(new THREE.Vector3());
+        let dist: number;
+        if (box.isEmpty()) {
+          dist = FRAMING_FALLBACK_DISTANCE;
+        } else {
+          const w = renderer.domElement.clientWidth || 1;
+          const h = renderer.domElement.clientHeight || 1;
+          dist = computeFramingDistance(
+            box.min,
+            box.max,
+            state.fov,
+            w / h,
+            PRESET_FILL_FRACTION,
+          );
+        }
+        const offset = viewPresetOffset(preset, dist);
+        state.pos.copy(target).add(offset);
+        // Three's lookAt picks an arbitrary basis when fwd is parallel to
+        // the world-up vector (overhead view). For the overhead preset we
+        // use +Z as up so the camera does not snap to a singular basis.
+        const worldUp =
+          preset === "overhead"
+            ? new THREE.Vector3(0, 0, -1)
+            : new THREE.Vector3(0, 1, 0);
+        const m = new THREE.Matrix4();
+        m.lookAt(state.pos, target, worldUp);
+        state.quat.setFromRotationMatrix(m);
+        state.orbitDist = state.pos.distanceTo(target);
+        orbitTarget.copy(target);
+        if (Number.isFinite(dist) && dist > 0) {
+          camera.near = Math.max(dist / 1000, 0.05);
+          camera.far = dist * 100;
+          camera.updateProjectionMatrix();
+        }
         markDirty();
       },
       getActiveCamera(): THREE.Camera {
