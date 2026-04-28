@@ -1883,9 +1883,34 @@ def _insert_animation_action(
                 except Exception:
                     continue
 
-        # Phase 24C: push the per-object action onto a per-clip NLA track so
-        # the Action stays editable and multiple clips don't overwrite each
-        # other on the timeline.
+        # Phase 46: set explicit BEZIER interpolation on every inserted
+        # keyframe. The CryEngine source data is sparse (~24-35 keys for a
+        # 47-frame wing-deploy animation), and Blender's keyframe_insert()
+        # honours the user-pref default which may be CONSTANT or LINEAR
+        # depending on the install. Linear interpolation between sparse
+        # keys produces the visible "judder" the user reported on
+        # asymmetric multi-bone deployments. BEZIER + AUTO_CLAMPED handles
+        # easing automatically and matches the smooth in-engine playback.
+        for fcurve in _action_fcurves(action):
+            try:
+                for keyframe in fcurve.keyframe_points:
+                    keyframe.interpolation = "BEZIER"
+                    keyframe.handle_left_type = "AUTO_CLAMPED"
+                    keyframe.handle_right_type = "AUTO_CLAMPED"
+                fcurve.update()
+            except Exception:
+                continue
+
+        # Phase 24C / Phase 46: push the per-object action onto a per-clip
+        # NLA track so the clip is visible as a movable "block" in the NLA
+        # editor (entire clips can be slid to a different start frame by
+        # selecting all the per-bone strips on the same NLA track and
+        # pressing G). The strip is muted so the live action drives
+        # playback (avoiding double-evaluation), and the live action keeps
+        # `anim.action = action` so the Dope Sheet / Action Editor shows
+        # the keyframes immediately for whichever bone object is selected.
+        # Users wanting NLA-only playback can mute the action and unmute
+        # the strip via the NLA editor.
         anim = obj.animation_data
         try:
             frame_range_low, frame_range_high = action.frame_range
@@ -1901,15 +1926,30 @@ def _insert_animation_action(
                 strip_start = int(action.frame_range[0])
             except Exception:
                 strip_start = int(frame_offset)
+            strip = None
             try:
                 strip = track.strips.new(name=name, start=strip_start, action=action)
                 strip.name = name
             except Exception:
-                # Strip may already exist at that frame; ignore.
-                pass
-            # Detach the active action so the NLA strip drives playback
-            # without double-evaluation; the Action remains in bpy.data.
-            anim.action = None
+                # Strip may already exist at that frame; reuse the
+                # most-recently-added strip on this track.
+                if track.strips:
+                    strip = track.strips[-1]
+            # Phase 46: mute the NLA strip so the live action drives
+            # playback (no double-evaluation). Apply mute regardless of
+            # whether the strip was freshly created or pre-existing from
+            # a prior import — Phase 46's first-pass version only set
+            # mute on freshly-created strips and left re-imports playing
+            # the strip at full strength alongside the live action.
+            if strip is not None:
+                try:
+                    strip.mute = True
+                except Exception:
+                    pass
+            # Phase 46: keep anim.action set so the keyframes are visible
+            # in the Dope Sheet / Action Editor for the selected object.
+            # The NLA strip above is muted, so there's no double-eval.
+            anim.action = action
 
         updated += 1
 
