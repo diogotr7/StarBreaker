@@ -17,9 +17,9 @@ pub struct MappedP4k {
     file_pool: Mutex<Vec<File>>,
     entries: Vec<P4kEntry>,
     path_index: FxHashMap<String, usize>,
-    lowercase_index: FxHashMap<String, usize>,
     sorted_index: Vec<u32>,
     lowercase_names: Vec<String>,
+    sorted_lower_index: Vec<u32>,
 }
 
 impl MappedP4k {
@@ -36,7 +36,7 @@ impl MappedP4k {
         let path_buf = path.as_ref().to_path_buf();
         let mut file = File::open(&path_buf)?;
 
-        let (entries, path_index, lowercase_index, sorted_index, lowercase_names) =
+        let (entries, path_index, sorted_index, lowercase_names, sorted_lower_index) =
             parse_central_directory_from_file(&mut file, progress)?;
 
         Ok(MappedP4k {
@@ -44,9 +44,9 @@ impl MappedP4k {
             file_pool: Mutex::new(vec![file]),
             entries,
             path_index,
-            lowercase_index,
             sorted_index,
             lowercase_names,
+            sorted_lower_index,
         })
     }
 
@@ -88,9 +88,16 @@ impl MappedP4k {
 
     /// Look up an entry by path, case-insensitively.
     pub fn entry_case_insensitive(&self, path: &str) -> Option<&P4kEntry> {
-        self.lowercase_index
-            .get(&path.to_ascii_lowercase())
-            .map(|&i| &self.entries[i])
+        let needle = path.to_ascii_lowercase();
+        let pos = self
+            .sorted_lower_index
+            .partition_point(|&i| self.lowercase_names[i as usize].as_str() < needle.as_str());
+        let idx = *self.sorted_lower_index.get(pos)? as usize;
+        if self.lowercase_names[idx] == needle {
+            Some(&self.entries[idx])
+        } else {
+            None
+        }
     }
 
     /// Look up and read a file by path (case-insensitive). Returns the decompressed data.

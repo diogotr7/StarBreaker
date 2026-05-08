@@ -31,23 +31,23 @@ pub struct P4kArchive<'a> {
     data: &'a [u8],
     entries: Vec<P4kEntry>,
     path_index: FxHashMap<String, usize>,
-    lowercase_index: FxHashMap<String, usize>,
-    sorted_index: Vec<u32>, // entry indices sorted by name (case-sensitive), for prefix scanning
-    lowercase_names: Vec<String>, // parallel to entries, ASCII-lowercased once
+    sorted_index: Vec<u32>,
+    lowercase_names: Vec<String>,
+    sorted_lower_index: Vec<u32>,
 }
 
 impl<'a> P4kArchive<'a> {
     /// Parse a P4k archive from a byte slice.
     pub fn from_bytes(data: &'a [u8]) -> Result<Self, P4kError> {
-        let (entries, path_index, lowercase_index, sorted_index, lowercase_names) =
+        let (entries, path_index, sorted_index, lowercase_names, sorted_lower_index) =
             parse_central_directory(data, None)?;
         Ok(P4kArchive {
             data,
             entries,
             path_index,
-            lowercase_index,
             sorted_index,
             lowercase_names,
+            sorted_lower_index,
         })
     }
 
@@ -186,9 +186,16 @@ impl<'a> P4kArchive<'a> {
 
     /// Look up an entry by path, case-insensitively.
     pub fn entry_case_insensitive(&self, path: &str) -> Option<&P4kEntry> {
-        self.lowercase_index
-            .get(&path.to_ascii_lowercase())
-            .map(|&i| &self.entries[i])
+        let needle = path.to_ascii_lowercase();
+        let pos = self
+            .sorted_lower_index
+            .partition_point(|&i| self.lowercase_names[i as usize].as_str() < needle.as_str());
+        let idx = *self.sorted_lower_index.get(pos)? as usize;
+        if self.lowercase_names[idx] == needle {
+            Some(&self.entries[idx])
+        } else {
+            None
+        }
     }
 
     /// Number of entries.
@@ -249,14 +256,18 @@ impl<'a> P4kArchive<'a> {
 
 // ── Internal parsing ─────────────────────────────────────────────────────────
 
-/// Parsed central directory: entries, exact-case path index, lowercase index,
-/// case-sensitive sorted index (for prefix scans), lowercase names in entry order.
+/// Parsed central directory:
+/// - entries
+/// - path_index (exact case)
+/// - sorted_index (case-sensitive, for prefix scans)
+/// - lowercase_names (parallel to entries)
+/// - sorted_lower_index (sorted by lowercase_names[i])
 pub(crate) type CentralDirectory = (
     Vec<P4kEntry>,
-    FxHashMap<String, usize>,
-    FxHashMap<String, usize>,
-    Vec<u32>,
-    Vec<String>,
+    FxHashMap<String, usize>, // path_index (exact case)
+    Vec<u32>,                  // sorted_index (case-sensitive, for prefix scans)
+    Vec<String>,               // lowercase_names (parallel to entries)
+    Vec<u32>,                  // sorted_lower_index (sorted by lowercase_names[i])
 );
 
 /// Location of the central directory within an archive.
@@ -359,26 +370,25 @@ fn parse_entries(
         path_index.insert(entry.name.clone(), i);
     }
 
-    // Build lowercase index for case-insensitive lookup
-    let mut lowercase_index =
-        FxHashMap::with_capacity_and_hasher(entries.len(), Default::default());
-    for (i, entry) in entries.iter().enumerate() {
-        lowercase_index.insert(entry.name.to_ascii_lowercase(), i);
-    }
+    // Parallel lowercased view used by search and entry_case_insensitive.
+    let lowercase_names: Vec<String> = entries.iter().map(|e| e.name.to_ascii_lowercase()).collect();
 
-    // Build sorted index for directory listing (prefix scan)
+    // Case-sensitive sorted index for list_dir / list_subdirs.
     let mut sorted_index: Vec<u32> = (0..entries.len() as u32).collect();
     sorted_index.sort_unstable_by(|&a, &b| entries[a as usize].name.cmp(&entries[b as usize].name));
 
-    // Parallel lowercased view used by search and (in Task 3) entry_case_insensitive.
-    let lowercase_names: Vec<String> = entries.iter().map(|e| e.name.to_ascii_lowercase()).collect();
+    // Case-insensitive sorted index for entry_case_insensitive.
+    let mut sorted_lower_index: Vec<u32> = (0..entries.len() as u32).collect();
+    sorted_lower_index.sort_unstable_by(|&a, &b| {
+        lowercase_names[a as usize].cmp(&lowercase_names[b as usize])
+    });
 
-    Ok((entries, path_index, lowercase_index, sorted_index, lowercase_names))
+    Ok((entries, path_index, sorted_index, lowercase_names, sorted_lower_index))
 }
 
 /// Parse the central directory from raw archive data (in-memory byte slice).
 ///
-/// Returns (entries, path_index, lowercase_index, sorted_index, lowercase_names).
+/// Returns (entries, path_index, sorted_index, lowercase_names, sorted_lower_index).
 pub(crate) fn parse_central_directory(
     data: &[u8],
     progress: Option<&starbreaker_common::Progress>,
@@ -616,4 +626,56 @@ fn deflate_decompress(data: &[u8], size_hint: usize) -> Result<Vec<u8>, P4kError
         .read_to_end(&mut output)
         .map_err(|e| P4kError::Decompression(format!("deflate: {e}")))?;
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_entry(name: &str) -> P4kEntry {
+        P4kEntry {
+            name: name.to_string(),
+            compressed_size: 0,
+            uncompressed_size: 0,
+            compression_method: 0,
+            is_encrypted: false,
+            offset: 0,
+            crc32: 0,
+            last_modified: 0,
+        }
+    }
+
+    #[test]
+    fn case_insensitive_lookup_finds_mixed_case_entries() {
+        let entries = vec![
+            make_entry("Data\\Foo.MTL"),
+            make_entry("data\\BAR.xml"),
+            make_entry("Other\\baz.dds"),
+        ];
+        let lowercase_names: Vec<String> =
+            entries.iter().map(|e| e.name.to_ascii_lowercase()).collect();
+        let mut sorted_lower_index: Vec<u32> = (0..entries.len() as u32).collect();
+        sorted_lower_index.sort_unstable_by(|&a, &b| {
+            lowercase_names[a as usize].cmp(&lowercase_names[b as usize])
+        });
+
+        let archive = P4kArchive {
+            data: &[],
+            entries,
+            path_index: FxHashMap::default(),
+            sorted_index: Vec::new(),
+            lowercase_names,
+            sorted_lower_index,
+        };
+
+        assert_eq!(
+            archive.entry_case_insensitive("DATA\\foo.mtl").map(|e| e.name.as_str()),
+            Some("Data\\Foo.MTL")
+        );
+        assert_eq!(
+            archive.entry_case_insensitive("data\\bar.xml").map(|e| e.name.as_str()),
+            Some("data\\BAR.xml")
+        );
+        assert!(archive.entry_case_insensitive("nope").is_none());
+    }
 }
