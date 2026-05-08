@@ -32,13 +32,14 @@ pub struct P4kArchive<'a> {
     entries: Vec<P4kEntry>,
     path_index: FxHashMap<String, usize>,
     lowercase_index: FxHashMap<String, usize>,
-    sorted_index: Vec<u32>, // entry indices sorted by name, for prefix scanning
+    sorted_index: Vec<u32>, // entry indices sorted by name (case-sensitive), for prefix scanning
+    lowercase_names: Vec<String>, // parallel to entries, ASCII-lowercased once
 }
 
 impl<'a> P4kArchive<'a> {
     /// Parse a P4k archive from a byte slice.
     pub fn from_bytes(data: &'a [u8]) -> Result<Self, P4kError> {
-        let (entries, path_index, lowercase_index, sorted_index) =
+        let (entries, path_index, lowercase_index, sorted_index, lowercase_names) =
             parse_central_directory(data, None)?;
         Ok(P4kArchive {
             data,
@@ -46,6 +47,7 @@ impl<'a> P4kArchive<'a> {
             path_index,
             lowercase_index,
             sorted_index,
+            lowercase_names,
         })
     }
 
@@ -247,12 +249,14 @@ impl<'a> P4kArchive<'a> {
 
 // ── Internal parsing ─────────────────────────────────────────────────────────
 
-/// Parsed central directory: entries, exact-case index, lowercase index, sorted offsets.
+/// Parsed central directory: entries, exact-case path index, lowercase index,
+/// case-sensitive sorted index (for prefix scans), lowercase names in entry order.
 pub(crate) type CentralDirectory = (
     Vec<P4kEntry>,
     FxHashMap<String, usize>,
     FxHashMap<String, usize>,
     Vec<u32>,
+    Vec<String>,
 );
 
 /// Location of the central directory within an archive.
@@ -366,7 +370,10 @@ fn parse_entries(
     let mut sorted_index: Vec<u32> = (0..entries.len() as u32).collect();
     sorted_index.sort_unstable_by(|&a, &b| entries[a as usize].name.cmp(&entries[b as usize].name));
 
-    Ok((entries, path_index, lowercase_index, sorted_index))
+    // Parallel lowercased view used by search and (in Task 3) entry_case_insensitive.
+    let lowercase_names: Vec<String> = entries.iter().map(|e| e.name.to_ascii_lowercase()).collect();
+
+    Ok((entries, path_index, lowercase_index, sorted_index, lowercase_names))
 }
 
 /// Parse the central directory from raw archive data (in-memory byte slice).

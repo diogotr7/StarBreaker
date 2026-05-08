@@ -19,6 +19,7 @@ pub struct MappedP4k {
     path_index: FxHashMap<String, usize>,
     lowercase_index: FxHashMap<String, usize>,
     sorted_index: Vec<u32>,
+    lowercase_names: Vec<String>,
 }
 
 impl MappedP4k {
@@ -35,7 +36,7 @@ impl MappedP4k {
         let path_buf = path.as_ref().to_path_buf();
         let mut file = File::open(&path_buf)?;
 
-        let (entries, path_index, lowercase_index, sorted_index) =
+        let (entries, path_index, lowercase_index, sorted_index, lowercase_names) =
             parse_central_directory_from_file(&mut file, progress)?;
 
         Ok(MappedP4k {
@@ -45,6 +46,7 @@ impl MappedP4k {
             path_index,
             lowercase_index,
             sorted_index,
+            lowercase_names,
         })
     }
 
