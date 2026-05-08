@@ -378,7 +378,7 @@ fn parse_entries(
 
 /// Parse the central directory from raw archive data (in-memory byte slice).
 ///
-/// Returns (entries, path_index, lowercase_index, sorted_index).
+/// Returns (entries, path_index, lowercase_index, sorted_index, lowercase_names).
 pub(crate) fn parse_central_directory(
     data: &[u8],
     progress: Option<&starbreaker_common::Progress>,
