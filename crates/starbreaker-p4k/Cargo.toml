@@ -13,3 +13,12 @@ aes = "0.8"
 cbc = "0.1"
 rustc-hash = "2"
 parking_lot = { workspace = true }
+rayon = "1"
+smallvec = "1"
+
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
+
+[[bench]]
+name = "search"
+harness = false
