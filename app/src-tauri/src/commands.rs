@@ -230,6 +230,10 @@ pub fn list_dir(state: State<'_, AppState>, path: String) -> Result<Vec<DirEntry
 }
 
 /// Search file paths from the loaded P4k archive.
+///
+/// Multi-token queries use space-separated AND semantics: each token must
+/// appear (case-insensitively) somewhere in the entry path. Returns all
+/// matches; the frontend is expected to virtualize rendering.
 #[tauri::command]
 pub fn p4k_search(
     state: State<'_, AppState>,
@@ -240,23 +244,22 @@ pub fn p4k_search(
         .as_ref()
         .ok_or_else(|| AppError::Internal("P4k not loaded".into()))?;
 
-    let query = query.trim().to_ascii_lowercase();
-    if query.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut results: Vec<_> = p4k
-        .entries()
-        .iter()
-        .filter(|entry| entry.name.to_ascii_lowercase().contains(&query))
-        .map(|entry| P4kSearchResultDto {
-            path: entry.name.clone(),
-            uncompressed_size: entry.uncompressed_size,
+    let indices = p4k.search(&query);
+    let entries = p4k.entries();
+    let mut results: Vec<P4kSearchResultDto> = indices
+        .into_iter()
+        .map(|i| {
+            let e = &entries[i as usize];
+            P4kSearchResultDto {
+                path: e.name.clone(),
+                uncompressed_size: e.uncompressed_size,
+            }
         })
         .collect();
 
-    results.sort_by(|a, b| a.path.len().cmp(&b.path.len()).then_with(|| a.path.cmp(&b.path)));
-    results.truncate(500);
+    results.sort_by(|a, b| {
+        a.path.len().cmp(&b.path.len()).then_with(|| a.path.cmp(&b.path))
+    });
 
     Ok(results)
 }
