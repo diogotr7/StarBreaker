@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Download } from "lucide-react";
 import {
   listDir,
@@ -8,6 +8,7 @@ import {
   type DirEntry,
   type P4kSearchResult,
 } from "../lib/commands";
+import { VirtualizedSearchList } from "../components/virtualized-search-list";
 import { ExtractProgress } from "../components/extract-progress";
 import { useAppStore } from "../stores/app-store";
 import { ResizeHandle } from "../components/resize-handle";
@@ -255,63 +256,6 @@ function entriesToNodes(parentPath: string, entries: DirEntry[]): TreeNode[] {
   return [...dirs, ...files];
 }
 
-function p4kSearchResultsToNodes(results: P4kSearchResult[]): TreeNode[] {
-  const root: TreeNode[] = [];
-
-  for (const result of results) {
-    const segments = result.path.split("\\").filter(Boolean);
-    let siblings = root;
-    let currentPath = "";
-
-    segments.forEach((segment, index) => {
-      const isFile = index === segments.length - 1;
-      currentPath = currentPath ? `${currentPath}\\${segment}` : segment;
-
-      if (isFile) {
-        siblings.push({
-          name: segment,
-          path: currentPath,
-          isDir: false,
-          size: result.uncompressed_size,
-          loaded: true,
-          expanded: false,
-          loading: false,
-        });
-        return;
-      }
-
-      let folder = siblings.find((node) => node.isDir && node.path === currentPath);
-      if (!folder) {
-        folder = {
-          name: segment,
-          path: currentPath,
-          isDir: true,
-          loaded: true,
-          expanded: true,
-          loading: false,
-          children: [],
-        };
-        siblings.push(folder);
-      }
-
-      folder.children ??= [];
-      siblings = folder.children;
-    });
-  }
-
-  const sortNodes = (nodes: TreeNode[]) => {
-    nodes.sort((a, b) => {
-      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-    for (const node of nodes) {
-      if (node.children) sortNodes(node.children);
-    }
-  };
-
-  sortNodes(root);
-  return root;
-}
 
 export function P4kBrowser() {
   const hasData = useAppStore((s) => s.hasData);
@@ -337,7 +281,6 @@ export function P4kBrowser() {
     const query = searchQuery.trim();
     searchSeqRef.current += 1;
     const seq = searchSeqRef.current;
-    setCollapsedSearchPaths(new Set());
 
     if (!hasData || query.length === 0) {
       setSearchResults([]);
@@ -366,34 +309,7 @@ export function P4kBrowser() {
     return () => clearTimeout(timeout);
   }, [hasData, searchQuery]);
 
-  const searchTree = useMemo(
-    () => p4kSearchResultsToNodes(searchResults),
-    [searchResults],
-  );
-  const [collapsedSearchPaths, setCollapsedSearchPaths] = useState<Set<string>>(new Set());
   const hasSearch = searchQuery.trim().length > 0;
-  const displayedTree = useMemo(() => {
-    if (!hasSearch) return tree;
-    const applyCollapsed = (nodes: TreeNode[]): TreeNode[] =>
-      nodes.map((node) => ({
-        ...node,
-        expanded: node.isDir ? !collapsedSearchPaths.has(node.path) : node.expanded,
-        ...(node.children ? { children: applyCollapsed(node.children) } : {}),
-      }));
-    return applyCollapsed(searchTree);
-  }, [hasSearch, tree, searchTree, collapsedSearchPaths]);
-
-  const handleSearchToggle = useCallback((path: string) => {
-    setCollapsedSearchPaths((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
-      return next;
-    });
-  }, []);
 
   const handleToggle = useCallback(
     async (path: string) => {
@@ -489,22 +405,44 @@ export function P4kBrowser() {
 
       <div className="flex-1 flex overflow-hidden">
       {/* Tree panel */}
-      <div className="border-r border-border overflow-y-auto shrink-0" style={{ width: treeWidth }}>
-        <div className="py-1">
-          {displayedTree.map((node) => (
-            <TreeItem
-              key={node.path}
-              node={node}
-              depth={0}
-              onToggle={hasSearch ? handleSearchToggle : handleToggle}
-              selectedPath={selectedPath}
-              onSelect={setSelectedPath}
-              extractFilter={extractFilter}
-              onExtractStart={() => setExtracting(true)}
-              onExtractEnd={() => setExtracting(false)}
-            />
-          ))}
-        </div>
+      <div className="border-r border-border shrink-0 flex flex-col min-h-0" style={{ width: treeWidth }}>
+        {hasSearch ? (
+          <VirtualizedSearchList<P4kSearchResult>
+            items={searchResults}
+            rowHeight={28}
+            getKey={(item) => item.path}
+            renderRow={(item) => (
+              <button
+                type="button"
+                onClick={() => setSelectedPath(item.path)}
+                className={`w-full h-full text-left px-3 text-sm flex items-center gap-2 hover:bg-surface/50 transition-colors ${
+                  selectedPath === item.path ? "bg-primary/15 text-text" : "text-text"
+                }`}
+              >
+                <span className="flex-1 truncate font-mono text-xs">{item.path}</span>
+                <span className="text-xs text-text-dim shrink-0 tabular-nums">
+                  {formatSize(item.uncompressed_size)}
+                </span>
+              </button>
+            )}
+          />
+        ) : (
+          <div className="py-1 flex-1 overflow-y-auto">
+            {tree.map((node) => (
+              <TreeItem
+                key={node.path}
+                node={node}
+                depth={0}
+                onToggle={handleToggle}
+                selectedPath={selectedPath}
+                onSelect={setSelectedPath}
+                extractFilter={extractFilter}
+                onExtractStart={() => setExtracting(true)}
+                onExtractEnd={() => setExtracting(false)}
+              />
+            ))}
+          </div>
+        )}
       </div>
       <ResizeHandle width={treeWidth} onResize={setTreeWidth} side="right" min={200} max={600} />
 
