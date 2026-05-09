@@ -184,6 +184,31 @@ impl<'a> P4kArchive<'a> {
         self.path_index.get(path).map(|&i| &self.entries[i])
     }
 
+    /// Returns entry indices whose lowercased name contains every
+    /// whitespace-separated token in `query`. Order is unspecified;
+    /// callers sort.
+    pub fn search(&self, query: &str) -> Vec<u32> {
+        use rayon::prelude::*;
+        let tokens: smallvec::SmallVec<[String; 4]> = query
+            .split_ascii_whitespace()
+            .map(str::to_ascii_lowercase)
+            .collect();
+        if tokens.is_empty() {
+            return Vec::new();
+        }
+
+        self.lowercase_names
+            .par_iter()
+            .enumerate()
+            .filter_map(|(i, name)| {
+                tokens
+                    .iter()
+                    .all(|t| name.contains(t.as_str()))
+                    .then_some(i as u32)
+            })
+            .collect()
+    }
+
     /// Look up an entry by path, case-insensitively.
     pub fn entry_case_insensitive(&self, path: &str) -> Option<&P4kEntry> {
         let needle = path.to_ascii_lowercase();
@@ -677,5 +702,79 @@ mod tests {
             Some("data\\BAR.xml")
         );
         assert!(archive.entry_case_insensitive("nope").is_none());
+    }
+
+    fn make_archive_for_search() -> P4kArchive<'static> {
+        let entries = vec![
+            make_entry("Data\\Objects\\Spaceships\\Ships\\AEGS\\Hornet\\hornet.cga"),
+            make_entry("Data\\Objects\\Spaceships\\Ships\\AEGS\\Hornet\\hornet_glass.mtl"),
+            make_entry("Data\\Objects\\Spaceships\\Ships\\RSI\\Aurora\\aurora.cga"),
+            make_entry("Data\\Textures\\hornet_diffuse.dds"),
+        ];
+        let lowercase_names: Vec<String> =
+            entries.iter().map(|e| e.name.to_ascii_lowercase()).collect();
+        let mut sorted_lower_index: Vec<u32> = (0..entries.len() as u32).collect();
+        sorted_lower_index.sort_unstable_by(|&a, &b| {
+            lowercase_names[a as usize].cmp(&lowercase_names[b as usize])
+        });
+
+        P4kArchive {
+            data: &[],
+            entries,
+            path_index: FxHashMap::default(),
+            sorted_index: Vec::new(),
+            lowercase_names,
+            sorted_lower_index,
+        }
+    }
+
+    #[test]
+    fn search_empty_query_returns_empty() {
+        let a = make_archive_for_search();
+        assert!(a.search("").is_empty());
+        assert!(a.search("   ").is_empty());
+    }
+
+    #[test]
+    fn search_single_token_substring_match() {
+        let a = make_archive_for_search();
+        let mut hits: Vec<&str> = a
+            .search("hornet")
+            .into_iter()
+            .map(|i| a.entries[i as usize].name.as_str())
+            .collect();
+        hits.sort();
+        assert_eq!(
+            hits,
+            vec![
+                "Data\\Objects\\Spaceships\\Ships\\AEGS\\Hornet\\hornet.cga",
+                "Data\\Objects\\Spaceships\\Ships\\AEGS\\Hornet\\hornet_glass.mtl",
+                "Data\\Textures\\hornet_diffuse.dds",
+            ]
+        );
+    }
+
+    #[test]
+    fn search_multi_token_is_and() {
+        let a = make_archive_for_search();
+        let mut hits: Vec<&str> = a
+            .search("hornet glass")
+            .into_iter()
+            .map(|i| a.entries[i as usize].name.as_str())
+            .collect();
+        hits.sort();
+        assert_eq!(hits, vec!["Data\\Objects\\Spaceships\\Ships\\AEGS\\Hornet\\hornet_glass.mtl"]);
+    }
+
+    #[test]
+    fn search_is_case_insensitive() {
+        let a = make_archive_for_search();
+        let upper: Vec<u32> = a.search("HORNET");
+        let lower: Vec<u32> = a.search("hornet");
+        let mut u = upper.clone();
+        let mut l = lower.clone();
+        u.sort();
+        l.sort();
+        assert_eq!(u, l);
     }
 }

@@ -86,6 +86,31 @@ impl MappedP4k {
         self.path_index.get(path).map(|&i| &self.entries[i])
     }
 
+    /// Returns entry indices whose lowercased name contains every
+    /// whitespace-separated token in `query`. Order is unspecified;
+    /// callers sort.
+    pub fn search(&self, query: &str) -> Vec<u32> {
+        use rayon::prelude::*;
+        let tokens: smallvec::SmallVec<[String; 4]> = query
+            .split_ascii_whitespace()
+            .map(str::to_ascii_lowercase)
+            .collect();
+        if tokens.is_empty() {
+            return Vec::new();
+        }
+
+        self.lowercase_names
+            .par_iter()
+            .enumerate()
+            .filter_map(|(i, name)| {
+                tokens
+                    .iter()
+                    .all(|t| name.contains(t.as_str()))
+                    .then_some(i as u32)
+            })
+            .collect()
+    }
+
     /// Look up an entry by path, case-insensitively.
     pub fn entry_case_insensitive(&self, path: &str) -> Option<&P4kEntry> {
         let needle = path.to_ascii_lowercase();
