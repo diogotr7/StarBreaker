@@ -1,34 +1,39 @@
-//! Search benchmarks. Skips silently if SC_DATA_P4K is not set so CI can run them.
+//! Search benchmarks. Auto-discovers Data.p4k via starbreaker-common; respects
+//! SC_DATA_P4K override. Skips silently if no archive can be found.
 
-use std::path::PathBuf;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use starbreaker_common::discover::find_p4k;
 use starbreaker_p4k::MappedP4k;
 
-fn locate_p4k() -> Option<PathBuf> {
-    std::env::var_os("SC_DATA_P4K").map(PathBuf::from)
-}
-
 fn bench_search(c: &mut Criterion) {
-    let Some(path) = locate_p4k() else {
-        eprintln!("SC_DATA_P4K not set; skipping search bench");
-        return;
+    let path = match find_p4k() {
+        Ok(d) => {
+            eprintln!("Using P4k from {}: {}", d.source, d.path.display());
+            d.path
+        }
+        Err(e) => {
+            eprintln!("No Data.p4k found ({e}); skipping search bench");
+            return;
+        }
     };
 
     let p4k = MappedP4k::open(&path).expect("open P4k");
     let mut group = c.benchmark_group("p4k_search");
     group.sample_size(20);
 
-    for query in [
-        "",            // empty (early-out)
-        "a",           // single letter, very wide match
-        "mtl",         // common extension fragment
-        "data",        // common prefix
-        "hornet",      // medium frequency
-        "hornet ship", // multi-token AND
-    ] {
-        group.bench_function(query, |b| {
+    let cases: &[(&str, &str)] = &[
+        ("empty", ""),                  // empty (early-out)
+        ("single_letter_a", "a"),       // very wide match
+        ("ext_mtl", "mtl"),             // common extension fragment
+        ("prefix_data", "data"),        // common prefix
+        ("hornet", "hornet"),           // medium frequency
+        ("multi_hornet_ship", "hornet ship"), // multi-token AND
+    ];
+
+    for (name, query) in cases {
+        group.bench_function(*name, |b| {
             b.iter(|| {
-                let results = p4k.search(black_box(query));
+                let results = p4k.search(black_box(*query));
                 black_box(results);
             });
         });
