@@ -318,6 +318,16 @@ export async function dcExportFolder(
   return invoke<number>("dc_export_folder", { pathPrefix, format, outputDir });
 }
 
+/** Export an explicit list of records (by ID) into `outputDir`. Files land
+ *  flat, named after each record's `file_name` field. */
+export async function dcExportRecords(
+  ids: string[],
+  format: "json" | "xml",
+  outputDir: string,
+): Promise<number> {
+  return invoke<number>("dc_export_records", { ids, format, outputDir });
+}
+
 export interface BacklinkDto {
   name: string;
   id: string;

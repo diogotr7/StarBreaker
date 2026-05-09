@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download } from "lucide-react";
 import { useDataCoreStore } from "../stores/datacore-store";
 import { ResizeHandle } from "../components/resize-handle";
 import { VirtualizedSearchList } from "../components/virtualized-search-list";
 import { buildTreeFromRows, flattenForVirtualization, type VisibleRow } from "../lib/search-tree";
+import { ContextMenu, useContextMenu, type ContextMenuItem } from "../components/context-menu";
 import { ExtractProgress } from "../components/extract-progress";
 import {
   dcSearch,
@@ -13,10 +13,22 @@ import {
   dcExportJson,
   dcExportXml,
   dcExportFolder,
+  dcExportRecords,
   type TreeEntryDto,
   type SearchResultDto,
   type BacklinkDto,
 } from "../lib/commands";
+
+/** Callbacks drilled down so any row can open a context menu without each
+ *  component having to know about extract state or dialog plumbing. */
+interface DcMenuApi {
+  openFolderMenu: (e: React.MouseEvent, path: string, name: string) => void;
+  openRecordMenu: (e: React.MouseEvent, id: string, name: string) => void;
+  exportSearchResults: (
+    ids: string[],
+    format: "json" | "xml",
+  ) => Promise<void>;
+}
 
 export function DataCoreBrowser() {
   const [navWidth, setNavWidth] = useState(350);
@@ -24,9 +36,117 @@ export function DataCoreBrowser() {
   const searchQuery = useDataCoreStore((s) => s.searchQuery);
   const setSearchQuery = useDataCoreStore((s) => s.setSearchQuery);
   const searching = useDataCoreStore((s) => s.searching);
+  const searchResults = useDataCoreStore((s) => s.searchResults);
+  const ctxMenu = useContextMenu();
+
+  // ── Action helpers ────────────────────────────────────────────────────────
+
+  const exportRecord = useCallback(
+    async (id: string, defaultName: string, format: "json" | "xml") => {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const path = await save({
+        title: `Export ${format.toUpperCase()}`,
+        defaultPath: `${defaultName}.${format}`,
+        filters: [{ name: format.toUpperCase(), extensions: [format] }],
+      });
+      if (!path) return;
+      try {
+        if (format === "json") await dcExportJson(id, path);
+        else await dcExportXml(id, path);
+      } catch (err) {
+        console.error(`Export ${format} failed:`, err);
+      }
+    },
+    [],
+  );
+
+  const exportFolder = useCallback(
+    async (path: string, name: string, format: "json" | "xml") => {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const dir = await open({
+        title: `Export "${name}" folder as ${format.toUpperCase()}`,
+        directory: true,
+        multiple: false,
+      });
+      if (!dir) return;
+      setExtracting(true);
+      try {
+        await dcExportFolder(path, format, dir);
+      } catch (err) {
+        console.error("Folder export failed:", err);
+      } finally {
+        setExtracting(false);
+      }
+    },
+    [],
+  );
+
+  const exportSearchResults = useCallback(
+    async (ids: string[], format: "json" | "xml") => {
+      if (ids.length === 0) return;
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const dir = await open({
+        title: `Export ${ids.length.toLocaleString()} records as ${format.toUpperCase()}`,
+        directory: true,
+        multiple: false,
+      });
+      if (!dir) return;
+      setExtracting(true);
+      try {
+        await dcExportRecords(ids, format, dir);
+      } catch (err) {
+        console.error("Search-results export failed:", err);
+      } finally {
+        setExtracting(false);
+      }
+    },
+    [],
+  );
+
+  const copyText = useCallback(async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (err) {
+      console.error("Clipboard write failed:", err);
+    }
+  }, []);
+
+  // ── Menu builders ─────────────────────────────────────────────────────────
+
+  const openFolderMenu = useCallback(
+    (e: React.MouseEvent, path: string, name: string) => {
+      const items: ContextMenuItem[] = [
+        { label: "Export folder as JSON…", onClick: () => exportFolder(path, name, "json") },
+        { label: "Export folder as XML…", onClick: () => exportFolder(path, name, "xml") },
+        { label: "Copy path", onClick: () => copyText(path) },
+      ];
+      ctxMenu.open(e, items);
+    },
+    [ctxMenu, exportFolder, copyText],
+  );
+
+  const openRecordMenu = useCallback(
+    (e: React.MouseEvent, id: string, name: string) => {
+      const items: ContextMenuItem[] = [
+        { label: "Export as JSON…", onClick: () => exportRecord(id, name, "json") },
+        { label: "Export as XML…", onClick: () => exportRecord(id, name, "xml") },
+        { label: "Copy ID", onClick: () => copyText(id) },
+      ];
+      ctxMenu.open(e, items);
+    },
+    [ctxMenu, exportRecord, copyText],
+  );
+
+  const menu: DcMenuApi = useMemo(
+    () => ({ openFolderMenu, openRecordMenu, exportSearchResults }),
+    [openFolderMenu, openRecordMenu, exportSearchResults],
+  );
+
+  const hasSearch = searchQuery.trim().length > 0;
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
+      <ContextMenu state={ctxMenu.state} onClose={ctxMenu.close} />
       <ExtractProgress active={extracting} onDone={() => setExtracting(false)} />
       {/* Toolbar */}
       <div className="flex items-center gap-2 px-3 border-b border-border bg-bg-alt shrink-0" style={{ height: "var(--toolbar-height)" }}>
@@ -40,9 +160,32 @@ export function DataCoreBrowser() {
         {searching && (
           <span className="text-xs text-text-dim shrink-0">Searching...</span>
         )}
+        {hasSearch && !searching && searchResults.length > 0 && (
+          <button
+            type="button"
+            onClick={(e) => {
+              ctxMenu.open(e, [
+                {
+                  label: "Export all as JSON…",
+                  onClick: () =>
+                    exportSearchResults(searchResults.map((r) => r.id), "json"),
+                },
+                {
+                  label: "Export all as XML…",
+                  onClick: () =>
+                    exportSearchResults(searchResults.map((r) => r.id), "xml"),
+                },
+              ]);
+            }}
+            title={`Export the ${searchResults.length.toLocaleString()} currently shown records.`}
+            className="px-2 py-1 text-xs rounded bg-surface text-text-dim hover:text-text hover:bg-surface-hi shrink-0"
+          >
+            Export all matches…
+          </button>
+        )}
       </div>
       <div className="flex-1 flex overflow-hidden">
-        <NavPanel width={navWidth} onExtractStart={() => setExtracting(true)} onExtractEnd={() => setExtracting(false)} />
+        <NavPanel width={navWidth} menu={menu} />
         <ResizeHandle width={navWidth} onResize={setNavWidth} side="right" min={200} max={600} />
         <InspectorPanel />
       </div>
@@ -52,27 +195,23 @@ export function DataCoreBrowser() {
 
 // ── Left panel: combined tree + search ──────────────────────────────────────
 
-function NavPanel({ width, onExtractStart, onExtractEnd }: {
-  width: number;
-  onExtractStart: () => void;
-  onExtractEnd: () => void;
-}) {
+function NavPanel({ width, menu }: { width: number; menu: DcMenuApi }) {
   const searchQuery = useDataCoreStore((s) => s.searchQuery);
   const hasSearch = searchQuery.trim().length > 0;
 
   return (
     <div className="flex flex-col border-r border-border overflow-hidden shrink-0 min-h-0" style={{ width }}>
       <div className={hasSearch ? "hidden" : "flex-1 min-h-0 overflow-hidden"}>
-        <TreePanel onExtractStart={onExtractStart} onExtractEnd={onExtractEnd} />
+        <TreePanel menu={menu} />
       </div>
-      {hasSearch && <SearchResults />}
+      {hasSearch && <SearchResults menu={menu} />}
     </div>
   );
 }
 
 // ── Search results (virtualized flat list while typing) ──────────────────────
 
-function SearchResults() {
+function SearchResults({ menu }: { menu: DcMenuApi }) {
   const searchQuery = useDataCoreStore((s) => s.searchQuery);
   const searchResults = useDataCoreStore((s) => s.searchResults);
   const setSearchResults = useDataCoreStore((s) => s.setSearchResults);
@@ -158,6 +297,7 @@ function SearchResults() {
               <button
                 type="button"
                 onClick={() => selectRecord(row.data!.id)}
+                onContextMenu={(e) => menu.openRecordMenu(e, row.data!.id, row.data!.name)}
                 className="w-full h-full text-left flex items-center hover:bg-surface transition-colors"
                 style={{ paddingLeft: row.depth * 16 + 24 }}
               >
@@ -176,6 +316,7 @@ function SearchResults() {
             <button
               type="button"
               onClick={() => selectRecord(item.id)}
+              onContextMenu={(e) => menu.openRecordMenu(e, item.id, item.name)}
               className="w-full h-full text-left flex items-center px-2.5 hover:bg-surface transition-colors"
             >
               <span className="text-[13px] text-text-sub truncate flex-1">{item.name}</span>
@@ -190,22 +331,18 @@ function SearchResults() {
 
 // ── Tree panel (browse when search is empty) ────────────────────────────────
 
-function TreePanel({ onExtractStart, onExtractEnd }: {
-  onExtractStart: () => void;
-  onExtractEnd: () => void;
-}) {
+function TreePanel({ menu }: { menu: DcMenuApi }) {
   return (
     <div className="h-full min-h-0 overflow-y-auto">
-      <TreeLevel path="" depth={0} onExtractStart={onExtractStart} onExtractEnd={onExtractEnd} />
+      <TreeLevel path="" depth={0} menu={menu} />
     </div>
   );
 }
 
-function TreeLevel({ path, depth, onExtractStart, onExtractEnd }: {
+function TreeLevel({ path, depth, menu }: {
   path: string;
   depth: number;
-  onExtractStart: () => void;
-  onExtractEnd: () => void;
+  menu: DcMenuApi;
 }) {
   const [entries, setEntries] = useState<TreeEntryDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -247,14 +384,12 @@ function TreeLevel({ path, depth, onExtractStart, onExtractEnd }: {
             <div key={`f:${entry.name}`}>
               <FolderRow
                 name={entry.name}
-                path={childPath}
                 depth={depth}
                 expanded={expanded}
                 onToggle={() => toggleFolder(entry.name)}
-                onExtractStart={onExtractStart}
-                onExtractEnd={onExtractEnd}
+                onContextMenu={(e) => menu.openFolderMenu(e, childPath, entry.name)}
               />
-              {expanded && <TreeLevel path={childPath} depth={depth + 1} onExtractStart={onExtractStart} onExtractEnd={onExtractEnd} />}
+              {expanded && <TreeLevel path={childPath} depth={depth + 1} menu={menu} />}
             </div>
           );
         }
@@ -263,7 +398,8 @@ function TreeLevel({ path, depth, onExtractStart, onExtractEnd }: {
             key={`r:${entry.id}`}
             type="button"
             onClick={() => selectRecord(entry.id)}
-            className="w-full text-left flex items-center h-6 hover:bg-surface transition-colors group"
+            onContextMenu={(e) => menu.openRecordMenu(e, entry.id, entry.name)}
+            className="w-full text-left flex items-center h-6 hover:bg-surface transition-colors"
             style={{ paddingLeft: depth * 16 + 22 }}
           >
             <span className="text-[13px] text-text-sub truncate flex-1">{entry.name}</span>
@@ -275,52 +411,25 @@ function TreeLevel({ path, depth, onExtractStart, onExtractEnd }: {
   );
 }
 
-function FolderRow({ name, path, depth, expanded, onToggle, onExtractStart, onExtractEnd }: {
+function FolderRow({ name, depth, expanded, onToggle, onContextMenu }: {
   name: string;
-  path: string;
   depth: number;
   expanded: boolean;
   onToggle: () => void;
-  onExtractStart: () => void;
-  onExtractEnd: () => void;
+  onContextMenu: (e: React.MouseEvent) => void;
 }) {
-  const handleExport = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const dir = await open({ title: `Export "${name}" folder`, directory: true, multiple: false });
-    if (!dir) return;
-
-    onExtractStart();
-    try {
-      await dcExportFolder(path, "json", dir);
-    } catch (err) {
-      console.error("Folder export failed:", err);
-    } finally {
-      onExtractEnd();
-    }
-  };
-
   return (
     <button
       type="button"
       onClick={onToggle}
-      className="w-full text-left flex items-center h-6 hover:bg-surface transition-colors group"
+      onContextMenu={onContextMenu}
+      className="w-full text-left flex items-center h-6 hover:bg-surface transition-colors"
       style={{ paddingLeft: depth * 16 + 6 }}
     >
       <span className="text-[10px] w-4 text-text-dim">
         {expanded ? "\u25BC" : "\u25B6"}
       </span>
       <span className="text-[13px] text-text flex-1">{name}</span>
-      <button
-        type="button"
-        onClick={handleExport}
-        title={`Export all records in ${name}/`}
-        className="hidden group-hover:flex items-center justify-center w-5 h-5 mr-1 rounded
-                   text-text-dim hover:text-text hover:bg-surface-hi transition-colors
-                   disabled:opacity-50"
-      >
-        <Download size={12} />
-      </button>
     </button>
   );
 }

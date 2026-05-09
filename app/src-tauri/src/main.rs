@@ -228,6 +228,7 @@ fn main() {
             datacore_commands::dc_export_xml,
             datacore_commands::dc_get_backlinks,
             datacore_commands::dc_export_folder,
+            datacore_commands::dc_export_records,
             audio_commands::audio_init,
             audio_commands::audio_search_entities,
             audio_commands::audio_search_triggers,
