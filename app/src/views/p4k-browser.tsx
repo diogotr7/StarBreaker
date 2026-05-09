@@ -18,6 +18,10 @@ import { XmlPreview } from "../components/xml-preview";
 import { DdsPreview } from "../components/dds-preview";
 import { ImagePreview } from "../components/image-preview";
 
+/** Default cap on results materialized per keystroke. The "Load all" button
+ *  in the toolbar fires an uncapped fetch on demand. */
+const DEFAULT_SEARCH_LIMIT = 5_000;
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -266,6 +270,7 @@ export function P4kBrowser() {
   const [searchResults, setSearchResults] = useState<P4kSearchResult[]>([]);
   const [searchTotal, setSearchTotal] = useState(0);
   const [searching, setSearching] = useState(false);
+  const [loadingAll, setLoadingAll] = useState(false);
   const [treeWidth, setTreeWidth] = useState(360);
   const [extracting, setExtracting] = useState(false);
   const [extractFilter, setExtractFilter] = useState("");
@@ -296,7 +301,7 @@ export function P4kBrowser() {
 
     setSearching(true);
     const timeout = setTimeout(() => {
-      p4kSearch(query)
+      p4kSearch(query, DEFAULT_SEARCH_LIMIT)
         .then((response) => {
           if (searchSeqRef.current === seq) {
             setSearchResults(response.results);
@@ -407,9 +412,37 @@ export function P4kBrowser() {
             {searching
               ? "Searching..."
               : searchTotal > searchResults.length
-                ? `${searchResults.length.toLocaleString()} of ${searchTotal.toLocaleString()} (refine to see more)`
+                ? `${searchResults.length.toLocaleString()} of ${searchTotal.toLocaleString()}`
                 : `${searchResults.length.toLocaleString()} results`}
           </span>
+        )}
+        {hasSearch && !searching && searchTotal > searchResults.length && (
+          <button
+            type="button"
+            disabled={loadingAll}
+            onClick={() => {
+              const query = searchQuery.trim();
+              if (!query) return;
+              const seq = ++searchSeqRef.current;
+              setLoadingAll(true);
+              p4kSearch(query, undefined)
+                .then((response) => {
+                  if (searchSeqRef.current === seq) {
+                    setSearchResults(response.results);
+                    setSearchTotal(response.total);
+                  }
+                })
+                .catch((err) => {
+                  console.error("P4k search (load all) failed:", err);
+                })
+                .finally(() => {
+                  if (searchSeqRef.current === seq) setLoadingAll(false);
+                });
+            }}
+            className="px-2 py-1 text-xs rounded bg-surface text-text-dim hover:text-text hover:bg-surface-hi shrink-0 disabled:opacity-50"
+          >
+            {loadingAll ? "Loading…" : `Load all ${searchTotal.toLocaleString()}`}
+          </button>
         )}
         {hasSearch && (
           <button

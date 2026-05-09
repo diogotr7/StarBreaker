@@ -80,8 +80,18 @@ export async function listDir(path: string): Promise<DirEntry[]> {
 }
 
 /** Search file paths from the loaded P4k. */
-export async function p4kSearch(query: string): Promise<P4kSearchResponse> {
-  return invoke<P4kSearchResponse>("p4k_search", { query });
+/**
+ * Search the loaded P4k.
+ *
+ * `limit`: max results to materialize (truncates after sort). Omit / pass
+ * `undefined` to load all matches. The response's `total` is always the
+ * true match count regardless of `limit`.
+ */
+export async function p4kSearch(
+  query: string,
+  limit?: number,
+): Promise<P4kSearchResponse> {
+  return invoke<P4kSearchResponse>("p4k_search", { query, limit });
 }
 
 /** List only subdirectory names under a path (fast). */

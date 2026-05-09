@@ -54,17 +54,12 @@ pub struct P4kSearchResultDto {
     pub uncompressed_size: u64,
 }
 
-/// Response envelope for p4k_search: capped slice of results + true total count.
+/// Response envelope for p4k_search: (possibly truncated) results + true total count.
 #[derive(Serialize)]
 pub struct P4kSearchResponseDto {
     pub results: Vec<P4kSearchResultDto>,
     pub total: u32,
 }
-
-/// Cap on returned `p4k_search` results. Beyond this, the slice is truncated
-/// and `total` is reported separately so the UI can show "X of Y, refine query".
-/// Tune this knob and re-test if the search feels laggy.
-const P4K_SEARCH_CAP: usize = 5_000;
 
 /// Info returned after opening a P4k.
 #[derive(Serialize)]
@@ -246,10 +241,13 @@ pub fn list_dir(state: State<'_, AppState>, path: String) -> Result<Vec<DirEntry
 /// Multi-token queries use space-separated AND semantics: each token must
 /// appear (case-insensitively) somewhere in the entry path. Returns all
 /// matches; the frontend is expected to virtualize rendering.
+/// `limit`: optional max number of results to materialize. `None` returns all
+/// matches. The `total` field on the response is always the true match count.
 #[tauri::command]
 pub fn p4k_search(
     state: State<'_, AppState>,
     query: String,
+    limit: Option<u32>,
 ) -> Result<P4kSearchResponseDto, AppError> {
     use rayon::prelude::*;
 
@@ -262,9 +260,8 @@ pub fn p4k_search(
     let entries = p4k.entries();
     let total = indices.len() as u32;
 
-    // Sort indices by (name.len(), name) so we keep the "best" P4K_SEARCH_CAP
-    // when truncating, rather than an arbitrary slice. Comparing &String avoids
-    // cloning the full DTO during sort.
+    // Sort indices by (name.len(), name) so a truncating `limit` keeps the
+    // shortest paths (more relevant) rather than an arbitrary slice.
     let mut sorted_indices = indices;
     sorted_indices.par_sort_by(|&a, &b| {
         let na = &entries[a as usize].name;
@@ -272,7 +269,10 @@ pub fn p4k_search(
         na.len().cmp(&nb.len()).then_with(|| na.cmp(nb))
     });
 
-    let take = sorted_indices.len().min(P4K_SEARCH_CAP);
+    let take = match limit {
+        Some(n) => sorted_indices.len().min(n as usize),
+        None => sorted_indices.len(),
+    };
     let results: Vec<P4kSearchResultDto> = sorted_indices[..take]
         .par_iter()
         .map(|&i| {
