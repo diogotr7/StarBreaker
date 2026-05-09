@@ -28,7 +28,18 @@ fn bench_search(c: &mut Criterion) {
         ("prefix_data", "data"),        // common prefix
         ("hornet", "hornet"),           // medium frequency
         ("multi_hornet_ship", "hornet ship"), // multi-token AND
+        ("ship_and_ext_xml", "gladius .xml"),  // ship name + extension
+        ("ship_and_ext_mtl", "gladius .mtl"),
+        ("ship_and_ext_dds", "aurora .dds"),
+        ("three_token", "hornet glass mtl"),
     ];
+
+    eprintln!("\nHit counts (out of {} entries):", p4k.entries().len());
+    for (name, query) in cases {
+        let hits = p4k.search(query).len();
+        eprintln!("  {name:24} {hits:>8}  for {query:?}");
+    }
+    eprintln!();
 
     for (name, query) in cases {
         group.bench_function(*name, |b| {
