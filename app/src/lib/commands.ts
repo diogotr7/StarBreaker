@@ -23,6 +23,9 @@ export type DirEntry = FileDirEntry | DirectoryDirEntry;
 export interface P4kSearchResult {
   path: string;
   uncompressed_size: number;
+  /** Unix seconds since epoch (decoded from the ZIP DOS timestamp on the
+   *  Rust side). 0 means unset / invalid. */
+  modified_unix: number;
 }
 
 export interface P4kSearchResponse {

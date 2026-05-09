@@ -52,6 +52,9 @@ pub enum DirEntryDto {
 pub struct P4kSearchResultDto {
     pub path: String,
     pub uncompressed_size: u64,
+    /// Unix seconds since epoch, decoded from the ZIP DOS timestamp by
+    /// `P4kEntry::last_modified_unix`. 0 means unset / invalid.
+    pub modified_unix: i64,
 }
 
 /// Response envelope for p4k_search: (possibly truncated) results + true total count.
@@ -280,6 +283,7 @@ pub fn p4k_search(
             P4kSearchResultDto {
                 path: e.name.clone(),
                 uncompressed_size: e.uncompressed_size,
+                modified_unix: e.last_modified_unix(),
             }
         })
         .collect();

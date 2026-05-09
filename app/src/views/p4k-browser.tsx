@@ -30,6 +30,70 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+function formatModified(unixSeconds: number): string {
+  if (!unixSeconds) return "—";
+  const d = new Date(unixSeconds * 1000);
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+}
+
+type SortColumn = "name" | "size" | "modified";
+type SortDirection = "asc" | "desc";
+interface SortState {
+  column: SortColumn;
+  direction: SortDirection;
+}
+const DEFAULT_DIRECTION: Record<SortColumn, SortDirection> = {
+  name: "asc",
+  size: "desc",
+  modified: "desc",
+};
+
+function SortHeaderButton({
+  label,
+  column,
+  sort,
+  onSort,
+  className = "",
+}: {
+  label: string;
+  column: SortColumn;
+  sort: SortState;
+  onSort: (col: SortColumn) => void;
+  className?: string;
+}) {
+  const active = sort.column === column;
+  const arrow = active ? (sort.direction === "asc" ? "▲" : "▼") : "";
+  return (
+    <button
+      type="button"
+      onClick={() => onSort(column)}
+      className={`text-left text-[11px] uppercase tracking-wide hover:text-text transition-colors ${
+        active ? "text-text" : "text-text-dim"
+      } ${className}`}
+    >
+      {label}
+      {arrow && <span className="ml-1 text-[9px]">{arrow}</span>}
+    </button>
+  );
+}
+
+function SearchColumnHeader({
+  sort,
+  onSort,
+}: {
+  sort: SortState;
+  onSort: (col: SortColumn) => void;
+}) {
+  return (
+    <div className="flex items-center border-b border-border bg-bg-alt h-7 shrink-0">
+      <SortHeaderButton label="Name" column="name" sort={sort} onSort={onSort} className="flex-1 px-3" />
+      <SortHeaderButton label="Size" column="size" sort={sort} onSort={onSort} className="w-20 text-right" />
+      <SortHeaderButton label="Modified" column="modified" sort={sort} onSort={onSort} className="w-32 text-right pr-3" />
+    </div>
+  );
+}
+
 const GEOMETRY_EXTENSIONS = [".skin", ".skinm", ".cgf", ".cgfm", ".cga"];
 
 function isGeometryFile(path: string): boolean {
@@ -271,6 +335,7 @@ export function P4kBrowser() {
   const [searchTotal, setSearchTotal] = useState(0);
   const [searching, setSearching] = useState(false);
   const [loadingAll, setLoadingAll] = useState(false);
+  const [sort, setSort] = useState<SortState>({ column: "name", direction: "asc" });
   const [treeWidth, setTreeWidth] = useState(360);
   const [extracting, setExtracting] = useState(false);
   const [extractFilter, setExtractFilter] = useState("");
@@ -323,6 +388,31 @@ export function P4kBrowser() {
   }, [hasData, searchQuery]);
 
   const hasSearch = searchQuery.trim().length > 0;
+
+  const sortedResults = useMemo(() => {
+    if (treeMode) return searchResults;
+    const sign = sort.direction === "asc" ? 1 : -1;
+    const arr = [...searchResults];
+    arr.sort((a, b) => {
+      switch (sort.column) {
+        case "name":
+          return sign * a.path.localeCompare(b.path);
+        case "size":
+          return sign * (a.uncompressed_size - b.uncompressed_size);
+        case "modified":
+          return sign * (a.modified_unix - b.modified_unix);
+      }
+    });
+    return arr;
+  }, [searchResults, sort, treeMode]);
+
+  const handleSortClick = useCallback((column: SortColumn) => {
+    setSort((prev) =>
+      prev.column === column
+        ? { column, direction: prev.direction === "asc" ? "desc" : "asc" }
+        : { column, direction: DEFAULT_DIRECTION[column] },
+    );
+  }, []);
 
   const visibleRows = useMemo(() => {
     if (!hasSearch || !treeMode) return null;
@@ -513,25 +603,31 @@ export function P4kBrowser() {
               }}
             />
           ) : (
-            <VirtualizedSearchList<P4kSearchResult>
-              items={searchResults}
-              rowHeight={28}
-              getKey={(item) => item.path}
-              renderRow={(item) => (
-                <button
-                  type="button"
-                  onClick={() => setSelectedPath(item.path)}
-                  className={`w-full h-full text-left px-3 text-sm flex items-center gap-2 hover:bg-surface/50 transition-colors ${
-                    selectedPath === item.path ? "bg-primary/15 text-text" : "text-text"
-                  }`}
-                >
-                  <span className="flex-1 truncate font-mono text-xs">{item.path}</span>
-                  <span className="text-xs text-text-dim shrink-0 tabular-nums">
-                    {formatSize(item.uncompressed_size)}
-                  </span>
-                </button>
-              )}
-            />
+            <>
+              <SearchColumnHeader sort={sort} onSort={handleSortClick} />
+              <VirtualizedSearchList<P4kSearchResult>
+                items={sortedResults}
+                rowHeight={28}
+                getKey={(item) => item.path}
+                renderRow={(item) => (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPath(item.path)}
+                    className={`w-full h-full text-left text-sm flex items-center hover:bg-surface/50 transition-colors ${
+                      selectedPath === item.path ? "bg-primary/15 text-text" : "text-text"
+                    }`}
+                  >
+                    <span className="flex-1 truncate font-mono text-xs px-3">{item.path}</span>
+                    <span className="w-20 text-right text-xs text-text-dim shrink-0 tabular-nums">
+                      {formatSize(item.uncompressed_size)}
+                    </span>
+                    <span className="w-32 text-right text-xs text-text-dim shrink-0 tabular-nums pr-3">
+                      {formatModified(item.modified_unix)}
+                    </span>
+                  </button>
+                )}
+              />
+            </>
           )
         ) : (
           <div className="py-1 flex-1 overflow-y-auto">

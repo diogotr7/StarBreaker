@@ -17,7 +17,46 @@ pub struct P4kEntry {
     pub is_encrypted: bool,
     pub offset: u64,
     pub crc32: u32,
+    /// Raw ZIP "last mod" timestamp: lower 16 bits = DOS time (h:m:s/2),
+    /// upper 16 bits = DOS date (year-1980, month, day). Use
+    /// [`Self::last_modified_unix`] to get Unix seconds.
     pub last_modified: u32,
+}
+
+impl P4kEntry {
+    /// Decode the ZIP DOS `last_modified` field into Unix seconds since the
+    /// epoch. Returns 0 if the timestamp is unset or the encoded date is
+    /// invalid (e.g. month 0).
+    pub fn last_modified_unix(&self) -> i64 {
+        if self.last_modified == 0 {
+            return 0;
+        }
+        let time = self.last_modified & 0xFFFF;
+        let date = (self.last_modified >> 16) & 0xFFFF;
+        let year = ((date >> 9) & 0x7F) + 1980;
+        let month = (date >> 5) & 0x0F;
+        let day = date & 0x1F;
+        let hour = (time >> 11) & 0x1F;
+        let minute = (time >> 5) & 0x3F;
+        let second = (time & 0x1F) * 2;
+        if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+            return 0;
+        }
+        let days = days_from_civil(year as i32, month, day);
+        days * 86_400 + (hour as i64) * 3600 + (minute as i64) * 60 + (second as i64)
+    }
+}
+
+/// Howard Hinnant's days-from-civil algorithm. Returns days since 1970-01-01,
+/// negative for earlier dates. Proleptic Gregorian, no time-zone or leap-second
+/// awareness — fine for ZIP DOS dates which are local-time-naive.
+fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = (y - era * 400) as u32;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era as i64 * 146_097 + doe as i64 - 719_468
 }
 
 /// An item returned by `list_dir` — either a file entry or a subdirectory name.
@@ -776,5 +815,35 @@ mod tests {
         u.sort();
         l.sort();
         assert_eq!(u, l);
+    }
+
+    fn entry_with_dos(last_modified: u32) -> P4kEntry {
+        let mut e = make_entry("x");
+        e.last_modified = last_modified;
+        e
+    }
+
+    #[test]
+    fn dos_timestamp_zero_is_zero() {
+        assert_eq!(entry_with_dos(0).last_modified_unix(), 0);
+    }
+
+    #[test]
+    fn dos_timestamp_decodes_known_value() {
+        // 2020-01-01 00:00:00 — easy to verify by hand.
+        // year - 1980 = 40 (0b0101000); month = 1; day = 1.
+        // date = (40 << 9) | (1 << 5) | 1 = 0x5021
+        // time = 0
+        let packed = 0x5021_0000u32;
+        let secs = entry_with_dos(packed).last_modified_unix();
+        // 2020-01-01T00:00:00Z (ZIP times are time-zone-naive; we treat them as UTC).
+        assert_eq!(secs, 1_577_836_800);
+    }
+
+    #[test]
+    fn dos_timestamp_invalid_month_returns_zero() {
+        // month = 0 → invalid
+        let packed = (0x5800u32 << 16) | 0x0000u32;
+        assert_eq!(entry_with_dos(packed).last_modified_unix(), 0);
     }
 }
