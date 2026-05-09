@@ -93,7 +93,8 @@ pub fn build_record_index(dcb_bytes: &[u8]) -> Vec<RecordEntry> {
 
 // ── Commands ─────────────────────────────────────────────────────────────────
 
-/// Search records by name substring. Returns up to 500 results.
+/// Search records by name. Multi-token queries use space-separated AND
+/// semantics. Returns all matches; the frontend is expected to virtualize.
 #[tauri::command]
 pub fn dc_search(state: State<'_, AppState>, query: String) -> Vec<SearchResultDto> {
     let guard = state.record_index.lock();
@@ -102,25 +103,30 @@ pub fn dc_search(state: State<'_, AppState>, query: String) -> Vec<SearchResultD
         None => return Vec::new(),
     };
 
-    let query_lower = query.to_lowercase();
+    let tokens: Vec<String> = query
+        .split_ascii_whitespace()
+        .map(str::to_ascii_lowercase)
+        .collect();
+    if tokens.is_empty() {
+        return Vec::new();
+    }
 
-    index
+    let mut results: Vec<SearchResultDto> = index
         .iter()
-        .filter(|entry| {
-            if query_lower.is_empty() {
-                true
-            } else {
-                entry.name_lower.contains(&query_lower)
-            }
-        })
-        .take(500)
+        .filter(|entry| tokens.iter().all(|t| entry.name_lower.contains(t.as_str())))
         .map(|entry| SearchResultDto {
             name: entry.name.clone(),
             struct_type: entry.struct_type.clone(),
             path: entry.path.clone(),
             id: entry.id.clone(),
         })
-        .collect()
+        .collect();
+
+    results.sort_by(|a, b| {
+        a.path.len().cmp(&b.path.len()).then_with(|| a.path.cmp(&b.path))
+    });
+
+    results
 }
 
 /// List tree entries (folders + records) at a given path.
