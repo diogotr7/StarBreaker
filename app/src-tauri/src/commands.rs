@@ -2223,6 +2223,73 @@ pub async fn extract_p4k_folder(
     .map_err(|e| AppError::Internal(format!("task join error: {e}")))?
 }
 
+/// Extract a list of P4k files to disk, preserving the full P4k path under
+/// the chosen output directory. Used by "Extract all matches" — the frontend
+/// supplies the (possibly filtered, possibly sorted) result paths it wants
+/// extracted. Emits the same `folder-extract-progress` events as
+/// `extract_p4k_folder`. Returns the number of files actually written
+/// (entries that no longer exist or are empty are silently skipped).
+#[tauri::command]
+pub async fn extract_p4k_paths(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+    output_dir: String,
+) -> Result<usize, AppError> {
+    let p4k = state
+        .p4k
+        .lock()
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("P4K not loaded".into()))?
+        .clone();
+
+    tokio::task::spawn_blocking(move || {
+        let out = std::path::Path::new(&output_dir);
+        let total = paths.len();
+        let mut written = 0usize;
+
+        for (i, path) in paths.iter().enumerate() {
+            let entry = match p4k.entry(path) {
+                Some(e) => e,
+                None => continue,
+            };
+            if entry.uncompressed_size == 0 {
+                continue;
+            }
+
+            if i % 50 == 0 || i + 1 == total {
+                let short_name = entry
+                    .name
+                    .rsplit('\\')
+                    .next()
+                    .unwrap_or(&entry.name)
+                    .to_string();
+                let _ = app.emit(
+                    "folder-extract-progress",
+                    FolderExtractProgress {
+                        current: i + 1,
+                        total,
+                        name: short_name,
+                    },
+                );
+            }
+
+            let rel = entry.name.replace('\\', "/");
+            let dest = out.join(&rel);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let data = p4k.read(entry)?;
+            std::fs::write(&dest, &data)?;
+            written += 1;
+        }
+
+        Ok::<_, AppError>(written)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("task join error: {e}")))?
+}
+
 /// Metadata returned alongside a DDS preview so the frontend can show mip controls.
 #[derive(serde::Serialize)]
 pub struct DdsPreviewResult {

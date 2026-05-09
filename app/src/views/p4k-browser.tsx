@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download } from "lucide-react";
 import {
   listDir,
   p4kSearch,
   extractP4kFolder,
   extractP4kFile,
+  extractP4kPaths,
   type DirEntry,
   type P4kSearchResult,
 } from "../lib/commands";
 import { VirtualizedSearchList } from "../components/virtualized-search-list";
 import { buildTreeFromRows, flattenForVirtualization, type VisibleRow } from "../lib/search-tree";
+import { ContextMenu, useContextMenu, type ContextMenuItem } from "../components/context-menu";
 import { ExtractProgress } from "../components/extract-progress";
 import { useAppStore } from "../stores/app-store";
 import { ResizeHandle } from "../components/resize-handle";
@@ -136,18 +137,14 @@ function TreeItem({
   onToggle,
   selectedPath,
   onSelect,
-  extractFilter,
-  onExtractStart,
-  onExtractEnd,
+  onContextMenu,
 }: {
   node: TreeNode;
   depth: number;
   onToggle: (path: string) => void;
   selectedPath: string;
   onSelect: (path: string) => void;
-  extractFilter: string;
-  onExtractStart: () => void;
-  onExtractEnd: () => void;
+  onContextMenu: (e: React.MouseEvent, node: TreeNode) => void;
 }) {
   const isSelected = selectedPath === node.path;
   const [showSpinner, setShowSpinner] = useState(false);
@@ -162,22 +159,6 @@ function TreeItem({
     }
     return () => clearTimeout(timerRef.current);
   }, [node.loading]);
-
-  const handleExtract = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const dir = await open({ title: `Extract "${node.name}"`, directory: true, multiple: false });
-    if (!dir) return;
-
-    onExtractStart();
-    try {
-      await extractP4kFolder(node.path, dir, extractFilter || undefined);
-    } catch (err) {
-      console.error("P4k folder extract failed:", err);
-    } finally {
-      onExtractEnd();
-    }
-  };
 
   return (
     <div>
@@ -194,9 +175,10 @@ function TreeItem({
             onSelect(node.path);
           }
         }}
+        onContextMenu={(e) => onContextMenu(e, node)}
         className={`
           w-full text-left px-2 py-1 text-sm flex items-center gap-1.5 cursor-pointer
-          hover:bg-surface/50 transition-colors group
+          hover:bg-surface/50 transition-colors
           ${isSelected ? "bg-primary/15 text-text" : "text-text"}
         `}
         style={{ paddingLeft: `${depth * 16 + 8}px` }}
@@ -228,49 +210,10 @@ function TreeItem({
 
         <span className="flex-1 truncate">{node.name}</span>
 
-        {/* Extract button for folders */}
-        {node.isDir && (
-          <button
-            type="button"
-            onClick={handleExtract}
-            title={`Extract ${node.name}/`}
-            className="hidden group-hover:flex items-center justify-center w-5 h-5 rounded
-                       text-text-dim hover:text-text hover:bg-surface-hi transition-colors
-                       disabled:opacity-50"
-          >
-            <Download size={12} />
-          </button>
-        )}
-
-        {/* File download + size */}
-        {!node.isDir && (
-          <>
-            <button
-              type="button"
-              onClick={async (e) => {
-                e.stopPropagation();
-                const { save } = await import("@tauri-apps/plugin-dialog");
-                const filename = node.name;
-                const outputPath = await save({ title: `Save "${filename}"`, defaultPath: filename });
-                if (!outputPath) return;
-                try {
-                  await extractP4kFile(node.path, outputPath);
-                } catch (err) {
-                  console.error("File extract failed:", err);
-                }
-              }}
-              title={`Save ${node.name}`}
-              className="hidden group-hover:flex items-center justify-center w-5 h-5 rounded
-                         text-text-dim hover:text-text hover:bg-surface-hi transition-colors"
-            >
-              <Download size={12} />
-            </button>
-            {node.size != null && (
-              <span className="text-xs text-text-dim shrink-0 tabular-nums">
-                {formatSize(node.size)}
-              </span>
-            )}
-          </>
+        {!node.isDir && node.size != null && (
+          <span className="text-xs text-text-dim shrink-0 tabular-nums">
+            {formatSize(node.size)}
+          </span>
         )}
       </div>
 
@@ -284,9 +227,7 @@ function TreeItem({
             onToggle={onToggle}
             selectedPath={selectedPath}
             onSelect={onSelect}
-            extractFilter={extractFilter}
-            onExtractStart={onExtractStart}
-            onExtractEnd={onExtractEnd}
+            onContextMenu={onContextMenu}
           />
         ))}
     </div>
@@ -338,10 +279,91 @@ export function P4kBrowser() {
   const [sort, setSort] = useState<SortState>({ column: "name", direction: "asc" });
   const [treeWidth, setTreeWidth] = useState(360);
   const [extracting, setExtracting] = useState(false);
-  const [extractFilter, setExtractFilter] = useState("");
   const searchSeqRef = useRef(0);
   const [treeMode, setTreeMode] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const ctxMenu = useContextMenu();
+
+  // ── Action helpers (used by context menus + toolbar buttons) ─────────────
+
+  const saveFile = useCallback(async (path: string) => {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const filename = path.split("\\").pop() ?? "file";
+    const outputPath = await save({ title: `Save "${filename}"`, defaultPath: filename });
+    if (!outputPath) return;
+    try {
+      await extractP4kFile(path, outputPath);
+    } catch (err) {
+      console.error("File extract failed:", err);
+    }
+  }, []);
+
+  const extractFolder = useCallback(async (folderPath: string, folderName: string) => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const dir = await open({
+      title: `Extract "${folderName}"`,
+      directory: true,
+      multiple: false,
+    });
+    if (!dir) return;
+    setExtracting(true);
+    try {
+      await extractP4kFolder(folderPath, dir);
+    } catch (err) {
+      console.error("P4k folder extract failed:", err);
+    } finally {
+      setExtracting(false);
+    }
+  }, []);
+
+  const extractAllMatches = useCallback(async (paths: string[]) => {
+    if (paths.length === 0) return;
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const dir = await open({
+      title: `Extract ${paths.length.toLocaleString()} files`,
+      directory: true,
+      multiple: false,
+    });
+    if (!dir) return;
+    setExtracting(true);
+    try {
+      await extractP4kPaths(paths, dir);
+    } catch (err) {
+      console.error("P4k batch extract failed:", err);
+    } finally {
+      setExtracting(false);
+    }
+  }, []);
+
+  const copyPath = useCallback(async (path: string) => {
+    try {
+      await navigator.clipboard.writeText(path);
+    } catch (err) {
+      console.error("Clipboard write failed:", err);
+    }
+  }, []);
+
+  const buildTreeMenu = useCallback(
+    (node: TreeNode): ContextMenuItem[] =>
+      node.isDir
+        ? [
+            { label: "Extract folder…", onClick: () => extractFolder(node.path, node.name) },
+            { label: "Copy path", onClick: () => copyPath(node.path) },
+          ]
+        : [
+            { label: "Save as…", onClick: () => saveFile(node.path) },
+            { label: "Copy path", onClick: () => copyPath(node.path) },
+          ],
+    [extractFolder, saveFile, copyPath],
+  );
+
+  const buildSearchFileMenu = useCallback(
+    (path: string): ContextMenuItem[] => [
+      { label: "Save as…", onClick: () => saveFile(path) },
+      { label: "Copy path", onClick: () => copyPath(path) },
+    ],
+    [saveFile, copyPath],
+  );
 
   // Load root entries on mount
   useEffect(() => {
@@ -487,6 +509,7 @@ export function P4kBrowser() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
+      <ContextMenu state={ctxMenu.state} onClose={ctxMenu.close} />
       <ExtractProgress active={extracting} onDone={() => setExtracting(false)} />
       {/* Toolbar */}
       <div className="px-3 flex items-center gap-2 border-b border-border bg-bg-alt shrink-0" style={{ height: "var(--toolbar-height)" }}>
@@ -544,14 +567,16 @@ export function P4kBrowser() {
             {treeMode ? "Flat" : "Tree"}
           </button>
         )}
-        <input
-          type="text"
-          placeholder="Extract filter (e.g. mtl,xml)"
-          value={extractFilter}
-          onChange={(e) => setExtractFilter(e.target.value)}
-          title="Comma-separated file extensions to include when extracting folders. Leave empty for all files."
-          className="w-48 bg-surface rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-faint outline-none focus:ring-1 focus:ring-ring shrink-0"
-        />
+        {hasSearch && !searching && searchResults.length > 0 && (
+          <button
+            type="button"
+            onClick={() => extractAllMatches(searchResults.map((r) => r.path))}
+            title={`Extract the ${searchResults.length.toLocaleString()} currently shown files. Use "Load all" first if you want every match.`}
+            className="px-2 py-1 text-xs rounded bg-surface text-text-dim hover:text-text hover:bg-surface-hi shrink-0"
+          >
+            Extract all matches…
+          </button>
+        )}
       </div>
 
       <div className="flex-1 flex overflow-hidden">
@@ -589,6 +614,9 @@ export function P4kBrowser() {
                   <button
                     type="button"
                     onClick={() => setSelectedPath(row.data!.path)}
+                    onContextMenu={(e) =>
+                      ctxMenu.open(e, buildSearchFileMenu(row.data!.path))
+                    }
                     className={`w-full h-full text-left flex items-center text-sm hover:bg-surface/50 transition-colors ${
                       selectedPath === row.data!.path ? "bg-primary/15 text-text" : "text-text"
                     }`}
@@ -613,6 +641,7 @@ export function P4kBrowser() {
                   <button
                     type="button"
                     onClick={() => setSelectedPath(item.path)}
+                    onContextMenu={(e) => ctxMenu.open(e, buildSearchFileMenu(item.path))}
                     className={`w-full h-full text-left text-sm flex items-center hover:bg-surface/50 transition-colors ${
                       selectedPath === item.path ? "bg-primary/15 text-text" : "text-text"
                     }`}
@@ -639,9 +668,7 @@ export function P4kBrowser() {
                 onToggle={handleToggle}
                 selectedPath={selectedPath}
                 onSelect={setSelectedPath}
-                extractFilter={extractFilter}
-                onExtractStart={() => setExtracting(true)}
-                onExtractEnd={() => setExtracting(false)}
+                onContextMenu={(e, n) => ctxMenu.open(e, buildTreeMenu(n))}
               />
             ))}
           </div>

@@ -465,6 +465,13 @@ export async function extractP4kFolder(
   return invoke<number>("extract_p4k_folder", { pathPrefix, outputDir, filter: filter ?? null });
 }
 
+/** Extract an explicit list of P4k file paths to disk, preserving each file's
+ *  full P4k path under `outputDir`. Emits the same `folder-extract-progress`
+ *  events as `extractP4kFolder`. */
+export async function extractP4kPaths(paths: string[], outputDir: string): Promise<number> {
+  return invoke<number>("extract_p4k_paths", { paths, outputDir });
+}
+
 // ── Raw file access ──
 
 /** Read a raw file from the P4K. */
