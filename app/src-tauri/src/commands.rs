@@ -239,6 +239,8 @@ pub fn p4k_search(
     state: State<'_, AppState>,
     query: String,
 ) -> Result<Vec<P4kSearchResultDto>, AppError> {
+    use rayon::prelude::*;
+
     let guard = state.p4k.lock();
     let p4k = guard
         .as_ref()
@@ -247,7 +249,7 @@ pub fn p4k_search(
     let indices = p4k.search(&query);
     let entries = p4k.entries();
     let mut results: Vec<P4kSearchResultDto> = indices
-        .into_iter()
+        .into_par_iter()
         .map(|i| {
             let e = &entries[i as usize];
             P4kSearchResultDto {
@@ -257,7 +259,7 @@ pub fn p4k_search(
         })
         .collect();
 
-    results.sort_by(|a, b| {
+    results.par_sort_by(|a, b| {
         a.path.len().cmp(&b.path.len()).then_with(|| a.path.cmp(&b.path))
     });
 
