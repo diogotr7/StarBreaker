@@ -14,3 +14,6 @@ GitHub.
   palettes, and how StarBreaker reconstructs them
 - [P4k format](/wiki/p4k-format/) — what `Data.p4k` contains and how the
   archive is laid out
+- [Zero to Hero tutorial](/wiki/zero-to-hero/) — all-in-one Windows workflow
+  for StarBreaker, Blender, and related asset tools
+  
