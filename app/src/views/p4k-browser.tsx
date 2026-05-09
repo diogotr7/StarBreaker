@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download } from "lucide-react";
 import {
   listDir,
@@ -9,6 +9,7 @@ import {
   type P4kSearchResult,
 } from "../lib/commands";
 import { VirtualizedSearchList } from "../components/virtualized-search-list";
+import { buildTreeFromRows, flattenForVirtualization, type VisibleRow } from "../lib/search-tree";
 import { ExtractProgress } from "../components/extract-progress";
 import { useAppStore } from "../stores/app-store";
 import { ResizeHandle } from "../components/resize-handle";
@@ -268,6 +269,8 @@ export function P4kBrowser() {
   const [extracting, setExtracting] = useState(false);
   const [extractFilter, setExtractFilter] = useState("");
   const searchSeqRef = useRef(0);
+  const [treeMode, setTreeMode] = useState(false);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   // Load root entries on mount
   useEffect(() => {
@@ -280,6 +283,7 @@ export function P4kBrowser() {
   useEffect(() => {
     const query = searchQuery.trim();
     searchSeqRef.current += 1;
+    setCollapsed(new Set());
     const seq = searchSeqRef.current;
 
     if (!hasData || query.length === 0) {
@@ -310,6 +314,12 @@ export function P4kBrowser() {
   }, [hasData, searchQuery]);
 
   const hasSearch = searchQuery.trim().length > 0;
+
+  const visibleRows = useMemo(() => {
+    if (!hasSearch || !treeMode) return null;
+    const tree = buildTreeFromRows(searchResults, (r) => r.path.split("\\").filter(Boolean));
+    return flattenForVirtualization(tree, collapsed);
+  }, [hasSearch, treeMode, searchResults, collapsed]);
 
   const handleToggle = useCallback(
     async (path: string) => {
@@ -393,6 +403,16 @@ export function P4kBrowser() {
             {searching ? "Searching..." : `${searchResults.length} results`}
           </span>
         )}
+        {hasSearch && (
+          <button
+            type="button"
+            onClick={() => setTreeMode((v) => !v)}
+            title={treeMode ? "Switch to flat list" : "Switch to tree view"}
+            className="px-2 py-1 text-xs rounded bg-surface text-text-dim hover:text-text hover:bg-surface-hi shrink-0"
+          >
+            {treeMode ? "Flat" : "Tree"}
+          </button>
+        )}
         <input
           type="text"
           placeholder="Extract filter (e.g. mtl,xml)"
@@ -407,25 +427,71 @@ export function P4kBrowser() {
       {/* Tree panel */}
       <div className="border-r border-border shrink-0 flex flex-col min-h-0" style={{ width: treeWidth }}>
         {hasSearch ? (
-          <VirtualizedSearchList<P4kSearchResult>
-            items={searchResults}
-            rowHeight={28}
-            getKey={(item) => item.path}
-            renderRow={(item) => (
-              <button
-                type="button"
-                onClick={() => setSelectedPath(item.path)}
-                className={`w-full h-full text-left px-3 text-sm flex items-center gap-2 hover:bg-surface/50 transition-colors ${
-                  selectedPath === item.path ? "bg-primary/15 text-text" : "text-text"
-                }`}
-              >
-                <span className="flex-1 truncate font-mono text-xs">{item.path}</span>
-                <span className="text-xs text-text-dim shrink-0 tabular-nums">
-                  {formatSize(item.uncompressed_size)}
-                </span>
-              </button>
-            )}
-          />
+          treeMode && visibleRows ? (
+            <VirtualizedSearchList<VisibleRow<P4kSearchResult>>
+              items={visibleRows}
+              rowHeight={24}
+              getKey={(row) => row.key}
+              renderRow={(row) => {
+                if (row.kind === "folder") {
+                  return (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCollapsed((prev) => {
+                          const next = new Set(prev);
+                          const path = row.key.slice(2);
+                          if (next.has(path)) next.delete(path);
+                          else next.add(path);
+                          return next;
+                        })
+                      }
+                      className="w-full h-full text-left flex items-center text-sm text-text-dim hover:bg-surface/50 transition-colors"
+                      style={{ paddingLeft: row.depth * 16 + 8 }}
+                    >
+                      <span className="w-4">{row.collapsed ? "▶" : "▼"}</span>
+                      <span className="flex-1 truncate">{row.name}</span>
+                    </button>
+                  );
+                }
+                return (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPath(row.data!.path)}
+                    className={`w-full h-full text-left flex items-center text-sm hover:bg-surface/50 transition-colors ${
+                      selectedPath === row.data!.path ? "bg-primary/15 text-text" : "text-text"
+                    }`}
+                    style={{ paddingLeft: row.depth * 16 + 24 }}
+                  >
+                    <span className="flex-1 truncate font-mono text-xs">{row.name}</span>
+                    <span className="text-xs text-text-dim shrink-0 tabular-nums pr-2">
+                      {formatSize(row.data!.uncompressed_size)}
+                    </span>
+                  </button>
+                );
+              }}
+            />
+          ) : (
+            <VirtualizedSearchList<P4kSearchResult>
+              items={searchResults}
+              rowHeight={28}
+              getKey={(item) => item.path}
+              renderRow={(item) => (
+                <button
+                  type="button"
+                  onClick={() => setSelectedPath(item.path)}
+                  className={`w-full h-full text-left px-3 text-sm flex items-center gap-2 hover:bg-surface/50 transition-colors ${
+                    selectedPath === item.path ? "bg-primary/15 text-text" : "text-text"
+                  }`}
+                >
+                  <span className="flex-1 truncate font-mono text-xs">{item.path}</span>
+                  <span className="text-xs text-text-dim shrink-0 tabular-nums">
+                    {formatSize(item.uncompressed_size)}
+                  </span>
+                </button>
+              )}
+            />
+          )
         ) : (
           <div className="py-1 flex-1 overflow-y-auto">
             {tree.map((node) => (

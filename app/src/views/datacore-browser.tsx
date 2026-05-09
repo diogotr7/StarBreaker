@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download } from "lucide-react";
 import { useDataCoreStore } from "../stores/datacore-store";
 import { ResizeHandle } from "../components/resize-handle";
 import { VirtualizedSearchList } from "../components/virtualized-search-list";
+import { buildTreeFromRows, flattenForVirtualization, type VisibleRow } from "../lib/search-tree";
 import { ExtractProgress } from "../components/extract-progress";
 import {
   dcSearch,
@@ -79,6 +80,8 @@ function SearchResults() {
   const setSearching = useDataCoreStore((s) => s.setSearching);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
   const selectRecord = useSelectRecord();
+  const [treeMode, setTreeMode] = useState(false);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   const doSearch = useCallback(
     (query: string) => {
@@ -95,6 +98,7 @@ function SearchResults() {
   );
 
   useEffect(() => {
+    setCollapsed(new Set());
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => doSearch(searchQuery), 150);
     return () => {
@@ -102,26 +106,84 @@ function SearchResults() {
     };
   }, [searchQuery, doSearch]);
 
+  const visibleRows = useMemo(() => {
+    if (!treeMode) return null;
+    const tree = buildTreeFromRows(searchResults, (r) => r.path.split("/").filter(Boolean));
+    return flattenForVirtualization(tree, collapsed);
+  }, [treeMode, searchResults, collapsed]);
+
   return (
     <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-      <div className="px-2.5 py-1 text-[11px] text-text-dim">
-        {searching ? "Searching..." : `${searchResults.length} results`}
+      <div className="px-2.5 py-1 text-[11px] text-text-dim flex items-center">
+        <span className="flex-1">
+          {searching ? "Searching..." : `${searchResults.length} results`}
+        </span>
+        <button
+          type="button"
+          onClick={() => setTreeMode((v) => !v)}
+          title={treeMode ? "Switch to flat list" : "Switch to tree view"}
+          className="px-2 py-0.5 text-[10px] rounded bg-surface text-text-dim hover:text-text hover:bg-surface-hi shrink-0"
+        >
+          {treeMode ? "Flat" : "Tree"}
+        </button>
       </div>
-      <VirtualizedSearchList<SearchResultDto>
-        items={searchResults}
-        rowHeight={24}
-        getKey={(item) => item.id}
-        renderRow={(item) => (
-          <button
-            type="button"
-            onClick={() => selectRecord(item.id)}
-            className="w-full h-full text-left flex items-center px-2.5 hover:bg-surface transition-colors"
-          >
-            <span className="text-[13px] text-text-sub truncate flex-1">{item.name}</span>
-            <span className="text-[10px] text-text-faint pl-2 shrink-0">{item.struct_type}</span>
-          </button>
-        )}
-      />
+      {treeMode && visibleRows ? (
+        <VirtualizedSearchList<VisibleRow<SearchResultDto>>
+          items={visibleRows}
+          rowHeight={24}
+          getKey={(row) => row.key}
+          renderRow={(row) => {
+            if (row.kind === "folder") {
+              return (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCollapsed((prev) => {
+                      const next = new Set(prev);
+                      const path = row.key.slice(2);
+                      if (next.has(path)) next.delete(path);
+                      else next.add(path);
+                      return next;
+                    })
+                  }
+                  className="w-full h-full text-left flex items-center text-[13px] text-text-dim hover:bg-surface transition-colors"
+                  style={{ paddingLeft: row.depth * 16 + 8 }}
+                >
+                  <span className="w-4 text-[10px]">{row.collapsed ? "▶" : "▼"}</span>
+                  <span className="flex-1 truncate">{row.name}</span>
+                </button>
+              );
+            }
+            return (
+              <button
+                type="button"
+                onClick={() => selectRecord(row.data!.id)}
+                className="w-full h-full text-left flex items-center hover:bg-surface transition-colors"
+                style={{ paddingLeft: row.depth * 16 + 24 }}
+              >
+                <span className="text-[13px] text-text-sub truncate flex-1">{row.name}</span>
+                <span className="text-[10px] text-text-faint pl-2 shrink-0">{row.data!.struct_type}</span>
+              </button>
+            );
+          }}
+        />
+      ) : (
+        <VirtualizedSearchList<SearchResultDto>
+          items={searchResults}
+          rowHeight={24}
+          getKey={(item) => item.id}
+          renderRow={(item) => (
+            <button
+              type="button"
+              onClick={() => selectRecord(item.id)}
+              className="w-full h-full text-left flex items-center px-2.5 hover:bg-surface transition-colors"
+            >
+              <span className="text-[13px] text-text-sub truncate flex-1">{item.name}</span>
+              <span className="text-[10px] text-text-faint pl-2 shrink-0">{item.struct_type}</span>
+            </button>
+          )}
+        />
+      )}
     </div>
   );
 }
