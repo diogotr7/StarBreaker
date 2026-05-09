@@ -54,6 +54,18 @@ pub struct P4kSearchResultDto {
     pub uncompressed_size: u64,
 }
 
+/// Response envelope for p4k_search: capped slice of results + true total count.
+#[derive(Serialize)]
+pub struct P4kSearchResponseDto {
+    pub results: Vec<P4kSearchResultDto>,
+    pub total: u32,
+}
+
+/// Cap on returned `p4k_search` results. Beyond this, the slice is truncated
+/// and `total` is reported separately so the UI can show "X of Y, refine query".
+/// Tune this knob and re-test if the search feels laggy.
+const P4K_SEARCH_CAP: usize = 5_000;
+
 /// Info returned after opening a P4k.
 #[derive(Serialize)]
 pub struct P4kInfo {
@@ -238,7 +250,7 @@ pub fn list_dir(state: State<'_, AppState>, path: String) -> Result<Vec<DirEntry
 pub fn p4k_search(
     state: State<'_, AppState>,
     query: String,
-) -> Result<Vec<P4kSearchResultDto>, AppError> {
+) -> Result<P4kSearchResponseDto, AppError> {
     use rayon::prelude::*;
 
     let guard = state.p4k.lock();
@@ -248,9 +260,22 @@ pub fn p4k_search(
 
     let indices = p4k.search(&query);
     let entries = p4k.entries();
-    let mut results: Vec<P4kSearchResultDto> = indices
-        .into_par_iter()
-        .map(|i| {
+    let total = indices.len() as u32;
+
+    // Sort indices by (name.len(), name) so we keep the "best" P4K_SEARCH_CAP
+    // when truncating, rather than an arbitrary slice. Comparing &String avoids
+    // cloning the full DTO during sort.
+    let mut sorted_indices = indices;
+    sorted_indices.par_sort_by(|&a, &b| {
+        let na = &entries[a as usize].name;
+        let nb = &entries[b as usize].name;
+        na.len().cmp(&nb.len()).then_with(|| na.cmp(nb))
+    });
+
+    let take = sorted_indices.len().min(P4K_SEARCH_CAP);
+    let results: Vec<P4kSearchResultDto> = sorted_indices[..take]
+        .par_iter()
+        .map(|&i| {
             let e = &entries[i as usize];
             P4kSearchResultDto {
                 path: e.name.clone(),
@@ -259,11 +284,7 @@ pub fn p4k_search(
         })
         .collect();
 
-    results.par_sort_by(|a, b| {
-        a.path.len().cmp(&b.path.len()).then_with(|| a.path.cmp(&b.path))
-    });
-
-    Ok(results)
+    Ok(P4kSearchResponseDto { results, total })
 }
       
 #[derive(Clone)]

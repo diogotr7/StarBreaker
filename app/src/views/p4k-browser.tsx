@@ -264,6 +264,7 @@ export function P4kBrowser() {
   const [selectedPath, setSelectedPath] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<P4kSearchResult[]>([]);
+  const [searchTotal, setSearchTotal] = useState(0);
   const [searching, setSearching] = useState(false);
   const [treeWidth, setTreeWidth] = useState(360);
   const [extracting, setExtracting] = useState(false);
@@ -288,6 +289,7 @@ export function P4kBrowser() {
 
     if (!hasData || query.length === 0) {
       setSearchResults([]);
+      setSearchTotal(0);
       setSearching(false);
       return;
     }
@@ -295,9 +297,10 @@ export function P4kBrowser() {
     setSearching(true);
     const timeout = setTimeout(() => {
       p4kSearch(query)
-        .then((results) => {
+        .then((response) => {
           if (searchSeqRef.current === seq) {
-            setSearchResults(results);
+            setSearchResults(response.results);
+            setSearchTotal(response.total);
             setSearching(false);
           }
         })
@@ -305,6 +308,7 @@ export function P4kBrowser() {
           if (searchSeqRef.current === seq) {
             console.error("P4k search failed:", err);
             setSearchResults([]);
+            setSearchTotal(0);
             setSearching(false);
           }
         });
@@ -400,7 +404,11 @@ export function P4kBrowser() {
         />
         {hasSearch && (
           <span className="text-xs text-text-dim shrink-0">
-            {searching ? "Searching..." : `${searchResults.length} results`}
+            {searching
+              ? "Searching..."
+              : searchTotal > searchResults.length
+                ? `${searchResults.length.toLocaleString()} of ${searchTotal.toLocaleString()} (refine to see more)`
+                : `${searchResults.length.toLocaleString()} results`}
           </span>
         )}
         {hasSearch && (
