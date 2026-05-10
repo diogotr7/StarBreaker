@@ -5,12 +5,11 @@ use std::path::{Path, PathBuf};
 use crate::archive::{DirEntry, P4kArchive, P4kEntry, cmp_lower_against, parse_central_directory_from_file};
 use crate::error::P4kError;
 
-/// A P4k archive backed by a pool of file handles.
+/// A P4k archive backed by a single shared file handle.
 ///
-/// Since `P4kEntry` fields are all owned types (`String`, `u64`, etc.),
-/// the entries are parsed once during construction and stored separately
-/// from the file. Individual reads use seek + read on a pooled file handle,
-/// allowing concurrent reads from multiple threads without contention.
+/// Entries are parsed once at construction. Individual reads use
+/// positional I/O (`pread`/`seek_read`) so multiple threads can hit
+/// the same `File` concurrently without coordinating on a cursor.
 pub struct MappedP4k {
     path: PathBuf,
     file: File,
