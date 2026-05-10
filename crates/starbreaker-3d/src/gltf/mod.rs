@@ -168,8 +168,9 @@ pub fn write_glb_with_progress(
     progress: Option<&Progress>,
 ) -> Result<Vec<u8>, Error> {
     let mut builder = GlbBuilder::new();
+    let entity_name = opts.metadata.entity_name.as_deref().unwrap_or("<unknown>");
 
-    log::info!("[mem-phase] start write_glb");
+    log::info!("[mem-phase] start write_glb name={}", entity_name);
     report_progress(progress, 0.05, "Packing root mesh");
     // ---- Pack root entity (drop textures after packing) ----
     let mut scene_nodes = if let Some(root_mesh) = input.root_mesh {
@@ -940,6 +941,8 @@ mod tests {
             offset_rotation: [0.0; 3],
             detach_direction: [0.0; 3],
             port_flags: String::new(),
+            instance_id: 0,
+            parent_instance_id: 0,
         }
     }
 

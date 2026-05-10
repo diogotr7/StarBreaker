@@ -7,6 +7,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "format": "oxfmt --write src/",
+    "test": "vitest run",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -35,6 +36,7 @@
     "oxlint": "^1.56.0",
     "tailwindcss": "^4",
     "typescript": "^6.0.2",
-    "vite": "^8.0.2"
+    "vite": "^8.0.2",
+    "vitest": "^4.1.5"
   }
 }

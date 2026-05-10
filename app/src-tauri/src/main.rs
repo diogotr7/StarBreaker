@@ -4,7 +4,9 @@
 mod audio_commands;
 mod commands;
 mod datacore_commands;
+mod decomposed_commands;
 mod error;
+mod scene_commands;
 mod state;
 mod ui_sink;
 
@@ -170,7 +172,13 @@ fn main() {
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
-                .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview))
+                .max_file_size(50_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepAll)
+                // Webview target removed: it routes Rust logs back to the JS
+                // console via attachConsole, where forwardConsole re-captures
+                // them and sends them back to Rust, creating an infinite loop.
+                // Use Stdout (terminal during `tauri dev`) and LogDir (file)
+                // for log inspection instead of DevTools.
                 .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout))
                 .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: None }))
                 .build(),
@@ -246,6 +254,27 @@ fn main() {
             commands::extract_p4k_file,
             commands::read_p4k_file,
             commands::extract_p4k_folder,
+            decomposed_commands::read_decomposed_file,
+            decomposed_commands::load_decomposed_json,
+            decomposed_commands::load_decomposed_scene,
+            decomposed_commands::load_decomposed_palettes,
+            decomposed_commands::load_decomposed_liveries,
+            decomposed_commands::list_decomposed_packages,
+            decomposed_commands::list_scene_entities,
+            decomposed_commands::start_scene_export,
+            decomposed_commands::cancel_scene_export,
+            decomposed_commands::get_scene_cache_path,
+            decomposed_commands::clear_scene_cache,
+            decomposed_commands::clear_all_scene_cache,
+            decomposed_commands::cache_stats,
+            decomposed_commands::prune_stale_cache,
+            commands::write_diag_file,
+            commands::list_diag_dir,
+            scene_commands::load_scene_to_gltf,
+            scene_commands::read_scene_glb,
+            scene_commands::enumerate_scenes,
+            scene_commands::list_socpak_dir_cmd,
+            scene_commands::list_all_socpaks_cmd,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

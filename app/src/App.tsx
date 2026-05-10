@@ -7,6 +7,7 @@ import { P4kBrowser } from "./views/p4k-browser";
 import { DataCoreBrowser } from "./views/datacore-browser";
 import { ExportView } from "./views/export-view";
 import { AudioView } from "./views/audio-view";
+import { SceneView } from "./views/scene-view";
 import { getSystemTheme, onSystemThemeChanged } from "./lib/commands";
 import { applySystemTheme } from "./lib/theme";
 
@@ -35,6 +36,7 @@ function App() {
           {mode === "datacore" && <DataCoreBrowser />}
           {mode === "export" && <ExportView />}
           {mode === "audio" && <AudioView />}
+          {mode === "scene" && <SceneView />}
         </main>
       </div>
     </div>
