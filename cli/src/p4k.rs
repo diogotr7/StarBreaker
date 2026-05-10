@@ -200,9 +200,6 @@ fn extract(
         entries.retain(|e| !is_dds_sibling(&e.name));
     }
 
-    // Keep p4k alive when DDS conversion needs sibling reads.
-    let p4k_ref: Option<MappedP4k> = if conv.any_dds() { Some(p4k) } else { drop(p4k); None };
-
     eprintln!("Extracting {} files...", entries.len());
     if conv.any() {
         eprintln!("[CONVERT] {}", conv.summary());
@@ -239,7 +236,11 @@ fn extract(
         if num_threads == 0 { "all cores".to_string() } else { num_threads.to_string() }
     );
 
-    // Thread-local P4k file handles — one per rayon worker.
+    // Per-thread P4k file handles. On Windows, multiple threads sharing a
+    // single File handle still serialize on a per-file-object lock inside
+    // ReadFile, even with positional reads. Per-thread handles avoid that
+    // contention; positional reads (read_from_file_at) keep the syscall
+    // savings of the random-read path.
     thread_local! {
         static P4K_FILE: std::cell::RefCell<Option<File>> = const { std::cell::RefCell::new(None) };
     }
@@ -247,24 +248,17 @@ fn extract(
     use rayon::prelude::*;
 
     pool.install(|| entries.par_iter().for_each(|entry| {
-        let result = if conv.any_dds() && is_base_dds(&entry.name) {
-            // DDS: read via MappedP4k so we can access siblings for split merging.
-            p4k_ref.as_ref().unwrap().read(entry)
-        } else {
-            P4K_FILE.with(|cell| {
-                let mut slot = cell.borrow_mut();
-                if slot.is_none() {
-                    match File::open(&p4k_file_path) {
-                        Ok(f) => *slot = Some(f),
-                        Err(e) => return Err(starbreaker_p4k::P4kError::Io(e)),
-                    }
+        let result = P4K_FILE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if slot.is_none() {
+                match File::open(&p4k_file_path) {
+                    Ok(f) => *slot = Some(f),
+                    Err(e) => return Err(starbreaker_p4k::P4kError::Io(e)),
                 }
-                let file = slot.as_mut().ok_or_else(|| {
-                    starbreaker_p4k::P4kError::Io(std::io::Error::other("P4k file handle missing"))
-                })?;
-                P4kArchive::read_from_file(file, entry)
-            })
-        };
+            }
+            let file = slot.as_ref().expect("File handle just initialized");
+            P4kArchive::read_from_file_at(file, entry)
+        });
 
         match result {
             Ok(data) => {
@@ -272,7 +266,7 @@ fn extract(
 
                 if conv.any() {
                     if !convert_and_write(
-                        entry, &data, &output, &conv, p4k_ref.as_ref(),
+                        entry, &data, &output, &conv, Some(&p4k),
                         &error_count, &converted_count,
                     ) {
                         // Not convertible — write raw.
