@@ -1,8 +1,8 @@
-use rustc_hash::FxHashMap;
+use hashbrown::HashTable;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use crate::archive::{DirEntry, P4kArchive, P4kEntry, cmp_lower_against, parse_central_directory_from_file};
+use crate::archive::{DirEntry, P4kArchive, P4kEntry, cmp_lower_against, hash_path, parse_central_directory_from_file};
 use crate::error::P4kError;
 
 /// A P4k archive backed by a single shared file handle.
@@ -14,7 +14,7 @@ pub struct MappedP4k {
     path: PathBuf,
     file: File,
     entries: Vec<P4kEntry>,
-    path_index: FxHashMap<String, usize>,
+    path_index: HashTable<u32>,
     sorted_index: Vec<u32>,
     lowercase_names: Vec<String>,
     sorted_lower_index: Vec<u32>,
@@ -68,7 +68,11 @@ impl MappedP4k {
 
     /// Look up an entry by path.
     pub fn entry(&self, path: &str) -> Option<&P4kEntry> {
-        self.path_index.get(path).map(|&i| &self.entries[i])
+        let h = hash_path(path);
+        let i = *self
+            .path_index
+            .find(h, |&j| self.entries[j as usize].name == path)?;
+        Some(&self.entries[i as usize])
     }
 
     /// Returns entry indices whose lowercased name contains every

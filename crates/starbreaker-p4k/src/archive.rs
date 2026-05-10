@@ -1,7 +1,9 @@
 use std::io::{Read, Seek, SeekFrom};
 use std::cmp::Ordering;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::FxHasher;
+use hashbrown::HashTable;
+use std::hash::{Hash, Hasher};
 use starbreaker_common::SpanReader;
 
 use crate::crypto;
@@ -70,7 +72,7 @@ pub enum DirEntry<'a> {
 pub struct P4kArchive<'a> {
     data: &'a [u8],
     entries: Vec<P4kEntry>,
-    path_index: FxHashMap<String, usize>,
+    path_index: HashTable<u32>,
     sorted_index: Vec<u32>,
     lowercase_names: Vec<String>,
     sorted_lower_index: Vec<u32>,
@@ -271,7 +273,11 @@ impl<'a> P4kArchive<'a> {
 
     /// Look up an entry by path.
     pub fn entry(&self, path: &str) -> Option<&P4kEntry> {
-        self.path_index.get(path).map(|&i| &self.entries[i])
+        let h = hash_path(path);
+        let i = *self
+            .path_index
+            .find(h, |&j| self.entries[j as usize].name == path)?;
+        Some(&self.entries[i as usize])
     }
 
     /// Returns entry indices whose lowercased name contains every
@@ -395,6 +401,14 @@ pub(crate) fn cmp_lower_against(haystack_lower: &str, needle_mixed: &str) -> Ord
 
 // ── Internal parsing ─────────────────────────────────────────────────────────
 
+/// Hash a path with FxHash for use as the key in `path_index`.
+#[inline]
+pub(crate) fn hash_path(s: &str) -> u64 {
+    let mut h = FxHasher::default();
+    s.hash(&mut h);
+    h.finish()
+}
+
 /// Parsed central directory:
 /// - entries
 /// - path_index (exact case)
@@ -403,7 +417,7 @@ pub(crate) fn cmp_lower_against(haystack_lower: &str, needle_mixed: &str) -> Ord
 /// - sorted_lower_index (sorted by lowercase_names[i])
 pub(crate) type CentralDirectory = (
     Vec<P4kEntry>,
-    FxHashMap<String, usize>, // path_index (exact case)
+    HashTable<u32>,            // path_index (exact case, keyed by entry index)
     Vec<u32>,                  // sorted_index (case-sensitive, for prefix scans)
     Vec<String>,               // lowercase_names (parallel to entries)
     Vec<u32>,                  // sorted_lower_index (sorted by lowercase_names[i])
@@ -503,10 +517,12 @@ fn parse_entries(
         }
     }
 
-    // Build path index — FxHashMap for exact lookup
-    let mut path_index = FxHashMap::with_capacity_and_hasher(entries.len(), Default::default());
+    // Build path index — HashTable<u32> keyed by entry index, hashing through entries[i].name.
+    // Avoids the full-path String key duplication of FxHashMap<String, usize>.
+    let mut path_index: HashTable<u32> = HashTable::with_capacity(entries.len());
     for (i, entry) in entries.iter().enumerate() {
-        path_index.insert(entry.name.clone(), i);
+        let h = hash_path(&entry.name);
+        path_index.insert_unique(h, i as u32, |&j| hash_path(&entries[j as usize].name));
     }
 
     // Parallel lowercased view used by search and entry_case_insensitive.
@@ -801,7 +817,7 @@ mod tests {
         let archive = P4kArchive {
             data: &[],
             entries,
-            path_index: FxHashMap::default(),
+            path_index: HashTable::new(),
             sorted_index: Vec::new(),
             lowercase_names,
             sorted_lower_index,
@@ -835,7 +851,7 @@ mod tests {
         P4kArchive {
             data: &[],
             entries,
-            path_index: FxHashMap::default(),
+            path_index: HashTable::new(),
             sorted_index: Vec::new(),
             lowercase_names,
             sorted_lower_index,
@@ -943,7 +959,7 @@ mod tests {
         let archive = P4kArchive {
             data: &[],
             entries,
-            path_index: FxHashMap::default(),
+            path_index: HashTable::new(),
             sorted_index: Vec::new(),
             lowercase_names,
             sorted_lower_index,
@@ -1001,5 +1017,60 @@ mod tests {
         }
         for h in handles { h.join().expect("thread"); }
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Build a `P4kArchive<'static>` from a list of entries, matching the
+    /// production index construction.
+    fn build_test_archive(entries: Vec<P4kEntry>) -> P4kArchive<'static> {
+        let lowercase_names: Vec<String> =
+            entries.iter().map(|e| e.name.to_ascii_lowercase()).collect();
+
+        let mut sorted_index: Vec<u32> = (0..entries.len() as u32).collect();
+        sorted_index.sort_unstable_by(|&a, &b| {
+            entries[a as usize].name.cmp(&entries[b as usize].name)
+        });
+
+        let mut sorted_lower_index: Vec<u32> = (0..entries.len() as u32).collect();
+        sorted_lower_index.sort_unstable_by(|&a, &b| {
+            lowercase_names[a as usize].cmp(&lowercase_names[b as usize])
+        });
+
+        let mut path_index: hashbrown::HashTable<u32> =
+            hashbrown::HashTable::with_capacity(entries.len());
+        for (i, e) in entries.iter().enumerate() {
+            let h = hash_path(&e.name);
+            path_index.insert_unique(h, i as u32, |&j| hash_path(&entries[j as usize].name));
+        }
+
+        P4kArchive {
+            data: &[],
+            entries,
+            path_index,
+            sorted_index,
+            lowercase_names,
+            sorted_lower_index,
+        }
+    }
+
+    #[test]
+    fn exact_lookup_roundtrip_all_entries() {
+        let entries = vec![
+            make_entry("Data\\Foo.MTL"),
+            make_entry("data\\BAR.xml"),
+            make_entry("Other\\baz.dds"),
+        ];
+
+        let archive = build_test_archive(entries);
+
+        for e in &archive.entries {
+            assert_eq!(
+                archive.entry(&e.name).map(|x| x.name.as_str()),
+                Some(e.name.as_str()),
+                "exact-case roundtrip failed for {}",
+                e.name
+            );
+        }
+        assert!(archive.entry("Data\\foo.mtl").is_none(), "wrong case must miss");
+        assert!(archive.entry("nope").is_none());
     }
 }
