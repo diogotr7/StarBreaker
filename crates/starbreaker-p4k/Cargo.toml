@@ -13,6 +13,7 @@ aes = "0.8"
 cbc = "0.1"
 rustc-hash = "2"
 hashbrown = "0.15"
+parking_lot = { workspace = true }
 rayon = "1"
 smallvec = "1"
 

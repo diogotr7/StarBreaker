@@ -1,18 +1,22 @@
 use hashbrown::HashTable;
+use parking_lot::Mutex;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use crate::archive::{DirEntry, P4kArchive, P4kEntry, cmp_lower_against, hash_path, parse_central_directory_from_file};
 use crate::error::P4kError;
 
-/// A P4k archive backed by a single shared file handle.
+/// A P4k archive backed by a pool of file handles.
 ///
-/// Entries are parsed once at construction. Individual reads use
-/// positional I/O (`pread`/`seek_read`) so multiple threads can hit
-/// the same `File` concurrently without coordinating on a cursor.
+/// Entries are parsed once at construction. Individual reads use positional
+/// I/O (`pread`/`seek_read`) on a handle popped from the pool — each rayon
+/// worker effectively gets its own handle once the pool stabilises, which
+/// avoids the per-file-object lock that Windows takes inside `ReadFile`
+/// when many threads share a single handle. The mutex covers only the
+/// pop/push around each read; the read itself runs without the lock.
 pub struct MappedP4k {
     path: PathBuf,
-    file: File,
+    file_pool: Mutex<Vec<File>>,
     entries: Vec<P4kEntry>,
     path_index: HashTable<u32>,
     sorted_index: Vec<u32>,
@@ -39,7 +43,7 @@ impl MappedP4k {
 
         Ok(MappedP4k {
             path: path_buf,
-            file,
+            file_pool: Mutex::new(vec![file]),
             entries,
             path_index,
             sorted_index,
@@ -55,10 +59,23 @@ impl MappedP4k {
 
     /// Read and decompress an entry's data.
     ///
-    /// Uses positional reads on a single shared `File` handle — multiple
-    /// threads can call this concurrently without coordination.
+    /// Pops a `File` handle from the pool (or opens a new one if empty),
+    /// reads positionally, then returns the handle. The pop/push is the
+    /// only contended path; the read itself runs unlocked. Each concurrent
+    /// caller ends up with its own handle once the pool stabilises.
     pub fn read(&self, entry: &P4kEntry) -> Result<Vec<u8>, P4kError> {
-        P4kArchive::read_from_file_at(&self.file, entry)
+        let file = self
+            .file_pool
+            .lock()
+            .pop()
+            .map(Ok)
+            .unwrap_or_else(|| File::open(&self.path))?;
+
+        let result = P4kArchive::read_from_file_at(&file, entry);
+
+        self.file_pool.lock().push(file);
+
+        result
     }
 
     /// Get all entries.
