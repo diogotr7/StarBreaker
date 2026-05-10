@@ -162,6 +162,56 @@ impl<'a> P4kArchive<'a> {
         }
     }
 
+    /// Read and decompress an entry using positional reads on a borrowed
+    /// `&File`.
+    ///
+    /// Doesn't mutate the file cursor, so multiple threads can call this
+    /// against the same handle without coordination. Cuts one syscall per
+    /// read vs the seek+read+seek+read shape of [`Self::read_from_file`].
+    pub fn read_from_file_at(file: &std::fs::File, entry: &P4kEntry) -> Result<Vec<u8>, P4kError> {
+        use crate::posread::pread_exact;
+
+        // 1. Local file header
+        let mut header_buf = [0u8; size_of::<LocalFileHeader>()];
+        pread_exact(file, &mut header_buf, entry.offset)?;
+        let local_header: LocalFileHeader =
+            *zerocopy::FromBytes::ref_from_bytes(&header_buf).map_err(|_| {
+                P4kError::Parse(starbreaker_common::ParseError::InvalidLayout(
+                    "LocalFileHeader".to_string(),
+                ))
+            })?;
+
+        let sig = local_header.signature;
+        if sig != LOCAL_FILE_SIGNATURE && sig != LOCAL_FILE_CIG_SIGNATURE {
+            return Err(P4kError::InvalidSignature {
+                expected: LOCAL_FILE_SIGNATURE,
+                got: sig,
+            });
+        }
+
+        // 2. Compressed data starts past the variable-length filename + extra field
+        let data_offset = entry.offset
+            + size_of::<LocalFileHeader>() as u64
+            + local_header.file_name_length as u64
+            + local_header.extra_field_length as u64;
+
+        let mut raw = vec![0u8; entry.compressed_size as usize];
+        pread_exact(file, &mut raw, data_offset)?;
+
+        let hint = entry.uncompressed_size as usize;
+        match (entry.is_encrypted, entry.compression_method) {
+            (true, 100) => {
+                let decrypted = crypto::decrypt(&raw)?;
+                zstd_decompress(&decrypted, hint)
+            }
+            (false, 100) => zstd_decompress(&raw, hint),
+            (false, 8) => deflate_decompress(&raw, hint),
+            (false, 0) => Ok(raw),
+            (true, method) => Err(P4kError::EncryptedNonZstd(method)),
+            (_, method) => Err(P4kError::UnsupportedCompression(method)),
+        }
+    }
+
     /// Read and decompress an entry using a seekable file handle instead of mmap.
     ///
     /// Each caller should use its own file handle (opened with read + share-read)
@@ -911,5 +961,45 @@ mod tests {
         assert!(archive.entry_case_insensitive("zz").is_none());
         // Miss before the start
         assert!(archive.entry_case_insensitive("").is_none());
+    }
+
+    /// Positional reads on a single shared `File` handle must not corrupt
+    /// each other when called concurrently.
+    #[test]
+    fn pread_exact_is_thread_safe() {
+        use std::fs::File;
+        use std::io::Write;
+        use std::sync::Arc;
+        use std::thread;
+
+        // Build a temp file with predictable content: byte at offset i is (i % 251).
+        let mut path = std::env::temp_dir();
+        path.push(format!("starbreaker-pread-{}.bin", std::process::id()));
+        {
+            let mut f = File::create(&path).expect("create temp");
+            let mut buf = vec![0u8; 65_536];
+            for (i, b) in buf.iter_mut().enumerate() {
+                *b = (i % 251) as u8;
+            }
+            f.write_all(&buf).expect("write temp");
+        }
+
+        let f = Arc::new(File::open(&path).expect("open temp"));
+        let mut handles = Vec::new();
+        for t in 0..8 {
+            let f = Arc::clone(&f);
+            handles.push(thread::spawn(move || {
+                let mut buf = [0u8; 17];
+                for k in 0..1000 {
+                    let off = ((t * 1000 + k) * 7) % (65_536 - 17);
+                    crate::posread::pread_exact(&f, &mut buf, off as u64).expect("pread");
+                    for (j, &b) in buf.iter().enumerate() {
+                        assert_eq!(b, ((off + j) % 251) as u8, "mismatch at off={}", off + j);
+                    }
+                }
+            }));
+        }
+        for h in handles { h.join().expect("thread"); }
+        let _ = std::fs::remove_file(&path);
     }
 }

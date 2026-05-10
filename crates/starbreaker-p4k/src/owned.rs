@@ -1,7 +1,6 @@
 use rustc_hash::FxHashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use parking_lot::Mutex;
 
 use crate::archive::{DirEntry, P4kArchive, P4kEntry, cmp_lower_against, parse_central_directory_from_file};
 use crate::error::P4kError;
@@ -14,7 +13,7 @@ use crate::error::P4kError;
 /// allowing concurrent reads from multiple threads without contention.
 pub struct MappedP4k {
     path: PathBuf,
-    file_pool: Mutex<Vec<File>>,
+    file: File,
     entries: Vec<P4kEntry>,
     path_index: FxHashMap<String, usize>,
     sorted_index: Vec<u32>,
@@ -41,7 +40,7 @@ impl MappedP4k {
 
         Ok(MappedP4k {
             path: path_buf,
-            file_pool: Mutex::new(vec![file]),
+            file,
             entries,
             path_index,
             sorted_index,
@@ -57,23 +56,10 @@ impl MappedP4k {
 
     /// Read and decompress an entry's data.
     ///
-    /// Uses a pooled file handle so concurrent reads from multiple threads
-    /// don't serialize on a single lock.
+    /// Uses positional reads on a single shared `File` handle — multiple
+    /// threads can call this concurrently without coordination.
     pub fn read(&self, entry: &P4kEntry) -> Result<Vec<u8>, P4kError> {
-        // Take a file handle from the pool, or open a new one if empty.
-        let mut file = self
-            .file_pool
-            .lock()
-            .pop()
-            .map(Ok)
-            .unwrap_or_else(|| File::open(&self.path))?;
-
-        let result = P4kArchive::read_from_file(&mut file, entry);
-
-        // Return the handle to the pool.
-        self.file_pool.lock().push(file);
-
-        result
+        P4kArchive::read_from_file_at(&self.file, entry)
     }
 
     /// Get all entries.

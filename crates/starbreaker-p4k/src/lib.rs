@@ -3,6 +3,7 @@ pub mod crypto;
 pub mod discover;
 pub mod error;
 pub mod owned;
+pub(crate) mod posread;
 pub mod types;
 
 pub use archive::{DirEntry, P4kArchive, P4kEntry};
