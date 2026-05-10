@@ -3,7 +3,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use parking_lot::Mutex;
 
-use crate::archive::{DirEntry, P4kArchive, P4kEntry, parse_central_directory_from_file};
+use crate::archive::{DirEntry, P4kArchive, P4kEntry, cmp_lower_against, parse_central_directory_from_file};
 use crate::error::P4kError;
 
 /// A P4k archive backed by a pool of file handles.
@@ -112,13 +112,15 @@ impl MappedP4k {
     }
 
     /// Look up an entry by path, case-insensitively.
+    ///
+    /// Allocates nothing per call.
     pub fn entry_case_insensitive(&self, path: &str) -> Option<&P4kEntry> {
-        let needle = path.to_ascii_lowercase();
-        let pos = self
-            .sorted_lower_index
-            .partition_point(|&i| self.lowercase_names[i as usize].as_str() < needle.as_str());
+        use std::cmp::Ordering;
+        let pos = self.sorted_lower_index.partition_point(|&i| {
+            cmp_lower_against(&self.lowercase_names[i as usize], path) == Ordering::Less
+        });
         let idx = *self.sorted_lower_index.get(pos)? as usize;
-        if self.lowercase_names[idx] == needle {
+        if self.lowercase_names[idx].eq_ignore_ascii_case(path) {
             Some(&self.entries[idx])
         } else {
             None

@@ -1,4 +1,5 @@
 use std::io::{Read, Seek, SeekFrom};
+use std::cmp::Ordering;
 
 use rustc_hash::FxHashMap;
 use starbreaker_common::SpanReader;
@@ -249,13 +250,16 @@ impl<'a> P4kArchive<'a> {
     }
 
     /// Look up an entry by path, case-insensitively.
+    ///
+    /// Allocates nothing per call: lowercases the needle on the fly during
+    /// the binary search and uses `eq_ignore_ascii_case` for the equality
+    /// check.
     pub fn entry_case_insensitive(&self, path: &str) -> Option<&P4kEntry> {
-        let needle = path.to_ascii_lowercase();
-        let pos = self
-            .sorted_lower_index
-            .partition_point(|&i| self.lowercase_names[i as usize].as_str() < needle.as_str());
+        let pos = self.sorted_lower_index.partition_point(|&i| {
+            cmp_lower_against(&self.lowercase_names[i as usize], path) == Ordering::Less
+        });
         let idx = *self.sorted_lower_index.get(pos)? as usize;
-        if self.lowercase_names[idx] == needle {
+        if self.lowercase_names[idx].eq_ignore_ascii_case(path) {
             Some(&self.entries[idx])
         } else {
             None
@@ -316,6 +320,27 @@ impl<'a> P4kArchive<'a> {
 
         result
     }
+}
+
+/// Compare a fully-lowercased haystack against a possibly-mixed-case needle,
+/// lowercasing the needle byte-by-byte without allocating.
+///
+/// Used for binary search over `sorted_lower_index`. Correct because
+/// `to_ascii_lowercase` is a no-op on non-ASCII bytes, matching the order
+/// produced by the materialised `lowercase_names` vec.
+#[inline]
+pub(crate) fn cmp_lower_against(haystack_lower: &str, needle_mixed: &str) -> Ordering {
+    let h = haystack_lower.as_bytes();
+    let n = needle_mixed.as_bytes();
+    let len = h.len().min(n.len());
+    for i in 0..len {
+        let nb = n[i].to_ascii_lowercase();
+        match h[i].cmp(&nb) {
+            Ordering::Equal => continue,
+            ord => return ord,
+        }
+    }
+    h.len().cmp(&n.len())
 }
 
 // ── Internal parsing ─────────────────────────────────────────────────────────
@@ -845,5 +870,46 @@ mod tests {
         // month = 0 → invalid
         let packed = (0x5800u32 << 16) | 0x0000u32;
         assert_eq!(entry_with_dos(packed).last_modified_unix(), 0);
+    }
+
+    /// Lookup must not allocate even when the needle has uppercase bytes.
+    /// We can't observe allocations directly here, so this test pins
+    /// behavior across casings and around the binary-search boundary.
+    #[test]
+    fn case_insensitive_lookup_handles_mixed_case_and_boundaries() {
+        let entries = vec![
+            make_entry("a"),
+            make_entry("aaa"),
+            make_entry("AAB"), // sort-adjacent to "aaa" lowercased
+            make_entry("z"),
+        ];
+        let lowercase_names: Vec<String> =
+            entries.iter().map(|e| e.name.to_ascii_lowercase()).collect();
+        let mut sorted_lower_index: Vec<u32> = (0..entries.len() as u32).collect();
+        sorted_lower_index.sort_unstable_by(|&a, &b| {
+            lowercase_names[a as usize].cmp(&lowercase_names[b as usize])
+        });
+
+        let archive = P4kArchive {
+            data: &[],
+            entries,
+            path_index: FxHashMap::default(),
+            sorted_index: Vec::new(),
+            lowercase_names,
+            sorted_lower_index,
+        };
+
+        // Exact case
+        assert_eq!(archive.entry_case_insensitive("a").map(|e| e.name.as_str()), Some("a"));
+        // Upper -> matches lowercase entry
+        assert_eq!(archive.entry_case_insensitive("AAA").map(|e| e.name.as_str()), Some("aaa"));
+        // Lower -> matches uppercase entry
+        assert_eq!(archive.entry_case_insensitive("aab").map(|e| e.name.as_str()), Some("AAB"));
+        // Miss in the middle of the sort range
+        assert!(archive.entry_case_insensitive("aac").is_none());
+        // Miss past the end
+        assert!(archive.entry_case_insensitive("zz").is_none());
+        // Miss before the start
+        assert!(archive.entry_case_insensitive("").is_none());
     }
 }
