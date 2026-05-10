@@ -622,16 +622,19 @@ fn read_entry(reader: &mut SpanReader, is_zip64: bool) -> Result<P4kEntry, P4kEr
         });
     }
 
-    // Read file name — single allocation, normalize separators in-place
+    // Read file name — copy once, swap '/' to '\' in place, validate UTF-8.
     let name_bytes = reader.read_bytes(header.file_name_length as usize)?;
-    let mut name = String::with_capacity(name_bytes.len());
-    for &b in name_bytes {
-        if b == b'/' {
-            name.push('\\');
-        } else {
-            name.push(b as char);
+    let mut bytes = name_bytes.to_vec();
+    for b in bytes.iter_mut() {
+        if *b == b'/' {
+            *b = b'\\';
         }
     }
+    let name = String::from_utf8(bytes).map_err(|_| {
+        P4kError::Parse(starbreaker_common::ParseError::InvalidLayout(
+            "non-utf8 entry name".to_string(),
+        ))
+    })?;
 
     let mut compressed_size = header.compressed_size as u64;
     let mut uncompressed_size = header.uncompressed_size as u64;
@@ -1072,5 +1075,53 @@ mod tests {
         }
         assert!(archive.entry("Data\\foo.mtl").is_none(), "wrong case must miss");
         assert!(archive.entry("nope").is_none());
+    }
+
+    #[test]
+    fn read_entry_rejects_non_utf8_name() {
+        // Hand-built non-ZIP64 CentralDirHeader with a 1-byte name 0xFF.
+        // 46-byte CentralDirHeader header + 1-byte name + 0 extra + 0 comment.
+        let mut buf = Vec::with_capacity(46 + 1);
+        // signature
+        buf.extend_from_slice(&CENTRAL_DIR_SIGNATURE.to_le_bytes());
+        // version_made_by, version_needed
+        buf.extend_from_slice(&[0, 0, 0, 0]);
+        // flags
+        buf.extend_from_slice(&[0, 0]);
+        // compression_method = 0 (stored)
+        buf.extend_from_slice(&[0, 0]);
+        // last_modified u32
+        buf.extend_from_slice(&[0, 0, 0, 0]);
+        // crc32 u32
+        buf.extend_from_slice(&[0, 0, 0, 0]);
+        // compressed_size u32
+        buf.extend_from_slice(&[0, 0, 0, 0]);
+        // uncompressed_size u32
+        buf.extend_from_slice(&[0, 0, 0, 0]);
+        // file_name_length u16 = 1
+        buf.extend_from_slice(&[1, 0]);
+        // extra_field_length u16 = 0
+        buf.extend_from_slice(&[0, 0]);
+        // file_comment_length u16 = 0
+        buf.extend_from_slice(&[0, 0]);
+        // disk_number_start u16
+        buf.extend_from_slice(&[0, 0]);
+        // internal_file_attributes u16
+        buf.extend_from_slice(&[0, 0]);
+        // external_file_attributes u32
+        buf.extend_from_slice(&[0, 0, 0, 0]);
+        // local_header_offset u32
+        buf.extend_from_slice(&[0, 0, 0, 0]);
+        // file name: a single non-UTF-8 byte
+        buf.push(0xFF);
+        assert_eq!(buf.len(), 46 + 1);
+
+        let mut reader = SpanReader::new(&buf);
+        let result = read_entry(&mut reader, /*is_zip64=*/ false);
+        assert!(
+            matches!(result, Err(P4kError::Parse(_))),
+            "expected Parse error for non-UTF-8 name, got: {:?}",
+            result
+        );
     }
 }
