@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useExportStore } from "../stores/export-store";
 import { ResizeHandle } from "../components/resize-handle";
+import { BlenderTargetSelector } from "../components/blender-target-selector";
+import { BlenderConfirmationDialog } from "../components/blender-confirmation-dialog";
 import {
   scanCategories,
   startExport,
@@ -8,18 +10,25 @@ import {
   onExportProgress,
   onExportDone,
   browseOutputDir,
-  getBlenderAddonStatus,
+  listBlenderAddonTargets,
   installBlenderAddon,
+  uninstallBlenderAddon,
   reloadBlenderAddon,
   type ExportRequest,
-  type BlenderAddonStatus,
+  type BlenderAddonTargets,
 } from "../lib/commands";
 
 export function ExportView() {
   const [optionsWidth, setOptionsWidth] = useState(260);
-  const [addonStatus, setAddonStatus] = useState<BlenderAddonStatus | null>(null);
+  const [addonTargets, setAddonTargets] = useState<BlenderAddonTargets | null>(null);
   const [addonBusy, setAddonBusy] = useState(false);
+  const [addonLoading, setAddonLoading] = useState(true);
   const [addonError, setAddonError] = useState<string | null>(null);
+  const [addonInfo, setAddonInfo] = useState<string | null>(null);
+  const [showTargetSelector, setShowTargetSelector] = useState(false);
+  const [selectedAddonsPath, setSelectedAddonsPath] = useState<string | null>(null);
+  const [confirmMode, setConfirmMode] = useState<"install" | "uninstall">("install");
+  const [showConfirmation, setShowConfirmation] = useState(false);
   const categories = useExportStore((s) => s.categories);
   const categoriesLoading = useExportStore((s) => s.categoriesLoading);
   const activeCategory = useExportStore((s) => s.activeCategory);
@@ -91,10 +100,11 @@ export function ExportView() {
 
   useEffect(() => {
     let mounted = true;
-    getBlenderAddonStatus()
-      .then((status) => {
+    setAddonLoading(true);
+    listBlenderAddonTargets()
+      .then((result) => {
         if (mounted) {
-          setAddonStatus(status);
+          setAddonTargets(result);
           setAddonError(null);
         }
       })
@@ -102,6 +112,9 @@ export function ExportView() {
         if (mounted) {
           setAddonError(String(err));
         }
+      })
+      .finally(() => {
+        if (mounted) setAddonLoading(false);
       });
     return () => {
       mounted = false;
@@ -218,42 +231,72 @@ export function ExportView() {
     });
   };
 
-  const refreshAddonStatus = () => {
-    getBlenderAddonStatus()
-      .then((status) => {
-        setAddonStatus(status);
+  const refreshAddonTargets = () => {
+    setAddonLoading(true);
+    listBlenderAddonTargets()
+      .then((result) => {
+        setAddonTargets(result);
         setAddonError(null);
       })
-      .catch((err) => setAddonError(String(err)));
+      .catch((err) => setAddonError(String(err)))
+      .finally(() => setAddonLoading(false));
   };
 
   const handleInstallAddon = () => {
+    setShowTargetSelector(true);
+  };
+
+  const handleTargetSelected = (addonsPath: string) => {
+    setSelectedAddonsPath(addonsPath);
+    setConfirmMode("install");
+    setShowTargetSelector(false);
+    setShowConfirmation(true);
+  };
+
+  const handleUninstallRequested = (addonsPath: string) => {
+    setSelectedAddonsPath(addonsPath);
+    setConfirmMode("uninstall");
+    setShowTargetSelector(false);
+    setShowConfirmation(true);
+  };
+
+  const handleConfirmAction = async () => {
+    if (!selectedAddonsPath) return;
     setAddonBusy(true);
     setAddonError(null);
-    installBlenderAddon()
-      .then((status) => {
-        setAddonStatus(status);
-      })
-      .catch((err) => {
-        setAddonError(String(err));
-      })
-      .finally(() => {
-        setAddonBusy(false);
-        refreshAddonStatus();
-      });
+    setAddonInfo(null);
+    try {
+      const result =
+        confirmMode === "uninstall"
+          ? await uninstallBlenderAddon(selectedAddonsPath)
+          : await installBlenderAddon(selectedAddonsPath);
+      setAddonTargets(result);
+      setShowConfirmation(false);
+      setSelectedAddonsPath(null);
+    } catch (err) {
+      setAddonError(String(err));
+    } finally {
+      setAddonBusy(false);
+    }
+  };
+
+  const handleConfirmCancel = () => {
+    setShowConfirmation(false);
+    setSelectedAddonsPath(null);
+  };
+
+  const handleTargetSelectorClose = () => {
+    setShowTargetSelector(false);
   };
 
   const handleReloadAddon = () => {
     setAddonBusy(true);
     setAddonError(null);
+    setAddonInfo(null);
     reloadBlenderAddon()
       .then((msg) => {
-        setAddonError(null);
-        refreshAddonStatus();
-        // Surface the reload result as a transient message via addonError (it may be informational)
-        if (msg) {
-          setAddonError(msg);
-        }
+        refreshAddonTargets();
+        if (msg) setAddonInfo(msg);
       })
       .catch((err) => {
         setAddonError(String(err));
@@ -263,13 +306,44 @@ export function ExportView() {
       });
   };
 
-  const addonActionLabel = addonStatus?.state === "installed"
-    ? "Installed"
-    : addonStatus?.state === "upgrade"
-      ? "Upgrade"
-      : addonStatus?.state === "unavailable"
-        ? "Unavailable"
-        : "Install";
+  const targets = addonTargets?.targets ?? [];
+  const totalTargets = targets.length;
+  const installedCount = targets.filter((t) => t.state === "installed").length;
+  const upgradeCount = targets.filter((t) => t.state === "upgrade").length;
+  const installCount = targets.filter((t) => t.state === "install").length;
+  const hasPendingAction = upgradeCount + installCount > 0;
+  const hasInstalled = installedCount > 0;
+  const blenderRunning = addonTargets?.blender_running ?? false;
+  const incompatibleFound = addonTargets?.incompatible_blender_found ?? false;
+
+  const countLabel =
+    totalTargets === 0
+      ? ""
+      : totalTargets === 1
+        ? "1 installation"
+        : `${totalTargets} installations`;
+
+  const breakdownLine = (() => {
+    if (totalTargets === 0) {
+      return incompatibleFound
+        ? "Blender detected, but requires 5.0 or newer"
+        : "No Blender installations detected";
+    }
+    if (totalTargets === 1) {
+      const only = targets[0];
+      return only.state === "installed"
+        ? "Addon installed and up to date"
+        : only.state === "upgrade"
+          ? "Update available"
+          : "Not installed";
+    }
+    const parts: string[] = [];
+    if (installedCount) parts.push(`${installedCount} installed`);
+    if (upgradeCount)
+      parts.push(`${upgradeCount} update${upgradeCount > 1 ? "s" : ""} available`);
+    if (installCount) parts.push(`${installCount} not installed`);
+    return parts.join(", ");
+  })();
 
   return (
     <div className="flex-1 flex overflow-hidden relative">
@@ -438,59 +512,78 @@ export function ExportView() {
             Export Options
           </h2>
 
-          <div className="rounded-md border border-border bg-surface/40 p-3 flex flex-col gap-2">
+          <div className="rounded-md border border-border bg-surface/40 p-3 flex flex-col gap-2.5">
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-text-sub">Blender Addon</span>
-              <div className="flex items-center gap-1.5">
-                {addonStatus?.blender_running && addonStatus.state === "installed" && (
-                  <button
-                    onClick={handleReloadAddon}
-                    disabled={addonBusy}
-                    className="px-2 py-1 rounded-md text-[11px] font-medium bg-surface text-text-sub hover:bg-surface/80 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-                    title="Reload addon in running Blender"
-                  >
-                    Reload
-                  </button>
-                )}
-                <button
-                  onClick={handleInstallAddon}
-                  disabled={addonBusy || addonStatus?.state === "unavailable" || addonStatus?.state === "installed"}
-                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${
-                    addonBusy || addonStatus?.state === "unavailable" || addonStatus?.state === "installed"
-                      ? "bg-surface text-text-faint cursor-not-allowed"
-                      : addonStatus?.state === "upgrade"
-                        ? "bg-warning/20 text-warning hover:bg-warning/30"
-                        : "bg-accent text-on-accent hover:brightness-110"
+              {addonLoading ? (
+                <span className="text-[10px] text-text-faint flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                  Checking...
+                </span>
+              ) : countLabel ? (
+                <span className="text-[10px] text-text-faint">{countLabel}</span>
+              ) : null}
+            </div>
+
+            {!addonLoading && addonTargets && (
+              <>
+                <p
+                  className={`text-[10px] leading-relaxed ${
+                    incompatibleFound && totalTargets === 0
+                      ? "text-warning"
+                      : "text-text-faint"
                   }`}
                 >
-                  {addonBusy ? "Working..." : addonActionLabel}
-                </button>
-              </div>
-            </div>
-            {addonStatus && (
-              <>
-                <p className="text-[10px] text-text-faint leading-relaxed">
-                  Current addon: {addonStatus.current_version}
-                  {addonStatus.installed_version
-                    ? ` | Installed: ${addonStatus.installed_version}`
-                    : " | Not installed"}
+                  {breakdownLine}
                 </p>
-                {addonStatus.addons_path && (
-                  <p className="text-[10px] text-text-faint leading-relaxed break-all">
-                    Target: {addonStatus.addons_path}
-                  </p>
-                )}
-                {addonStatus.incompatible_blender_found && addonStatus.state === "unavailable" && (
-                  <p className="text-[10px] text-warning leading-relaxed">
-                    Blender found but requires 5.0 or newer. Please upgrade Blender.
-                  </p>
-                )}
-                {addonStatus.message && (
-                  <p className="text-[10px] text-warning leading-relaxed">
-                    {addonStatus.message}
-                  </p>
-                )}
+                <p className="text-[10px] text-text-faint leading-relaxed">
+                  Bundled addon: v{addonTargets.current_version}
+                </p>
               </>
+            )}
+
+            <button
+              onClick={handleInstallAddon}
+              disabled={addonBusy || addonLoading}
+              className={`
+                w-full py-2 rounded-md text-xs font-medium transition-colors
+                flex items-center justify-center gap-2
+                ${
+                  addonBusy || addonLoading
+                    ? "bg-accent/40 text-on-accent cursor-not-allowed"
+                    : hasPendingAction || totalTargets === 0
+                      ? "bg-accent text-on-accent hover:brightness-110 cursor-pointer"
+                      : "bg-surface text-text hover:bg-surface-hi cursor-pointer"
+                }
+              `}
+            >
+              {addonBusy && (
+                <span className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+              )}
+              {addonBusy
+                ? "Installing..."
+                : installCount > 0 && upgradeCount === 0
+                  ? "Install Addon"
+                  : upgradeCount > 0 && installCount === 0
+                    ? "Upgrade Addon"
+                    : "Manage Installs"}
+            </button>
+
+            {blenderRunning && hasInstalled && (
+              <button
+                onClick={handleReloadAddon}
+                disabled={addonBusy}
+                className="w-full py-1.5 rounded-md text-[11px] font-medium bg-surface text-text-sub hover:bg-surface-hi transition-colors disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                title="Reload addon in running Blender"
+              >
+                Reload in Blender
+              </button>
+            )}
+
+            {addonInfo && (
+              <p className="text-[10px] text-text-sub leading-relaxed break-words">
+                {addonInfo}
+              </p>
             )}
             {addonError && (
               <p className="text-[10px] text-danger leading-relaxed break-words">
@@ -788,6 +881,38 @@ export function ExportView() {
           </button>
         </div>
       </div>
+
+      {/* Target selection modal */}
+      {showTargetSelector && (
+        <div className="fixed inset-0 bg-bg/80 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-bg-alt border border-border rounded-lg p-4 w-[480px] max-w-[90vw] shadow-lg">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-text">Select Blender Installation</h3>
+              <button
+                onClick={handleTargetSelectorClose}
+                className="text-text-dim hover:text-text p-1 rounded-md hover:bg-surface/60 transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+            <BlenderTargetSelector
+              onTargetSelected={handleTargetSelected}
+              onUninstallRequested={handleUninstallRequested}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation dialog */}
+      {showConfirmation && selectedAddonsPath && (
+        <BlenderConfirmationDialog
+          mode={confirmMode}
+          addonsPath={selectedAddonsPath}
+          onConfirm={handleConfirmAction}
+          onCancel={handleConfirmCancel}
+          busy={addonBusy}
+        />
+      )}
     </div>
   );
 }

@@ -199,28 +199,34 @@ export async function browseOutputDir(): Promise<string | null> {
   return result ?? null;
 }
 
-export interface BlenderAddonStatus {
-  state: "install" | "installed" | "upgrade" | "unavailable";
-  current_version: string;
+export interface BlenderAddonTarget {
+  blender_version: string;
+  addons_path: string;
+  state: "install" | "installed" | "upgrade";
   installed_version: string | null;
-  addons_path: string | null;
-  blender_version: string | null;
+}
+
+export interface BlenderAddonTargets {
+  current_version: string;
+  targets: BlenderAddonTarget[];
   blender_running: boolean;
-  message: string | null;
-  /** True when Blender was found but all installs are older than 5.0. */
   incompatible_blender_found: boolean;
 }
 
-export async function getBlenderAddonStatus(): Promise<BlenderAddonStatus> {
-  return invoke<BlenderAddonStatus>("get_blender_addon_status");
+export async function listBlenderAddonTargets(): Promise<BlenderAddonTargets> {
+  return invoke<BlenderAddonTargets>("list_blender_addon_targets");
 }
 
 export async function installBlenderAddon(
-  targetPath: string | null = null,
-): Promise<BlenderAddonStatus> {
-  return invoke<BlenderAddonStatus>("install_blender_addon", {
-    target_path: targetPath,
-  });
+  targetPath: string,
+): Promise<BlenderAddonTargets> {
+  return invoke<BlenderAddonTargets>("install_blender_addon", { targetPath });
+}
+
+export async function uninstallBlenderAddon(
+  targetPath: string,
+): Promise<BlenderAddonTargets> {
+  return invoke<BlenderAddonTargets>("uninstall_blender_addon", { targetPath });
 }
 
 export async function reloadBlenderAddon(): Promise<string> {

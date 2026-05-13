@@ -261,19 +261,6 @@ pub fn p4k_search(
     Ok(results)
 }
       
-#[derive(Clone, Serialize)]
-pub struct BlenderAddonStatusDto {
-    pub state: String,
-    pub current_version: String,
-    pub installed_version: Option<String>,
-    pub addons_path: Option<String>,
-    pub blender_version: Option<String>,
-    pub blender_running: bool,
-    pub message: Option<String>,
-    /// True when Blender installations were found but all are older than 5.0.
-    pub incompatible_blender_found: bool,
-}
-
 #[derive(Clone)]
 struct BlenderAddonTarget {
     blender_version: String,
@@ -698,102 +685,87 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), AppError>
     Ok(())
 }
 
-fn compute_addon_status(
-    target: Option<BlenderAddonTarget>,
-    incompatible_blender_found: bool,
-) -> Result<BlenderAddonStatusDto, AppError> {
-    let current_version = current_addon_version()?;
+/// One install target as surfaced to the frontend target picker.
+#[derive(Serialize)]
+pub struct BlenderAddonTargetDto {
+    pub blender_version: String,
+    pub addons_path: String,
+    /// "install" | "installed" | "upgrade"
+    pub state: String,
+    pub installed_version: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct BlenderAddonTargetsDto {
+    pub current_version: String,
+    pub targets: Vec<BlenderAddonTargetDto>,
+    pub blender_running: bool,
+    pub incompatible_blender_found: bool,
+}
+
+fn build_targets_dto(discovery: BlenderDiscovery, current_version: String) -> BlenderAddonTargetsDto {
     let running = blender_running();
-
-    let Some(target) = target else {
-        let message = if incompatible_blender_found {
-            format!(
-                "Blender was found but requires version {}.{} or newer. \
-                 Please upgrade Blender to use the StarBreaker addon.",
-                MIN_BLENDER_MAJOR, MIN_BLENDER_MINOR
-            )
-        } else {
-            "No Blender installation was detected. Install Blender {}.{}+ or provide a manual target path."
-                .replace("{}.{}", &format!("{}.{}", MIN_BLENDER_MAJOR, MIN_BLENDER_MINOR))
-        };
-        return Ok(BlenderAddonStatusDto {
-            state: "unavailable".to_string(),
-            current_version,
-            installed_version: None,
-            addons_path: None,
-            blender_version: None,
-            blender_running: running,
-            message: Some(message),
-            incompatible_blender_found,
-        });
-    };
-
-    let installed_version = installed_addon_version(&target.addons_path);
-    let state = match installed_version.as_deref() {
-        None => "install",
-        Some(installed) if installed == current_version => "installed",
-        Some(_) => "upgrade",
-    };
-
-    Ok(BlenderAddonStatusDto {
-        state: state.to_string(),
+    let targets = discovery
+        .compatible
+        .into_iter()
+        .map(|t| {
+            let installed = installed_addon_version(&t.addons_path);
+            let state = match installed.as_deref() {
+                None => "install",
+                Some(v) if v == current_version => "installed",
+                Some(_) => "upgrade",
+            }
+            .to_string();
+            BlenderAddonTargetDto {
+                blender_version: t.blender_version,
+                addons_path: t.addons_path.to_string_lossy().to_string(),
+                state,
+                installed_version: installed,
+            }
+        })
+        .collect();
+    BlenderAddonTargetsDto {
         current_version,
-        installed_version,
-        addons_path: Some(target.addons_path.to_string_lossy().to_string()),
-        blender_version: Some(target.blender_version),
+        targets,
         blender_running: running,
-        message: if running {
-            Some(
-                "Blender appears to be running. Restart Blender after install/upgrade to reload the addon."
-                    .to_string(),
-            )
-        } else {
-            None
-        },
-        incompatible_blender_found,
-    })
+        incompatible_blender_found: discovery.has_incompatible,
+    }
 }
 
+/// Return every compatible Blender installation discovered on the system, with
+/// per-target install state. Used by the target-selector UI so the user can
+/// choose which Blender to install the addon into.
 #[tauri::command]
-pub fn get_blender_addon_status() -> Result<BlenderAddonStatusDto, AppError> {
+pub fn list_blender_addon_targets() -> Result<BlenderAddonTargetsDto, AppError> {
     let discovery = discover_blender_addon_targets();
-    let has_incompatible = discovery.has_incompatible;
-    compute_addon_status(discovery.compatible.into_iter().next(), has_incompatible)
+    let current_version = current_addon_version()?;
+    Ok(build_targets_dto(discovery, current_version))
+}
+
+/// Remove the StarBreaker addon directory from the given Blender addons path.
+/// Idempotent: succeeds even if the addon directory doesn't exist.
+#[tauri::command]
+pub fn uninstall_blender_addon(target_path: String) -> Result<BlenderAddonTargetsDto, AppError> {
+    let addons_path = PathBuf::from(target_path);
+    let destination = addons_path.join("starbreaker_addon");
+    if destination.exists() {
+        let _ = fs::remove_dir_all(destination.join("__pycache__"));
+        fs::remove_dir_all(&destination)?;
+    }
+    let discovery = discover_blender_addon_targets();
+    let current_version = current_addon_version()?;
+    Ok(build_targets_dto(discovery, current_version))
 }
 
 #[tauri::command]
-pub fn install_blender_addon(target_path: Option<String>) -> Result<BlenderAddonStatusDto, AppError> {
+pub fn install_blender_addon(target_path: String) -> Result<BlenderAddonTargetsDto, AppError> {
     let source_dir = addon_source_dir().ok_or_else(|| {
         AppError::Internal("Unable to locate bundled starbreaker_addon source directory".into())
     })?;
 
-    let (target, has_incompatible) = if let Some(path) = target_path {
-        // Manual path: trust the user, version is unknown
-        (
-            BlenderAddonTarget {
-                blender_version: "manual".to_string(),
-                addons_path: PathBuf::from(path),
-            },
-            false,
-        )
-    } else {
-        let discovery = discover_blender_addon_targets();
-        let has_incompatible = discovery.has_incompatible;
-        let target = discovery.compatible.into_iter().next().ok_or_else(|| {
-            if has_incompatible {
-                AppError::Internal(format!(
-                    "Blender found but requires {}.{}+. Please upgrade Blender.",
-                    MIN_BLENDER_MAJOR, MIN_BLENDER_MINOR
-                ))
-            } else {
-                AppError::Internal("No Blender installation found.".into())
-            }
-        })?;
-        (target, has_incompatible)
-    };
-
-    fs::create_dir_all(&target.addons_path)?;
-    let destination = target.addons_path.join("starbreaker_addon");
+    let addons_path = PathBuf::from(target_path);
+    fs::create_dir_all(&addons_path)?;
+    let destination = addons_path.join("starbreaker_addon");
     if destination.exists() {
         let _ = fs::remove_dir_all(destination.join("__pycache__"));
         fs::remove_dir_all(&destination)?;
@@ -801,8 +773,8 @@ pub fn install_blender_addon(target_path: Option<String>) -> Result<BlenderAddon
     copy_dir_recursive(&source_dir, &destination)?;
 
     // Stamp the installed __init__.py with the build-time version so that
-    // compute_addon_status correctly reports "up to date" after a fresh install
-    // rather than always showing "update available".
+    // subsequent target-state checks correctly report "up to date" after a
+    // fresh install rather than always showing "update available".
     let init_path = destination.join("__init__.py");
     if let Ok(content) = fs::read_to_string(&init_path) {
         let build_version = env!("ADDON_BUILD_VERSION");
@@ -818,7 +790,6 @@ pub fn install_blender_addon(target_path: Option<String>) -> Result<BlenderAddon
             })
             .collect::<Vec<_>>()
             .join("\n");
-        // Preserve a trailing newline if the original had one.
         let patched = if content.ends_with('\n') {
             patched + "\n"
         } else {
@@ -827,14 +798,9 @@ pub fn install_blender_addon(target_path: Option<String>) -> Result<BlenderAddon
         let _ = fs::write(&init_path, patched);
     }
 
-    let mut status = compute_addon_status(Some(target), has_incompatible)?;
-    if status.blender_running {
-        status.message = Some(
-            "Addon files were installed. Blender is running — restart Blender to load the new version."
-                .to_string(),
-        );
-    }
-    Ok(status)
+    let discovery = discover_blender_addon_targets();
+    let current_version = current_addon_version()?;
+    Ok(build_targets_dto(discovery, current_version))
 }
 
 /// Attempt to reload the StarBreaker addon in the running Blender instance via its

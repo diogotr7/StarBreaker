@@ -246,8 +246,9 @@ fn main() {
             commands::extract_p4k_file,
             commands::read_p4k_file,
             commands::extract_p4k_folder,
-            commands::get_blender_addon_status,
+            commands::list_blender_addon_targets,
             commands::install_blender_addon,
+            commands::uninstall_blender_addon,
             commands::reload_blender_addon,
         ])
         .run(tauri::generate_context!())
