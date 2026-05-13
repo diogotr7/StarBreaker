@@ -31,4 +31,3 @@ blender_addon/starbreaker_addon/resources/material_templates.blend1
 
 # Asset exports (decomposed mesh packages, textures, materials) — DO NOT COMMIT
 ships/
-Cargo.lock
