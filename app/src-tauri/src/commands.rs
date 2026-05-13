@@ -2435,3 +2435,19 @@ pub fn extract_p4k_file(
 
     Ok(())
 }
+
+#[derive(serde::Serialize)]
+pub struct AppVersion {
+    pub version: String,
+}
+
+/// Get app version information including commit SHA as semver build metadata.
+#[tauri::command]
+pub fn get_app_version() -> AppVersion {
+    let base_version = env!("CARGO_PKG_VERSION");
+    let commit_sha = env!("COMMIT_SHA");
+
+    AppVersion {
+        version: format!("{}+{}", base_version, commit_sha),
+    }
+}

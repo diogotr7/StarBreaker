@@ -48,6 +48,15 @@ export interface SystemPalette {
   danger: string;
 }
 
+export interface AppVersion {
+  version: string;
+}
+
+/** Get app version information including commit SHA as semver build metadata. */
+export async function getAppVersion(): Promise<AppVersion> {
+  return invoke<AppVersion>("get_app_version");
+}
+
 /** Get the OS system theme (dark/light, accent, palette). */
 export async function getSystemTheme(): Promise<SystemPalette> {
   return invoke<SystemPalette>("get_system_theme");

@@ -1,0 +1,51 @@
+name: App Artifacts
+
+# Manual-only: this runs a release-mode Tauri build which is much slower than
+# the debug `cargo test` in ci.yml. Trigger from the Actions tab when you
+# actually need a downloadable portable .exe for a specific commit.
+on:
+  workflow_dispatch:
+
+jobs:
+  build-app:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Read-only cache: reuse whatever release.yml last warmed under
+      # `cache-${{ platform }}` but never write back, so ad-hoc dispatches
+      # can't evict the release cache.
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+          shared-key: cache-windows-latest
+          save-if: false
+          cache-on-failure: true
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app (portable)
+        run: npx tauri build --bundles none
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+
+      - name: Upload portable executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: starbreaker-${{ github.sha }}
+          path: app/src-tauri/target/release/starbreaker.exe
+          if-no-files-found: error

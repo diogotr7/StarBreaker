@@ -1,5 +1,7 @@
 import { Archive, Database, Box, Volume2, type LucideIcon } from "lucide-react";
 import { useAppStore, type AppMode } from "../stores/app-store";
+import { getAppVersion, type AppVersion } from "../lib/commands";
+import { useEffect, useState } from "react";
 
 interface ModeButton {
   id: AppMode;
@@ -31,7 +33,13 @@ export function Sidebar() {
   const p4kSource = useAppStore((s) => s.p4kSource);
   const p4kPath = useAppStore((s) => s.p4kPath);
 
+  const [version, setVersion] = useState<AppVersion | null>(null);
+
   const fileName = p4kPath?.split(/[/\\]/).pop() ?? null;
+
+  useEffect(() => {
+    getAppVersion().then(setVersion).catch(console.error);
+  }, []);
 
   return (
     <aside className="w-[180px] flex flex-col bg-bg-alt border-r border-border shrink-0">
@@ -67,6 +75,14 @@ export function Sidebar() {
           </button>
         ))}
       </nav>
+
+      {version && (
+        <div className="px-3 py-2 border-t border-border">
+          <p className="text-[11px] text-text-dim font-mono">
+            {version.version}
+          </p>
+        </div>
+      )}
     </aside>
   );
 }

@@ -212,6 +212,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::get_app_version,
             commands::get_system_theme,
             commands::discover_p4k,
             commands::open_p4k,
