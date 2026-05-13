@@ -42,6 +42,9 @@ starbreaker p4k list --filter '**/*.mtl'
 
 # Extract everything under a ship's directory
 starbreaker p4k extract -o ./out --filter '**/AEGS/Gladius/**'
+
+# Clean broad extraction: convert XML/textures and skip LOD variants
+starbreaker p4k extract -o ./out --filter '**/AEGS/Gladius/**' --convert all --skip-lod
 ```
 
 #### Filtering
@@ -72,8 +75,14 @@ starbreaker p4k extract -o ./out --filter '**/*.dds' --convert dds-png
 # Get merged DDS files (for modding tools that need DDS format)
 starbreaker p4k extract -o ./out --filter '**/*.dds' --convert dds-merge
 
-# Everything at once — binary XML decoded, textures as both PNG and merged DDS
+# Everything at once - binary XML decoded, textures as both PNG and merged DDS
 starbreaker p4k extract -o ./out --filter '**/AEGS/Gladius/**' --convert all
+
+# Extract a ship directory with raw DDS files, without .dds.1/.dds.2 segment clutter
+starbreaker p4k extract -o ./out --filter '**/AEGS/Gladius/**' --skip-dds-segments
+
+# Broad object extraction without _lod1/_lod2 variant files
+starbreaker p4k extract -o ./out --filter '**/Objects/**' --skip-lod
 ```
 
 | Converter   | What it does                                                       |
@@ -83,16 +92,22 @@ starbreaker p4k extract -o ./out --filter '**/AEGS/Gladius/**' --convert all
 | `dds-merge` | DDS split mips to single merged DDS file                           |
 | `all`       | All of the above                                                   |
 
+`--skip-dds-segments` skips raw DDS split segment files without converting textures.
+DDS converters already skip those segment files automatically because they merge the
+segments into the base `.dds`. `--skip-lod` skips files with `_lod1`, `_lod2`, etc.
+in the path.
+
 Example output:
 
 ```
 Extracting 329 files...
-[CONVERT] CryXML→XML, DDS→PNG, DDS→merged DDS
+[CONVERT] CryXML->XML, DDS->PNG, DDS->merged DDS
 Pre-creating directories... 31 directories created.
 [START] all cores threads
 [DONE] Extracted 329/329 files in 0.6s
 [DONE] Total: 91.3 MB | Avg throughput: 151.3 MB/s
-[DONE] 196 files converted
+[DONE] Converted: 124 CryXML->XML, 36 DDS->PNG, 36 DDS->merged
+[DONE] Skipped: 18 DDS segments, 4 LOD variants
 ```
 
 </details>
@@ -189,7 +204,12 @@ starbreaker dcb extract --format json -o ./dcb_out --filter '**/*gladius*'
 
 # Use a .dcb file directly instead of extracting from P4k
 starbreaker dcb extract --dcb Game2.dcb --format json -o ./dcb_out
+
+# Read Game2.dcb/Game.dcb from a specific P4k and export expanded records
+starbreaker dcb extract --p4k Data.p4k --format unp4k -o ./dcb_out
 ```
+
+`dcb extract` reads `Game2.dcb` / `Game.dcb` directly from the P4K, so a separate raw DCB extraction step is not required.
 
 </details>
 

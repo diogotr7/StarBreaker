@@ -29,9 +29,9 @@ const CONVERT_HELP: &str = "\
 Convert files during extraction (repeatable).
 
 Available converters:
-  cryxml     CryXmlB binary → readable XML (e.g. .mtl, .chrparams, .xml)
-  dds-png    DDS textures → PNG (merges split mips, drops .dds.N siblings)
-  dds-merge  DDS split mips → single merged DDS (keeps DDS format)
+  cryxml     CryXmlB binary -> readable XML (e.g. .mtl, .chrparams, .xml)
+  dds-png    DDS textures -> PNG (merges split mips, drops .dds.N siblings)
+  dds-merge  DDS split mips -> single merged DDS (keeps DDS format)
   all        enable all converters
 
 Examples:
@@ -48,15 +48,23 @@ Typical workflows:
   starbreaker p4k extract -o out --filter '**/*.mtl' --convert cryxml
 
   # Get merged DDS textures (for modding tools that need DDS):
-  starbreaker p4k extract -o out --filter '**/*.dds' --convert dds-merge";
+  starbreaker p4k extract -o out --filter '**/*.dds' --convert dds-merge
+
+Additional options:
+  --skip-dds-segments  skip raw DDS split segment files without converting
+  --skip-lod           skip files with _lod1, _lod2, ... variant names
+
+Notes:
+  --convert all keeps the current behavior: CryXML, DDS->PNG, and DDS->merged outputs.
+  Expanded DataCore/DCB export is handled by `starbreaker dcb extract`, not `p4k extract`.";
 
 #[derive(Clone, ValueEnum)]
 pub(crate) enum Converter {
-    /// CryXmlB → readable XML
+    /// CryXmlB -> readable XML
     Cryxml,
-    /// DDS → PNG (merges split mips)
+    /// DDS -> PNG (merges split mips)
     DdsPng,
-    /// DDS split mips → single merged DDS
+    /// DDS split mips -> single merged DDS
     DdsMerge,
     /// Enable all converters
     All,
@@ -98,9 +106,15 @@ impl ConvertFlags {
 
     fn summary(&self) -> String {
         let mut parts = Vec::new();
-        if self.cryxml { parts.push("CryXML→XML"); }
-        if self.dds_png { parts.push("DDS→PNG"); }
-        if self.dds_merge { parts.push("DDS→merged DDS"); }
+        if self.cryxml {
+            parts.push("CryXML->XML");
+        }
+        if self.dds_png {
+            parts.push("DDS->PNG");
+        }
+        if self.dds_merge {
+            parts.push("DDS->merged DDS");
+        }
         parts.join(", ")
     }
 }
@@ -127,6 +141,12 @@ pub enum P4kCommand {
         /// Convert files during extraction (repeatable, see --help)
         #[arg(long, value_enum, long_help = CONVERT_HELP)]
         convert: Vec<Converter>,
+        /// Skip DDS split segment files (.dds.1, .dds.2, ...) without converting
+        #[arg(long)]
+        skip_dds_segments: bool,
+        /// Skip LOD variant files (_lod1, _lod2, ...)
+        #[arg(long)]
+        skip_lod: bool,
     },
     /// List files in a P4k archive
     List {
@@ -152,9 +172,20 @@ impl P4kCommand {
                 regex,
                 max_threads,
                 convert,
+                skip_dds_segments,
+                skip_lod,
             } => {
                 let flags = ConvertFlags::from_list(&convert);
-                extract(p4k, output, filter, regex, max_threads, flags)
+                extract(
+                    p4k,
+                    output,
+                    filter,
+                    regex,
+                    max_threads,
+                    flags,
+                    skip_dds_segments,
+                    skip_lod,
+                )
             }
             Self::List { p4k, filter, regex } => list(p4k, filter, regex),
         }
@@ -168,6 +199,8 @@ fn extract(
     regex_pattern: Option<String>,
     max_threads: Option<usize>,
     conv: ConvertFlags,
+    skip_dds_segments: bool,
+    skip_lod: bool,
 ) -> Result<()> {
     let p4k = load_p4k(p4k_path.as_deref())?;
     let p4k_file_path = p4k.path().to_path_buf();
@@ -195,13 +228,26 @@ fn extract(
     }
 
     // When converting DDS, skip split sibling files (.dds.1, .dds.2, .dds.a, etc.)
-    // — they'll be merged into the base .dds during conversion.
-    if conv.any_dds() {
+    // - they'll be merged into the base .dds during conversion.
+    let before_dds = entries.len();
+    if conv.any_dds() || skip_dds_segments {
         entries.retain(|e| !is_dds_sibling(&e.name));
     }
+    let skipped_segments = before_dds - entries.len();
+
+    let before_lod = entries.len();
+    if skip_lod {
+        entries.retain(|e| !is_lod_variant(&e.name));
+    }
+    let skipped_lod = before_lod - entries.len();
 
     // Keep p4k alive when DDS conversion needs sibling reads.
-    let p4k_ref: Option<MappedP4k> = if conv.any_dds() { Some(p4k) } else { drop(p4k); None };
+    let p4k_ref: Option<MappedP4k> = if conv.any_dds() {
+        Some(p4k)
+    } else {
+        drop(p4k);
+        None
+    };
 
     eprintln!("Extracting {} files...", entries.len());
     if conv.any() {
@@ -224,7 +270,9 @@ fn extract(
     let total_bytes = AtomicU64::new(0);
     let files_done = AtomicU64::new(0);
     let error_count = AtomicU64::new(0);
-    let converted_count = AtomicU64::new(0);
+    let cryxml_converted = AtomicU64::new(0);
+    let dds_png_converted = AtomicU64::new(0);
+    let dds_merged_converted = AtomicU64::new(0);
     let total_files = entries.len() as u64;
     let start = std::time::Instant::now();
     let report_interval = 10_000u64;
@@ -236,10 +284,14 @@ fn extract(
 
     eprintln!(
         "[START] {} threads",
-        if num_threads == 0 { "all cores".to_string() } else { num_threads.to_string() }
+        if num_threads == 0 {
+            "all cores".to_string()
+        } else {
+            num_threads.to_string()
+        }
     );
 
-    // Thread-local P4k file handles — one per rayon worker.
+    // Thread-local P4k file handles - one per rayon worker.
     thread_local! {
         static P4K_FILE: std::cell::RefCell<Option<File>> = const { std::cell::RefCell::new(None) };
     }
@@ -273,9 +325,9 @@ fn extract(
                 if conv.any() {
                     if !convert_and_write(
                         entry, &data, &output, &conv, p4k_ref.as_ref(),
-                        &error_count, &converted_count,
+                        &error_count, &cryxml_converted, &dds_png_converted, &dds_merged_converted,
                     ) {
-                        // Not convertible — write raw.
+                        // Not convertible - write raw.
                         let out_path = output.join(entry.name.replace('\\', "/"));
                         if let Err(e) = write_file(&out_path, &data) {
                             error_count.fetch_add(1, Ordering::Relaxed);
@@ -313,16 +365,42 @@ fn extract(
     let secs = elapsed.as_secs_f64();
     let done = files_done.load(Ordering::Relaxed);
     let errors = error_count.load(Ordering::Relaxed);
-    let converted = converted_count.load(Ordering::Relaxed);
+    let cryxml = cryxml_converted.load(Ordering::Relaxed);
+    let dds_png = dds_png_converted.load(Ordering::Relaxed);
+    let dds_merged = dds_merged_converted.load(Ordering::Relaxed);
 
-    eprintln!("[DONE] Extracted {done}/{total_files} files in {:.1}s", secs);
+    eprintln!(
+        "[DONE] Extracted {done}/{total_files} files in {:.1}s",
+        secs
+    );
     eprintln!(
         "[DONE] Total: {:.1} MB | Avg throughput: {:.1} MB/s",
         total_mb,
         total_mb / secs
     );
-    if converted > 0 {
-        eprintln!("[DONE] {converted} files converted");
+    let mut converted_parts = Vec::new();
+    if cryxml > 0 {
+        converted_parts.push(format!("{cryxml} CryXML->XML"));
+    }
+    if dds_png > 0 {
+        converted_parts.push(format!("{dds_png} DDS->PNG"));
+    }
+    if dds_merged > 0 {
+        converted_parts.push(format!("{dds_merged} DDS->merged"));
+    }
+    if !converted_parts.is_empty() {
+        eprintln!("[DONE] Converted: {}", converted_parts.join(", "));
+    }
+
+    let mut skipped_parts = Vec::new();
+    if skipped_segments > 0 {
+        skipped_parts.push(format!("{skipped_segments} DDS segments"));
+    }
+    if skipped_lod > 0 {
+        skipped_parts.push(format!("{skipped_lod} LOD variants"));
+    }
+    if !skipped_parts.is_empty() {
+        eprintln!("[DONE] Skipped: {}", skipped_parts.join(", "));
     }
     if errors > 0 {
         eprintln!("[DONE] {errors} errors encountered");
@@ -357,11 +435,55 @@ fn is_dds_sibling(name: &str) -> bool {
     // or `.dds.a` (alpha-only sibling).
     if let Some(pos) = lower.rfind(".dds.") {
         let suffix = &lower[pos + 5..]; // after ".dds."
-        matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8"
-            | "1a" | "2a" | "3a" | "4a" | "5a" | "6a" | "7a" | "8a" | "a")
+        matches!(
+            suffix,
+            "1" | "2"
+                | "3"
+                | "4"
+                | "5"
+                | "6"
+                | "7"
+                | "8"
+                | "1a"
+                | "2a"
+                | "3a"
+                | "4a"
+                | "5a"
+                | "6a"
+                | "7a"
+                | "8a"
+                | "a"
+        )
     } else {
         false
     }
+}
+
+/// Returns true if this P4k entry name contains an `_lodN` variant token.
+fn is_lod_variant(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let token = b"_lod";
+    let mut start = 0;
+
+    while let Some(pos) = bytes[start..].windows(token.len()).position(|w| w == token) {
+        let token_pos = start + pos;
+        let digit_pos = token_pos + token.len();
+        let Some(&digit) = bytes.get(digit_pos) else {
+            // _lod at the very end of the string with nothing after it - not a variant.
+            // No further match is possible, so exit the loop.
+            break;
+        };
+        if matches!(digit, b'1'..=b'9') {
+            let after = bytes.get(digit_pos + 1).copied();
+            if matches!(after, None | Some(b'.' | b'_' | b'-' | b'/' | b'\\')) {
+                return true;
+            }
+        }
+        start = token_pos + 1;
+    }
+
+    false
 }
 
 /// Returns true if the entry is a base `.dds` file (not a sibling).
@@ -385,7 +507,7 @@ impl starbreaker_dds::ReadSibling for P4kSiblingReader<'_> {
 }
 
 /// Try to convert `data` in place. Returns `true` if a conversion was performed
-/// (even if it failed — errors are counted but the file is skipped).
+/// (even if it failed - errors are counted but the file is skipped).
 fn convert_and_write(
     entry: &P4kEntry,
     data: &[u8],
@@ -393,9 +515,11 @@ fn convert_and_write(
     conv: &ConvertFlags,
     p4k: Option<&MappedP4k>,
     error_count: &AtomicU64,
-    converted_count: &AtomicU64,
+    cryxml_converted: &AtomicU64,
+    dds_png_converted: &AtomicU64,
+    dds_merged_converted: &AtomicU64,
 ) -> bool {
-    // CryXML → XML
+    // CryXML -> XML
     if conv.cryxml && starbreaker_cryxml::is_cryxmlb(data) {
         match starbreaker_cryxml::from_bytes(data) {
             Ok(cryxml) => {
@@ -403,20 +527,20 @@ fn convert_and_write(
                 let out_path = output.join(entry.name.replace('\\', "/"));
                 if let Err(e) = write_file(&out_path, xml.as_bytes()) {
                     error_count.fetch_add(1, Ordering::Relaxed);
-                    eprintln!("\n[ERR] Write (cryxml→xml) {}: {e}", entry.name);
+                    eprintln!("\n[ERR] Write (cryxml->xml) {}: {e}", entry.name);
                 } else {
-                    converted_count.fetch_add(1, Ordering::Relaxed);
+                    cryxml_converted.fetch_add(1, Ordering::Relaxed);
                 }
             }
             Err(e) => {
                 error_count.fetch_add(1, Ordering::Relaxed);
-                eprintln!("\n[ERR] Convert (cryxml→xml) {}: {e}", entry.name);
+                eprintln!("\n[ERR] Convert (cryxml->xml) {}: {e}", entry.name);
             }
         }
         return true;
     }
 
-    // DDS conversions — parse once, write whichever outputs are requested.
+    // DDS conversions - parse once, write whichever outputs are requested.
     if (conv.dds_png || conv.dds_merge) && is_base_dds(&entry.name) {
         match parse_dds_with_siblings(data, &entry.name, p4k) {
             Ok(dds) => {
@@ -425,17 +549,21 @@ fn convert_and_write(
                     let png_rel = format!("{}.png", &rel[..rel.len() - 4]);
                     let out_path = output.join(&png_rel);
                     match dds.save_png(&out_path, 0) {
-                        Ok(()) => { converted_count.fetch_add(1, Ordering::Relaxed); }
+                        Ok(()) => {
+                            dds_png_converted.fetch_add(1, Ordering::Relaxed);
+                        }
                         Err(e) => {
                             error_count.fetch_add(1, Ordering::Relaxed);
-                            eprintln!("\n[ERR] Convert (dds→png) {}: {e}", entry.name);
+                            eprintln!("\n[ERR] Convert (dds->png) {}: {e}", entry.name);
                         }
                     }
                 }
                 if conv.dds_merge {
                     let out_path = output.join(&rel);
                     match write_file(&out_path, &dds.to_dds()) {
-                        Ok(()) => { converted_count.fetch_add(1, Ordering::Relaxed); }
+                        Ok(()) => {
+                            dds_merged_converted.fetch_add(1, Ordering::Relaxed);
+                        }
                         Err(e) => {
                             error_count.fetch_add(1, Ordering::Relaxed);
                             eprintln!("\n[ERR] Write (dds merge) {}: {e}", entry.name);
@@ -527,7 +655,7 @@ fn suggest_filter(filter: Option<&str>, entries: &[P4kEntry]) {
         }
     }
 
-    // Generic fallback — show sample paths and examples.
+    // Generic fallback - show sample paths and examples.
     eprintln!();
     eprintln!("Hint: paths inside the P4k look like:");
     let mut shown = 0;
@@ -550,4 +678,48 @@ fn suggest_filter(filter: Option<&str>, entries: &[P4kEntry]) {
     eprintln!("  --filter '**/*.xml'                       all .xml files");
     eprintln!("  --filter 'Data/Objects/ships/aurora/*.dds' .dds directly in aurora/");
     eprintln!("  --filter 'Data/Objects/ships/aurora/**'    everything under aurora/");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lod_variant_matches_expected_tokens() {
+        assert!(is_lod_variant("hull_lod1.cgf"));
+        assert!(is_lod_variant("wing_lod2.skin"));
+        assert!(is_lod_variant("body_diff_lod1.dds"));
+        assert!(is_lod_variant("Hull_LOD3.CGFM"));
+        assert!(is_lod_variant("part_lod1_debris.cgf"));
+        assert!(is_lod_variant("part_lod1-debris.cgf"));
+    }
+
+    #[test]
+    fn lod_variant_rejects_unrelated_names() {
+        assert!(!is_lod_variant("AEGS_Gladius.cga"));
+        assert!(!is_lod_variant("explosive_lodestone.cgf"));
+        assert!(!is_lod_variant("explode_loding.cgf"));
+        assert!(!is_lod_variant("reload_trigger.xml"));
+        assert!(!is_lod_variant("hull_lod0.cgf"));
+        assert!(!is_lod_variant("hull_lod10.cgf")); // two-digit: must not match
+        assert!(!is_lod_variant("hull_lod.cgf")); // no digit after _lod
+        assert!(!is_lod_variant("hull_lod")); // string ends exactly with _lod
+        assert!(!is_lod_variant("lod_directory/file.cgf"));
+    }
+
+    #[test]
+    fn dds_sibling_matches_split_segments() {
+        assert!(is_dds_sibling("texture.dds.1"));
+        assert!(is_dds_sibling("texture.dds.8"));
+        assert!(is_dds_sibling("texture.dds.a"));
+        assert!(is_dds_sibling("texture.dds.1a"));
+        assert!(is_dds_sibling("texture.dds.8a"));
+    }
+
+    #[test]
+    fn dds_sibling_rejects_base_and_other_suffixes() {
+        assert!(!is_dds_sibling("texture.dds"));
+        assert!(!is_dds_sibling("texture.dds.9"));
+        assert!(!is_dds_sibling("texture.dds.png"));
+    }
 }
