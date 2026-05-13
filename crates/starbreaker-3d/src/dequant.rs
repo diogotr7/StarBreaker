@@ -197,9 +197,6 @@ mod tests {
         // Two orthogonal axis-aligned vectors should produce a unit normal
         // Tangent = +X: x_raw=16383 → (1,0,0), Bitangent = +Y: y_raw=16383 → (0,1,0)
         // Normal = cross(+X, +Y) = +Z
-        let tx_val: u32 = 0x3FFF + (0x3FFF << 15); // x=+1, y=0, z_sign=0 → (1,0,0) after normalize
-        let by_val: u32 = 0x3FFF + (0x7FFE << 15); // x=0, y=+1, z_sign=0 → (0,1,0) after normalize
-        // Actually these bit patterns need care. Let's just test that output is unit length.
         let nt = decode_compressed_tangent([0x3FFF, 0x3FFF, 0x3FFF, 0x3FFF]);
         let len = (nt.normal[0].powi(2) + nt.normal[1].powi(2) + nt.normal[2].powi(2)).sqrt();
         assert!((len - 1.0).abs() < 0.01, "normal length should be ~1.0, got {len}");

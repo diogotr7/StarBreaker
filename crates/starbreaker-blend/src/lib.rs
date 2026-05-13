@@ -2356,7 +2356,7 @@ mod tests {
     
     #[test]
     fn test_build_lamp_temperature_written_correctly() {
-        // Test 5: Temperature value written to correct offset (460)
+        // Temperature is stored as f32 at offset 436 of the Lamp struct.
         let temp_value = 6500.0;
         let lamp_bytes = build_lamp(
             "TestLight",
@@ -2370,19 +2370,15 @@ mod tests {
             temp_value,
             false,
         );
-        
-        // Read f32 from offset 460
-        let mut temp_bytes = [0u8; 4];
-        temp_bytes.copy_from_slice(&lamp_bytes[460..464]);
-        let read_temp = f32::from_le_bytes(temp_bytes);
-        
-        assert!((read_temp - temp_value).abs() < 0.01, 
+
+        let read_temp = f32::from_le_bytes(lamp_bytes[436..440].try_into().unwrap());
+        assert!((read_temp - temp_value).abs() < 0.01,
             "Temperature not written correctly: expected {}, got {}", temp_value, read_temp);
     }
-    
+
     #[test]
     fn test_build_lamp_use_temperature_true() {
-        // Test 5a: use_temperature flag set to 1 when true
+        // use_temperature is encoded as bit 24 of the `mode` u32 at offset 420 (LA_USE_TEMPERATURE).
         let lamp_bytes = build_lamp(
             "TestLight",
             0,
@@ -2393,16 +2389,15 @@ mod tests {
             0.0,
             0.0,
             5000.0,
-            true,  // use_temperature = true
+            true,
         );
-        
-        // Check byte at offset 464
-        assert_eq!(lamp_bytes[464], 1, "use_temperature flag not set to 1 when true");
+
+        let mode = u32::from_le_bytes(lamp_bytes[420..424].try_into().unwrap());
+        assert!(mode & (1 << 24) != 0, "LA_USE_TEMPERATURE bit not set when use_temperature=true");
     }
-    
+
     #[test]
     fn test_build_lamp_use_temperature_false() {
-        // Test 5b: use_temperature flag set to 0 when false
         let lamp_bytes = build_lamp(
             "TestLight",
             0,
@@ -2413,16 +2408,17 @@ mod tests {
             0.0,
             0.0,
             5000.0,
-            false,  // use_temperature = false
+            false,
         );
-        
-        // Check byte at offset 464
-        assert_eq!(lamp_bytes[464], 0, "use_temperature flag not set to 0 when false");
+
+        let mode = u32::from_le_bytes(lamp_bytes[420..424].try_into().unwrap());
+        assert!(mode & (1 << 24) == 0, "LA_USE_TEMPERATURE bit set when use_temperature=false");
     }
     
     #[test]
     fn test_build_lamp_temperature_multiple_values() {
-        // Test 6: Multiple temperature values written correctly
+        // Multiple temperature values exercise the same offset/bit pair as the
+        // dedicated tests above.
         let test_values = vec![
             (2700.0, true),
             (3000.0, false),
@@ -2430,7 +2426,7 @@ mod tests {
             (9000.0, false),
             (12000.0, true),
         ];
-        
+
         for (temp, use_temp) in test_values {
             let lamp_bytes = build_lamp(
                 &format!("Light_{}", temp as i32),
@@ -2444,19 +2440,15 @@ mod tests {
                 temp,
                 use_temp,
             );
-            
-            // Read temperature
-            let mut temp_bytes = [0u8; 4];
-            temp_bytes.copy_from_slice(&lamp_bytes[460..464]);
-            let read_temp = f32::from_le_bytes(temp_bytes);
-            
-            assert!((read_temp - temp).abs() < 0.01, 
+
+            let read_temp = f32::from_le_bytes(lamp_bytes[436..440].try_into().unwrap());
+            assert!((read_temp - temp).abs() < 0.01,
                 "Temperature mismatch for {}: expected {}, got {}", temp, temp, read_temp);
-            
-            // Read use_temperature
-            let read_use_temp = lamp_bytes[464] != 0;
-            assert_eq!(read_use_temp, use_temp, 
-                "use_temperature flag mismatch for {}: expected {}, got {}", temp, use_temp, read_use_temp);
+
+            let mode = u32::from_le_bytes(lamp_bytes[420..424].try_into().unwrap());
+            let read_use_temp = (mode & (1 << 24)) != 0;
+            assert_eq!(read_use_temp, use_temp,
+                "use_temperature bit mismatch for {}: expected {}, got {}", temp, use_temp, read_use_temp);
         }
     }
 

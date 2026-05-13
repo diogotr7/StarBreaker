@@ -6,8 +6,6 @@
 
 #[cfg(test)]
 mod hierarchy_findings {
-    use starbreaker_blend::*;
-
     // Blender 5.1.1 struct offsets (verified against DNA_*.h)
     const ID_STRUCT_SIZE: usize = 408;
     const COLLECTION_STRUCT_SIZE: usize = 544; // ID(408) + fields(136)

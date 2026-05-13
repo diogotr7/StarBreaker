@@ -3,7 +3,7 @@ use std::env;
 use std::fs;
 use std::io::Cursor;
 
-use starbreaker_wem::{WemFile, WemCodec};
+use starbreaker_wem::WemFile;
 
 fn main() {
     let args: Vec<String> = env::args().collect();

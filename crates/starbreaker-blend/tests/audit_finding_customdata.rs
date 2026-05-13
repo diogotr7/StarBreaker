@@ -5,8 +5,6 @@
 
 #[cfg(test)]
 mod customdata_findings {
-    use starbreaker_blend::*;
-
     /// FINDING 1.1-1: vdata.totsize field not initialized
     /// When CD_MDEFORMVERT layers are present, totsize must be set to 16 (size of MDeformVert)
     /// This test verifies that the vdata CustomData structure correctly sets totsize
@@ -27,7 +25,6 @@ mod customdata_findings {
             0,        // material_slots
             1,        // vgroup_first_ptr (non-zero = vertex groups present)
             1,        // vgroup_last_ptr
-            1,        // vgroup_count
             1,        // cdl_ptr (non-zero triggers vdata initialization)
             0,        // num_attributes
         );
@@ -72,7 +69,6 @@ mod customdata_findings {
             0,        // material_slots
             1,        // vgroup_first_ptr (triggers vdata init)
             1,        // vgroup_last_ptr
-            1,        // vgroup_count
             1,        // cdl_ptr (triggers layer init)
             0,        // num_attributes
         );
@@ -124,7 +120,6 @@ mod customdata_findings {
             0,        // material_slots
             0,        // vgroup_first_ptr (no vertex groups)
             0,        // vgroup_last_ptr
-            0,        // vgroup_count
             0,        // cdl_ptr (no custom data)
             0,        // num_attributes
         );

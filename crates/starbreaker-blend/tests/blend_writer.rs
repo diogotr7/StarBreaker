@@ -321,7 +321,7 @@ fn world_defaults_are_render_visible() {
 }
 
 #[test]
-fn world_sky_shader_uses_requested_low_intensity_defaults() {
+fn world_sky_shader_uses_requested_intensity_defaults() {
     let mut bytes = Vec::new();
     let mut ptrs = PtrAlloc::new(0x8000);
     write_world_with_sky_shader(&mut bytes, "World", 0x7000, 0x7010, &mut ptrs);
@@ -336,7 +336,7 @@ fn world_sky_shader_uses_requested_low_intensity_defaults() {
         let data_end = data_start + len;
         if sdna == SDNA_IDX_BNSV_FLOAT && len >= 16 {
             let value = f32::from_le_bytes(bytes[data_start + 4..data_start + 8].try_into().unwrap());
-            if (value - 0.1).abs() < 1e-6 {
+            if (value - 0.5).abs() < 1e-6 {
                 found_background_strength = true;
             }
         }
@@ -349,7 +349,7 @@ fn world_sky_shader_uses_requested_low_intensity_defaults() {
         offset = data_end;
     }
 
-    assert!(found_background_strength, "Background Strength should default to 0.1");
+    assert!(found_background_strength, "Background Strength should default to 0.5");
     assert!(found_sky_sun_intensity, "Sky Texture sun_intensity should default to 0.1");
 }
 

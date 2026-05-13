@@ -329,9 +329,9 @@ fn little_endian_pointer_encoding() {
 fn default_mesh_rotation_identity_quaternion() {
     let obj = build_object("DefaultRotMesh", 0x2000, 0x3000, 0x4000, 1, 0x5000);
     
-    // Default mesh rotation: quaternion with w=1.0, xyz=0
-    // Offset 820 for x, 824 for y, 828 for z, 832 for w
-    let quat_w = f32::from_le_bytes([obj[832], obj[833], obj[834], obj[835]]);
+    // Default mesh rotation: quaternion stored as [w, x, y, z] per Blender DNA.
+    // Offset 820 = w, 824 = x, 828 = y, 832 = z.
+    let quat_w = f32::from_le_bytes([obj[820], obj[821], obj[822], obj[823]]);
     assert_eq!(quat_w, 1.0, "Default mesh quaternion w component should be 1.0");
 }
 

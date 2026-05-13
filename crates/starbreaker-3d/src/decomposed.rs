@@ -652,30 +652,30 @@ pub(crate) fn build_decomposed_material_view(
         })
         .collect();
     
-    // Rebuild the mesh to actually remove the geometry from filtered submeshes
-    if surviving_submeshes.len() < mesh.submeshes.len() {
-        // Some submeshes were filtered out - rebuild indices
+    // Rebuild the mesh to actually remove the geometry from filtered submeshes.
+    // Only attempt the rebuild when every surviving submesh's index range lies
+    // within the mesh's indices buffer — degenerate or partial meshes (no
+    // indices at all, or submeshes whose `first_index + num_indices` exceeds
+    // the buffer) skip the rebuild and surface the surviving submeshes as-is.
+    let needs_rebuild = surviving_submeshes.len() < mesh.submeshes.len();
+    let all_ranges_in_bounds = surviving_submeshes.iter().all(|(orig_idx, _)| {
+        let sm = &mesh.submeshes[*orig_idx];
+        sm.first_index as usize + sm.num_indices as usize <= mesh.indices.len()
+    });
+    if needs_rebuild && all_ranges_in_bounds {
         let mut new_indices = Vec::new();
         let mut index_offset = 0u32;
-        
         let mut new_submeshes = Vec::new();
         for (orig_idx, mut submesh) in surviving_submeshes {
             let orig_range_start = mesh.submeshes[orig_idx].first_index as usize;
             let orig_range_end = orig_range_start + mesh.submeshes[orig_idx].num_indices as usize;
-            
-            // Copy this submesh's indices
             new_indices.extend_from_slice(&mesh.indices[orig_range_start..orig_range_end]);
-            
-            // Update submesh to point to new index location
             submesh.first_index = index_offset;
             index_offset += submesh.num_indices;
-            
             new_submeshes.push(submesh);
         }
-        
         filtered_mesh.indices = new_indices;
         filtered_mesh.submeshes = new_submeshes;
-        
         log::debug!(
             "[mesh-rebuild] indices: {} -> {} (removed {} bytes of orphaned geometry)",
             mesh.indices.len(),
@@ -683,7 +683,6 @@ pub(crate) fn build_decomposed_material_view(
             mesh.indices.len() - filtered_mesh.indices.len()
         );
     } else {
-        // No submeshes were filtered, just remap material IDs
         filtered_mesh.submeshes = surviving_submeshes.into_iter().map(|(_, sm)| sm).collect();
     }
     

@@ -10,6 +10,7 @@ const AURORA_SCENE_BLEND: &str = "/home/tom/projects/scorg_tools/ships/Packages/
 const AURORA_SHIPS_ROOT: &str = "/home/tom/projects/scorg_tools/ships";
 
 /// Tests that scene.blend file exists and is readable
+#[ignore = "requires local Aurora export at hard-coded /home/tom/... path"]
 #[test]
 fn test_aurora_scene_blend_exists() {
     let path = Path::new(AURORA_SCENE_BLEND);
@@ -27,6 +28,7 @@ fn test_aurora_scene_blend_exists() {
 
 /// Tests that scene.blend has valid Zstandard format header
 /// (Blender 3.2+ exports with zstandard compression)
+#[ignore = "requires local Aurora export at hard-coded /home/tom/... path"]
 #[test]
 fn test_aurora_scene_blend_has_valid_format() {
     let data = fs::read(AURORA_SCENE_BLEND)
@@ -44,6 +46,7 @@ fn test_aurora_scene_blend_has_valid_format() {
 }
 
 /// Tests that scene.blend has reasonable file size (> 10KB, < 10MB)
+#[ignore = "requires local Aurora export at hard-coded /home/tom/... path"]
 #[test]
 fn test_aurora_scene_blend_has_valid_size() {
     let metadata = fs::metadata(AURORA_SCENE_BLEND)
@@ -59,6 +62,7 @@ fn test_aurora_scene_blend_has_valid_size() {
 }
 
 /// Tests that scene.blend JSON metadata (scene.json) exists and is valid
+#[ignore = "requires local Aurora export at hard-coded /home/tom/... path"]
 #[test]
 fn test_aurora_scene_json_exists_and_valid() {
     let scene_json_path = Path::new(AURORA_EXPORT_ROOT).join("scene.json");
@@ -86,6 +90,7 @@ fn test_aurora_scene_json_exists_and_valid() {
 }
 
 /// Tests that all referenced mesh .blend files in scene.json exist
+#[ignore = "requires local Aurora export at hard-coded /home/tom/... path"]
 #[test]
 fn test_all_referenced_mesh_files_exist() {
     let scene_json_path = Path::new(AURORA_EXPORT_ROOT).join("scene.json");
@@ -130,6 +135,7 @@ fn test_all_referenced_mesh_files_exist() {
 }
 
 /// Tests that individual mesh .blend files have valid headers
+#[ignore = "requires local Aurora export at hard-coded /home/tom/... path"]
 #[test]
 fn test_mesh_blend_files_have_valid_headers() {
     let scene_json_path = Path::new(AURORA_EXPORT_ROOT).join("scene.json");
@@ -176,6 +182,7 @@ fn test_mesh_blend_files_have_valid_headers() {
 }
 
 /// Tests that mesh files have reasonable sizes (not empty, not huge)
+#[ignore = "requires local Aurora export at hard-coded /home/tom/... path"]
 #[test]
 fn test_mesh_files_have_valid_sizes() {
     let scene_json_path = Path::new(AURORA_EXPORT_ROOT).join("scene.json");
@@ -217,6 +224,7 @@ fn test_mesh_files_have_valid_sizes() {
 }
 
 /// Tests that materials metadata files exist
+#[ignore = "requires local Aurora export at hard-coded /home/tom/... path"]
 #[test]
 fn test_materials_metadata_files_exist() {
     let materials_json = Path::new(AURORA_EXPORT_ROOT).join("paints.json");
@@ -239,6 +247,7 @@ fn test_materials_metadata_files_exist() {
 }
 
 /// Tests that paints.json is valid JSON with expected structure
+#[ignore = "requires local Aurora export at hard-coded /home/tom/... path"]
 #[test]
 fn test_paints_json_valid_structure() {
     let paints_json = Path::new(AURORA_EXPORT_ROOT).join("paints.json");
@@ -254,6 +263,7 @@ fn test_paints_json_valid_structure() {
 }
 
 /// Tests that palettes.json is valid JSON and contains paint palette data
+#[ignore = "requires local Aurora export at hard-coded /home/tom/... path"]
 #[test]
 fn test_palettes_json_valid_structure() {
     let palettes_json = Path::new(AURORA_EXPORT_ROOT).join("palettes.json");
@@ -269,6 +279,7 @@ fn test_palettes_json_valid_structure() {
 }
 
 /// Tests that animations directory exists with animation metadata
+#[ignore = "requires local Aurora export at hard-coded /home/tom/... path"]
 #[test]
 fn test_animations_directory_exists() {
     let animations_dir = Path::new(AURORA_EXPORT_ROOT).join("animations");
@@ -292,6 +303,7 @@ fn test_animations_directory_exists() {
 }
 
 /// Tests that animation files are valid JSON
+#[ignore = "requires local Aurora export at hard-coded /home/tom/... path"]
 #[test]
 fn test_animation_files_valid_json() {
     let animations_dir = Path::new(AURORA_EXPORT_ROOT).join("animations");
@@ -313,6 +325,7 @@ fn test_animation_files_valid_json() {
 }
 
 /// Tests that the export package maintains directory structure consistency
+#[ignore = "requires local Aurora export at hard-coded /home/tom/... path"]
 #[test]
 fn test_export_structure_consistency() {
     let root = Path::new(AURORA_EXPORT_ROOT);
@@ -327,6 +340,7 @@ fn test_export_structure_consistency() {
 }
 
 /// Tests that mesh asset paths in scene.json are consistent (use forward slashes)
+#[ignore = "requires local Aurora export at hard-coded /home/tom/... path"]
 #[test]
 fn test_scene_json_paths_consistent() {
     let scene_json_path = Path::new(AURORA_EXPORT_ROOT).join("scene.json");

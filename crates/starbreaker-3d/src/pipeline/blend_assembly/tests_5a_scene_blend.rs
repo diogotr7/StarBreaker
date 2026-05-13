@@ -2040,7 +2040,6 @@ fn test_create_scene_blend_writes_decal_offset_modifier_for_decal_mesh_asset() {
 
 #[test]
 fn test_create_scene_blend_basic() {
-    let input = create_test_input("TestEntity", 1);
     let result = create_scene_blend("TestEntity", 1, "Data/Objects", &[]);
     
     assert!(result.is_ok(), "Function should succeed with basic input");
@@ -2078,13 +2077,10 @@ fn test_create_scene_blend_collections_structure() {
     assert!(result.is_ok(), "Function should succeed");
     
     let blend_bytes = result.unwrap();
-    
-    // Check for collection names in the output
-    let blend_str = String::from_utf8_lossy(&blend_bytes);
-    
-    // The output should contain collection markers (GRP\0 blocks)
+
+    // The output should contain collection markers (GRP\0 blocks).
     // We can't easily verify collection structure without parsing the binary format,
-    // but we can verify the file format is valid
+    // but we can verify the file format is valid.
     assert!(blend_bytes.len() > 200, "Valid scene file should be substantial");
 }
 

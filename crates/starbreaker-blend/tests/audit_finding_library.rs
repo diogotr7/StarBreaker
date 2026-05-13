@@ -6,8 +6,6 @@
 
 #[cfg(test)]
 mod library_findings {
-    use starbreaker_blend::*;
-
     const LIBRARY_SIZE_CORRECT: usize = 1472;  // Blender 5.1.1 actual size
     const LIBRARY_SIZE_WRONG: usize = 1426;    // Current (incorrect) size in code
     const ID_STRUCT_SIZE_CORRECT: usize = 408; // Correct ID struct size
@@ -179,9 +177,7 @@ mod library_findings {
         // - filepath (char[1024]) @ offset 408
         // - Additional fields @ offset 1432+
 
-        const LIBRARY_ID_OFFSET: usize = 0;
         const LIBRARY_ID_SIZE: usize = 408;
-        const LIBRARY_FILEPATH_OFFSET: usize = 408;
         const LIBRARY_FILEPATH_SIZE: usize = 1024;
 
         // Total Library size should be:
