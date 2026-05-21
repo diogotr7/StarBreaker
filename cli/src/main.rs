@@ -4,6 +4,7 @@ mod common;
 mod cryxml;
 mod dcb;
 mod dds;
+mod diff;
 mod entity;
 mod error;
 mod glb;
@@ -98,6 +99,8 @@ enum Command {
         #[command(subcommand)]
         command: dcb::DcbCommand,
     },
+    /// Generate diffable game data reports
+    Diff(diff::DiffCommand),
     /// Entity export operations
     Entity {
         #[command(subcommand)]
@@ -166,6 +169,7 @@ fn main() {
     let result = match cli.command {
         Command::P4k { command } => command.run(),
         Command::Dcb { command } => command.run(),
+        Command::Diff(command) => command.run(),
         Command::Entity { command } => command.run(),
         Command::Skin { command } => command.run(),
         Command::Socpak { command } => command.run(),
