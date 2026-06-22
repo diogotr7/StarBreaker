@@ -30,6 +30,9 @@ except ImportError:  # pragma: no cover - Blender provides this at runtime.
 from ..constants import (
     CONTROL_ONLY_POM_DEFAULT_ROUGHNESS,
     MATERIAL_IDENTITY_SCHEMA,
+    POM_SCALE_MAX,
+    POM_SCALE_MIN,
+    POM_SCALE_MULTIPLIER,
     NON_COLOR_INPUT_KEYWORDS,
     POM_DETAIL_DEFAULT,
     PROP_ASSEMBLY_KIND,
@@ -510,7 +513,10 @@ class BuildersMixin:
         # Drive Scale from the authored PomDisplacement
         # (CryEngine-space ≈0.02–0.1) rescaled into POM-test's default
         # range (≈1.5 for 0.05 input) by multiplying by 30.
-        self._set_socket_default(_input_socket(parallax_node, "Scale"), min(3.0, scale_value * 30.0))
+        self._set_socket_default(
+            _input_socket(parallax_node, "Scale"),
+            max(POM_SCALE_MIN, min(POM_SCALE_MAX, scale_value * POM_SCALE_MULTIPLIER)),
+        )
         self._set_socket_default(_input_socket(parallax_node, "Bias"), max(0.0, min(1.0, bias_value)))
         self._set_socket_default(_input_socket(parallax_node, "Non-planar"), True)
         clamped_tile = max(0.001, uv_tile)

@@ -88,6 +88,15 @@ POM_DETAIL_DEFAULT = "MEDIUM"
 # height/normal with no authored decal colour or gloss). Aesthetic neutral knob,
 # not a value derived from game data.
 CONTROL_ONLY_POM_DEFAULT_ROUGHNESS = 0.55
+# Parallax-occlusion depth calibration. The runtime POM_Vector group's "Scale"
+# input is the parallax depth; the reference pom.blend uses Scale = 1.5 for a
+# readable relief. Authored CryEngine PomDisplacement values are tiny (e.g. behr
+# weapons ~0.005), so converting linearly (x30) lands ~0.15 -- effectively flat.
+# Convert with POM_SCALE_MULTIPLIER then clamp into the proven-good range so the
+# relief is never imperceptible (floor) nor extreme enough to swim (cap).
+POM_SCALE_MULTIPLIER = 30.0
+POM_SCALE_MIN = 1.5
+POM_SCALE_MAX = 3.0
 POM_DETAIL_ITEMS = (
     ("LOW", "Low", "20 layers with reduced scale for faster viewport playback"),
     ("MEDIUM", "Medium", "50 layers with balanced scale; default"),
