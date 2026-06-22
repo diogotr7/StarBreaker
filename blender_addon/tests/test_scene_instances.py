@@ -121,6 +121,7 @@ def _load_orchestration() -> types.ModuleType:
     types_stub = types.ModuleType("sb_scene_test_runtime.importer.types")
     types_stub.ImportedTemplate = type("ImportedTemplate", (), {})
     types_stub._bake_bitangent_sign_attribute = lambda *args, **kwargs: None
+    types_stub.BITANGENT_SIGN_ATTRIBUTE = "starbreaker_bitangent_sign"
     sys.modules["sb_scene_test_runtime.importer.types"] = types_stub
 
     utils_stub = types.ModuleType("sb_scene_test_runtime.importer.utils")

@@ -66,7 +66,7 @@ from .groups import GroupsMixin
 from .layers import LayersMixin
 from .materials import MaterialsMixin
 from .palette import PaletteMixin
-from .types import ImportedTemplate, _bake_bitangent_sign_attribute
+from .types import BITANGENT_SIGN_ATTRIBUTE, ImportedTemplate, _bake_bitangent_sign_attribute
 from .utils import (
     _canonical_material_sidecar_path,
     _canonical_source_name,
@@ -569,6 +569,12 @@ class OrchestrationMixin:
             self._advance_progress(f"Preparing {interior.name}")
             self.import_interior_container(interior, scene_root_parent)
 
+        # POM tangent_space reads a per-corner bitangent sign to correct
+        # UV-mirrored faces (where parallax otherwise marches the wrong way
+        # vertically). The per-template bake covers shared templates, but
+        # instantiated meshes that bypass the template loader still need it.
+        self._bake_pom_mesh_bitangent_signs(package_root)
+
         # Final flush in case anything else deferred a depsgraph update.
         self._flush_pending_view_layer_update()
         # Drain the per-template orphan-material queue with a single
@@ -587,6 +593,47 @@ class OrchestrationMixin:
         if sidecar_path in self.exterior_material_sidecars:
             return self.import_paint_variant_sidecar
         return sidecar_path
+
+    def _bake_pom_mesh_bitangent_signs(self, package_root: bpy.types.Object) -> None:
+        """Bake ``starbreaker_bitangent_sign`` on every POM-bearing mesh under
+        ``package_root`` that lacks it.
+
+        The POM ``tangent_space`` group multiplies its bitangent by this
+        per-corner sign so UV-mirrored faces parallax-march in the correct
+        vertical direction. Only meshes whose materials use a runtime POM group
+        are baked, and meshes that already carry the attribute (e.g. inherited
+        from a baked template) are skipped.
+        """
+        seen: set[int] = set()
+        stack: list[bpy.types.Object] = [package_root]
+        while stack:
+            obj = stack.pop()
+            stack.extend(obj.children)
+            if getattr(obj, "type", None) != "MESH":
+                continue
+            mesh = getattr(obj, "data", None)
+            if mesh is None or mesh.as_pointer() in seen:
+                continue
+            seen.add(mesh.as_pointer())
+            if mesh.attributes.get(BITANGENT_SIGN_ATTRIBUTE) is not None:
+                continue
+            if self._object_uses_runtime_pom(obj):
+                _bake_bitangent_sign_attribute(mesh)
+
+    @staticmethod
+    def _object_uses_runtime_pom(obj: bpy.types.Object) -> bool:
+        for slot in obj.material_slots:
+            mat = slot.material
+            if mat is None or mat.node_tree is None:
+                continue
+            for node in mat.node_tree.nodes:
+                if (
+                    node.bl_idname == "ShaderNodeGroup"
+                    and node.node_tree is not None
+                    and node.node_tree.name.startswith("StarBreaker POM [")
+                ):
+                    return True
+        return False
 
     def rebuild_object_materials(self, obj: bpy.types.Object, palette_id: str | None) -> int:
         self._ensure_runtime_shared_groups()
