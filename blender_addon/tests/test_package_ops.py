@@ -1466,6 +1466,37 @@ class PackageOpsTests(unittest.TestCase):
         )
         self.assertEqual(rebuild_calls, [("p6lr_body", "base.materials.json", "palette/base")])
 
+    def test_unnamed_submaterial_is_refreshable_by_index(self) -> None:
+        """A UIPlane-style submaterial with no name (e.g. screen_16x9_a) must
+        still be matched to its sidecar entry by slot index so the load-post
+        refresh rebuilds it instead of skipping it."""
+        po = self.package_ops
+        sidecar = types.SimpleNamespace(submaterials=[types.SimpleNamespace(index=0)])
+        material = FakeMaterial("rtt_comms_opaque_hightech_mtl__00")  # node_tree=None
+        obj = FakeObject("screen_16x9_a")
+        obj.type = "MESH"
+        obj.material_slots = [FakeSlot(material)]
+
+        # Precondition: the exported name canonicalises to empty.
+        self.assertEqual(
+            po._canonical_source_name("rtt_comms_opaque_hightech_mtl__00"), ""
+        )
+        self.assertTrue(po._material_slot_can_refresh(obj, 0, material, sidecar))
+        self.assertTrue(po._object_needs_material_refresh(obj, sidecar))
+
+    def test_unnamed_submaterial_without_matching_index_is_not_refreshable(self) -> None:
+        """The index fallback must not green-light a slot whose index has no
+        submaterial in the sidecar."""
+        po = self.package_ops
+        sidecar = types.SimpleNamespace(submaterials=[types.SimpleNamespace(index=0)])
+        material = FakeMaterial("rtt_comms_opaque_hightech_mtl__00")
+        obj = FakeObject("screen_16x9_a")
+        obj.type = "MESH"
+        obj.material_slots = [FakeSlot(material)]
+
+        # Slot index 1 has no submaterial in the sidecar -> not refreshable.
+        self.assertFalse(po._material_slot_can_refresh(obj, 1, material, sidecar))
+
 
 class AnimationDisplayNameTests(unittest.TestCase):
     """Tests for _animation_display_name and _entity_name_prefix."""

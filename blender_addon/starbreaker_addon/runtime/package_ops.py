@@ -694,7 +694,12 @@ def _material_slot_can_refresh(
         return False
     canonical_name = _canonical_source_name(material_name)
     if not canonical_name:
-        return False
+        # An unnamed submaterial (e.g. a UIPlane screen) exports to a material
+        # whose name canonicalises to "". It cannot be matched by name, so fall
+        # back to the structural 1:1 slot->submaterial index used by the
+        # exporter. This only fires for slots the caller already flagged as
+        # needing a refresh (node_tree None/empty or linked).
+        return _sidecar_has_submaterial_index(sidecar, slot_index)
     if canonical_name in _unique_submaterials_by_name(sidecar):
         return True
     return canonical_name in _submaterials_by_name(sidecar)
