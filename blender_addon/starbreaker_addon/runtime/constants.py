@@ -89,13 +89,17 @@ POM_DETAIL_DEFAULT = "MEDIUM"
 # not a value derived from game data.
 CONTROL_ONLY_POM_DEFAULT_ROUGHNESS = 0.55
 # Parallax-occlusion depth calibration. The runtime POM_Vector group's "Scale"
-# input is the parallax depth; the reference pom.blend uses Scale = 1.5 for a
-# readable relief. Authored CryEngine PomDisplacement values are tiny (e.g. behr
-# weapons ~0.005), so converting linearly (x30) lands ~0.15 -- effectively flat.
-# Convert with POM_SCALE_MULTIPLIER then clamp into the proven-good range so the
-# relief is never imperceptible (floor) nor extreme enough to swim (cap).
+# input is the parallax depth, driven from the authored CryEngine PomDisplacement
+# (POM_SCALE_MULTIPLIER calibrated so the reference pom.blend's single-decal POM
+# reads at Scale ~1.5). PomDisplacement is authored small (e.g. behr weapons
+# ~0.003) because the intended relief is subtle, so this stays faithful rather
+# than amplifying it. NOTE: the library's POM reference-plane (Bias) is fixed and
+# assumes a single-decal height map; atlas height maps (FPS weapons pack many
+# decals per texture) only sit flush at small displacement -- a larger Scale both
+# reads recessed and walks the march out of the decal's UV cell into neighbouring
+# atlas cells. Atlas-aware POM (cell-space march + per-cell reference) is a
+# separate, larger effort; until then keep displacement authored-faithful.
 POM_SCALE_MULTIPLIER = 30.0
-POM_SCALE_MIN = 1.5
 POM_SCALE_MAX = 3.0
 POM_DETAIL_ITEMS = (
     ("LOW", "Low", "20 layers with reduced scale for faster viewport playback"),

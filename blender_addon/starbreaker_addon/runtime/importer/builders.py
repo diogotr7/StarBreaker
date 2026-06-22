@@ -31,7 +31,6 @@ from ..constants import (
     CONTROL_ONLY_POM_DEFAULT_ROUGHNESS,
     MATERIAL_IDENTITY_SCHEMA,
     POM_SCALE_MAX,
-    POM_SCALE_MIN,
     POM_SCALE_MULTIPLIER,
     NON_COLOR_INPUT_KEYWORDS,
     POM_DETAIL_DEFAULT,
@@ -510,12 +509,13 @@ class BuildersMixin:
         # POM_Vector inputs: Scale (Float), Bias (Float), Non-planar
         # (Bool), UV Scale X/Y (Float). Layer count is controlled inside
         # the runtime POM root group based on the active scene profile.
-        # Drive Scale from the authored PomDisplacement
-        # (CryEngine-space ≈0.02–0.1) rescaled into POM-test's default
-        # range (≈1.5 for 0.05 input) by multiplying by 30.
+        # Drive Scale from the authored PomDisplacement (CryEngine-space,
+        # typically tiny ≈0.003–0.05) rescaled by POM_SCALE_MULTIPLIER —
+        # faithful to the authored subtle relief, capped at POM_SCALE_MAX.
+        # See constants.py for why this is kept small (atlas height maps).
         self._set_socket_default(
             _input_socket(parallax_node, "Scale"),
-            max(POM_SCALE_MIN, min(POM_SCALE_MAX, scale_value * POM_SCALE_MULTIPLIER)),
+            min(POM_SCALE_MAX, scale_value * POM_SCALE_MULTIPLIER),
         )
         self._set_socket_default(_input_socket(parallax_node, "Bias"), max(0.0, min(1.0, bias_value)))
         self._set_socket_default(_input_socket(parallax_node, "Non-planar"), True)
