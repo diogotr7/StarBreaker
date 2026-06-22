@@ -2440,7 +2440,14 @@ class DecalOffsetTests(unittest.TestCase):
             self.assertEqual(alpha_input.links[0].from_socket.node.name, "SB_POM_POM Alpha")
             height_input = variant_group.inputs.get("Height")
             self.assertEqual(len(height_input.links), 1)
-            self.assertEqual(height_input.links[0].from_socket.node.name, "SB_POM_POM Height")
+            height_separate = height_input.links[0].from_socket.node
+            self.assertEqual(height_separate.name, "SB_POM_POM Height Channel")
+            # Regression: the height texture must actually feed the channel split.
+            # The old socket-copy dropped it, leaving an orphaned SeparateColor
+            # (height never reached the shader).
+            height_color_in = height_separate.inputs.get("Color")
+            self.assertEqual(len(height_color_in.links), 1)
+            self.assertEqual(height_color_in.links[0].from_socket.node.name, "SB_POM_POM Height")
             self.assertEqual(variant.get("starbreaker_mesh_decal_variant_mode"), "control_only_pom_host_material_v5")
             self.assertEqual(variant.get("starbreaker_shader_family"), "HardSurface")
             self.assertFalse(

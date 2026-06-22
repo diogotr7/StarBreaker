@@ -486,7 +486,7 @@ class BuildersMixin:
         node_tree = material.node_tree
         if node_tree is None or height_node is None:
             return None
-        if height_node.bl_idname != "ShaderNodeTexImage" or height_node.image is None:
+        if height_node.bl_idname != "ShaderNodeTexImage" or getattr(height_node, "image", None) is None:
             return None
 
         pom_tree = self._ensure_runtime_parallax_group(
@@ -1351,6 +1351,27 @@ class BuildersMixin:
             bump_strength = 0.0 if displacement is None else max(0.0, min(0.2, float(displacement) * 30.0))
             self._set_socket_default(_input_socket(shader_group, "Bump Strength"), bump_strength)
             self._set_socket_default(_input_socket(shader_group, "Use Bump"), 1.0 if bump_strength > 0.0 else 0.0)
+
+            # True parallax-occlusion mapping: the height map drives the bundled
+            # POM_Vector ray-march, whose offset UVs feed the coverage + normal
+            # samplers. Without this the relief was only a bump, never POM.
+            pom_scale = min(0.2, float(displacement)) if (displacement is not None and displacement > 0.0) else 0.05
+            pom_bias = self._parallax_bias_value(submaterial)
+            parallax_targets = [node for node in (coverage_node, normal_node) if node is not None]
+            if parallax_targets:
+                self._wire_runtime_parallax(
+                    material,
+                    height_node=height_node,
+                    target_image_nodes=parallax_targets,
+                    scale_value=pom_scale,
+                    bias_value=pom_bias,
+                    location=(-900, 360),
+                )
+            # Stash the resolved POM parameters so host-material variants can
+            # rebuild the same parallax/relief without re-reading the submaterial.
+            material["starbreaker_pom_displacement"] = pom_scale
+            material["starbreaker_pom_bias"] = pom_bias
+            material["starbreaker_pom_bump_strength"] = bump_strength
 
         self._wire_surface_shader_to_output(
             nodes,
@@ -4257,91 +4278,188 @@ class BuildersMixin:
     ) -> bool:
         """Inject a control-only MeshDecal POM into a host-material clone.
 
-        Star Engine applies these MeshDecal POM entries as control overlays:
-        the host material remains the colour/specular owner while the decal
-        contributes coverage, normal, and height. Blender cannot write only
-        GBuffer normal/height, so the closest representation is a host material
-        clone clipped by the decal alpha with the POM normal/height wired into
-        the host runtime shader.
+        Star Engine applies these MeshDecal POM entries as control overlays: the
+        host material stays the colour/specular owner while the decal contributes
+        coverage, normal, and parallax-occlusion height. The ``clone`` is a copy
+        of the host material (so it already owns the host colour/roughness/
+        metallic chain); this routine rebuilds the full POM relief on top of it:
+        fresh coverage/normal/height samplers, the bundled ``POM_Vector``
+        parallax offset on their UVs, a host-normal overlay clipped by the decal
+        coverage alpha, the height bump, and the shadowless wrapper. The earlier
+        socket-copy approach dropped the height texture, never wired parallax,
+        and skipped the wrapper, so the overlay is built explicitly here.
         """
 
-        sources = self._control_only_pom_relief_sources(pom_material)
-        if not sources:
-            return False
         node_tree = getattr(clone, "node_tree", None)
         if node_tree is None:
+            return False
+        relief_images = self._control_only_pom_relief_image_nodes(pom_material)
+        if not relief_images:
             return False
         nodes = node_tree.nodes
         links = node_tree.links
 
-        alpha_source = sources.get("alpha")
-        copied_alpha = (
-            self._copy_socket_upstream_into_tree(alpha_source, node_tree, name_prefix="SB_POM_")
-            if alpha_source is not None
-            else None
-        )
-        if copied_alpha is not None:
+        def make_pom_tex(src_node: Any, y: int, *, is_color: bool) -> Any:
+            if src_node is None:
+                return None
+            tex = nodes.new("ShaderNodeTexImage")
+            tex.image = getattr(src_node, "image", None)
+            tex.name = f"SB_POM_{getattr(src_node, 'name', 'tex')}"
+            tex.label = "StarBreaker POM source"
+            tex.location = (-1200, y)
+            settings = getattr(getattr(tex, "image", None), "colorspace_settings", None)
+            if settings is not None:
+                try:
+                    settings.name = "sRGB" if is_color else "Non-Color"
+                except Exception:
+                    pass
+            return tex
+
+        coverage_node = make_pom_tex(relief_images.get("diff"), 360, is_color=True)
+        normal_node = make_pom_tex(relief_images.get("normal"), 100, is_color=False)
+        height_node = make_pom_tex(relief_images.get("height"), -180, is_color=False)
+
+        coverage_alpha = _output_socket(coverage_node, "Alpha") if coverage_node is not None else None
+        if coverage_alpha is not None:
             alpha_target = self._host_material_runtime_input(
-                clone,
-                ("Alpha", "Primary Alpha", "Base Alpha", "Top Alpha"),
+                clone, ("Alpha", "Primary Alpha", "Base Alpha", "Top Alpha")
             )
             if alpha_target is not None:
-                self._replace_socket_link(links, alpha_target, copied_alpha)
+                self._replace_socket_link(links, alpha_target, coverage_alpha)
                 clone.blend_method = "HASHED"
                 try:
                     clone.shadow_method = "HASHED"
                 except Exception:
                     pass
 
-        normal_source = sources.get("normal")
-        copied_normal = (
-            self._copy_socket_upstream_into_tree(normal_source, node_tree, name_prefix="SB_POM_")
-            if normal_source is not None
-            else None
-        )
-        normal_target, host_normal_source = self._host_material_normal_target(clone)
-        if normal_target is not None and copied_normal is not None:
-            if host_normal_source is not None and copied_alpha is not None:
-                self._apply_illum_decal_normal_overlay(
-                    nodes,
-                    links,
-                    normal_target=normal_target,
-                    host_normal_source=host_normal_source,
-                    decal_normal_source=copied_normal,
-                    factor_source=copied_alpha,
-                )
-            else:
-                self._replace_socket_link(links, normal_target, copied_normal)
-            use_normal = self._host_material_runtime_input(clone, ("Use Normal",))
-            if use_normal is not None and hasattr(use_normal, "default_value"):
-                use_normal.default_value = 1.0
+        if normal_node is not None:
+            normal_target, host_normal_source = self._host_material_normal_target(clone)
+            decal_normal = _output_socket(normal_node, "Color")
+            if normal_target is not None and decal_normal is not None:
+                if host_normal_source is not None and coverage_alpha is not None:
+                    self._apply_illum_decal_normal_overlay(
+                        nodes,
+                        links,
+                        normal_target=normal_target,
+                        host_normal_source=host_normal_source,
+                        decal_normal_source=decal_normal,
+                        factor_source=coverage_alpha,
+                    )
+                else:
+                    self._replace_socket_link(links, normal_target, decal_normal)
+                use_normal = self._host_material_runtime_input(clone, ("Use Normal",))
+                if use_normal is not None and hasattr(use_normal, "default_value"):
+                    use_normal.default_value = 1.0
 
-        height_source = sources.get("height")
-        copied_height = (
-            self._copy_socket_upstream_into_tree(height_source, node_tree, name_prefix="SB_POM_")
-            if height_source is not None
-            else None
-        )
-        if copied_height is not None:
+        if height_node is not None:
+            separate = nodes.new("ShaderNodeSeparateColor")
+            separate.name = "SB_POM_POM Height Channel"
+            separate.label = "POM height"
+            separate.location = (-940, -180)
+            links.new(_output_socket(height_node, "Color") or height_node.outputs[0], separate.inputs[0])
+            height_socket = separate.outputs.get("Red") or separate.outputs[0]
             height_target = self._host_material_runtime_input(
-                clone,
-                ("Height", "Primary Height", "Displacement Height"),
+                clone, ("Height", "Primary Height", "Displacement Height")
             )
             if height_target is not None:
-                self._replace_socket_link(links, height_target, copied_height)
+                self._replace_socket_link(links, height_target, height_socket)
             use_bump = self._host_material_runtime_input(clone, ("Use Bump",))
             if use_bump is not None and hasattr(use_bump, "default_value"):
                 use_bump.default_value = 1.0
             bump_strength = self._host_material_runtime_input(clone, ("Bump Strength", "POM Strength"))
-            source_bump_strength = sources.get("bump_strength")
+            relief_bump = pom_material.get("starbreaker_pom_bump_strength")
             if (
                 bump_strength is not None
                 and hasattr(bump_strength, "default_value")
-                and isinstance(source_bump_strength, (int, float))
-                and float(source_bump_strength) > 0.0
+                and isinstance(relief_bump, (int, float))
+                and float(relief_bump) > 0.0
             ):
-                bump_strength.default_value = float(source_bump_strength)
+                bump_strength.default_value = float(relief_bump)
+
+        # True POM parallax: the height map drives the ray-march; the resulting
+        # offset UVs feed the coverage + normal samplers so the decal reads as
+        # parallax relief over the host surface rather than a flat bump.
+        parallax_targets = [node for node in (coverage_node, normal_node) if node is not None]
+        if height_node is not None and parallax_targets:
+            pom_scale = pom_material.get("starbreaker_pom_displacement")
+            if not isinstance(pom_scale, (int, float)) or pom_scale <= 0.0:
+                pom_scale = 0.05
+            pom_bias = pom_material.get("starbreaker_pom_bias")
+            if not isinstance(pom_bias, (int, float)):
+                pom_bias = 0.5
+            self._wire_runtime_parallax(
+                clone,
+                height_node=height_node,
+                target_image_nodes=parallax_targets,
+                scale_value=min(0.2, float(pom_scale)),
+                bias_value=float(pom_bias),
+                location=(-1700, 360),
+            )
+
+        # GBuffer control overlays do not cast shadows in Star Engine; wrap the
+        # host surface shader so the relief stays shadow-invisible.
+        self._insert_shadowless_wrapper(clone)
         return True
+
+    @classmethod
+    def _control_only_pom_relief_image_nodes(cls, material: bpy.types.Material) -> dict[str, Any]:
+        """Return the POM source image nodes (``diff``/``normal``/``height``)
+        wired into a control-only POM relief material's runtime group."""
+        relief_group = cls._control_only_pom_relief_group_node(material)
+        if relief_group is None:
+            return {}
+
+        def tex_behind(socket_name: str, through_separate: bool = False) -> Any:
+            source = cls._socket_link_source(relief_group.inputs.get(socket_name))
+            node = getattr(source, "node", None)
+            if node is None:
+                return None
+            if through_separate and node.bl_idname == "ShaderNodeSeparateColor":
+                upstream = cls._socket_link_source(node.inputs[0]) if node.inputs else None
+                node = getattr(upstream, "node", None)
+            if node is not None and node.bl_idname == "ShaderNodeTexImage":
+                return node
+            return None
+
+        source_nodes = {
+            "diff": tex_behind("Alpha"),
+            "normal": tex_behind("Normal Color"),
+            "height": tex_behind("Height", through_separate=True),
+        }
+        return {key: value for key, value in source_nodes.items() if value is not None}
+
+    def _insert_shadowless_wrapper(self, material: bpy.types.Material) -> None:
+        """Insert the shared Shadowless Wrapper between the material's surface
+        shader and its Material Output, unless it is already wrapped."""
+        node_tree = getattr(material, "node_tree", None)
+        if node_tree is None:
+            return
+        output = next(
+            (n for n in node_tree.nodes if n.bl_idname == "ShaderNodeOutputMaterial"), None
+        )
+        if output is None:
+            return
+        surface = output.inputs.get("Surface")
+        if surface is None or not surface.is_linked:
+            return
+        link = surface.links[0]
+        source_socket = link.from_socket
+        source_node = link.from_node
+        if (
+            source_node.bl_idname == "ShaderNodeGroup"
+            and getattr(getattr(source_node, "node_tree", None), "name", "")
+            == "StarBreaker Runtime Shadowless Wrapper"
+        ):
+            return
+        wrapper = node_tree.nodes.new("ShaderNodeGroup")
+        wrapper.node_tree = self._ensure_runtime_shadowless_wrapper_group()
+        _refresh_group_node_sockets(wrapper)
+        wrapper.location = (output.location.x - 180, output.location.y - 140)
+        wrapper.label = "StarBreaker Shadowless"
+        for existing in list(surface.links):
+            node_tree.links.remove(existing)
+        node_tree.links.new(source_socket, wrapper.inputs["Shader"])
+        node_tree.links.new(wrapper.outputs["Shader"], surface)
 
     @staticmethod
     def _control_only_pom_relief_group_node(material: bpy.types.Material) -> Any:
