@@ -520,7 +520,7 @@ pub(crate) fn rebase_mesh_submeshes_to_bone_space(
         let [qw, qx, qy, qz] = bone.world_rotation;
         let inv_rot = glam::Quat::from_xyzw(qx, qy, qz, qw).inverse();
 
-        let start = submesh.first_index as usize;
+        let start = (submesh.first_index as usize).min(source_indices.len());
         let end = (start + submesh.num_indices as usize).min(source_indices.len());
         let mut remap = std::collections::BTreeMap::<u32, u32>::new();
         let first_vertex = rebuilt_positions.len() as u32;

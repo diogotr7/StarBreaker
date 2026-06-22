@@ -181,7 +181,7 @@ pub fn render_vehicle_hologram(
 
     // 3. Painter's algorithm: gather triangles with their mean depth, draw
     //    far→near so translucent faces composite into a see-through hologram.
-    let shield_start = params.shield_index_start.unwrap_or(usize::MAX);
+    //    (`shield_start` was computed above for the hull/shield fit split.)
     let mut tris: Vec<(f32, [usize; 3], bool)> = Vec::with_capacity(indices.len() / 3);
     for (ti, chunk) in indices.chunks_exact(3).enumerate() {
         let (a, b, c) = (chunk[0] as usize, chunk[1] as usize, chunk[2] as usize);

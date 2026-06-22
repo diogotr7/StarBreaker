@@ -964,12 +964,18 @@ fn prune_colocated_standard_canvas_overlays(placements: &mut Vec<InteriorPlaceme
         }
 
         let position = placement_position(placements[i].transform);
-        let has_colocated_peer = placements.iter().enumerate().any(|(j, candidate)| {
+        // Only prune a `_standard` canvas when it is shadowed by a co-located
+        // NON-standard (specialised/content) canvas. Requiring the peer to be
+        // non-standard prevents two co-located `_standard` canvases from each
+        // marking the other for removal — which would delete BOTH and silently
+        // drop the screen geometry.
+        let has_specialised_peer = placements.iter().enumerate().any(|(j, candidate)| {
             i != j
                 && placement_has_ui_binding(candidate)
                 && same_position(position, placement_position(candidate.transform))
+                && !placement_canvas_name(candidate).is_some_and(is_standard_canvas_name)
         });
-        if has_colocated_peer {
+        if has_specialised_peer {
             remove[i] = true;
         }
     }
@@ -1717,6 +1723,36 @@ mod tests {
 
         assert_eq!(placements.len(), 1);
         assert_eq!(placements[0].mesh_index, 1);
+    }
+
+    #[test]
+    fn prune_colocated_standard_canvas_overlays_keeps_both_when_only_standards_colocate() {
+        // Two co-located `_standard` canvases must NOT annihilate each other:
+        // pruning a standard requires a co-located NON-standard (specialised)
+        // peer. Regression for the mutual-removal bug that dropped both.
+        let transform = glam::Mat4::from_translation(glam::Vec3::new(1.0, 2.0, 3.0)).to_cols_array_2d();
+        let mut standard_a = test_ui_binding();
+        standard_a.canvas_record_name = Some("BuildingBlocks_Canvas.I_Door_Standard".to_string());
+        let mut standard_b = test_ui_binding();
+        standard_b.canvas_record_name = Some("BuildingBlocks_Canvas.I_Screen_Standard".to_string());
+        let mut placements = vec![
+            InteriorPlacement {
+                mesh_index: 0,
+                transform,
+                palette: None,
+                ui_bindings: vec![standard_a],
+            },
+            InteriorPlacement {
+                mesh_index: 1,
+                transform,
+                palette: None,
+                ui_bindings: vec![standard_b],
+            },
+        ];
+
+        prune_colocated_standard_canvas_overlays(&mut placements);
+
+        assert_eq!(placements.len(), 2);
     }
 
     #[test]

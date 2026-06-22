@@ -304,6 +304,19 @@ pub fn project_radar_disc(
     let tw = texture.width() as f32;
     let th = texture.height() as f32;
 
+    // Rotate the texture lookup by the material's ViewingAngle MINUS the ship
+    // heading: the disc OUTLINE stays put, but the degree-scale / ticks rotate
+    // WITH the heading (heading-up — subtracting in the lookup frame displays a
+    // +heading rotation, matching the spokes / ring / cardinals). This rotation
+    // is constant for the whole disc, so hoist the trig out of the pixel loop
+    // (the sweep loop below already does the same).
+    let disc_rot = params.texture_rotation_deg - params.heading_deg;
+    let disc_rotates = disc_rot != 0.0;
+    let (disc_cos, disc_sin) = {
+        let a = disc_rot.to_radians();
+        (a.cos(), a.sin())
+    };
+
     for y in y0..y1 {
         for x in x0..x1 {
             // Output pixel centre relative to the disc centre, in [-1, 1] disc
@@ -313,14 +326,8 @@ pub fn project_radar_disc(
             if nx * nx + ny * ny > 1.0 {
                 continue; // outside the disc
             }
-            // Rotate the texture lookup by the material's ViewingAngle MINUS the
-            // ship heading: the disc OUTLINE stays put, but the degree-scale / ticks
-            // rotate WITH the heading (heading-up — subtracting in the lookup frame
-            // displays a +heading rotation, matching the spokes / ring / cardinals).
-            let disc_rot = params.texture_rotation_deg - params.heading_deg;
-            let (rx, ry) = if disc_rot != 0.0 {
-                let a = disc_rot.to_radians();
-                (nx * a.cos() - ny * a.sin(), nx * a.sin() + ny * a.cos())
+            let (rx, ry) = if disc_rotates {
+                (nx * disc_cos - ny * disc_sin, nx * disc_sin + ny * disc_cos)
             } else {
                 (nx, ny)
             };
@@ -690,11 +697,18 @@ fn fill_triangle(img: &mut RgbaImage, a: (f32, f32), b: (f32, f32), d: (f32, f32
 
 /// Bilinear texture sample at floating `(u, v)` in pixel coords (clamped).
 fn sample_bilinear(tex: &RgbaImage, u: f32, v: f32) -> [u8; 4] {
-    let u = u.clamp(0.0, tex.width() as f32 - 1.001);
-    let v = v.clamp(0.0, tex.height() as f32 - 1.001);
+    // Clamp the source coords AND the neighbour-pixel indices: for a >=2px
+    // texture this is identical to `width - 1.001` (u0 stays <= width-2, so the
+    // index clamp is a no-op), but for a degenerate 1px-wide/tall texture
+    // `width - 1.001` is negative — `f32::clamp(0.0, negative)` panics (min > max)
+    // — and `u0 + 1` would read out of bounds. Saturating keeps it total.
+    let max_x = tex.width().saturating_sub(1);
+    let max_y = tex.height().saturating_sub(1);
+    let u = u.clamp(0.0, (tex.width() as f32 - 1.001).max(0.0));
+    let v = v.clamp(0.0, (tex.height() as f32 - 1.001).max(0.0));
     let (u0, v0) = (u.floor() as u32, v.floor() as u32);
     let (fu, fv) = (u - u0 as f32, v - v0 as f32);
-    let p = |dx: u32, dy: u32| tex.get_pixel(u0 + dx, v0 + dy).0;
+    let p = |dx: u32, dy: u32| tex.get_pixel((u0 + dx).min(max_x), (v0 + dy).min(max_y)).0;
     let (a, b, c, d) = (p(0, 0), p(1, 0), p(0, 1), p(1, 1));
     let mut out = [0u8; 4];
     for i in 0..4 {
@@ -887,5 +901,23 @@ mod tests {
         let tex = white_disc_texture(16);
         let _ = project_radar_disc(0, 0, &tex, None, None, &RadarPlaneParams::default());
         let _ = project_radar_disc(100, 100, &RgbaImage::new(0, 0), None, None, &RadarPlaneParams::default());
+    }
+
+    #[test]
+    fn sample_bilinear_handles_degenerate_single_pixel_texture() {
+        // A 1px-wide/tall texture makes `width - 1.001` negative; the old
+        // `clamp(0.0, negative)` panicked (min > max) and `u0 + 1` read out of
+        // bounds. Sampling must stay total and return the lone pixel.
+        let mut one = RgbaImage::new(1, 1);
+        one.put_pixel(0, 0, Rgba([10, 20, 30, 40]));
+        assert_eq!(sample_bilinear(&one, 0.0, 0.0), [10, 20, 30, 40]);
+        assert_eq!(sample_bilinear(&one, 5.0, 5.0), [10, 20, 30, 40]);
+
+        let mut strip = RgbaImage::new(1, 4);
+        strip.put_pixel(0, 2, Rgba([1, 2, 3, 4]));
+        let _ = sample_bilinear(&strip, 0.0, 2.0);
+
+        // And the full disc projection over a 1px source must not panic.
+        let _ = project_radar_disc(32, 32, &RgbaImage::new(1, 1), None, None, &RadarPlaneParams::default());
     }
 }

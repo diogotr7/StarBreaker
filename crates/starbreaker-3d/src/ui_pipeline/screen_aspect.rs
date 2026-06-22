@@ -120,7 +120,7 @@ fn collect_render_target_vertices(
         if !node_matches {
             continue;
         }
-        let start = submesh.first_index as usize;
+        let start = (submesh.first_index as usize).min(mesh.indices.len());
         let end = start.saturating_add(submesh.num_indices as usize).min(mesh.indices.len());
         seen.extend(mesh.indices[start..end].iter().copied());
     }

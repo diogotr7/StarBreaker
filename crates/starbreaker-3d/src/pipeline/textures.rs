@@ -874,13 +874,13 @@ pub(super) fn load_material_textures(
                         );
                         None
                     } else {
-                        cached_load(p4k, path, mip, png_cache, load_normal_texture)
+                        cached_load_keyed(p4k, path, mip, "@n", png_cache, load_normal_texture)
                     }
                 } else {
-                    cached_load(p4k, path, mip, png_cache, load_normal_texture)
+                    cached_load_keyed(p4k, path, mip, "@n", png_cache, load_normal_texture)
                 }
             } else {
-                cached_load(p4k, path, mip, png_cache, load_normal_texture)
+                cached_load_keyed(p4k, path, mip, "@n", png_cache, load_normal_texture)
             }
         } else {
             None

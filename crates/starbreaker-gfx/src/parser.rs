@@ -155,6 +155,14 @@ impl<'a> BitReader<'a> {
 
     fn read_signed(&mut self, bit_count: u8) -> GfxResult<i32> {
         let unsigned = self.read_unsigned(bit_count)?;
+        // A zero-width field is a legal encoding for the value 0 (e.g. a MATRIX
+        // with NTranslateBits == 0). Guard it explicitly: `unsigned << 32` is
+        // UB-shaped — it panics under debug overflow-checks and is a no-op mask
+        // in release, both wrong. `parse_rect` rejects 0 as malformed for RECT,
+        // but the MATRIX scale/translate paths must accept it as 0.
+        if bit_count == 0 {
+            return Ok(0);
+        }
         let shift = 32 - u32::from(bit_count);
         Ok(((unsigned << shift) as i32) >> shift)
     }
@@ -806,5 +814,29 @@ mod tests {
     fn patch_len(bytes: &mut [u8]) {
         let len = bytes.len() as u32;
         bytes[4..8].copy_from_slice(&len.to_le_bytes());
+    }
+
+    #[test]
+    fn read_signed_zero_width_field_is_zero_not_a_shift_overflow() {
+        // A 0-bit signed field is the legal encoding of 0. It must NOT evaluate
+        // `unsigned << 32` (panics under debug overflow-checks, masks to a no-op
+        // in release). Regression for the matrix translate/scale-bits path.
+        let mut reader = BitReader::new(&[0xFF, 0xFF], 0);
+        assert_eq!(reader.read_signed(0).unwrap(), 0);
+    }
+
+    #[test]
+    fn parse_matrix_accepts_zero_translate_and_rotate_bits() {
+        // Bit layout (MSB-first): has_scale=0, n_rotate_bits=00000,
+        // n_translate_bits=00000 -> 11 bits, all zero. Decodes to identity
+        // scale, zero skew, zero translation. Before the read_signed(0) guard
+        // this panicked on the unguarded n_translate_bits == 0 read.
+        let matrix = parse_matrix(&[0x00, 0x00], 0).expect("zero-bit matrix is valid");
+        assert_eq!(matrix.scale_x, 1.0);
+        assert_eq!(matrix.scale_y, 1.0);
+        assert_eq!(matrix.skew0, 0.0);
+        assert_eq!(matrix.skew1, 0.0);
+        assert_eq!(matrix.translate_x, 0);
+        assert_eq!(matrix.translate_y, 0);
     }
 }

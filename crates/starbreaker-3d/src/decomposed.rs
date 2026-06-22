@@ -3414,7 +3414,7 @@ fn derive_manufacturer_id(root_entity_name: &str) -> Option<String> {
     const KNOWN_PREFIXES: &[&str] = &[
         "drak", "rsi", "aegs", "anvl", "misc", "crus", "orig", "xian", "banu",
         "krgn", "tmbl", "gama", "grin", "btc", "koa", "expl", "cnou", "vncl",
-        "espe", "gatc", "argo", "ksar", "drak", "kgnp",
+        "espe", "gatc", "argo", "ksar", "kgnp",
     ];
     if KNOWN_PREFIXES.iter().any(|known| *known == lower.as_str()) {
         Some(lower)
