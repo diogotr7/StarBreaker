@@ -13,9 +13,52 @@ use starbreaker_p4k::MappedP4k;
 use crate::mtl;
 use crate::types::{MaterialTextures, TextureTransformInfo};
 
-use super::{datacore_path_to_p4k, try_load_mtl, P4kSiblingReader};
+use super::{P4kSiblingReader, datacore_path_to_p4k, try_load_mtl};
 
 pub(crate) type PngCache = std::collections::HashMap<String, Option<Vec<u8>>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RoughnessTextureLoadError {
+    MissingSourceDds,
+    ReadSourceDds,
+    InvalidDds,
+    MissingAlphaMips,
+    DecodeAlphaMip,
+    EncodePng,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RoughnessTextureLoad {
+    pub(crate) png: Vec<u8>,
+    pub(crate) grayscale_png: Vec<u8>,
+    pub(crate) requested_mip: u32,
+    pub(crate) selected_mip: u32,
+    pub(crate) mip_selection: &'static str,
+    pub(crate) alpha_mip_format: &'static str,
+    pub(crate) alpha_mip_layout: &'static str,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) alpha_mip_count: u32,
+    pub(crate) smoothness_min: u8,
+    pub(crate) smoothness_max: u8,
+    pub(crate) smoothness_mean: u8,
+    pub(crate) roughness_min: u8,
+    pub(crate) roughness_max: u8,
+    pub(crate) roughness_mean: u8,
+}
+
+impl RoughnessTextureLoadError {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingSourceDds => "missing_source_dds",
+            Self::ReadSourceDds => "read_source_dds",
+            Self::InvalidDds => "invalid_dds",
+            Self::MissingAlphaMips => "missing_alpha_mips",
+            Self::DecodeAlphaMip => "decode_alpha_mip",
+            Self::EncodePng => "encode_png",
+        }
+    }
+}
 
 pub(super) fn empty_material_textures(len: usize) -> MaterialTextures {
     MaterialTextures {
@@ -39,11 +82,11 @@ pub(super) fn push_fallback_tag(tags: &mut Vec<String>, tag: &str) {
     }
 }
 
-pub(super) fn make_texture_transform(scale: [f32; 2], tex_coord: u32) -> Option<TextureTransformInfo> {
-    if tex_coord == 0
-        && (scale[0] - 1.0).abs() <= 1e-4
-        && (scale[1] - 1.0).abs() <= 1e-4
-    {
+pub(super) fn make_texture_transform(
+    scale: [f32; 2],
+    tex_coord: u32,
+) -> Option<TextureTransformInfo> {
+    if tex_coord == 0 && (scale[0] - 1.0).abs() <= 1e-4 && (scale[1] - 1.0).abs() <= 1e-4 {
         None
     } else {
         Some(TextureTransformInfo { scale, tex_coord })
@@ -51,12 +94,17 @@ pub(super) fn make_texture_transform(scale: [f32; 2], tex_coord: u32) -> Option<
 }
 
 pub(super) fn material_uses_secondary_uv(material: &mtl::SubMaterial) -> bool {
-    material.public_param_f32(&["UseUV2ForStencil"]).is_some_and(|value| value > 0.0)
+    material
+        .public_param_f32(&["UseUV2ForStencil"])
+        .is_some_and(|value| value > 0.0)
         || material.string_gen_mask.contains("SECOND_UVS")
         || material.string_gen_mask.contains("EMISSIVE_SECOND_UVS")
 }
 
-pub(super) fn uniform_scale_transform(material: &mtl::SubMaterial, names: &[&str]) -> Option<[f32; 2]> {
+pub(super) fn uniform_scale_transform(
+    material: &mtl::SubMaterial,
+    names: &[&str],
+) -> Option<[f32; 2]> {
     material
         .public_param_f32(names)
         .map(|value| value.abs())
@@ -70,7 +118,11 @@ pub(super) fn simple_texture_transform(
 ) -> Option<TextureTransformInfo> {
     use mtl::TextureSemanticRole;
 
-    let tex_coord = if material_uses_secondary_uv(material) { 1 } else { 0 };
+    let tex_coord = if material_uses_secondary_uv(material) {
+        1
+    } else {
+        0
+    };
     let scale = match role {
         Some(TextureSemanticRole::ScreenPixelLayout) => {
             let sx = material
@@ -89,31 +141,33 @@ pub(super) fn simple_texture_transform(
         )
         .or_else(|| material.primary_uv_tiling().map(|value| [value, value]))
         .unwrap_or([1.0, 1.0]),
-        Some(TextureSemanticRole::BlendMask) => uniform_scale_transform(
-            material,
-            &["BlendMaskTiling", "Tiling", "LayerTiling"],
-        )
-        .or_else(|| material.primary_uv_tiling().map(|value| [value, value]))
-        .unwrap_or([1.0, 1.0]),
+        Some(TextureSemanticRole::BlendMask) => {
+            uniform_scale_transform(material, &["BlendMaskTiling", "Tiling", "LayerTiling"])
+                .or_else(|| material.primary_uv_tiling().map(|value| [value, value]))
+                .unwrap_or([1.0, 1.0])
+        }
         Some(TextureSemanticRole::ScreenMask)
         | Some(TextureSemanticRole::WearGloss)
         | Some(TextureSemanticRole::Dirt)
-        | Some(TextureSemanticRole::PatternMask) => uniform_scale_transform(
-            material,
-            &["GlassTiling", "Tiling", "LayerTiling"],
-        )
-        .or_else(|| material.primary_uv_tiling().map(|value| [value, value]))
-        .unwrap_or([1.0, 1.0]),
-        Some(TextureSemanticRole::WearMask)
-        | Some(TextureSemanticRole::HalControl) => uniform_scale_transform(
-            material,
-            &["Tiling", "LayerTiling"],
-        )
-        .or_else(|| material.primary_uv_tiling().map(|value| [value, value]))
-        .unwrap_or([1.0, 1.0]),
+        | Some(TextureSemanticRole::PatternMask) => {
+            uniform_scale_transform(material, &["GlassTiling", "Tiling", "LayerTiling"])
+                .or_else(|| material.primary_uv_tiling().map(|value| [value, value]))
+                .unwrap_or([1.0, 1.0])
+        }
+        Some(TextureSemanticRole::WearMask) | Some(TextureSemanticRole::HalControl) => {
+            uniform_scale_transform(material, &["Tiling", "LayerTiling"])
+                .or_else(|| material.primary_uv_tiling().map(|value| [value, value]))
+                .unwrap_or([1.0, 1.0])
+        }
         _ => uniform_scale_transform(
             material,
-            &["StencilTiling", "GlassTiling", "Tiling", "LayerTiling", "MacroTiling"],
+            &[
+                "StencilTiling",
+                "GlassTiling",
+                "Tiling",
+                "LayerTiling",
+                "MacroTiling",
+            ],
         )
         .or_else(|| material.primary_uv_tiling().map(|value| [value, value]))
         .unwrap_or([1.0, 1.0]),
@@ -139,11 +193,20 @@ pub(super) fn encode_png(image: &image::RgbaImage) -> Option<Vec<u8>> {
     Some(png_buf)
 }
 
-pub(super) fn make_solid_image(width: u32, height: u32, color: [f32; 3], alpha: u8) -> image::RgbaImage {
+pub(super) fn make_solid_image(
+    width: u32,
+    height: u32,
+    color: [f32; 3],
+    alpha: u8,
+) -> image::RgbaImage {
     let red = (color[0].clamp(0.0, 1.0) * 255.0).round() as u8;
     let green = (color[1].clamp(0.0, 1.0) * 255.0).round() as u8;
     let blue = (color[2].clamp(0.0, 1.0) * 255.0).round() as u8;
-    image::RgbaImage::from_pixel(width.max(1), height.max(1), image::Rgba([red, green, blue, alpha]))
+    image::RgbaImage::from_pixel(
+        width.max(1),
+        height.max(1),
+        image::Rgba([red, green, blue, alpha]),
+    )
 }
 
 pub(super) fn sample_pixel(
@@ -156,14 +219,12 @@ pub(super) fn sample_pixel(
     let src_x = if target_width <= 1 || image.width() <= 1 {
         0
     } else {
-        x.saturating_mul(image.width().saturating_sub(1))
-            / target_width.saturating_sub(1)
+        x.saturating_mul(image.width().saturating_sub(1)) / target_width.saturating_sub(1)
     };
     let src_y = if target_height <= 1 || image.height() <= 1 {
         0
     } else {
-        y.saturating_mul(image.height().saturating_sub(1))
-            / target_height.saturating_sub(1)
+        y.saturating_mul(image.height().saturating_sub(1)) / target_height.saturating_sub(1)
     };
     *image.get_pixel(
         src_x.min(image.width().saturating_sub(1)),
@@ -264,7 +325,8 @@ pub(super) fn build_layered_base_color_texture(
     png_cache: &mut PngCache,
 ) -> Option<Vec<u8>> {
     let base_layer = material.layers.first()?;
-    let base_image = build_layer_source_image(p4k, material, base_layer, palette, mip, png_cache, None)?;
+    let base_image =
+        build_layer_source_image(p4k, material, base_layer, palette, mip, png_cache, None)?;
     let mut output = base_image.clone();
 
     if let Some(overlay_layer) = material.layers.get(1) {
@@ -298,7 +360,8 @@ pub(super) fn build_layered_base_color_texture(
         for y in 0..output.height() {
             for x in 0..output.width() {
                 let base_pixel = *output.get_pixel(x, y);
-                let overlay_pixel = sample_pixel(&overlay_image, x, y, output.width(), output.height());
+                let overlay_pixel =
+                    sample_pixel(&overlay_image, x, y, output.width(), output.height());
                 let mask = blend_mask
                     .as_ref()
                     .map(|image| sample_luma(image, x, y, output.width(), output.height()))
@@ -359,7 +422,8 @@ pub(super) fn build_illum_blend_texture(
     for y in 0..output.height() {
         for x in 0..output.width() {
             let base_pixel = sample_pixel(&base_image, x, y, output.width(), output.height());
-            let alternate_pixel = sample_pixel(&alternate_image, x, y, output.width(), output.height());
+            let alternate_pixel =
+                sample_pixel(&alternate_image, x, y, output.width(), output.height());
             let mask = blend_mask
                 .as_ref()
                 .map(|image| sample_luma(image, x, y, output.width(), output.height()))
@@ -370,12 +434,12 @@ pub(super) fn build_illum_blend_texture(
                 x,
                 y,
                 image::Rgba([
-                    (f32::from(base_pixel[0]) * inv + f32::from(alternate_pixel[0]) * mask)
-                        .round() as u8,
-                    (f32::from(base_pixel[1]) * inv + f32::from(alternate_pixel[1]) * mask)
-                        .round() as u8,
-                    (f32::from(base_pixel[2]) * inv + f32::from(alternate_pixel[2]) * mask)
-                        .round() as u8,
+                    (f32::from(base_pixel[0]) * inv + f32::from(alternate_pixel[0]) * mask).round()
+                        as u8,
+                    (f32::from(base_pixel[1]) * inv + f32::from(alternate_pixel[1]) * mask).round()
+                        as u8,
+                    (f32::from(base_pixel[2]) * inv + f32::from(alternate_pixel[2]) * mask).round()
+                        as u8,
                     255,
                 ]),
             );
@@ -425,11 +489,20 @@ pub(super) fn build_stencil_fallback_texture(
     let (width, height) = base_image
         .as_ref()
         .map(|image| (image.width(), image.height()))
-        .or_else(|| stencil_image.as_ref().map(|image| (image.width(), image.height())))
-        .or_else(|| breakup_image.as_ref().map(|image| (image.width(), image.height())))
+        .or_else(|| {
+            stencil_image
+                .as_ref()
+                .map(|image| (image.width(), image.height()))
+        })
+        .or_else(|| {
+            breakup_image
+                .as_ref()
+                .map(|image| (image.width(), image.height()))
+        })
         .unwrap_or((64, 64));
 
-    let mut output = base_image.unwrap_or_else(|| make_solid_image(width, height, [0.0, 0.0, 0.0], 0));
+    let mut output =
+        base_image.unwrap_or_else(|| make_solid_image(width, height, [0.0, 0.0, 0.0], 0));
     let stencil_color = material
         .public_param_rgb(&[
             "StencilDiffuseColor1",
@@ -465,12 +538,8 @@ pub(super) fn build_stencil_fallback_texture(
             let mut base_pixel = *output.get_pixel(x, y);
 
             if material.is_decal() && base_color_png.is_none() {
-                base_pixel = image::Rgba([
-                    color[0],
-                    color[1],
-                    color[2],
-                    (blend * 255.0).round() as u8,
-                ]);
+                base_pixel =
+                    image::Rgba([color[0], color[1], color[2], (blend * 255.0).round() as u8]);
             } else {
                 let inv = 1.0 - blend;
                 base_pixel = image::Rgba([
@@ -498,8 +567,10 @@ pub(super) fn build_screen_placeholder_textures(
     pixel_layout_png: Option<Vec<u8>>,
 ) -> Option<(Vec<u8>, Vec<u8>)> {
     let family = material.shader_family();
-    if !matches!(family, mtl::ShaderFamily::DisplayScreen | mtl::ShaderFamily::UiPlane)
-        && !material.has_virtual_input("$RenderToTexture")
+    if !matches!(
+        family,
+        mtl::ShaderFamily::DisplayScreen | mtl::ShaderFamily::UiPlane
+    ) && !material.has_virtual_input("$RenderToTexture")
     {
         return None;
     }
@@ -509,7 +580,11 @@ pub(super) fn build_screen_placeholder_textures(
     let (width, height) = support_mask
         .as_ref()
         .map(|image| (image.width(), image.height()))
-        .or_else(|| pixel_layout.as_ref().map(|image| (image.width(), image.height())))
+        .or_else(|| {
+            pixel_layout
+                .as_ref()
+                .map(|image| (image.width(), image.height()))
+        })
         .unwrap_or((96, 64));
 
     let back_color = material
@@ -597,9 +672,15 @@ pub(super) fn build_screen_placeholder_textures(
                 x,
                 y,
                 image::Rgba([
-                    (accent_color[0] * emissive_mix * 255.0).clamp(0.0, 255.0).round() as u8,
-                    (accent_color[1] * emissive_mix * 255.0).clamp(0.0, 255.0).round() as u8,
-                    (accent_color[2] * emissive_mix * 255.0).clamp(0.0, 255.0).round() as u8,
+                    (accent_color[0] * emissive_mix * 255.0)
+                        .clamp(0.0, 255.0)
+                        .round() as u8,
+                    (accent_color[1] * emissive_mix * 255.0)
+                        .clamp(0.0, 255.0)
+                        .round() as u8,
+                    (accent_color[2] * emissive_mix * 255.0)
+                        .clamp(0.0, 255.0)
+                        .round() as u8,
                     255,
                 ]),
             );
@@ -643,8 +724,13 @@ pub(super) fn convert_png_to_occlusion(png_bytes: &[u8], invert: bool) -> Option
     let source = decode_png(png_bytes)?;
     let mut image = image::RgbaImage::new(source.width(), source.height());
     for (x, y, pixel) in source.enumerate_pixels() {
-        let luminance = ((u16::from(pixel[0]) + u16::from(pixel[1]) + u16::from(pixel[2])) / 3) as u8;
-        let occlusion = if invert { 255u8.saturating_sub(luminance) } else { luminance };
+        let luminance =
+            ((u16::from(pixel[0]) + u16::from(pixel[1]) + u16::from(pixel[2])) / 3) as u8;
+        let occlusion = if invert {
+            255u8.saturating_sub(luminance)
+        } else {
+            luminance
+        };
         image.put_pixel(x, y, image::Rgba([occlusion, occlusion, occlusion, 255]));
     }
     encode_png(&image)
@@ -710,7 +796,8 @@ pub(super) fn load_material_textures(
             mip,
             png_cache,
         );
-        let screen_placeholder = build_screen_placeholder_textures(material, screen_mask, pixel_layout);
+        let screen_placeholder =
+            build_screen_placeholder_textures(material, screen_mask, pixel_layout);
 
         let direct_diffuse = material
             .diffuse_tex
@@ -740,13 +827,17 @@ pub(super) fn load_material_textures(
         }
 
         if matches!(material.shader_family(), mtl::ShaderFamily::Illum) {
-            if let Some(blended) = build_illum_blend_texture(p4k, material, diffuse.as_ref(), mip, png_cache) {
+            if let Some(blended) =
+                build_illum_blend_texture(p4k, material, diffuse.as_ref(), mip, png_cache)
+            {
                 diffuse = Some(blended);
                 push_fallback_tag(&mut fallback_tags, "illum_blend_fallback");
             }
         }
 
-        if let Some(stencil) = build_stencil_fallback_texture(p4k, material, palette, diffuse.as_ref(), mip, png_cache) {
+        if let Some(stencil) =
+            build_stencil_fallback_texture(p4k, material, palette, diffuse.as_ref(), mip, png_cache)
+        {
             diffuse = Some(stencil);
             push_fallback_tag(&mut fallback_tags, "stencil_fallback");
         }
@@ -758,8 +849,8 @@ pub(super) fn load_material_textures(
             }
         }
 
-        let normal_path = if let Some(path) = &material.normal_tex {
-            Some(path.clone())
+        let normal_path = if let Some(path) = material_normal_gloss_path(material) {
+            Some(path)
         } else {
             material.layers.first().and_then(|layer| {
                 let p4k_path = datacore_path_to_p4k(&layer.path);
@@ -767,7 +858,7 @@ pub(super) fn load_material_textures(
                     layer_mtl
                         .materials
                         .first()
-                        .and_then(|layer_material| layer_material.normal_tex.clone())
+                        .and_then(material_normal_gloss_path)
                 })
             })
         };
@@ -778,7 +869,9 @@ pub(super) fn load_material_textures(
             if !experimental_textures {
                 if let Some(diffuse_path) = material.diffuse_tex.as_ref() {
                     if !textures_share_uv_space(diffuse_path, path) {
-                        log::debug!("  skipping mismatched normal: diffuse={diffuse_path}, normal={path}");
+                        log::debug!(
+                            "  skipping mismatched normal: diffuse={diffuse_path}, normal={path}"
+                        );
                         None
                     } else {
                         cached_load(p4k, path, mip, png_cache, load_normal_texture)
@@ -796,43 +889,15 @@ pub(super) fn load_material_textures(
         let roughness = if !include_normals {
             None
         } else if let Some(path) = normal_path.as_ref() {
-            if !path.contains("_ddna") {
+            if !texture_path_is_ddna_normal_gloss(path) {
+                None
+            } else if !experimental_textures
+                && let Some(diffuse_path) = material.diffuse_tex.as_ref()
+                && !textures_share_uv_space(diffuse_path, path)
+            {
                 None
             } else {
-                if !experimental_textures {
-                    if let Some(diffuse_path) = material.diffuse_tex.as_ref() {
-                        if !textures_share_uv_space(diffuse_path, path) {
-                            None
-                        } else {
-                            let cache_key = format!("{path}@roughness_mip{mip}");
-                            if let Some(cached) = png_cache.get(&cache_key) {
-                                cached.clone()
-                            } else {
-                                let result = load_roughness_texture(p4k, path, mip);
-                                png_cache.insert(cache_key, result.clone());
-                                result
-                            }
-                        }
-                    } else {
-                        let cache_key = format!("{path}@roughness_mip{mip}");
-                        if let Some(cached) = png_cache.get(&cache_key) {
-                            cached.clone()
-                        } else {
-                            let result = load_roughness_texture(p4k, path, mip);
-                            png_cache.insert(cache_key, result.clone());
-                            result
-                        }
-                    }
-                } else {
-                    let cache_key = format!("{path}@roughness_mip{mip}");
-                    if let Some(cached) = png_cache.get(&cache_key) {
-                        cached.clone()
-                    } else {
-                        let result = load_roughness_texture(p4k, path, mip);
-                        png_cache.insert(cache_key, result.clone());
-                        result
-                    }
-                }
+                cached_load_keyed(p4k, path, mip, "@r", png_cache, load_roughness_texture)
             }
         } else {
             None
@@ -841,78 +906,118 @@ pub(super) fn load_material_textures(
         let emissive = build_emissive_texture(
             material,
             diffuse.as_ref(),
-            screen_placeholder.as_ref().map(|(_, emissive)| emissive.clone()),
+            screen_placeholder
+                .as_ref()
+                .map(|(_, emissive)| emissive.clone()),
         );
         if emissive.is_some() {
-            push_fallback_tag(&mut fallback_tags, if material.has_virtual_input("$RenderToTexture") {
-                "screen_emissive_placeholder"
-            } else {
-                "emissive_texture"
-            });
-        }
-
-        let occlusion = build_occlusion_texture(p4k, material, mip, png_cache).map(|(bytes, source)| {
             push_fallback_tag(
                 &mut fallback_tags,
-                if source == "height" {
-                    "occlusion_from_height"
+                if material.has_virtual_input("$RenderToTexture") {
+                    "screen_emissive_placeholder"
                 } else {
-                    "occlusion_from_mask"
+                    "emissive_texture"
                 },
             );
-            bytes
-        });
+        }
+
+        let occlusion =
+            build_occlusion_texture(p4k, material, mip, png_cache).map(|(bytes, source)| {
+                push_fallback_tag(
+                    &mut fallback_tags,
+                    if source == "height" {
+                        "occlusion_from_height"
+                    } else {
+                        "occlusion_from_mask"
+                    },
+                );
+                bytes
+            });
 
         textures.diffuse.push(diffuse.clone());
         textures.normal.push(normal.clone());
         textures.roughness.push(roughness.clone());
         textures.emissive.push(emissive.clone());
         textures.occlusion.push(occlusion.clone());
-        textures.diffuse_transform.push(
-            diffuse
-                .as_ref()
-                .and_then(|_| simple_texture_transform(material, Some(mtl::TextureSemanticRole::BaseColor))),
-        );
-        textures.normal_transform.push(
-            normal
-                .as_ref()
-                .and_then(|_| simple_texture_transform(material, Some(mtl::TextureSemanticRole::NormalGloss))),
-        );
-        textures.roughness_transform.push(
-            roughness
-                .as_ref()
-                .and_then(|_| simple_texture_transform(material, Some(mtl::TextureSemanticRole::Height))),
-        );
-        textures.emissive_transform.push(
-            emissive
-                .as_ref()
-                .and_then(|_| {
-                    if matches!(material.shader_family(), mtl::ShaderFamily::DisplayScreen | mtl::ShaderFamily::UiPlane)
-                        || material.has_virtual_input("$RenderToTexture")
-                    {
-                        simple_texture_transform(material, Some(mtl::TextureSemanticRole::ScreenPixelLayout))
-                            .or_else(|| simple_texture_transform(material, Some(mtl::TextureSemanticRole::ScreenMask)))
-                    } else {
-                        simple_texture_transform(material, Some(mtl::TextureSemanticRole::BaseColor))
-                    }
-                }),
-        );
-        textures.occlusion_transform.push(
-            occlusion
-                .as_ref()
-                .and_then(|_| {
-                    if material.decoded_string_gen_mask().has_parallax_occlusion_mapping {
-                        simple_texture_transform(material, Some(mtl::TextureSemanticRole::Height))
-                    } else {
-                        simple_texture_transform(material, Some(mtl::TextureSemanticRole::BlendMask))
-                            .or_else(|| simple_texture_transform(material, Some(mtl::TextureSemanticRole::Dirt)))
-                    }
-                }),
-        );
+        textures
+            .diffuse_transform
+            .push(diffuse.as_ref().and_then(|_| {
+                simple_texture_transform(material, Some(mtl::TextureSemanticRole::BaseColor))
+            }));
+        textures
+            .normal_transform
+            .push(normal.as_ref().and_then(|_| {
+                simple_texture_transform(material, Some(mtl::TextureSemanticRole::NormalGloss))
+            }));
+        textures
+            .roughness_transform
+            .push(roughness.as_ref().and_then(|_| {
+                simple_texture_transform(material, Some(mtl::TextureSemanticRole::NormalGloss))
+            }));
+        textures
+            .emissive_transform
+            .push(emissive.as_ref().and_then(|_| {
+                if matches!(
+                    material.shader_family(),
+                    mtl::ShaderFamily::DisplayScreen | mtl::ShaderFamily::UiPlane
+                ) || material.has_virtual_input("$RenderToTexture")
+                {
+                    simple_texture_transform(
+                        material,
+                        Some(mtl::TextureSemanticRole::ScreenPixelLayout),
+                    )
+                    .or_else(|| {
+                        simple_texture_transform(
+                            material,
+                            Some(mtl::TextureSemanticRole::ScreenMask),
+                        )
+                    })
+                } else {
+                    simple_texture_transform(material, Some(mtl::TextureSemanticRole::BaseColor))
+                }
+            }));
+        textures
+            .occlusion_transform
+            .push(occlusion.as_ref().and_then(|_| {
+                if material
+                    .decoded_string_gen_mask()
+                    .has_parallax_occlusion_mapping
+                {
+                    simple_texture_transform(material, Some(mtl::TextureSemanticRole::Height))
+                } else {
+                    simple_texture_transform(material, Some(mtl::TextureSemanticRole::BlendMask))
+                        .or_else(|| {
+                            simple_texture_transform(material, Some(mtl::TextureSemanticRole::Dirt))
+                        })
+                }
+            }));
         textures.bundled_fallbacks.push(fallback_tags);
     }
 
     textures
+}
+
+fn material_normal_gloss_path(material: &mtl::SubMaterial) -> Option<String> {
+    if let Some(path) = material
+        .normal_tex
+        .as_deref()
+        .filter(|path| texture_path_looks_normal_gloss(path))
+    {
+        return Some(path.to_string());
+    }
+
+    material
+        .semantic_texture_slots()
+        .into_iter()
+        .find(|binding| {
+            matches!(binding.role, mtl::TextureSemanticRole::NormalGloss)
+                && texture_path_looks_normal_gloss(&binding.path)
+        })
+        .map(|binding| binding.path)
+}
+
+fn texture_path_is_ddna_normal_gloss(path: &str) -> bool {
+    mtl::texture_path_has_file_stem_token(path, &["ddna"])
 }
 
 /// Check if a diffuse and normal texture are from the same texture set (same UV space).
@@ -952,9 +1057,10 @@ pub(crate) fn cached_load(
 
 /// Like [`cached_load`] but appends `key_discriminator` to the cache key so the
 /// same texture path decoded with different loaders (e.g. a Generic albedo vs a
-/// Normal-gloss map) occupies distinct cache slots instead of aliasing to one
-/// "first decode wins" entry. The discriminator is `""` for the legacy/Generic
-/// key and a short tag (e.g. `"@n"`) for other flavors.
+/// Normal-gloss map vs a derived DDNA roughness map) occupies distinct cache
+/// slots instead of aliasing to one "first decode wins" entry. The discriminator
+/// is `""` for the legacy/Generic key and a short tag (e.g. `"@n"` for Normal,
+/// `"@r"` for derived Roughness) for other flavors.
 pub(crate) fn cached_load_keyed(
     p4k: &MappedP4k,
     path: &str,
@@ -983,7 +1089,11 @@ pub(super) fn encode_png_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Option<
     Some(png_buf)
 }
 
-pub(crate) fn load_diffuse_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u32) -> Option<Vec<u8>> {
+pub(crate) fn load_diffuse_texture(
+    p4k: &MappedP4k,
+    tif_path: &str,
+    mip_level: u32,
+) -> Option<Vec<u8>> {
     if tif_path.starts_with('$') {
         return None;
     }
@@ -1016,15 +1126,18 @@ pub(crate) fn load_diffuse_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u
 /// The RGB channels come from the decoded normal texture. When sibling alpha mips
 /// are present, their smoothness values are copied into the PNG alpha channel so
 /// downstream consumers can derive roughness without Rust-side reinterpretation.
-pub(crate) fn load_normal_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u32) -> Option<Vec<u8>> {
+pub(crate) fn load_normal_texture(
+    p4k: &MappedP4k,
+    tif_path: &str,
+    mip_level: u32,
+) -> Option<Vec<u8>> {
     if tif_path.starts_with('$') {
         return None;
     }
 
     // Only load actual normal maps (_ddna/_ddn), not specular/other textures
     // that happen to be in TexSlot2.
-    let lower = tif_path.to_lowercase();
-    if !lower.contains("_ddna") && !lower.contains("_ddn.") && !lower.contains("_ddn_") {
+    if !texture_path_looks_normal_gloss(tif_path) {
         log::debug!("  skipping non-normal in TexSlot2: {tif_path}");
         return None;
     }
@@ -1044,14 +1157,16 @@ pub(crate) fn load_normal_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u3
     };
     let dds = DdsFile::from_split(&base_bytes, &sibling_reader).ok()?;
 
-    let format = starbreaker_dds::resolve_format(
-        &dds.header.pixel_format,
-        dds.dxt10_header.as_ref(),
-    );
+    let format =
+        starbreaker_dds::resolve_format(&dds.header.pixel_format, dds.dxt10_header.as_ref());
     let (dw, dh) = ({ dds.header.width }, { dds.header.height });
     log::debug!("  normal: {tif_path} → {format:?}, {dw}x{dh}");
 
-    let mip = (mip_level as usize).min(dds.mip_count().saturating_sub(1));
+    let mip = select_normal_texture_mip(
+        mip_level as usize,
+        dds.mip_count(),
+        dds.alpha_mip_data.len(),
+    );
     let (w, h) = dds.dimensions(mip);
     let mut rgba = dds.decode_rgba(mip).ok()?;
 
@@ -1070,54 +1185,337 @@ pub(crate) fn load_normal_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u3
 /// Extract per-pixel roughness from the alpha mips of a _ddna normal map DDS.
 ///
 /// CryEngine stores smoothness in separate sibling files (.7a, .6a, ...) as BC4 compressed.
-/// We convert smoothness → roughness (1-smoothness) and pack into a glTF metallicRoughness
-/// texture: R=0, G=roughness, B=metallic(0), A=255.
-pub(crate) fn load_roughness_texture(p4k: &MappedP4k, tif_path: &str, mip_level: u32) -> Option<Vec<u8>> {
+/// We convert smoothness → perceptual roughness (`sqrt(1-smoothness)`) and pack into a glTF metallicRoughness
+/// texture: R=0, G=roughness, B=metallic neutral(1), A=255.
+pub(crate) fn load_roughness_texture(
+    p4k: &MappedP4k,
+    tif_path: &str,
+    mip_level: u32,
+) -> Option<Vec<u8>> {
+    load_roughness_texture_result(p4k, tif_path, mip_level)
+        .ok()
+        .map(|loaded| loaded.png)
+}
+
+pub(crate) fn load_roughness_texture_result(
+    p4k: &MappedP4k,
+    tif_path: &str,
+    mip_level: u32,
+) -> Result<RoughnessTextureLoad, RoughnessTextureLoadError> {
     let dds_path = tif_path
         .strip_suffix(".tif")
         .map(|base| format!("{base}.dds"))
         .unwrap_or_else(|| tif_path.to_string());
 
     let p4k_path = datacore_path_to_p4k(&dds_path);
-    let entry = p4k.entry_case_insensitive(&p4k_path)?;
-    let base_bytes = p4k.read(entry).ok()?;
+    let entry = p4k
+        .entry_case_insensitive(&p4k_path)
+        .ok_or(RoughnessTextureLoadError::MissingSourceDds)?;
+    let base_bytes = p4k
+        .read(entry)
+        .map_err(|_| RoughnessTextureLoadError::ReadSourceDds)?;
     let sibling_reader = P4kSiblingReader {
         p4k,
         base_path: p4k_path,
     };
-    let dds = DdsFile::from_split(&base_bytes, &sibling_reader).ok()?;
+    let dds = DdsFile::from_split(&base_bytes, &sibling_reader)
+        .map_err(|_| RoughnessTextureLoadError::InvalidDds)?;
 
     if !dds.has_alpha_mips() {
-        return None;
+        return Err(RoughnessTextureLoadError::MissingAlphaMips);
     }
 
-    let mip = (mip_level as usize).min(dds.alpha_mip_data.len().saturating_sub(1));
+    let requested_mip = mip_level as usize;
+    let mip = select_available_mip(requested_mip, dds.alpha_mip_data.len());
+    let mip_selection = if mip == requested_mip {
+        "requested"
+    } else {
+        "clamped_to_available_alpha_mip"
+    };
     let (w, h) = dds.dimensions(mip);
+    let alpha_mip_format = match dds
+        .alpha_mip_format_for_mip(mip)
+        .unwrap_or(starbreaker_dds::dds_file::AlphaMipFormat::Bc4Unorm)
+    {
+        starbreaker_dds::dds_file::AlphaMipFormat::Bc4Unorm => "bc4_unorm",
+        starbreaker_dds::dds_file::AlphaMipFormat::Bc4Snorm => "bc4_snorm",
+        starbreaker_dds::dds_file::AlphaMipFormat::R8Unorm => "r8_unorm",
+    };
+    let alpha_mip_layout = match dds.alpha_mip_layout_for_mip(mip) {
+        Some(starbreaker_dds::dds_file::AlphaMipLayout::NumberedSibling) => "numbered_sibling",
+        Some(starbreaker_dds::dds_file::AlphaMipLayout::HeaderedTail) => "headered_tail",
+        Some(starbreaker_dds::dds_file::AlphaMipLayout::RawTailSplit) => "raw_tail_split",
+        Some(starbreaker_dds::dds_file::AlphaMipLayout::RawSinglePayload) => "raw_single_payload",
+        None => "unknown",
+    };
 
-    let smoothness = dds.decode_alpha_mip(mip).ok()?;
-    let pixel_count = (w * h) as usize;
-    if smoothness.len() != pixel_count {
-        return None;
-    }
-
-    // Pack into glTF metallicRoughness format: R=0, G=roughness, B=metallic(0), A=255
-    let mut rgba = vec![0u8; pixel_count * 4];
-    for i in 0..pixel_count {
-        let roughness = 255 - smoothness[i]; // roughness = 1 - smoothness
-        rgba[i * 4] = 0;           // R: unused
-        rgba[i * 4 + 1] = roughness; // G: roughness
-        rgba[i * 4 + 2] = 0;       // B: metallic = 0
-        rgba[i * 4 + 3] = 255;     // A: unused
-    }
-
-    let img = image::RgbaImage::from_raw(w, h, rgba)?;
-    let mut png_buf = Vec::new();
-    img.write_to(
-        &mut std::io::Cursor::new(&mut png_buf),
-        image::ImageFormat::Png,
-    )
-    .ok()?;
-
-    Some(png_buf)
+    let smoothness = dds
+        .decode_alpha_mip(mip)
+        .map_err(|_| RoughnessTextureLoadError::DecodeAlphaMip)?;
+    let smoothness_stats =
+        smoothness_statistics(&smoothness).ok_or(RoughnessTextureLoadError::DecodeAlphaMip)?;
+    let roughness = smoothness_to_perceptual_roughness(&smoothness);
+    let roughness_stats =
+        byte_statistics(&roughness).ok_or(RoughnessTextureLoadError::EncodePng)?;
+    let png = pack_perceptual_roughness_as_metallic_roughness_png(w, h, &roughness)
+        .ok_or(RoughnessTextureLoadError::EncodePng)?;
+    let grayscale_png = pack_perceptual_roughness_as_grayscale_roughness_png(w, h, &roughness)
+        .ok_or(RoughnessTextureLoadError::EncodePng)?;
+    Ok(RoughnessTextureLoad {
+        png,
+        grayscale_png,
+        requested_mip: mip_level,
+        selected_mip: mip as u32,
+        mip_selection,
+        alpha_mip_format,
+        alpha_mip_layout,
+        width: w,
+        height: h,
+        alpha_mip_count: dds.alpha_mip_data.len() as u32,
+        smoothness_min: smoothness_stats.0,
+        smoothness_max: smoothness_stats.1,
+        smoothness_mean: smoothness_stats.2,
+        roughness_min: roughness_stats.0,
+        roughness_max: roughness_stats.1,
+        roughness_mean: roughness_stats.2,
+    })
 }
 
+fn select_normal_texture_mip(
+    requested_mip: usize,
+    color_mip_count: usize,
+    alpha_mip_count: usize,
+) -> usize {
+    let color_mip = select_available_mip(requested_mip, color_mip_count);
+    if alpha_mip_count == 0 {
+        color_mip
+    } else {
+        color_mip.min(alpha_mip_count.saturating_sub(1))
+    }
+}
+
+fn select_available_mip(requested_mip: usize, mip_count: usize) -> usize {
+    requested_mip.min(mip_count.saturating_sub(1))
+}
+
+fn smoothness_statistics(smoothness: &[u8]) -> Option<(u8, u8, u8)> {
+    byte_statistics(smoothness)
+}
+
+fn byte_statistics(values: &[u8]) -> Option<(u8, u8, u8)> {
+    let (&first, rest) = values.split_first()?;
+    let mut min = first;
+    let mut max = first;
+    let mut sum = u64::from(first);
+    for value in rest {
+        min = min.min(*value);
+        max = max.max(*value);
+        sum += u64::from(*value);
+    }
+    let mean = ((sum as f64) / (values.len() as f64)).round() as u8;
+    Some((min, max, mean))
+}
+
+#[cfg(test)]
+fn pack_smoothness_as_metallic_roughness_png(
+    width: u32,
+    height: u32,
+    smoothness: &[u8],
+) -> Option<Vec<u8>> {
+    let roughness = smoothness_to_perceptual_roughness(smoothness);
+    pack_perceptual_roughness_as_metallic_roughness_png(width, height, &roughness)
+}
+
+#[cfg(test)]
+fn pack_smoothness_as_grayscale_roughness_png(
+    width: u32,
+    height: u32,
+    smoothness: &[u8],
+) -> Option<Vec<u8>> {
+    let roughness = smoothness_to_perceptual_roughness(smoothness);
+    pack_perceptual_roughness_as_grayscale_roughness_png(width, height, &roughness)
+}
+
+fn smoothness_to_perceptual_roughness(smoothness: &[u8]) -> Vec<u8> {
+    smoothness
+        .iter()
+        .map(|value| smoothness_to_perceptual_roughness_byte(*value))
+        .collect()
+}
+
+fn pack_perceptual_roughness_as_metallic_roughness_png(
+    width: u32,
+    height: u32,
+    roughness: &[u8],
+) -> Option<Vec<u8>> {
+    let pixel_count = width.checked_mul(height)? as usize;
+    if roughness.len() != pixel_count {
+        return None;
+    }
+
+    // Pack into glTF metallicRoughness format: R=unused, G=roughness, B=neutral metallic, A=unused.
+    // Metallic is left at 1.0 so a metallicFactor authored from CryEngine specular
+    // data is not multiplied down to zero by this roughness-only derived texture.
+    let mut rgba = vec![0u8; pixel_count * 4];
+    for (index, roughness_value) in roughness.iter().enumerate() {
+        rgba[index * 4] = 0;
+        rgba[index * 4 + 1] = *roughness_value;
+        rgba[index * 4 + 2] = 255;
+        rgba[index * 4 + 3] = 255;
+    }
+
+    encode_png_rgba(width, height, rgba)
+}
+
+fn pack_perceptual_roughness_as_grayscale_roughness_png(
+    width: u32,
+    height: u32,
+    roughness: &[u8],
+) -> Option<Vec<u8>> {
+    let pixel_count = width.checked_mul(height)? as usize;
+    if roughness.len() != pixel_count {
+        return None;
+    }
+
+    let mut rgba = vec![0u8; pixel_count * 4];
+    for (index, roughness_value) in roughness.iter().enumerate() {
+        rgba[index * 4] = *roughness_value;
+        rgba[index * 4 + 1] = *roughness_value;
+        rgba[index * 4 + 2] = *roughness_value;
+        rgba[index * 4 + 3] = 255;
+    }
+
+    encode_png_rgba(width, height, rgba)
+}
+
+fn smoothness_to_perceptual_roughness_byte(smoothness: u8) -> u8 {
+    let smoothness = f32::from(smoothness) / 255.0;
+    ((1.0 - smoothness).sqrt() * 255.0).round() as u8
+}
+
+fn texture_path_looks_normal_gloss(path: &str) -> bool {
+    mtl::texture_path_looks_normal_gloss(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_material() -> mtl::SubMaterial {
+        mtl::SubMaterial {
+            name: String::new(),
+            shader: "HardSurface".to_string(),
+            diffuse: [1.0, 1.0, 1.0],
+            opacity: 1.0,
+            alpha_test: 0.0,
+            string_gen_mask: String::new(),
+            is_nodraw: false,
+            specular: [0.04, 0.04, 0.04],
+            shininess: 255.0,
+            emissive: [0.0, 0.0, 0.0],
+            glow: 0.0,
+            surface_type: String::new(),
+            diffuse_tex: None,
+            normal_tex: None,
+            layers: Vec::new(),
+            palette_tint: 0,
+            texture_slots: Vec::new(),
+            public_params: Vec::new(),
+            authored_attributes: Vec::new(),
+            authored_textures: Vec::new(),
+            authored_child_blocks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn material_normal_gloss_path_uses_semantic_ddna_slots_when_normal_tex_is_empty() {
+        let mut material = test_material();
+        material.texture_slots = vec![mtl::TextureSlotBinding {
+            slot: "TexSlot1".to_string(),
+            path: "objects/fps_weapons/weapons_v7/behr/p6lr/panel_ddna.tif".to_string(),
+            is_virtual: false,
+        }];
+
+        assert_eq!(
+            material_normal_gloss_path(&material),
+            Some("objects/fps_weapons/weapons_v7/behr/p6lr/panel_ddna.tif".to_string())
+        );
+    }
+
+    #[test]
+    fn pack_smoothness_as_metallic_roughness_png_writes_perceptual_roughness_to_green() {
+        let png = pack_smoothness_as_metallic_roughness_png(2, 2, &[0, 64, 128, 255])
+            .expect("smoothness buffer should encode");
+        let image = decode_png(&png).expect("encoded PNG should decode");
+
+        assert_eq!(*image.get_pixel(0, 0), image::Rgba([0, 255, 255, 255]));
+        assert_eq!(*image.get_pixel(1, 0), image::Rgba([0, 221, 255, 255]));
+        assert_eq!(*image.get_pixel(0, 1), image::Rgba([0, 180, 255, 255]));
+        assert_eq!(*image.get_pixel(1, 1), image::Rgba([0, 0, 255, 255]));
+    }
+
+    #[test]
+    fn pack_smoothness_as_grayscale_roughness_png_writes_perceptual_roughness_to_rgb() {
+        let png = pack_smoothness_as_grayscale_roughness_png(2, 2, &[0, 64, 128, 255])
+            .expect("smoothness buffer should encode");
+        let image = decode_png(&png).expect("encoded PNG should decode");
+
+        assert_eq!(*image.get_pixel(0, 0), image::Rgba([255, 255, 255, 255]));
+        assert_eq!(*image.get_pixel(1, 0), image::Rgba([221, 221, 221, 255]));
+        assert_eq!(*image.get_pixel(0, 1), image::Rgba([180, 180, 180, 255]));
+        assert_eq!(*image.get_pixel(1, 1), image::Rgba([0, 0, 0, 255]));
+    }
+
+    #[test]
+    fn pack_smoothness_as_metallic_roughness_png_rejects_wrong_pixel_count() {
+        assert!(pack_smoothness_as_metallic_roughness_png(2, 2, &[0, 128, 255]).is_none());
+    }
+
+    #[test]
+    fn smoothness_statistics_reports_min_max_and_rounded_mean() {
+        assert_eq!(
+            smoothness_statistics(&[0, 64, 128, 255]),
+            Some((0, 255, 112))
+        );
+        assert_eq!(smoothness_statistics(&[10, 11]), Some((10, 11, 11)));
+        assert_eq!(smoothness_statistics(&[]), None);
+    }
+
+    #[test]
+    fn normal_texture_mip_clamps_to_alpha_mips_when_smoothness_is_present() {
+        assert_eq!(select_normal_texture_mip(8, 10, 6), 5);
+        assert_eq!(select_normal_texture_mip(3, 10, 6), 3);
+    }
+
+    #[test]
+    fn normal_texture_mip_uses_color_mips_when_smoothness_is_missing() {
+        assert_eq!(select_normal_texture_mip(8, 10, 0), 8);
+        assert_eq!(select_normal_texture_mip(12, 10, 0), 9);
+    }
+
+    #[test]
+    fn normal_gloss_filename_detection_uses_file_tokens() {
+        assert!(texture_path_looks_normal_gloss(
+            "Data/Objects/Test/panel-ddna.tif"
+        ));
+        assert!(texture_path_looks_normal_gloss(
+            "Data/Objects/Test/panel_ddn.tif"
+        ));
+        assert!(!texture_path_looks_normal_gloss(
+            "Data/Objects/Test_ddna_cache/panel_diff.tif"
+        ));
+    }
+
+    #[test]
+    fn ddna_roughness_detection_uses_file_tokens() {
+        assert!(texture_path_is_ddna_normal_gloss(
+            "Data/Objects/Test/panel-ddna.tif"
+        ));
+        assert!(!texture_path_is_ddna_normal_gloss(
+            "Data/Objects/Test/panel-ddn.tif"
+        ));
+        assert!(!texture_path_is_ddna_normal_gloss(
+            "Data/Objects/Test_ddna_cache/panel_diff.tif"
+        ));
+    }
+}

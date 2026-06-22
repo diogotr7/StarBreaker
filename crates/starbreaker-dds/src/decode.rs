@@ -176,11 +176,7 @@ fn decode_bc5(data: &[u8], width: u32, height: u32, is_snorm: bool) -> Vec<u8> {
 }
 
 /// Decode BC6H (HDR float format) to RGBA8 with tone mapping.
-fn decode_bc6h_to_rgba8(
-    data: &[u8],
-    width: u32,
-    height: u32,
-) -> Result<Vec<u8>, DdsError> {
+fn decode_bc6h_to_rgba8(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, DdsError> {
     let w = width as usize;
     let h = height as usize;
     let bw = (w + 3) / 4;
@@ -190,22 +186,22 @@ fn decode_bc6h_to_rgba8(
     let pitch = 4 * 3; // 4 pixels × 3 float channels (RGB)
     let mut out = vec![0u8; w * h * 4];
     let mut block_buf_float = vec![0.0f32; 4 * 4 * 3]; // 4×4 × RGB (float)
-    
+
     // Calculate mean luminance while decoding for gobo compensation
     let mut luminance_sum = 0.0f32;
     let mut pixel_count = 0usize;
-    
+
     for by in 0..bh {
         for bx in 0..bw {
             let offset = (by * bw + bx) * block_size;
             if offset + block_size > data.len() {
                 break;
             }
-            
+
             // Decode using bc6h_float (returns 3-channel float output)
             // BC6H gobos are typically unsigned (is_signed = false)
             bcdec_rs::bc6h_float(&data[offset..], &mut block_buf_float, pitch, false);
-            
+
             // Collect luminance and convert float to RGBA8 with simple tone mapping
             for py in 0..4 {
                 for px in 0..4 {
@@ -214,17 +210,17 @@ fn decode_bc6h_to_rgba8(
                     if x >= w || y >= h {
                         continue;
                     }
-                    
+
                     let src_idx = (py * 4 + px) * 3;
                     let r = block_buf_float[src_idx];
                     let g = block_buf_float[src_idx + 1];
                     let b = block_buf_float[src_idx + 2];
-                    
+
                     // Calculate perceived luminance (standard weighted average)
                     let lum = r * 0.299 + g * 0.587 + b * 0.114;
                     luminance_sum += lum;
                     pixel_count += 1;
-                    
+
                     // Tone map with clamping + Reinhard for very bright values
                     let r_mapped = if r > 1.0 { r / (1.0 + r) } else { r };
                     let g_mapped = if g > 1.0 { g / (1.0 + g) } else { g };
@@ -240,14 +236,14 @@ fn decode_bc6h_to_rgba8(
             }
         }
     }
-    
+
     // Store mean luminance for later use in compensation
     if pixel_count > 0 {
         let _mean_luminance = luminance_sum / pixel_count as f32;
         // Note: This is informational; the actual compensation happens in the decomposed exporter
         // Luminance is printed in debug logs in the decomposed path
     }
-    
+
     Ok(out)
 }
 
@@ -269,17 +265,17 @@ pub fn decode_bc6h_to_float_rgb(
     let pitch = 4 * 3; // 4 pixels × 3 float channels (RGB)
     let mut out = vec![0.0f32; w * h * 3]; // Only RGB, no alpha
     let mut block_buf_float = vec![0.0f32; 4 * 4 * 3]; // 4×4 × RGB (float)
-    
+
     for by in 0..bh {
         for bx in 0..bw {
             let offset = (by * bw + bx) * block_size;
             if offset + block_size > data.len() {
                 break;
             }
-            
+
             // Decode using bc6h_float; preserves all float values including >1.0
             bcdec_rs::bc6h_float(&data[offset..], &mut block_buf_float, pitch, false);
-            
+
             // Copy float RGB directly without tone mapping
             for py in 0..4 {
                 for px in 0..4 {
@@ -288,7 +284,7 @@ pub fn decode_bc6h_to_float_rgb(
                     if x >= w || y >= h {
                         continue;
                     }
-                    
+
                     let src_idx = (py * 4 + px) * 3;
                     let dst_idx = (y * w + x) * 3;
                     out[dst_idx] = block_buf_float[src_idx];
@@ -298,6 +294,6 @@ pub fn decode_bc6h_to_float_rgb(
             }
         }
     }
-    
+
     Ok(out)
 }

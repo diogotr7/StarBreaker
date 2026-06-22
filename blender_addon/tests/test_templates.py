@@ -113,6 +113,27 @@ class TemplateTests(unittest.TestCase):
         hard_surface_stencil = synthetic_submaterial("HardSurface", tokens=["STENCIL_MAP", "STENCIL_AS_STICKER"])
         self.assertEqual(template_plan_for_submaterial(hard_surface_stencil).template_key, "physical_surface")
 
+    def test_mesh_decal_material_stays_on_decal_path(self) -> None:
+        mesh_decal = synthetic_submaterial("MeshDecal", tokens=["DECAL"])
+        plan = template_plan_for_submaterial(mesh_decal)
+
+        self.assertEqual(plan.template_key, "decal_stencil")
+        self.assertTrue(plan.uses_alpha)
+
+    def test_non_hard_surface_stencil_material_stays_on_decal_path(self) -> None:
+        decal_stencil = synthetic_submaterial("Illum", tokens=["STENCIL_MAP"])
+        plan = template_plan_for_submaterial(decal_stencil)
+
+        self.assertEqual(plan.template_key, "decal_stencil")
+        self.assertTrue(plan.uses_alpha)
+
+    def test_illum_decal_opacity_material_stays_on_decal_path(self) -> None:
+        illum_decal = synthetic_submaterial("Illum", tokens=["NORMAL_MAP", "DECAL", "DECAL_OPACITY_MAP"])
+        plan = template_plan_for_submaterial(illum_decal)
+
+        self.assertEqual(plan.template_key, "decal_stencil")
+        self.assertTrue(plan.uses_alpha)
+
     @unittest.skipUnless(
         VULTURE_BASE.is_file() and VULTURE_ALT_A.is_file() and VULTURE_PIRATE_SKULL.is_file(),
         "Vulture fixtures not present; skipping livery_decal template tests",

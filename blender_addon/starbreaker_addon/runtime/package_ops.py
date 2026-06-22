@@ -73,6 +73,7 @@ def import_package(
     from .importer import PackageImporter
 
     package = PackageBundle.load(scene_path)
+    _remove_default_startup_cube()
     _remove_existing_package_instances(package.scene_path)
     importer = PackageImporter(context, package, progress_callback=progress_callback)
     with _suspend_heavy_viewports(context):
@@ -116,6 +117,68 @@ def _remove_existing_package_instances(scene_path: str | Path) -> int:
             bpy.data.objects.remove(obj, do_unlink=True)
             removed += 1
     return removed
+
+
+def _remove_default_startup_cube() -> int:
+    """Drop Blender's untouched startup Cube before package import.
+
+    StarBreaker import supports replacing an existing package inside a
+    working scene, so the importer must not call ``read_homefile`` here.  The
+    only safe automatic cleanup is the unmodified default Cube that Blender
+    creates in a new file before any package is imported.
+    """
+
+    removed = 0
+    for obj in list(getattr(bpy.data, "objects", []) or []):
+        if not _is_default_startup_cube(obj):
+            continue
+        bpy.data.objects.remove(obj, do_unlink=True)
+        removed += 1
+    return removed
+
+
+def _is_default_startup_cube(obj: bpy.types.Object) -> bool:
+    if getattr(obj, "name", "") != "Cube":
+        return False
+    if getattr(obj, "type", None) != "MESH":
+        return False
+    if getattr(obj, "parent", None) is not None:
+        return False
+    if list(getattr(obj, "children", []) or []):
+        return False
+    if list(getattr(obj, "modifiers", []) or []):
+        return False
+    if any(getattr(slot, "material", None) is not None for slot in getattr(obj, "material_slots", []) or []):
+        return False
+    if hasattr(obj, "keys") and list(obj.keys()):
+        return False
+
+    data = getattr(obj, "data", None)
+    if data is None or getattr(data, "name", "") != "Cube":
+        return False
+    if not _sequence_matches(getattr(obj, "location", None), (0.0, 0.0, 0.0)):
+        return False
+    if not _sequence_matches(getattr(obj, "rotation_euler", None), (0.0, 0.0, 0.0)):
+        return False
+    if not _sequence_matches(getattr(obj, "scale", None), (1.0, 1.0, 1.0)):
+        return False
+    vertices = getattr(data, "vertices", None)
+    polygons = getattr(data, "polygons", None)
+    if vertices is not None and len(vertices) != 8:
+        return False
+    if polygons is not None and len(polygons) != 6:
+        return False
+    return True
+
+
+def _sequence_matches(value: Any, expected: tuple[float, ...], *, epsilon: float = 1e-6) -> bool:
+    if value is None:
+        return True
+    try:
+        values = tuple(float(value[index]) for index in range(len(expected)))
+    except Exception:
+        return False
+    return all(abs(actual - target) <= epsilon for actual, target in zip(values, expected))
 
 
 def _exterior_material_sidecars(package: PackageBundle) -> set[str] | None:
@@ -822,12 +885,16 @@ def apply_livery_to_package_root(context: bpy.types.Context, package_root: bpy.t
             instance = _scene_instance_from_object(obj)
             if instance is None:
                 continue
+            restored_sidecar = _restore_paint_object_sidecar(instance, None)
+            sidecar_for_livery = restored_sidecar or _string_prop(obj, PROP_MATERIAL_SIDECAR)
             effective_palette_id = palette_id_for_livery_instance(
                 package,
                 livery_id,
                 instance,
-                _string_prop(obj, PROP_MATERIAL_SIDECAR),
+                sidecar_for_livery,
             )
+            if restored_sidecar is not None:
+                obj[PROP_MATERIAL_SIDECAR] = restored_sidecar
             applied += importer.rebuild_object_materials(obj, effective_palette_id)
             if effective_palette_id is not None:
                 obj[PROP_PALETTE_ID] = effective_palette_id
@@ -842,6 +909,7 @@ def apply_livery_to_package_root(context: bpy.types.Context, package_root: bpy.t
             root_palette_id,
             package.scene.root_entity.palette_id,
         ) or ""
+        package_root.pop(PROP_PAINT_VARIANT_SIDECAR, None)
     _purge_orphaned_runtime_groups()
     _purge_orphaned_file_backed_images()
     return applied

@@ -4,19 +4,20 @@ use std::time::Instant;
 
 use gltf_json as json;
 use rayon::prelude::*;
-use starbreaker_common::progress::{report as report_progress, Progress};
+use starbreaker_common::progress::{Progress, report as report_progress};
 use starbreaker_dds;
 use starbreaker_datacore::Database;
 use starbreaker_p4k::MappedP4k;
 
 use crate::error::Error;
-use crate::gltf::{offset_to_gltf_matrix, GlbBuilder, PackedMeshInfo};
-use crate::mtl::{MtlFile, SemanticTextureBinding, ShaderFamily, SubMaterial, TextureSemanticRole, TintPalette};
+use crate::gltf::{GlbBuilder, PackedMeshInfo, offset_to_gltf_matrix};
+use crate::mtl::{
+    MtlFile, SemanticTextureBinding, ShaderFamily, SubMaterial, TextureSemanticRole, TintPalette,
+};
 use crate::nmc::NodeMeshCombo;
 use crate::pipeline::{
-    DecomposedExport, ExportFormat, ExportOptions, ExportedFile, ExportedFileKind, InteriorCgfEntry,
-    LoadedInteriors, MaterialMode,
-    PngCache,
+    DecomposedExport, ExportFormat, ExportOptions, ExportedFile, ExportedFileKind,
+    InteriorCgfEntry, LoadedInteriors, MaterialMode, PngCache,
 };
 use crate::skeleton::Bone;
 use crate::types::{EntityPayload, Mesh, UiBinding};
@@ -25,6 +26,9 @@ pub(crate) struct DecomposedInput {
     pub entity_name: String,
     pub geometry_path: String,
     pub material_path: String,
+    pub assembly_kind: Option<String>,
+    pub weapon_assembly: Option<serde_json::Value>,
+    pub weapon_assembly_diagnostics: Option<serde_json::Value>,
     pub root_mesh: Mesh,
     pub root_materials: Option<MtlFile>,
     pub root_nmc: Option<NodeMeshCombo>,
@@ -45,6 +49,7 @@ pub(crate) type ExistingInteriorAssetMap = HashMap<String, (String, Option<Strin
 enum TextureFlavor {
     Generic,
     Normal,
+    Roughness,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,8 +60,48 @@ struct TextureExportRef {
     export_kind: String,
     texture_identity: Option<String>,
     alpha_semantic: Option<String>,
+    alpha_channel: Option<String>,
     derived_from_texture_identity: Option<String>,
     derived_from_semantic: Option<String>,
+    derived_from_channel: Option<String>,
+    value_channel: Option<String>,
+    value_transform: Option<String>,
+    packed_texture_format: Option<String>,
+    packed_channel_semantics: Option<BTreeMap<String, String>>,
+    constant_channel_values: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextureDerivationStatus {
+    role: String,
+    source_path: String,
+    export_kind: String,
+    texture_identity: Option<String>,
+    derived_from_texture_identity: Option<String>,
+    derived_from_semantic: Option<String>,
+    derived_from_channel: Option<String>,
+    value_channel: Option<String>,
+    value_transform: Option<String>,
+    packed_texture_format: Option<String>,
+    packed_channel_semantics: Option<BTreeMap<String, String>>,
+    constant_channel_values: Option<BTreeMap<String, String>>,
+    status: String,
+    reason: Option<String>,
+    export_path: Option<String>,
+    requested_mip: Option<u32>,
+    selected_mip: Option<u32>,
+    mip_selection: Option<String>,
+    alpha_mip_format: Option<String>,
+    alpha_mip_layout: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    alpha_mip_count: Option<u32>,
+    smoothness_min: Option<u8>,
+    smoothness_max: Option<u8>,
+    smoothness_mean: Option<u8>,
+    roughness_min: Option<u8>,
+    roughness_max: Option<u8>,
+    roughness_mean: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +110,8 @@ struct LayerTextureExport {
     diffuse_export_path: Option<String>,
     normal_export_path: Option<String>,
     roughness_export_path: Option<String>,
+    roughness_texture: Option<TextureExportRef>,
+    ddna_derivations: Vec<TextureDerivationStatus>,
     slot_exports: Vec<serde_json::Value>,
 }
 
@@ -74,6 +121,7 @@ struct ExtractedMaterialEntry {
     direct_texture_exports: Vec<TextureExportRef>,
     layer_exports: Vec<LayerTextureExport>,
     derived_texture_exports: Vec<TextureExportRef>,
+    ddna_derivations: Vec<TextureDerivationStatus>,
 }
 
 #[derive(Debug, Clone)]
@@ -117,10 +165,7 @@ struct ResolvedChildTransform {
 
 fn identity_flat_4x4() -> [f32; 16] {
     [
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0,
-        0.0, 0.0, 0.0, 1.0,
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     ]
 }
 
@@ -171,8 +216,11 @@ fn resolve_no_rotation_local_matrix(
     } else {
         desired_translation
     };
-    glam::Mat4::from_rotation_translation(parent_rotation.inverse() * desired_rotation, local_translation)
-        .to_cols_array()
+    glam::Mat4::from_rotation_translation(
+        parent_rotation.inverse() * desired_rotation,
+        local_translation,
+    )
+    .to_cols_array()
 }
 
 fn node_parent_indices(nodes: &[json::Node]) -> Vec<Option<usize>> {
@@ -190,10 +238,7 @@ fn node_parent_indices(nodes: &[json::Node]) -> Vec<Option<usize>> {
     parent_of
 }
 
-fn docking_host_world_matrix(
-    builder: &GlbBuilder,
-    target_idx: usize,
-) -> Option<[f32; 16]> {
+fn docking_host_world_matrix(builder: &GlbBuilder, target_idx: usize) -> Option<[f32; 16]> {
     let parent_of = node_parent_indices(&builder.nodes_json);
     let parent_idx = parent_of.get(target_idx).and_then(|idx| *idx)?;
     let siblings = builder.nodes_json.get(parent_idx)?.children.as_ref()?;
@@ -201,7 +246,12 @@ fn docking_host_world_matrix(
         .iter()
         .filter_map(|sibling| {
             let index = sibling.value();
-            let name = builder.nodes_json.get(index)?.name.as_deref()?.to_ascii_lowercase();
+            let name = builder
+                .nodes_json
+                .get(index)?
+                .name
+                .as_deref()?
+                .to_ascii_lowercase();
             Some((index, name))
         })
         .find(|(_, name)| name.contains("docking_host"))
@@ -210,7 +260,12 @@ fn docking_host_world_matrix(
                 .iter()
                 .filter_map(|sibling| {
                     let index = sibling.value();
-                    let name = builder.nodes_json.get(index)?.name.as_deref()?.to_ascii_lowercase();
+                    let name = builder
+                        .nodes_json
+                        .get(index)?
+                        .name
+                        .as_deref()?
+                        .to_ascii_lowercase();
                     Some((index, name))
                 })
                 .find(|(_, name)| name.contains("docking_door"))
@@ -220,13 +275,16 @@ fn docking_host_world_matrix(
 
 fn child_docking_vehicle_translation(nmc: Option<&NodeMeshCombo>) -> Option<glam::Vec3> {
     nmc?.nodes.iter().find_map(|node| {
-        node.name.to_ascii_lowercase().contains("docking_vehicle").then(|| {
-            glam::Vec3::new(
-                node.bone_to_world[0][3],
-                node.bone_to_world[1][3],
-                node.bone_to_world[2][3],
-            )
-        })
+        node.name
+            .to_ascii_lowercase()
+            .contains("docking_vehicle")
+            .then(|| {
+                glam::Vec3::new(
+                    node.bone_to_world[0][3],
+                    node.bone_to_world[1][3],
+                    node.bone_to_world[2][3],
+                )
+            })
     })
 }
 
@@ -267,25 +325,25 @@ fn resolve_child_instance_transforms(input: &DecomposedInput) -> Vec<ResolvedChi
         submesh_idx_accessors: Vec::new(),
     };
 
-    let scene_nodes = if let Some(root_nmc) = input.root_nmc.as_ref().filter(|nmc| !nmc.nodes.is_empty()) {
-        builder
-            .build_nmc_hierarchy(&dummy_packed, root_nmc, &input.root_mesh.submeshes, false)
-            .into_iter()
-            .map(json::Index::new)
-            .collect::<Vec<_>>()
-    } else {
-        builder.nodes_json.push(json::Node {
-            name: Some(input.entity_name.clone()),
-            ..Default::default()
-        });
-        vec![json::Index::new(0)]
-    };
+    let scene_nodes =
+        if let Some(root_nmc) = input.root_nmc.as_ref().filter(|nmc| !nmc.nodes.is_empty()) {
+            builder
+                .build_nmc_hierarchy(&dummy_packed, root_nmc, &input.root_mesh.submeshes, false)
+                .into_iter()
+                .map(json::Index::new)
+                .collect::<Vec<_>>()
+        } else {
+            builder.nodes_json.push(json::Node {
+                name: Some(input.entity_name.clone()),
+                ..Default::default()
+            });
+            vec![json::Index::new(0)]
+        };
 
     builder.attach_skeleton_bones(&input.root_bones, &scene_nodes);
 
-    let mut load_textures = |_materials: Option<&crate::mtl::MtlFile>, _palette: Option<&crate::mtl::TintPalette>| {
-        None
-    };
+    let mut load_textures =
+        |_materials: Option<&crate::mtl::MtlFile>, _palette: Option<&crate::mtl::TintPalette>| None;
     let mut resolved = Vec::with_capacity(input.children.len());
 
     for child in &input.children {
@@ -294,11 +352,18 @@ fn resolve_child_instance_transforms(input: &DecomposedInput) -> Vec<ResolvedChi
                 .node_name_to_idx
                 .get(&child.parent_node_name.to_lowercase())
                 .copied()
-                .or_else(|| builder.node_name_to_idx.get(&child.parent_entity_name.to_lowercase()).copied())
+                .or_else(|| {
+                    builder
+                        .node_name_to_idx
+                        .get(&child.parent_entity_name.to_lowercase())
+                        .copied()
+                })
                 .or_else(|| scene_nodes.first().map(|node| node.value() as u32))
                 .unwrap_or(0);
             let mut offset_position = child.offset_position;
-            if let Some(docking_offset) = docking_entity_attachment_offset(&builder, target_idx as usize, child) {
+            if let Some(docking_offset) =
+                docking_entity_attachment_offset(&builder, target_idx as usize, child)
+            {
                 offset_position = [docking_offset.x, docking_offset.y, docking_offset.z];
             }
             Some(resolve_no_rotation_local_matrix(
@@ -480,7 +545,8 @@ fn build_thruster_engine_glow_targets(
         .unwrap_or(material_sidecar)
         .strip_suffix(".mtl")
         .unwrap_or(material_sidecar);
-    let blender_material_names = preferred_blender_material_names(&materials.materials, source_stem);
+    let blender_material_names =
+        preferred_blender_material_names(&materials.materials, source_stem);
     materials
         .materials
         .iter()
@@ -513,11 +579,15 @@ fn build_thruster_engine_glow_targets(
 }
 
 fn is_engine_glow_material(material: &SubMaterial) -> bool {
-    if !matches!(material.shader_family(), ShaderFamily::Illum | ShaderFamily::HardSurface) {
+    if !matches!(
+        material.shader_family(),
+        ShaderFamily::Illum | ShaderFamily::HardSurface
+    ) {
         return false;
     }
     let emissive_factor = material.emissive_factor();
-    let has_emissive_energy = emissive_factor.iter().any(|component| *component > 0.0) || material.glow > 0.0;
+    let has_emissive_energy =
+        emissive_factor.iter().any(|component| *component > 0.0) || material.glow > 0.0;
     let has_emissive_texture = material.texture_slots.iter().any(|slot| {
         let lowered = slot.path.to_ascii_lowercase();
         lowered.contains("glow") || lowered.contains("emissive")
@@ -558,7 +628,8 @@ pub(crate) fn build_decomposed_material_view(
 ) -> DecomposedMaterialView {
     let Some(materials) = materials else {
         let filtered_mesh = filter_mesh_geometry(mesh, None, nmc, include_nodraw, include_shields);
-        let (filtered_mesh, filtered_nmc) = filter_nmc_hierarchy(filtered_mesh, nmc, include_nodraw, include_shields);
+        let (filtered_mesh, filtered_nmc) =
+            filter_nmc_hierarchy(filtered_mesh, nmc, include_nodraw, include_shields);
         return DecomposedMaterialView {
             mesh: filtered_mesh,
             sidecar_materials: None,
@@ -569,8 +640,10 @@ pub(crate) fn build_decomposed_material_view(
     };
 
     if include_nodraw {
-        let filtered_mesh = filter_mesh_geometry(mesh, Some(materials), nmc, include_nodraw, include_shields);
-        let (filtered_mesh, filtered_nmc) = filter_nmc_hierarchy(filtered_mesh, nmc, include_nodraw, include_shields);
+        let filtered_mesh =
+            filter_mesh_geometry(mesh, Some(materials), nmc, include_nodraw, include_shields);
+        let (filtered_mesh, filtered_nmc) =
+            filter_nmc_hierarchy(filtered_mesh, nmc, include_nodraw, include_shields);
         let identity_indices = (0..materials.materials.len() as u32).collect();
         return DecomposedMaterialView {
             mesh: filtered_mesh,
@@ -589,7 +662,11 @@ pub(crate) fn build_decomposed_material_view(
                 "[material-map] filtering out mat_id={} ({}), reason={}",
                 orig_idx,
                 material.name,
-                if material.is_nodraw { "NoDraw" } else { "opacity" }
+                if material.is_nodraw {
+                    "NoDraw"
+                } else {
+                    "opacity"
+                }
             );
             material_id_map.push(None);
         } else {
@@ -604,7 +681,13 @@ pub(crate) fn build_decomposed_material_view(
     let sidecar_original_indices: Vec<u32> = material_id_map
         .iter()
         .enumerate()
-        .filter_map(|(orig_idx, mapped)| if mapped.is_some() { Some(orig_idx as u32) } else { None })
+        .filter_map(|(orig_idx, mapped)| {
+            if mapped.is_some() {
+                Some(orig_idx as u32)
+            } else {
+                None
+            }
+        })
         .collect();
 
     // Save the non-hidden (post-hide-filter, pre-used-compaction) material list.
@@ -619,7 +702,7 @@ pub(crate) fn build_decomposed_material_view(
 
     let mut dropped_out_of_range = false;
     let mut filtered_mesh = mesh.clone();
-    
+
     // Collect surviving submeshes first
     let surviving_submeshes: Vec<(usize, crate::types::SubMesh)> = mesh
         .submeshes
@@ -668,7 +751,7 @@ pub(crate) fn build_decomposed_material_view(
             Some((orig_idx, filtered))
         })
         .collect();
-    
+
     // Rebuild the mesh to actually remove the geometry from filtered submeshes.
     // Only attempt the rebuild when every surviving submesh's index range lies
     // within the mesh's indices buffer — degenerate or partial meshes (no
@@ -702,13 +785,13 @@ pub(crate) fn build_decomposed_material_view(
     } else {
         filtered_mesh.submeshes = surviving_submeshes.into_iter().map(|(_, sm)| sm).collect();
     }
-    
+
     log::debug!(
         "[mesh-filtering-result] submeshes: {} before -> {} after filtering",
         mesh.submeshes.len(),
         filtered_mesh.submeshes.len()
     );
-    
+
     // Keep sidecar + GLB material indices aligned with the surviving primitive
     // set by removing materials no remaining submesh references.
     let used_material_ids: BTreeSet<u32> = filtered_mesh
@@ -757,7 +840,8 @@ pub(crate) fn build_decomposed_material_view(
         && !dropped_out_of_range
     {
         let identity_indices = (0..materials.materials.len() as u32).collect();
-        let (filtered_mesh, filtered_nmc) = filter_nmc_hierarchy(filtered_mesh, nmc, include_nodraw, include_shields);
+        let (filtered_mesh, filtered_nmc) =
+            filter_nmc_hierarchy(filtered_mesh, nmc, include_nodraw, include_shields);
         return DecomposedMaterialView {
             mesh: filtered_mesh,
             sidecar_materials: Some(materials.clone()),
@@ -774,7 +858,8 @@ pub(crate) fn build_decomposed_material_view(
         material_set: materials.material_set.clone(),
     };
 
-    let (filtered_mesh, filtered_nmc) = filter_nmc_hierarchy(filtered_mesh, nmc, include_nodraw, include_shields);
+    let (filtered_mesh, filtered_nmc) =
+        filter_nmc_hierarchy(filtered_mesh, nmc, include_nodraw, include_shields);
 
     DecomposedMaterialView {
         mesh: filtered_mesh,
@@ -909,7 +994,9 @@ fn submesh_is_excluded_helper(
         .is_some_and(|value| helper_name_is_excluded(value, include_nodraw, include_shields))
         || nmc
             .and_then(|combo| combo.nodes.get(submesh.node_parent_index as usize))
-            .is_some_and(|node| helper_name_is_excluded(&node.name, include_nodraw, include_shields))
+            .is_some_and(|node| {
+                helper_name_is_excluded(&node.name, include_nodraw, include_shields)
+            })
 }
 
 fn helper_name_is_excluded(value: &str, include_nodraw: bool, _include_shields: bool) -> bool {
@@ -937,7 +1024,8 @@ pub(crate) fn write_decomposed_export(
     png_cache: PngCache,
     load_interior_mesh: &mut dyn FnMut(
         &InteriorCgfEntry,
-    ) -> Option<(Mesh, Option<MtlFile>, Option<NodeMeshCombo>)>,
+    )
+        -> Option<(Mesh, Option<MtlFile>, Option<NodeMeshCombo>)>,
 ) -> Result<DecomposedExport, Error> {
     const ROOT_ASSETS_START: f32 = 0.01;
     const CHILD_ASSETS_START: f32 = 0.16;
@@ -1103,14 +1191,19 @@ pub(crate) fn write_decomposed_export(
         &input.entity_name,
         root_material_sidecar.as_deref(),
     );
-    log::info!("[timing][decomposed] root_assets: {:.2}s", phase_start.elapsed().as_secs_f32());
+    log::info!(
+        "[timing][decomposed] root_assets: {:.2}s",
+        phase_start.elapsed().as_secs_f32()
+    );
     phase_start = Instant::now();
 
     // Export material sidecars for each paint variant and build the paints.json manifest.
     let mut paint_variant_json: Vec<serde_json::Value> = Vec::new();
     for variant in &input.paint_variants {
         register_paint_variant_palette(&mut palette_records, variant);
-        let Some(palette_id) = variant.palette_id.as_ref() else { continue };
+        let Some(palette_id) = variant.palette_id.as_ref() else {
+            continue;
+        };
         let sidecar_path = variant.materials.as_ref().map(|materials| {
             let variant_material_path = variant
                 .material_path
@@ -1163,7 +1256,10 @@ pub(crate) fn write_decomposed_export(
             }),
         );
     }
-    log::info!("[timing][decomposed] paint_variants: {:.2}s", phase_start.elapsed().as_secs_f32());
+    log::info!(
+        "[timing][decomposed] paint_variants: {:.2}s",
+        phase_start.elapsed().as_secs_f32()
+    );
     phase_start = Instant::now();
 
     report_progress(progress, CHILD_ASSETS_START, "Writing child assets");
@@ -1483,7 +1579,10 @@ pub(crate) fn write_decomposed_export(
                 .material_path
                 .as_deref()
                 .map(|path| normalize_source_path(p4k, path));
-            let cache_key = interior_asset_lookup_key(&normalized_cgf_path, normalized_material_path.as_deref());
+            let cache_key = interior_asset_lookup_key(
+                &normalized_cgf_path,
+                normalized_material_path.as_deref(),
+            );
             if failed_interior_asset_cache.contains(&cache_key) {
                 interior_asset_resolve_elapsed += asset_resolve_start.elapsed();
                 processed_interior_placements += 1;
@@ -1498,9 +1597,10 @@ pub(crate) fn write_decomposed_export(
                 }
                 continue;
             }
-            let (mesh_asset, material_sidecar) = if let Some(cached) = interior_asset_cache.get(&cache_key) {
-                cached.clone()
-            } else {
+            let (mesh_asset, material_sidecar) =
+                if let Some(cached) = interior_asset_cache.get(&cache_key) {
+                    cached.clone()
+                } else {
                 let existing_reusable = existing_interior_asset_paths(
                     existing_interior_assets,
                     existing_asset_paths,
@@ -1813,7 +1913,10 @@ pub(crate) fn write_decomposed_export(
         "[timing][decomposed] interior_lights: {:.2}s",
         interior_light_elapsed.as_secs_f32()
     );
-    log::info!("[timing][decomposed] interior_assets: {:.2}s", phase_start.elapsed().as_secs_f32());
+    log::info!(
+        "[timing][decomposed] interior_assets: {:.2}s",
+        phase_start.elapsed().as_secs_f32()
+    );
     phase_start = Instant::now();
 
     let root_animations = if opts.include_animations {
@@ -1935,7 +2038,9 @@ pub(crate) fn write_decomposed_export(
             None
         } else {
             if let Some(source) = input.root_animation_controller.as_ref() {
-                if let Err(error) = crate::animation::annotate_animation_fragments_json(p4k, &mut clips, source) {
+                if let Err(error) =
+                    crate::animation::annotate_animation_fragments_json(p4k, &mut clips, source)
+                {
                     log::warn!("[anim] failed to annotate Mannequin fragments: {error}");
                 }
             }
@@ -1945,7 +2050,8 @@ pub(crate) fn write_decomposed_export(
             // Deduplicate sidecar filenames in case two clips end up
             // sanitizing to the same name.
             let mut index_records: Vec<serde_json::Value> = Vec::with_capacity(clips.len());
-            let mut used_filenames: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut used_filenames: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
             for clip in clips.iter() {
                 let raw_name = clip
                     .get("name")
@@ -1975,7 +2081,10 @@ pub(crate) fn write_decomposed_export(
     } else {
         None
     };
-    log::info!("[timing][decomposed] animations: {:.2}s", phase_start.elapsed().as_secs_f32());
+    log::info!(
+        "[timing][decomposed] animations: {:.2}s",
+        phase_start.elapsed().as_secs_f32()
+    );
     phase_start = Instant::now();
 
     let scene_manifest = build_scene_manifest_value(
@@ -1990,6 +2099,8 @@ pub(crate) fn write_decomposed_export(
         &child_instances,
         &interior_records,
         &engine_glow_targets,
+        input.assembly_kind.as_deref(),
+        input.weapon_assembly.as_ref(),
         opts,
     );
     report_progress(progress, INTERIOR_ASSETS_END, "Writing manifests");
@@ -2005,6 +2116,13 @@ pub(crate) fn write_decomposed_export(
             opts.texture_mip,
             existing_asset_paths,
         );
+        if let Some(diagnostics) = input.weapon_assembly_diagnostics.as_ref() {
+            insert_json_file(
+                &mut files,
+                package_relative_path(&package_name, "weapon_assembly_diagnostics.json"),
+                diagnostics.clone(),
+            );
+        }
         insert_json_file(
             &mut files,
             palettes_manifest_path.clone(),
@@ -2056,6 +2174,8 @@ fn build_scene_manifest_value(
     child_instances: &[SceneInstanceRecord],
     interiors: &[InteriorContainerRecord],
     engine_glow_targets: &[EngineGlowTargetRecord],
+    assembly_kind: Option<&str>,
+    weapon_assembly: Option<&serde_json::Value>,
     opts: &ExportOptions,
 ) -> serde_json::Value {
     let mut manifest = serde_json::json!({
@@ -2092,6 +2212,12 @@ fn build_scene_manifest_value(
 
     if let Some(animations) = root_animations {
         manifest["root_entity"]["animations"] = animations.clone();
+    }
+    if let Some(kind) = assembly_kind {
+        manifest["assembly_kind"] = serde_json::json!(kind);
+    }
+    if let Some(weapon_assembly) = weapon_assembly {
+        manifest["weapon_assembly"] = weapon_assembly.clone();
     }
     if !engine_glow_targets.is_empty() {
         manifest["controls"] = serde_json::json!({
@@ -2313,7 +2439,8 @@ fn write_mesh_asset(
     format: ExportFormat,
     existing_asset_paths: Option<&HashSet<String>>,
 ) -> Result<String, Error> {
-    let requested_path = mesh_asset_relative_path(p4k, geometry_path, fallback_name, lod_level, format);
+    let requested_path =
+        mesh_asset_relative_path(p4k, geometry_path, fallback_name, lod_level, format);
     if existing_asset_paths
         .is_some_and(|paths| paths.contains(&requested_path.to_ascii_lowercase()))
     {
@@ -2439,6 +2566,24 @@ fn extract_material_entry(
     mtl_cache: &mut HashMap<String, Option<MtlFile>>,
     source_material_path: &str,
 ) -> ExtractedMaterialEntry {
+    let mut derived_texture_exports = Vec::new();
+    let mut ddna_derivations = Vec::new();
+    for path in normal_gloss_ddna_source_paths(material) {
+        let (roughness_texture, derivation_status) = export_ddna_roughness_asset_with_status(
+            files,
+            p4k,
+            texture_cache,
+            &path,
+            texture_mip,
+            existing_asset_paths,
+        );
+        if let Some(roughness_texture) = roughness_texture {
+            derived_texture_exports.push(roughness_texture);
+        }
+        ddna_derivations.push(derivation_status);
+    }
+    let ddna_smoothness_sources = exported_ddna_smoothness_sources(&ddna_derivations);
+
     let semantic_slots = material.semantic_texture_slots();
     let slot_exports = semantic_slots
         .iter()
@@ -2453,6 +2598,7 @@ fn extract_material_entry(
                 source_material_path,
                 texture_mip,
                 existing_asset_paths,
+                &ddna_smoothness_sources,
             )
         })
         .collect::<Vec<_>>();
@@ -2476,8 +2622,15 @@ fn extract_material_entry(
                 export_kind: "source".to_string(),
                 texture_identity: ddna_texture_identity(path).map(str::to_string),
                 alpha_semantic: None,
+                alpha_channel: None,
                 derived_from_texture_identity: None,
                 derived_from_semantic: None,
+                derived_from_channel: None,
+                value_channel: None,
+                value_transform: None,
+                packed_texture_format: None,
+                packed_channel_semantics: None,
+                constant_channel_values: None,
             });
         }
     }
@@ -2498,14 +2651,31 @@ fn extract_material_entry(
                 export_path,
                 export_kind: "source".to_string(),
                 texture_identity: ddna_texture_identity(path).map(str::to_string),
-                alpha_semantic: ddna_alpha_semantic(path, TextureSemanticRole::NormalGloss).map(str::to_string),
+                alpha_semantic: ddna_alpha_semantic_for_exported_source(
+                    p4k,
+                    path,
+                    TextureSemanticRole::NormalGloss,
+                    &ddna_smoothness_sources,
+                )
+                .map(str::to_string),
+                alpha_channel: ddna_alpha_channel_for_exported_source(
+                    p4k,
+                    path,
+                    TextureSemanticRole::NormalGloss,
+                    &ddna_smoothness_sources,
+                )
+                .map(str::to_string),
                 derived_from_texture_identity: None,
                 derived_from_semantic: None,
+                derived_from_channel: None,
+                value_channel: None,
+                value_transform: None,
+                packed_texture_format: None,
+                packed_channel_semantics: None,
+                constant_channel_values: None,
             });
         }
     }
-
-    let derived_texture_exports = Vec::new();
 
     let layer_exports = material
         .layers
@@ -2516,6 +2686,26 @@ fn extract_material_entry(
             let layer_sub = layer_mtl
                 .as_ref()
                 .and_then(|mtl| crate::mtl::resolve_layer_submaterial(mtl, &layer.sub_material));
+            let mut layer_ddna_derivations = Vec::new();
+            let mut roughness_texture = None;
+            if let Some(layer_sub) = layer_sub {
+                for path in normal_gloss_ddna_source_paths(layer_sub) {
+                    let (candidate, derivation_status) = export_ddna_roughness_asset_with_status(
+                        files,
+                        p4k,
+                        texture_cache,
+                        &path,
+                        texture_mip,
+                        existing_asset_paths,
+                    );
+                    if roughness_texture.is_none() {
+                        roughness_texture = candidate;
+                    }
+                    layer_ddna_derivations.push(derivation_status);
+                }
+            }
+            let layer_ddna_smoothness_sources =
+                exported_ddna_smoothness_sources(&layer_ddna_derivations);
             let slot_exports = layer_sub
                 .map(|sub| {
                     sub.semantic_texture_slots()
@@ -2531,6 +2721,7 @@ fn extract_material_entry(
                                 &layer_material_path,
                                 texture_mip,
                                 existing_asset_paths,
+                                &layer_ddna_smoothness_sources,
                             )
                         })
                         .collect::<Vec<_>>()
@@ -2563,13 +2754,17 @@ fn extract_material_entry(
                     existing_asset_paths,
                 )
             });
-            let roughness_export_path = None;
+            let roughness_export_path = roughness_texture
+                .as_ref()
+                .map(|texture| texture.export_path.clone());
 
             LayerTextureExport {
                 source_material_path: layer_material_path,
                 diffuse_export_path,
                 normal_export_path,
                 roughness_export_path,
+                roughness_texture,
+                ddna_derivations: layer_ddna_derivations,
                 slot_exports,
             }
         })
@@ -2580,6 +2775,7 @@ fn extract_material_entry(
         direct_texture_exports,
         layer_exports,
         derived_texture_exports,
+        ddna_derivations,
     }
 }
 
@@ -2597,7 +2793,8 @@ fn build_material_sidecar_value(
         .unwrap_or(source_material_path)
         .strip_suffix(".mtl")
         .unwrap_or(source_material_path);
-    let blender_material_names = preferred_blender_material_names(&materials.materials, source_stem);
+    let blender_material_names =
+        preferred_blender_material_names(&materials.materials, source_stem);
 
     serde_json::json!({
         "version": 1,
@@ -2637,7 +2834,12 @@ fn preferred_blender_material_names(materials: &[SubMaterial], source_stem: &str
         .iter()
         .enumerate()
         .map(|(index, material)| {
-            if name_counts.get(material.name.as_str()).copied().unwrap_or_default() > 1 {
+            if name_counts
+                .get(material.name.as_str())
+                .copied()
+                .unwrap_or_default()
+                > 1
+            {
                 format!("{source_stem}:{}_{}", material.name, index)
             } else {
                 format!("{source_stem}:{}", material.name)
@@ -2656,7 +2858,8 @@ fn build_submaterial_json(
 ) -> serde_json::Value {
     let semantic_slots = material.semantic_texture_slots();
     let decoded_flags = material.decoded_string_gen_mask();
-    let (activation_state, activation_reason) = material_activation_state(material, &semantic_slots);
+    let (activation_state, activation_reason) =
+        material_activation_state(material, &semantic_slots);
     let public_params = material
         .public_params
         .iter()
@@ -2696,6 +2899,11 @@ fn build_submaterial_json(
         "public_params": public_params,
         "direct_textures": extracted.direct_texture_exports.iter().map(texture_ref_json).collect::<Vec<_>>(),
         "derived_textures": extracted.derived_texture_exports.iter().map(texture_ref_json).collect::<Vec<_>>(),
+        "ddna_derivations": extracted
+            .ddna_derivations
+            .iter()
+            .map(texture_derivation_status_json)
+            .collect::<Vec<_>>(),
         "layer_manifest": material.layers.iter().enumerate().map(|(layer_index, layer)| {
             let extracted_layer = extracted.layer_exports.get(layer_index);
             let palette_channel = palette_channel_json(layer.palette_tint, false);
@@ -2738,6 +2946,18 @@ fn build_submaterial_json(
                 "diffuse_export_path": extracted_layer.and_then(|layer| layer.diffuse_export_path.clone()),
                 "normal_export_path": extracted_layer.and_then(|layer| layer.normal_export_path.clone()),
                 "roughness_export_path": extracted_layer.and_then(|layer| layer.roughness_export_path.clone()),
+                "roughness_texture": extracted_layer
+                    .and_then(|layer| layer.roughness_texture.as_ref())
+                    .map(texture_ref_json),
+                "ddna_derivations": extracted_layer
+                    .map(|layer| {
+                        layer
+                            .ddna_derivations
+                            .iter()
+                            .map(texture_derivation_status_json)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
             })
         }).collect::<Vec<_>>(),
         "palette_routing": {
@@ -2774,6 +2994,7 @@ fn build_slot_export_value(
     source_material_path: &str,
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
+    ddna_smoothness_sources: &HashSet<String>,
 ) -> serde_json::Value {
     let source_path = slot_source_path(Some(p4k), binding);
     let export_flavor = slot_texture_flavor(binding.role);
@@ -2808,7 +3029,10 @@ fn build_slot_export_value(
     let mut value = serde_json::Map::from_iter([
         ("slot".to_string(), serde_json::json!(binding.slot)),
         ("role".to_string(), serde_json::json!(binding.role.as_str())),
-        ("is_virtual".to_string(), serde_json::json!(binding.is_virtual)),
+        (
+            "is_virtual".to_string(),
+            serde_json::json!(binding.is_virtual),
+        ),
         ("source_path".to_string(), serde_json::json!(source_path)),
         ("export_path".to_string(), serde_json::json!(export_path)),
         (
@@ -2830,10 +3054,32 @@ fn build_slot_export_value(
         ),
     ]);
     if let Some(texture_identity) = ddna_texture_identity(&binding.path) {
-        value.insert("texture_identity".to_string(), serde_json::json!(texture_identity));
+        value.insert(
+            "texture_identity".to_string(),
+            serde_json::json!(texture_identity),
+        );
     }
-    if let Some(alpha_semantic) = ddna_alpha_semantic(&binding.path, binding.role) {
-        value.insert("alpha_semantic".to_string(), serde_json::json!(alpha_semantic));
+    if let Some(alpha_semantic) = ddna_alpha_semantic_for_exported_source(
+        p4k,
+        &binding.path,
+        binding.role,
+        ddna_smoothness_sources,
+    ) {
+        value.insert(
+            "alpha_semantic".to_string(),
+            serde_json::json!(alpha_semantic),
+        );
+    }
+    if let Some(alpha_channel) = ddna_alpha_channel_for_exported_source(
+        p4k,
+        &binding.path,
+        binding.role,
+        ddna_smoothness_sources,
+    ) {
+        value.insert(
+            "alpha_channel".to_string(),
+            serde_json::json!(alpha_channel),
+        );
     }
     if let Some(texture_transform) = texture_transform_json(&binding.authored_child_blocks) {
         value.insert("texture_transform".to_string(), texture_transform);
@@ -3301,7 +3547,7 @@ fn export_texture_asset(
     existing_asset_paths: Option<&HashSet<String>>,
 ) -> Option<String> {
     let normalized_source = normalize_source_path(p4k, source_path);
-    let cache_key = (normalized_source.to_lowercase(), flavor);
+    let cache_key = texture_cache_key(&normalized_source, flavor);
     if let Some(existing) = texture_cache.get(&cache_key) {
         return Some(existing.clone());
     }
@@ -3331,6 +3577,14 @@ fn export_texture_asset(
             png_cache,
             crate::pipeline::load_normal_texture,
         ),
+        TextureFlavor::Roughness => crate::pipeline::cached_load_keyed(
+            p4k,
+            source_path,
+            texture_mip,
+            "@r",
+            png_cache,
+            crate::pipeline::load_roughness_texture,
+        ),
     }?;
 
     let stored_path = insert_binary_file(files, requested_path, bytes);
@@ -3338,7 +3592,14 @@ fn export_texture_asset(
     Some(stored_path)
 }
 
-fn register_palette(records: &mut BTreeMap<String, PaletteRecord>, palette: &TintPalette) -> String {
+fn texture_cache_key(normalized_source: &str, flavor: TextureFlavor) -> (String, TextureFlavor) {
+    (normalized_source.to_ascii_lowercase(), flavor)
+}
+
+fn register_palette(
+    records: &mut BTreeMap<String, PaletteRecord>,
+    palette: &TintPalette,
+) -> String {
     let id = palette_id(palette);
     register_palette_with_id(records, id.clone(), palette);
     id
@@ -3402,12 +3663,14 @@ fn register_livery_usage(
     let Some(palette_id) = palette_id else {
         return;
     };
-    let entry = usages.entry(palette_id.to_string()).or_insert_with(|| LiveryUsage {
-        palette_id: palette_id.to_string(),
-        palette_source_name: palette.and_then(|palette| palette.source_name.clone()),
-        entity_names: BTreeSet::new(),
-        material_sidecars: BTreeSet::new(),
-    });
+    let entry = usages
+        .entry(palette_id.to_string())
+        .or_insert_with(|| LiveryUsage {
+            palette_id: palette_id.to_string(),
+            palette_source_name: palette.and_then(|palette| palette.source_name.clone()),
+            entity_names: BTreeSet::new(),
+            material_sidecars: BTreeSet::new(),
+        });
     entry.entity_names.insert(entity_name.to_string());
     if let Some(material_sidecar) = material_sidecar {
         entry.material_sidecars.insert(material_sidecar.to_string());
@@ -3473,7 +3736,11 @@ fn material_source_request(materials: &MtlFile, material_path: &str, geometry_pa
     if let Some(source_path) = materials.source_path.as_ref() {
         source_path.clone()
     } else if !material_path.is_empty() {
-        if material_path.rsplit('/').next().is_some_and(|name| name.contains('.')) {
+        if material_path
+            .rsplit('/')
+            .next()
+            .is_some_and(|name| name.contains('.'))
+        {
             material_path.to_string()
         } else {
             format!("{material_path}.mtl")
@@ -3485,9 +3752,17 @@ fn material_source_request(materials: &MtlFile, material_path: &str, geometry_pa
     }
 }
 
-fn requested_material_source_path(p4k: &MappedP4k, material_path: Option<&str>, geometry_path: &str) -> String {
+fn requested_material_source_path(
+    p4k: &MappedP4k,
+    material_path: Option<&str>,
+    geometry_path: &str,
+) -> String {
     let request = if let Some(material_path) = material_path.filter(|path| !path.is_empty()) {
-        if material_path.rsplit('/').next().is_some_and(|name| name.contains('.')) {
+        if material_path
+            .rsplit('/')
+            .next()
+            .is_some_and(|name| name.contains('.'))
+        {
             material_path.to_string()
         } else {
             format!("{material_path}.mtl")
@@ -3498,9 +3773,11 @@ fn requested_material_source_path(p4k: &MappedP4k, material_path: Option<&str>, 
     normalize_source_path(p4k, &request)
 }
 
-fn existing_asset_set_contains(existing_asset_paths: Option<&HashSet<String>>, relative_path: &str) -> bool {
-    existing_asset_paths
-        .is_some_and(|paths| paths.contains(&relative_path.to_ascii_lowercase()))
+fn existing_asset_set_contains(
+    existing_asset_paths: Option<&HashSet<String>>,
+    relative_path: &str,
+) -> bool {
+    existing_asset_paths.is_some_and(|paths| paths.contains(&relative_path.to_ascii_lowercase()))
 }
 
 pub(crate) fn interior_asset_lookup_key(cgf_path: &str, material_path: Option<&str>) -> String {
@@ -3568,7 +3845,11 @@ pub(crate) fn mesh_asset_relative_path(
 ) -> String {
     let extension = mesh_asset_extension(format);
     let base = if geometry_path.is_empty() {
-        format!("Data/generated/{}{}", sanitize_identifier(fallback_name), extension)
+        format!(
+            "Data/generated/{}{}",
+            sanitize_identifier(fallback_name),
+            extension
+        )
     } else {
         let _ = p4k;
         replace_extension(&normalize_requested_source_path(geometry_path), extension)
@@ -3586,11 +3867,27 @@ fn material_sidecar_relative_path(source_material_path: &str, fallback_name: &st
     insert_stem_suffix(&base, &format!("_TEX{mip}"))
 }
 
-fn texture_relative_path(p4k: &MappedP4k, source_path: &str, flavor: TextureFlavor, mip: u32) -> String {
+fn texture_relative_path(
+    p4k: &MappedP4k,
+    source_path: &str,
+    flavor: TextureFlavor,
+    mip: u32,
+) -> String {
     let normalized = normalize_source_path(p4k, source_path);
+    texture_relative_path_from_normalized(&normalized, flavor, mip)
+}
+
+fn texture_relative_path_from_normalized(
+    normalized: &str,
+    flavor: TextureFlavor,
+    mip: u32,
+) -> String {
     let base = match flavor {
         TextureFlavor::Generic => replace_extension(&normalized, ".png"),
         TextureFlavor::Normal => replace_extension(&normalized, ".png"),
+        TextureFlavor::Roughness => {
+            insert_stem_suffix(&replace_extension(&normalized, ".png"), "_roughness")
+        }
     };
     insert_stem_suffix(&base, &format!("_TEX{mip}"))
 }
@@ -3637,79 +3934,72 @@ fn create_white_png_fallback() -> Vec<u8> {
     // PNG signature + minimal IHDR + IDAT + IEND chunks.
     vec![
         // PNG signature
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-        // IHDR chunk: 2x2 8-bit RGBA
-        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-        0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
-        0x08, 0x06, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
-        0xDE,
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // IHDR chunk: 2x2 8-bit RGBA
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+        0x02, 0x08, 0x06, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE,
         // IDAT chunk: white 2x2 image (zlib compressed, then CRC)
-        0x00, 0x00, 0x00, 0x1B, 0x49, 0x44, 0x41, 0x54,
-        0x78, 0x9C, 0x62, 0xF8, 0xFF, 0xFF, 0x3F, 0x03,
-        0x03, 0x03, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x09,
-        0x00, 0x01, 0xBE, 0xCE, 0x66, 0xA9,
+        0x00, 0x00, 0x00, 0x1B, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x62, 0xF8, 0xFF, 0xFF, 0x3F,
+        0x03, 0x03, 0x03, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x09, 0x00, 0x01, 0xBE, 0xCE, 0x66, 0xA9,
         // IEND chunk
-        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
-        0xAE, 0x42, 0x60, 0x82,
+        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
     ]
 }
 
-fn export_gobo_as_exr(
-    p4k: &MappedP4k,
-    source_path: &str,
-    texture_mip: u32,
-) -> Option<Vec<u8>> {
+fn export_gobo_as_exr(p4k: &MappedP4k, source_path: &str, texture_mip: u32) -> Option<Vec<u8>> {
     // Attempt to load and decode the DDS source texture as HDR (BC6H).
     // If successful, export to EXR format so Blender can sample values >1.0.
     // This preserves light energy for gobos that use HDR formats.
-    
+
     // Look up the entry first
     let entry = p4k.entry_case_insensitive(source_path)?;
     let bytes = p4k.read(&entry).ok()?;
-    
+
     // Parse DDS and check if it's BC6H
     let dds = starbreaker_dds::DdsFile::from_bytes(&bytes).ok()?;
-    
+
     // Attempt BC6H float decode
     let (width, height, float_rgb) = match dds.decode_bc6h_to_float_rgb(texture_mip as usize) {
         Ok(Some(result)) => result,
         _ => return None, // Not BC6H or decode failed
     };
-    
+
     if width == 0 || height == 0 {
         return None;
     }
-    
+
     // Build EXR image from float RGB data using the exr crate API.
     use exr::prelude::*;
     use std::io::Cursor;
-    
+
     // Split the interleaved float RGB data into per-channel vectors
     let mut r_channel = Vec::with_capacity((width as usize) * (height as usize));
     let mut g_channel = Vec::with_capacity((width as usize) * (height as usize));
     let mut b_channel = Vec::with_capacity((width as usize) * (height as usize));
-    
+
     for chunk in float_rgb.chunks_exact(3) {
         r_channel.push(chunk[0]);
         g_channel.push(chunk[1]);
         b_channel.push(chunk[2]);
     }
-    
-    let channels: AnyChannels<FlatSamples> = AnyChannels::sort(vec![
-        AnyChannel::new("R", FlatSamples::F32(r_channel)),
-        AnyChannel::new("G", FlatSamples::F32(g_channel)),
-        AnyChannel::new("B", FlatSamples::F32(b_channel)),
-    ].into());
-    
+
+    let channels: AnyChannels<FlatSamples> = AnyChannels::sort(
+        vec![
+            AnyChannel::new("R", FlatSamples::F32(r_channel)),
+            AnyChannel::new("G", FlatSamples::F32(g_channel)),
+            AnyChannel::new("B", FlatSamples::F32(b_channel)),
+        ]
+        .into(),
+    );
+
     let layer = Layer::new(
         Vec2(width as usize, height as usize),
         LayerAttributes::default(),
         Encoding::FAST_LOSSLESS,
         channels,
     );
-    
+
     let image = Image::from_layer(layer);
-    
+
     let buffer = Vec::new();
     let mut cursor = Cursor::new(buffer);
     match image.write().to_buffered(&mut cursor) {
@@ -3964,7 +4254,10 @@ fn material_activation_state(
     }
 }
 
-fn has_base_color_source(material: &SubMaterial, semantic_slots: &[SemanticTextureBinding]) -> bool {
+fn has_base_color_source(
+    material: &SubMaterial,
+    semantic_slots: &[SemanticTextureBinding],
+) -> bool {
     material.diffuse_tex.is_some()
         || !material.layers.is_empty()
         || semantic_slots.iter().any(|binding| {
@@ -3993,15 +4286,36 @@ fn palette_channel_json(channel: u8, is_glass: bool) -> Option<serde_json::Value
 fn texture_ref_json(texture_ref: &TextureExportRef) -> serde_json::Value {
     let mut value = serde_json::Map::from_iter([
         ("role".to_string(), serde_json::json!(texture_ref.role)),
-        ("source_path".to_string(), serde_json::json!(texture_ref.source_path)),
-        ("export_path".to_string(), serde_json::json!(texture_ref.export_path)),
-        ("export_kind".to_string(), serde_json::json!(texture_ref.export_kind)),
+        (
+            "source_path".to_string(),
+            serde_json::json!(texture_ref.source_path),
+        ),
+        (
+            "export_path".to_string(),
+            serde_json::json!(texture_ref.export_path),
+        ),
+        (
+            "export_kind".to_string(),
+            serde_json::json!(texture_ref.export_kind),
+        ),
     ]);
     if let Some(texture_identity) = &texture_ref.texture_identity {
-        value.insert("texture_identity".to_string(), serde_json::json!(texture_identity));
+        value.insert(
+            "texture_identity".to_string(),
+            serde_json::json!(texture_identity),
+        );
     }
     if let Some(alpha_semantic) = &texture_ref.alpha_semantic {
-        value.insert("alpha_semantic".to_string(), serde_json::json!(alpha_semantic));
+        value.insert(
+            "alpha_semantic".to_string(),
+            serde_json::json!(alpha_semantic),
+        );
+    }
+    if let Some(alpha_channel) = &texture_ref.alpha_channel {
+        value.insert(
+            "alpha_channel".to_string(),
+            serde_json::json!(alpha_channel),
+        );
     }
     if let Some(texture_identity) = &texture_ref.derived_from_texture_identity {
         value.insert(
@@ -4015,11 +4329,198 @@ fn texture_ref_json(texture_ref: &TextureExportRef) -> serde_json::Value {
             serde_json::json!(derived_from_semantic),
         );
     }
+    if let Some(derived_from_channel) = &texture_ref.derived_from_channel {
+        value.insert(
+            "derived_from_channel".to_string(),
+            serde_json::json!(derived_from_channel),
+        );
+    }
+    if let Some(value_channel) = &texture_ref.value_channel {
+        value.insert(
+            "value_channel".to_string(),
+            serde_json::json!(value_channel),
+        );
+    }
+    if let Some(value_transform) = &texture_ref.value_transform {
+        value.insert(
+            "value_transform".to_string(),
+            serde_json::json!(value_transform),
+        );
+    }
+    if let Some(packed_texture_format) = &texture_ref.packed_texture_format {
+        value.insert(
+            "packed_texture_format".to_string(),
+            serde_json::json!(packed_texture_format),
+        );
+    }
+    if let Some(packed_channel_semantics) = &texture_ref.packed_channel_semantics {
+        value.insert(
+            "packed_channel_semantics".to_string(),
+            serde_json::json!(packed_channel_semantics),
+        );
+    }
+    if let Some(constant_channel_values) = &texture_ref.constant_channel_values {
+        value.insert(
+            "constant_channel_values".to_string(),
+            serde_json::json!(constant_channel_values),
+        );
+    }
+    serde_json::Value::Object(value)
+}
+
+fn texture_derivation_status_json(status: &TextureDerivationStatus) -> serde_json::Value {
+    let mut value = serde_json::Map::from_iter([
+        ("role".to_string(), serde_json::json!(status.role)),
+        (
+            "source_path".to_string(),
+            serde_json::json!(status.source_path),
+        ),
+        (
+            "export_kind".to_string(),
+            serde_json::json!(status.export_kind),
+        ),
+        ("status".to_string(), serde_json::json!(status.status)),
+    ]);
+    if let Some(texture_identity) = &status.texture_identity {
+        value.insert(
+            "texture_identity".to_string(),
+            serde_json::json!(texture_identity),
+        );
+    }
+    if let Some(texture_identity) = &status.derived_from_texture_identity {
+        value.insert(
+            "derived_from_texture_identity".to_string(),
+            serde_json::json!(texture_identity),
+        );
+    }
+    if let Some(derived_from_semantic) = &status.derived_from_semantic {
+        value.insert(
+            "derived_from_semantic".to_string(),
+            serde_json::json!(derived_from_semantic),
+        );
+    }
+    if let Some(derived_from_channel) = &status.derived_from_channel {
+        value.insert(
+            "derived_from_channel".to_string(),
+            serde_json::json!(derived_from_channel),
+        );
+    }
+    if let Some(value_channel) = &status.value_channel {
+        value.insert(
+            "value_channel".to_string(),
+            serde_json::json!(value_channel),
+        );
+    }
+    if let Some(value_transform) = &status.value_transform {
+        value.insert(
+            "value_transform".to_string(),
+            serde_json::json!(value_transform),
+        );
+    }
+    if let Some(packed_texture_format) = &status.packed_texture_format {
+        value.insert(
+            "packed_texture_format".to_string(),
+            serde_json::json!(packed_texture_format),
+        );
+    }
+    if let Some(packed_channel_semantics) = &status.packed_channel_semantics {
+        value.insert(
+            "packed_channel_semantics".to_string(),
+            serde_json::json!(packed_channel_semantics),
+        );
+    }
+    if let Some(constant_channel_values) = &status.constant_channel_values {
+        value.insert(
+            "constant_channel_values".to_string(),
+            serde_json::json!(constant_channel_values),
+        );
+    }
+    if let Some(reason) = &status.reason {
+        value.insert("reason".to_string(), serde_json::json!(reason));
+    }
+    if let Some(export_path) = &status.export_path {
+        value.insert("export_path".to_string(), serde_json::json!(export_path));
+    }
+    if let Some(requested_mip) = status.requested_mip {
+        value.insert(
+            "requested_mip".to_string(),
+            serde_json::json!(requested_mip),
+        );
+    }
+    if let Some(selected_mip) = status.selected_mip {
+        value.insert("selected_mip".to_string(), serde_json::json!(selected_mip));
+    }
+    if let Some(mip_selection) = &status.mip_selection {
+        value.insert(
+            "mip_selection".to_string(),
+            serde_json::json!(mip_selection),
+        );
+    }
+    if let Some(alpha_mip_format) = &status.alpha_mip_format {
+        value.insert(
+            "alpha_mip_format".to_string(),
+            serde_json::json!(alpha_mip_format),
+        );
+    }
+    if let Some(alpha_mip_layout) = &status.alpha_mip_layout {
+        value.insert(
+            "alpha_mip_layout".to_string(),
+            serde_json::json!(alpha_mip_layout),
+        );
+    }
+    if let Some(width) = status.width {
+        value.insert("width".to_string(), serde_json::json!(width));
+    }
+    if let Some(height) = status.height {
+        value.insert("height".to_string(), serde_json::json!(height));
+    }
+    if let Some(alpha_mip_count) = status.alpha_mip_count {
+        value.insert(
+            "alpha_mip_count".to_string(),
+            serde_json::json!(alpha_mip_count),
+        );
+    }
+    if let Some(smoothness_min) = status.smoothness_min {
+        value.insert(
+            "smoothness_min".to_string(),
+            serde_json::json!(smoothness_min),
+        );
+    }
+    if let Some(smoothness_max) = status.smoothness_max {
+        value.insert(
+            "smoothness_max".to_string(),
+            serde_json::json!(smoothness_max),
+        );
+    }
+    if let Some(smoothness_mean) = status.smoothness_mean {
+        value.insert(
+            "smoothness_mean".to_string(),
+            serde_json::json!(smoothness_mean),
+        );
+    }
+    if let Some(roughness_min) = status.roughness_min {
+        value.insert(
+            "roughness_min".to_string(),
+            serde_json::json!(roughness_min),
+        );
+    }
+    if let Some(roughness_max) = status.roughness_max {
+        value.insert(
+            "roughness_max".to_string(),
+            serde_json::json!(roughness_max),
+        );
+    }
+    if let Some(roughness_mean) = status.roughness_mean {
+        value.insert(
+            "roughness_mean".to_string(),
+            serde_json::json!(roughness_mean),
+        );
+    }
     serde_json::Value::Object(value)
 }
 
 fn ddna_texture_identity(path: &str) -> Option<&'static str> {
-    if path.to_ascii_lowercase().contains("_ddna") {
+    if crate::mtl::texture_path_has_file_stem_token(path, &["ddna"]) {
         Some("ddna_normal")
     } else {
         None
@@ -4032,6 +4533,75 @@ fn ddna_alpha_semantic(path: &str, role: TextureSemanticRole) -> Option<&'static
     } else {
         None
     }
+}
+
+fn ddna_alpha_channel(path: &str, role: TextureSemanticRole) -> Option<&'static str> {
+    if ddna_alpha_semantic(path, role).is_some() {
+        Some("a")
+    } else {
+        None
+    }
+}
+
+fn exported_ddna_smoothness_sources(derivations: &[TextureDerivationStatus]) -> HashSet<String> {
+    derivations
+        .iter()
+        .filter(|derivation| {
+            derivation.export_kind == "derived_ddna_alpha"
+                && derivation.status == "exported"
+                && derivation.derived_from_texture_identity.as_deref() == Some("ddna_normal")
+                && derivation.derived_from_semantic.as_deref() == Some("smoothness")
+                && derivation.derived_from_channel.as_deref() == Some("a")
+        })
+        .map(|derivation| derivation.source_path.to_ascii_lowercase())
+        .collect()
+}
+
+fn ddna_alpha_semantic_for_exported_source(
+    p4k: &MappedP4k,
+    path: &str,
+    role: TextureSemanticRole,
+    exported_sources: &HashSet<String>,
+) -> Option<&'static str> {
+    let semantic = ddna_alpha_semantic(path, role)?;
+    let source_path = normalize_source_path(p4k, path).to_ascii_lowercase();
+    exported_sources.contains(&source_path).then_some(semantic)
+}
+
+fn ddna_alpha_channel_for_exported_source(
+    p4k: &MappedP4k,
+    path: &str,
+    role: TextureSemanticRole,
+    exported_sources: &HashSet<String>,
+) -> Option<&'static str> {
+    if ddna_alpha_semantic_for_exported_source(p4k, path, role, exported_sources).is_some() {
+        Some("a")
+    } else {
+        None
+    }
+}
+
+fn normal_gloss_ddna_source_paths(material: &SubMaterial) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut paths = Vec::new();
+    for binding in material.semantic_texture_slots() {
+        if !matches!(binding.role, TextureSemanticRole::NormalGloss) {
+            continue;
+        }
+        if ddna_texture_identity(&binding.path).is_none() {
+            continue;
+        }
+        if seen.insert(normalize_requested_source_path(&binding.path).to_ascii_lowercase()) {
+            paths.push(binding.path);
+        }
+    }
+    if let Some(path) = material.normal_tex.as_deref()
+        && ddna_texture_identity(path).is_some()
+        && seen.insert(normalize_requested_source_path(path).to_ascii_lowercase())
+    {
+        paths.push(path.to_string());
+    }
+    paths
 }
 
 fn texture_transform_json(blocks: &[crate::mtl::AuthoredBlock]) -> Option<serde_json::Value> {
@@ -4058,7 +4628,10 @@ fn texture_transform_json(blocks: &[crate::mtl::AuthoredBlock]) -> Option<serde_
         value.insert("offset".to_string(), serde_json::json!(offset));
     }
     if !texmod.children.is_empty() {
-        value.insert("children".to_string(), authored_blocks_json(&texmod.children));
+        value.insert(
+            "children".to_string(),
+            authored_blocks_json(&texmod.children),
+        );
     }
     Some(serde_json::Value::Object(value))
 }
@@ -4236,6 +4809,10 @@ pub(crate) fn prewarm_decomposed_textures(
                 format!("{path}@mip{texture_mip}@n"),
                 crate::pipeline::load_normal_texture(p4k, path, texture_mip),
             ),
+            TextureFlavor::Roughness => (
+                format!("{path}@mip{texture_mip}@r"),
+                crate::pipeline::load_roughness_texture(p4k, path, texture_mip),
+            ),
         })
         .collect()
 }
@@ -4244,6 +4821,226 @@ fn texture_export_kind(flavor: TextureFlavor) -> &'static str {
     match flavor {
         TextureFlavor::Generic => "source",
         TextureFlavor::Normal => "source",
+        TextureFlavor::Roughness => "derived_ddna_alpha",
+    }
+}
+
+fn ddna_roughness_texture_ref(
+    p4k: &MappedP4k,
+    source_path: &str,
+    export_path: String,
+) -> TextureExportRef {
+    TextureExportRef {
+        role: "roughness".to_string(),
+        source_path: normalize_source_path(p4k, source_path),
+        export_path,
+        export_kind: texture_export_kind(TextureFlavor::Roughness).to_string(),
+        texture_identity: None,
+        alpha_semantic: None,
+        alpha_channel: None,
+        derived_from_texture_identity: ddna_texture_identity(source_path).map(str::to_string),
+        derived_from_semantic: ddna_alpha_semantic(source_path, TextureSemanticRole::NormalGloss)
+            .map(str::to_string),
+        derived_from_channel: ddna_alpha_channel(source_path, TextureSemanticRole::NormalGloss)
+            .map(str::to_string),
+        value_channel: Some("r".to_string()),
+        value_transform: Some("sqrt_one_minus".to_string()),
+        packed_texture_format: Some("roughness_grayscale".to_string()),
+        packed_channel_semantics: Some(roughness_grayscale_channel_semantics()),
+        constant_channel_values: Some(roughness_grayscale_constant_channels()),
+    }
+}
+
+fn roughness_grayscale_channel_semantics() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("r".to_string(), "roughness".to_string()),
+        ("g".to_string(), "roughness".to_string()),
+        ("b".to_string(), "roughness".to_string()),
+        ("a".to_string(), "unused".to_string()),
+    ])
+}
+
+fn roughness_grayscale_constant_channels() -> BTreeMap<String, String> {
+    BTreeMap::from([("a".to_string(), "1.0".to_string())])
+}
+
+fn export_ddna_roughness_asset_with_status(
+    files: &mut OutputFiles,
+    p4k: &MappedP4k,
+    texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    source_path: &str,
+    texture_mip: u32,
+    existing_asset_paths: Option<&HashSet<String>>,
+) -> (Option<TextureExportRef>, TextureDerivationStatus) {
+    let Some(_) = ddna_texture_identity(source_path) else {
+        return (
+            None,
+            ddna_roughness_derivation_status(
+                p4k,
+                source_path,
+                "missing",
+                Some("not_ddna_normal"),
+                None,
+                Some(texture_mip),
+                None,
+                Some("unavailable"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        );
+    };
+
+    let normalized_source = normalize_source_path(p4k, source_path);
+    let cache_key = texture_cache_key(&normalized_source, TextureFlavor::Roughness);
+    let requested_path =
+        texture_relative_path(p4k, source_path, TextureFlavor::Roughness, texture_mip);
+
+    match crate::pipeline::load_roughness_texture_result(p4k, source_path, texture_mip) {
+        Ok(loaded) => {
+            let selected_mip = loaded.selected_mip;
+            let requested_mip = loaded.requested_mip;
+            let mip_selection = loaded.mip_selection;
+            let alpha_mip_format = loaded.alpha_mip_format;
+            let alpha_mip_layout = loaded.alpha_mip_layout;
+            let width = loaded.width;
+            let height = loaded.height;
+            let alpha_mip_count = loaded.alpha_mip_count;
+            let smoothness_min = loaded.smoothness_min;
+            let smoothness_max = loaded.smoothness_max;
+            let smoothness_mean = loaded.smoothness_mean;
+            let roughness_min = loaded.roughness_min;
+            let roughness_max = loaded.roughness_max;
+            let roughness_mean = loaded.roughness_mean;
+            let stored_path = if let Some(cached_path) = texture_cache.get(&cache_key) {
+                cached_path.clone()
+            } else if existing_asset_paths
+                .is_some_and(|paths| paths.contains(&requested_path.to_ascii_lowercase()))
+            {
+                texture_cache.insert(cache_key, requested_path.clone());
+                requested_path
+            } else {
+                let stored_path = insert_binary_file(files, requested_path, loaded.grayscale_png);
+                texture_cache.insert(cache_key, stored_path.clone());
+                stored_path
+            };
+            (
+                Some(ddna_roughness_texture_ref(
+                    p4k,
+                    source_path,
+                    stored_path.clone(),
+                )),
+                ddna_roughness_derivation_status(
+                    p4k,
+                    source_path,
+                    "exported",
+                    None,
+                    Some(stored_path),
+                    Some(requested_mip),
+                    Some(selected_mip),
+                    Some(mip_selection),
+                    Some(alpha_mip_format),
+                    Some(alpha_mip_layout),
+                    Some(width),
+                    Some(height),
+                    Some(alpha_mip_count),
+                    Some(smoothness_min),
+                    Some(smoothness_max),
+                    Some(smoothness_mean),
+                    Some(roughness_min),
+                    Some(roughness_max),
+                    Some(roughness_mean),
+                ),
+            )
+        }
+        Err(error) => (
+            None,
+            ddna_roughness_derivation_status(
+                p4k,
+                source_path,
+                "missing",
+                Some(error.as_str()),
+                None,
+                Some(texture_mip),
+                None,
+                Some("unavailable"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        ),
+    }
+}
+
+fn ddna_roughness_derivation_status(
+    p4k: &MappedP4k,
+    source_path: &str,
+    status: &str,
+    reason: Option<&str>,
+    export_path: Option<String>,
+    requested_mip: Option<u32>,
+    selected_mip: Option<u32>,
+    mip_selection: Option<&str>,
+    alpha_mip_format: Option<&str>,
+    alpha_mip_layout: Option<&str>,
+    width: Option<u32>,
+    height: Option<u32>,
+    alpha_mip_count: Option<u32>,
+    smoothness_min: Option<u8>,
+    smoothness_max: Option<u8>,
+    smoothness_mean: Option<u8>,
+    roughness_min: Option<u8>,
+    roughness_max: Option<u8>,
+    roughness_mean: Option<u8>,
+) -> TextureDerivationStatus {
+    TextureDerivationStatus {
+        role: "roughness".to_string(),
+        source_path: normalize_source_path(p4k, source_path),
+        export_kind: texture_export_kind(TextureFlavor::Roughness).to_string(),
+        texture_identity: None,
+        derived_from_texture_identity: ddna_texture_identity(source_path).map(str::to_string),
+        derived_from_semantic: ddna_alpha_semantic(source_path, TextureSemanticRole::NormalGloss)
+            .map(str::to_string),
+        derived_from_channel: ddna_alpha_channel(source_path, TextureSemanticRole::NormalGloss)
+            .map(str::to_string),
+        value_channel: Some("r".to_string()),
+        value_transform: Some("sqrt_one_minus".to_string()),
+        packed_texture_format: Some("roughness_grayscale".to_string()),
+        packed_channel_semantics: Some(roughness_grayscale_channel_semantics()),
+        constant_channel_values: Some(roughness_grayscale_constant_channels()),
+        status: status.to_string(),
+        reason: reason.map(str::to_string),
+        export_path,
+        requested_mip,
+        selected_mip,
+        mip_selection: mip_selection.map(str::to_string),
+        alpha_mip_format: alpha_mip_format.map(str::to_string),
+        alpha_mip_layout: alpha_mip_layout.map(str::to_string),
+        width,
+        height,
+        alpha_mip_count,
+        smoothness_min,
+        smoothness_max,
+        smoothness_mean,
+        roughness_min,
+        roughness_max,
+        roughness_mean,
     }
 }
 
@@ -4304,7 +5101,10 @@ fn merge_animation_channel_values(
     }
 
     if let Some(existing_variants) = existing_value.as_array_mut() {
-        if !existing_variants.iter().any(|variant| *variant == incoming_value) {
+        if !existing_variants
+            .iter()
+            .any(|variant| *variant == incoming_value)
+        {
             existing_variants.push(incoming_value);
         }
         return;
@@ -4645,9 +5445,16 @@ mod tests {
         let mut existing = serde_json::json!({"position": [[1.0, 2.0, 3.0]]});
         let incoming = serde_json::json!({"position": [[4.0, 5.0, 6.0]]});
 
-        merge_animation_channel_values(&mut existing, incoming.clone(), "landing_gear_retract", "0x2522C378");
+        merge_animation_channel_values(
+            &mut existing,
+            incoming.clone(),
+            "landing_gear_retract",
+            "0x2522C378",
+        );
 
-        let arr = existing.as_array().expect("channel entry should become a variant array");
+        let arr = existing
+            .as_array()
+            .expect("channel entry should become a variant array");
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0], serde_json::json!({"position": [[1.0, 2.0, 3.0]]}));
         assert_eq!(arr[1], incoming);
@@ -4661,9 +5468,16 @@ mod tests {
         ]);
         let incoming = serde_json::json!({"position": [[4.0, 5.0, 6.0]]});
 
-        merge_animation_channel_values(&mut existing, incoming, "landing_gear_retract", "0x2522C378");
+        merge_animation_channel_values(
+            &mut existing,
+            incoming,
+            "landing_gear_retract",
+            "0x2522C378",
+        );
 
-        let arr = existing.as_array().expect("channel entry should remain an array");
+        let arr = existing
+            .as_array()
+            .expect("channel entry should remain an array");
         assert_eq!(arr.len(), 2);
     }
 
@@ -4869,12 +5683,96 @@ mod tests {
     #[test]
     fn texture_relative_paths_preserve_source_filenames() {
         assert_eq!(
-            replace_extension(&normalize_requested_source_path("Objects/Ships/Test/hull_diff.dds"), ".png"),
+            replace_extension(
+                &normalize_requested_source_path("Objects/Ships/Test/hull_diff.dds"),
+                ".png"
+            ),
             "Data/Objects/Ships/Test/hull_diff.png"
         );
         assert_eq!(
-            replace_extension(&normalize_requested_source_path("Objects/Ships/Test/hull_ddna.dds"), ".png"),
+            replace_extension(
+                &normalize_requested_source_path("Objects/Ships/Test/hull_ddna.dds"),
+                ".png"
+            ),
             "Data/Objects/Ships/Test/hull_ddna.png"
+        );
+    }
+
+    #[test]
+    fn roughness_texture_relative_path_marks_ddna_alpha_derivation() {
+        assert_eq!(
+            texture_relative_path_from_normalized(
+                "Data/Objects/FPS_Weapons/Test/brfl_fps_behr_p6lr_ddna.dds",
+                TextureFlavor::Roughness,
+                2,
+            ),
+            "Data/Objects/FPS_Weapons/Test/brfl_fps_behr_p6lr_ddna_roughness_TEX2.png"
+        );
+        assert_eq!(
+            texture_export_kind(TextureFlavor::Roughness),
+            "derived_ddna_alpha"
+        );
+    }
+
+    #[test]
+    fn ddna_texture_identity_uses_filename_tokens() {
+        assert_eq!(
+            ddna_texture_identity("Data/Objects/Test/panel-ddna.tif"),
+            Some("ddna_normal")
+        );
+        assert_eq!(
+            ddna_texture_identity("Data/Objects/Test_ddna_cache/panel_diff.tif"),
+            None
+        );
+    }
+
+    #[test]
+    fn normal_gloss_ddna_sources_include_semantic_slots_outside_texslot2() {
+        let mut material = sample_submaterial();
+        material.shader = "HardSurface".into();
+        material.normal_tex = None;
+        material.texture_slots = vec![mtl::TextureSlotBinding {
+            slot: "TexSlot1".into(),
+            path: "Objects/FPS_Weapons/Test/brfl_fps_behr_p6lr_ddna.tif".into(),
+            is_virtual: false,
+        }];
+
+        assert_eq!(
+            normal_gloss_ddna_source_paths(&material),
+            vec!["Objects/FPS_Weapons/Test/brfl_fps_behr_p6lr_ddna.tif".to_string()]
+        );
+    }
+
+    #[test]
+    fn normal_gloss_ddna_sources_deduplicate_normalized_paths() {
+        let mut material = sample_submaterial();
+        material.shader = "HardSurface".into();
+        material.normal_tex =
+            Some("Data\\Objects\\FPS_Weapons\\Test\\brfl_fps_behr_p6lr_ddna.tif".into());
+        material.texture_slots = vec![mtl::TextureSlotBinding {
+            slot: "TexSlot1".into(),
+            path: "Objects/FPS_Weapons/Test/brfl_fps_behr_p6lr_ddna.tif".into(),
+            is_virtual: false,
+        }];
+
+        assert_eq!(
+            normal_gloss_ddna_source_paths(&material),
+            vec!["Objects/FPS_Weapons/Test/brfl_fps_behr_p6lr_ddna.tif".to_string()]
+        );
+    }
+
+    #[test]
+    fn texture_cache_key_normalizes_case_by_flavor() {
+        assert_eq!(
+            texture_cache_key("Data/Objects/Test/PANEL_DDNA.dds", TextureFlavor::Roughness),
+            (
+                "data/objects/test/panel_ddna.dds".to_string(),
+                TextureFlavor::Roughness
+            )
+        );
+        assert_ne!(
+            texture_cache_key("Data/Objects/Test/PANEL_DDNA.dds", TextureFlavor::Normal),
+            texture_cache_key("Data/Objects/Test/PANEL_DDNA.dds", TextureFlavor::Roughness)
         );
     }
 
@@ -4930,8 +5828,14 @@ mod tests {
     #[test]
     fn normalize_package_subdir_filters_invalid_segments() {
         assert_eq!(normalize_package_subdir("ship"), Some("ship".to_string()));
-        assert_eq!(normalize_package_subdir("vehicle/test"), Some("vehicle/test".to_string()));
-        assert_eq!(normalize_package_subdir("../ship"), Some("ship".to_string()));
+        assert_eq!(
+            normalize_package_subdir("vehicle/test"),
+            Some("vehicle/test".to_string())
+        );
+        assert_eq!(
+            normalize_package_subdir("../ship"),
+            Some("ship".to_string())
+        );
         assert_eq!(normalize_package_subdir(""), None);
     }
 
@@ -5041,14 +5945,73 @@ mod tests {
                 export_kind: "source".into(),
                 texture_identity: None,
                 alpha_semantic: None,
+                alpha_channel: None,
                 derived_from_texture_identity: None,
                 derived_from_semantic: None,
+                derived_from_channel: None,
+                value_channel: None,
+                value_transform: None,
+                packed_texture_format: None,
+                packed_channel_semantics: None,
+                constant_channel_values: None,
             }],
             layer_exports: vec![LayerTextureExport {
                 source_material_path: "Data/libs/materials/metal/test_layer.mtl".into(),
                 diffuse_export_path: Some("Data/libs/materials/metal/test_layer.png".into()),
                 normal_export_path: Some("Data/libs/materials/metal/test_layer.png".into()),
-                roughness_export_path: None,
+                roughness_export_path: Some(
+                    "Data/libs/materials/metal/test_layer_roughness_TEX0.png".into(),
+                ),
+                roughness_texture: Some(TextureExportRef {
+                    role: "roughness".into(),
+                    source_path: "Data/libs/materials/metal/test_layer_ddna.dds".into(),
+                    export_path: "Data/libs/materials/metal/test_layer_roughness_TEX0.png".into(),
+                    export_kind: "derived_ddna_alpha".into(),
+                    texture_identity: None,
+                    alpha_semantic: None,
+                    alpha_channel: None,
+                    derived_from_texture_identity: Some("ddna_normal".into()),
+                    derived_from_semantic: Some("smoothness".into()),
+                    derived_from_channel: Some("a".into()),
+                    value_channel: Some("r".into()),
+                    value_transform: Some("sqrt_one_minus".into()),
+                    packed_texture_format: Some("roughness_grayscale".into()),
+                    packed_channel_semantics: Some(roughness_grayscale_channel_semantics()),
+                    constant_channel_values: Some(roughness_grayscale_constant_channels()),
+                }),
+                ddna_derivations: vec![TextureDerivationStatus {
+                    role: "roughness".into(),
+                    source_path: "Data/libs/materials/metal/test_layer_ddna.dds".into(),
+                    export_kind: "derived_ddna_alpha".into(),
+                    texture_identity: None,
+                    derived_from_texture_identity: Some("ddna_normal".into()),
+                    derived_from_semantic: Some("smoothness".into()),
+                    derived_from_channel: Some("a".into()),
+                    value_channel: Some("r".into()),
+                    value_transform: Some("sqrt_one_minus".into()),
+                    packed_texture_format: Some("roughness_grayscale".into()),
+                    packed_channel_semantics: Some(roughness_grayscale_channel_semantics()),
+                    constant_channel_values: Some(roughness_grayscale_constant_channels()),
+                    status: "exported".into(),
+                    reason: None,
+                    export_path: Some(
+                        "Data/libs/materials/metal/test_layer_roughness_TEX0.png".into(),
+                    ),
+                    requested_mip: Some(0),
+                    selected_mip: Some(0),
+                    mip_selection: Some("requested".into()),
+                    alpha_mip_format: Some("bc4_unorm".into()),
+                    alpha_mip_layout: Some("numbered_sibling".into()),
+                    width: Some(256),
+                    height: Some(128),
+                    alpha_mip_count: Some(8),
+                    smoothness_min: Some(12),
+                    smoothness_max: Some(240),
+                    smoothness_mean: Some(128),
+                    roughness_min: Some(125),
+                    roughness_max: Some(250),
+                    roughness_mean: Some(180),
+                }],
                 slot_exports: vec![serde_json::json!({
                     "slot": "TexSlot3",
                     "role": "normal_gloss",
@@ -5058,6 +6021,7 @@ mod tests {
                     "export_kind": "source",
                     "texture_identity": "ddna_normal",
                     "alpha_semantic": "smoothness",
+                    "alpha_channel": "a",
                     "texture_transform": {
                         "attributes": {
                             "OffsetU": 0.25,
@@ -5070,7 +6034,54 @@ mod tests {
                     },
                 })],
             }],
-            derived_texture_exports: vec![],
+            derived_texture_exports: vec![TextureExportRef {
+                role: "roughness".into(),
+                source_path: "Data/libs/materials/metal/test_layer_ddna.dds".into(),
+                export_path: "Data/libs/materials/metal/test_layer_roughness_TEX0.png".into(),
+                export_kind: "derived_ddna_alpha".into(),
+                texture_identity: None,
+                alpha_semantic: None,
+                alpha_channel: None,
+                derived_from_texture_identity: Some("ddna_normal".into()),
+                derived_from_semantic: Some("smoothness".into()),
+                derived_from_channel: Some("a".into()),
+                value_channel: Some("r".into()),
+                value_transform: Some("sqrt_one_minus".into()),
+                packed_texture_format: Some("roughness_grayscale".into()),
+                packed_channel_semantics: Some(roughness_grayscale_channel_semantics()),
+                constant_channel_values: Some(roughness_grayscale_constant_channels()),
+            }],
+            ddna_derivations: vec![TextureDerivationStatus {
+                role: "roughness".into(),
+                source_path: "Data/libs/materials/metal/test_layer_ddna.dds".into(),
+                export_kind: "derived_ddna_alpha".into(),
+                texture_identity: None,
+                derived_from_texture_identity: Some("ddna_normal".into()),
+                derived_from_semantic: Some("smoothness".into()),
+                derived_from_channel: Some("a".into()),
+                value_channel: Some("r".into()),
+                value_transform: Some("sqrt_one_minus".into()),
+                packed_texture_format: Some("roughness_grayscale".into()),
+                packed_channel_semantics: Some(roughness_grayscale_channel_semantics()),
+                constant_channel_values: Some(roughness_grayscale_constant_channels()),
+                status: "missing".into(),
+                reason: Some("missing_alpha_mips".into()),
+                export_path: None,
+                requested_mip: Some(0),
+                selected_mip: None,
+                mip_selection: Some("unavailable".into()),
+                alpha_mip_format: None,
+                alpha_mip_layout: None,
+                width: None,
+                height: None,
+                alpha_mip_count: None,
+                smoothness_min: None,
+                smoothness_max: None,
+                smoothness_mean: None,
+                roughness_min: None,
+                roughness_max: None,
+                roughness_mean: None,
+            }],
         }];
 
         let value = build_material_sidecar_value(
@@ -5082,47 +6093,344 @@ mod tests {
             &[0],
         );
 
-        assert_eq!(value["source_material_path"], serde_json::json!("Data/Objects/Ships/Test/hull.mtl"));
+        assert_eq!(
+            value["source_material_path"],
+            serde_json::json!("Data/Objects/Ships/Test/hull.mtl")
+        );
         assert!(value.get("geometry_path").is_none());
-        assert_eq!(value["authored_material_set"]["attributes"][0]["name"], serde_json::json!("DefaultPalette"));
-        assert_eq!(value["authored_material_set"]["public_params"][0]["name"], serde_json::json!("RootGlowScale"));
-        assert_eq!(value["authored_material_set"]["child_blocks"][0]["tag"], serde_json::json!("VertexDeform"));
-        assert_eq!(value["paint_override"]["subgeometry_tag"], serde_json::json!("BlackGold"));
+        assert_eq!(
+            value["authored_material_set"]["attributes"][0]["name"],
+            serde_json::json!("DefaultPalette")
+        );
+        assert_eq!(
+            value["authored_material_set"]["public_params"][0]["name"],
+            serde_json::json!("RootGlowScale")
+        );
+        assert_eq!(
+            value["authored_material_set"]["child_blocks"][0]["tag"],
+            serde_json::json!("VertexDeform")
+        );
+        assert_eq!(
+            value["paint_override"]["subgeometry_tag"],
+            serde_json::json!("BlackGold")
+        );
         assert_eq!(
             value["submaterials"][0]["blender_material_name"],
             serde_json::json!("hull:hull_panel")
         );
-        assert_eq!(value["submaterials"][0]["shader_family"], serde_json::json!("LayerBlend_V2"));
-        assert_eq!(value["submaterials"][0]["authored_attributes"][0]["name"], serde_json::json!("MtlFlags"));
-        assert_eq!(value["submaterials"][0]["authored_public_params"][0]["name"], serde_json::json!("WearBlendBase"));
-        assert_eq!(value["submaterials"][0]["authored_child_blocks"][0]["tag"], serde_json::json!("VertexDeform"));
-        assert_eq!(value["submaterials"][0]["texture_slots"][0]["authored_child_blocks"][0]["tag"], serde_json::json!("TexMod"));
-        assert_eq!(value["submaterials"][0]["palette_routing"]["material_channel"]["name"], serde_json::json!("secondary"));
-        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["palette_channel"]["name"], serde_json::json!("primary"));
-        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["name"], serde_json::json!("Primary"));
-        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["submaterial_name"], serde_json::json!("paint"));
-        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["resolved_material"]["shader_family"], serde_json::json!("Layer"));
-        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["resolved_material"]["authored_attributes"][0]["name"], serde_json::json!("MatTemplate"));
-        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["resolved_material"]["authored_public_params"][0]["name"], serde_json::json!("WearGlossiness"));
-        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["resolved_material"]["authored_child_blocks"][0]["tag"], serde_json::json!("VertexDeform"));
-        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["authored_attributes"][0]["name"], serde_json::json!("CustomBlendMode"));
-        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["authored_child_blocks"][0]["tag"], serde_json::json!("CustomAnimation"));
-        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["texture_slots"][0]["role"], serde_json::json!("normal_gloss"));
-        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["texture_slots"][0]["texture_identity"], serde_json::json!("ddna_normal"));
-        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["texture_slots"][0]["alpha_semantic"], serde_json::json!("smoothness"));
-        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["texture_slots"][0]["texture_transform"]["scale"], serde_json::json!([2.0, 3.0]));
+        assert_eq!(
+            value["submaterials"][0]["shader_family"],
+            serde_json::json!("LayerBlend_V2")
+        );
+        assert_eq!(
+            value["submaterials"][0]["authored_attributes"][0]["name"],
+            serde_json::json!("MtlFlags")
+        );
+        assert_eq!(
+            value["submaterials"][0]["authored_public_params"][0]["name"],
+            serde_json::json!("WearBlendBase")
+        );
+        assert_eq!(
+            value["submaterials"][0]["authored_child_blocks"][0]["tag"],
+            serde_json::json!("VertexDeform")
+        );
+        assert_eq!(
+            value["submaterials"][0]["texture_slots"][0]["authored_child_blocks"][0]["tag"],
+            serde_json::json!("TexMod")
+        );
+        assert_eq!(
+            value["submaterials"][0]["palette_routing"]["material_channel"]["name"],
+            serde_json::json!("secondary")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["palette_channel"]["name"],
+            serde_json::json!("primary")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["name"],
+            serde_json::json!("Primary")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["submaterial_name"],
+            serde_json::json!("paint")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["resolved_material"]["shader_family"],
+            serde_json::json!("Layer")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["resolved_material"]["authored_attributes"]
+                [0]["name"],
+            serde_json::json!("MatTemplate")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["resolved_material"]["authored_public_params"]
+                [0]["name"],
+            serde_json::json!("WearGlossiness")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["resolved_material"]["authored_child_blocks"]
+                [0]["tag"],
+            serde_json::json!("VertexDeform")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["authored_attributes"][0]["name"],
+            serde_json::json!("CustomBlendMode")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["authored_child_blocks"][0]["tag"],
+            serde_json::json!("CustomAnimation")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["texture_slots"][0]["role"],
+            serde_json::json!("normal_gloss")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["texture_slots"][0]["texture_identity"],
+            serde_json::json!("ddna_normal")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["texture_slots"][0]["alpha_semantic"],
+            serde_json::json!("smoothness")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["texture_slots"][0]["alpha_channel"],
+            serde_json::json!("a")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["texture_slots"][0]["texture_transform"]
+                ["scale"],
+            serde_json::json!([2.0, 3.0])
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["roughness_export_path"],
+            serde_json::json!("Data/libs/materials/metal/test_layer_roughness_TEX0.png")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["roughness_texture"]["role"],
+            serde_json::json!("roughness")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["roughness_texture"]["export_kind"],
+            serde_json::json!("derived_ddna_alpha")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["roughness_texture"]["derived_from_texture_identity"],
+            serde_json::json!("ddna_normal")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["roughness_texture"]["derived_from_semantic"],
+            serde_json::json!("smoothness")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["roughness_texture"]["derived_from_channel"],
+            serde_json::json!("a")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["roughness_texture"]["value_transform"],
+            serde_json::json!("sqrt_one_minus")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["roughness_texture"]["value_channel"],
+            serde_json::json!("r")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["roughness_texture"]["packed_texture_format"],
+            serde_json::json!("roughness_grayscale")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["roughness_texture"]["packed_channel_semantics"]
+                ["r"],
+            serde_json::json!("roughness")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["roughness_texture"]["packed_channel_semantics"]
+                ["g"],
+            serde_json::json!("roughness")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["roughness_texture"]["packed_channel_semantics"]
+                ["b"],
+            serde_json::json!("roughness")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["roughness_texture"]["constant_channel_values"]
+                ["a"],
+            serde_json::json!("1.0")
+        );
         let gloss_mult = value["submaterials"][0]["layer_manifest"][0]["gloss_mult"]
             .as_f64()
             .expect("gloss_mult should be numeric");
         assert!((gloss_mult - 0.7).abs() < 1e-6);
-        assert_eq!(value["submaterials"][0]["layer_manifest"][0]["layer_snapshot"]["shader"], serde_json::json!("Layer"));
-        let wear_glossiness = value["submaterials"][0]["layer_manifest"][0]["layer_snapshot"]["wear_glossiness"]
-            .as_f64()
-            .expect("wear_glossiness should be numeric");
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["layer_snapshot"]["shader"],
+            serde_json::json!("Layer")
+        );
+        let wear_glossiness =
+            value["submaterials"][0]["layer_manifest"][0]["layer_snapshot"]["wear_glossiness"]
+                .as_f64()
+                .expect("wear_glossiness should be numeric");
         assert!((wear_glossiness - 0.91).abs() < 1e-6);
-        assert_eq!(value["submaterials"][0]["public_params"]["WearBlendBase"], serde_json::json!(0.5));
-        assert_eq!(value["submaterials"][0]["derived_textures"], serde_json::json!([]));
-        assert_eq!(value["submaterials"][0]["virtual_inputs"][0], serde_json::json!("$TintPaletteDecal"));
+        assert_eq!(
+            value["submaterials"][0]["public_params"]["WearBlendBase"],
+            serde_json::json!(0.5)
+        );
+        assert_eq!(
+            value["submaterials"][0]["derived_textures"][0]["role"],
+            serde_json::json!("roughness")
+        );
+        assert_eq!(
+            value["submaterials"][0]["derived_textures"][0]["export_kind"],
+            serde_json::json!("derived_ddna_alpha")
+        );
+        assert_eq!(
+            value["submaterials"][0]["derived_textures"][0]["derived_from_texture_identity"],
+            serde_json::json!("ddna_normal")
+        );
+        assert_eq!(
+            value["submaterials"][0]["derived_textures"][0]["derived_from_semantic"],
+            serde_json::json!("smoothness")
+        );
+        assert_eq!(
+            value["submaterials"][0]["derived_textures"][0]["derived_from_channel"],
+            serde_json::json!("a")
+        );
+        assert_eq!(
+            value["submaterials"][0]["derived_textures"][0]["value_transform"],
+            serde_json::json!("sqrt_one_minus")
+        );
+        assert_eq!(
+            value["submaterials"][0]["derived_textures"][0]["value_channel"],
+            serde_json::json!("r")
+        );
+        assert_eq!(
+            value["submaterials"][0]["derived_textures"][0]["packed_texture_format"],
+            serde_json::json!("roughness_grayscale")
+        );
+        assert_eq!(
+            value["submaterials"][0]["derived_textures"][0]["packed_channel_semantics"]["r"],
+            serde_json::json!("roughness")
+        );
+        assert_eq!(
+            value["submaterials"][0]["derived_textures"][0]["packed_channel_semantics"]["g"],
+            serde_json::json!("roughness")
+        );
+        assert_eq!(
+            value["submaterials"][0]["derived_textures"][0]["constant_channel_values"]["a"],
+            serde_json::json!("1.0")
+        );
+        assert_eq!(
+            value["submaterials"][0]["ddna_derivations"][0]["status"],
+            serde_json::json!("missing")
+        );
+        assert_eq!(
+            value["submaterials"][0]["ddna_derivations"][0]["reason"],
+            serde_json::json!("missing_alpha_mips")
+        );
+        assert_eq!(
+            value["submaterials"][0]["ddna_derivations"][0]["requested_mip"],
+            serde_json::json!(0)
+        );
+        assert_eq!(
+            value["submaterials"][0]["ddna_derivations"][0]["mip_selection"],
+            serde_json::json!("unavailable")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["status"],
+            serde_json::json!("exported")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["value_transform"],
+            serde_json::json!("sqrt_one_minus")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["value_channel"],
+            serde_json::json!("r")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["packed_texture_format"],
+            serde_json::json!("roughness_grayscale")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["packed_channel_semantics"]
+                ["r"],
+            serde_json::json!("roughness")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["packed_channel_semantics"]
+                ["g"],
+            serde_json::json!("roughness")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["packed_channel_semantics"]
+                ["b"],
+            serde_json::json!("roughness")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["constant_channel_values"]
+                ["a"],
+            serde_json::json!("1.0")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["requested_mip"],
+            serde_json::json!(0)
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["selected_mip"],
+            serde_json::json!(0)
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["mip_selection"],
+            serde_json::json!("requested")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["width"],
+            serde_json::json!(256)
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["height"],
+            serde_json::json!(128)
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["alpha_mip_count"],
+            serde_json::json!(8)
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["alpha_mip_format"],
+            serde_json::json!("bc4_unorm")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["alpha_mip_layout"],
+            serde_json::json!("numbered_sibling")
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["smoothness_min"],
+            serde_json::json!(12)
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["smoothness_max"],
+            serde_json::json!(240)
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["smoothness_mean"],
+            serde_json::json!(128)
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["roughness_min"],
+            serde_json::json!(125)
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["roughness_max"],
+            serde_json::json!(250)
+        );
+        assert_eq!(
+            value["submaterials"][0]["layer_manifest"][0]["ddna_derivations"][0]["roughness_mean"],
+            serde_json::json!(180)
+        );
+        assert_eq!(
+            value["submaterials"][0]["virtual_inputs"][0],
+            serde_json::json!("$TintPaletteDecal")
+        );
     }
 
     #[test]
@@ -5155,6 +6463,7 @@ mod tests {
             direct_texture_exports: Vec::new(),
             layer_exports: Vec::new(),
             derived_texture_exports: Vec::new(),
+            ddna_derivations: Vec::new(),
         }];
 
         let value = build_material_sidecar_value(
@@ -5166,10 +6475,22 @@ mod tests {
             &[0],
         );
 
-        assert_eq!(value["submaterials"][0]["decoded_feature_flags"]["has_iridescence"], serde_json::json!(true));
-        assert_eq!(value["submaterials"][0]["texture_slots"][0]["role"], serde_json::json!("iridescence"));
-        assert_eq!(value["submaterials"][0]["public_params"]["IridescenceIntensity"], serde_json::json!(0.75));
-        assert_eq!(value["submaterials"][0]["authored_public_params"][0]["name"], serde_json::json!("IridescenceIntensity"));
+        assert_eq!(
+            value["submaterials"][0]["decoded_feature_flags"]["has_iridescence"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            value["submaterials"][0]["texture_slots"][0]["role"],
+            serde_json::json!("iridescence")
+        );
+        assert_eq!(
+            value["submaterials"][0]["public_params"]["IridescenceIntensity"],
+            serde_json::json!(0.75)
+        );
+        assert_eq!(
+            value["submaterials"][0]["authored_public_params"][0]["name"],
+            serde_json::json!("IridescenceIntensity")
+        );
     }
 
     #[test]
@@ -5212,6 +6533,7 @@ mod tests {
             direct_texture_exports: Vec::new(),
             layer_exports: Vec::new(),
             derived_texture_exports: Vec::new(),
+            ddna_derivations: Vec::new(),
         }];
 
         let value = build_material_sidecar_value(
@@ -5275,7 +6597,10 @@ mod tests {
             paint_override: None,
             material_set: Default::default(),
         };
-        let extracted = vec![ExtractedMaterialEntry::default(), ExtractedMaterialEntry::default()];
+        let extracted = vec![
+            ExtractedMaterialEntry::default(),
+            ExtractedMaterialEntry::default(),
+        ];
 
         let value = build_material_sidecar_value(
             &materials,
@@ -5286,8 +6611,14 @@ mod tests {
             &[0, 1],
         );
 
-        assert_eq!(value["submaterials"][0]["blender_material_name"], serde_json::json!("hull:hull_panel_0"));
-        assert_eq!(value["submaterials"][1]["blender_material_name"], serde_json::json!("hull:hull_panel_1"));
+        assert_eq!(
+            value["submaterials"][0]["blender_material_name"],
+            serde_json::json!("hull:hull_panel_0")
+        );
+        assert_eq!(
+            value["submaterials"][1]["blender_material_name"],
+            serde_json::json!("hull:hull_panel_1")
+        );
     }
 
     #[test]
@@ -5312,7 +6643,9 @@ mod tests {
             LiveryUsage {
                 palette_id: "palette/test".to_string(),
                 palette_source_name: Some("vehicle.palette.test".to_string()),
-                entity_names: ["child_a".to_string(), "child_b".to_string()].into_iter().collect(),
+                entity_names: ["child_a".to_string(), "child_b".to_string()]
+                    .into_iter()
+                    .collect(),
                 material_sidecars: [
                     "Data/Objects/A.materials.json".to_string(),
                     "Data/Objects/B.materials.json".to_string(),
@@ -5323,9 +6656,22 @@ mod tests {
         );
 
         let value = build_livery_manifest_value(&records);
-        assert_eq!(value["liveries"][0]["palette_source_name"], serde_json::json!("vehicle.palette.test"));
-        assert_eq!(value["liveries"][0]["entity_names"].as_array().map(|items| items.len()), Some(2));
-        assert_eq!(value["liveries"][0]["material_sidecars"].as_array().map(|items| items.len()), Some(2));
+        assert_eq!(
+            value["liveries"][0]["palette_source_name"],
+            serde_json::json!("vehicle.palette.test")
+        );
+        assert_eq!(
+            value["liveries"][0]["entity_names"]
+                .as_array()
+                .map(|items| items.len()),
+            Some(2)
+        );
+        assert_eq!(
+            value["liveries"][0]["material_sidecars"]
+                .as_array()
+                .map(|items| items.len()),
+            Some(2)
+        );
     }
 
     #[test]
@@ -5354,12 +6700,34 @@ mod tests {
 
         let value = build_palette_manifest_value(&records);
         assert_eq!(palette_id, "palette/vehicle_palette_test");
-        assert_eq!(value["palettes"][0]["id"], serde_json::json!("palette/vehicle_palette_test"));
-        assert_eq!(value["palettes"][0]["source_name"], serde_json::json!("vehicle.palette.test"));
-        assert_eq!(value["palettes"][0]["display_name"], serde_json::json!("Vehicle Palette Test"));
-        assert_eq!(value["palettes"][0]["glass"].as_array().map(|items| items.len()), Some(3));
-        assert_eq!(value["palettes"][0]["decal"]["source_path"], serde_json::json!("Data/Textures/branding/test_decal.png"));
-        assert_eq!(value["palettes"][0]["decal"]["red"].as_array().map(|items| items.len()), Some(3));
+        assert_eq!(
+            value["palettes"][0]["id"],
+            serde_json::json!("palette/vehicle_palette_test")
+        );
+        assert_eq!(
+            value["palettes"][0]["source_name"],
+            serde_json::json!("vehicle.palette.test")
+        );
+        assert_eq!(
+            value["palettes"][0]["display_name"],
+            serde_json::json!("Vehicle Palette Test")
+        );
+        assert_eq!(
+            value["palettes"][0]["glass"]
+                .as_array()
+                .map(|items| items.len()),
+            Some(3)
+        );
+        assert_eq!(
+            value["palettes"][0]["decal"]["source_path"],
+            serde_json::json!("Data/Textures/branding/test_decal.png")
+        );
+        assert_eq!(
+            value["palettes"][0]["decal"]["red"]
+                .as_array()
+                .map(|items| items.len()),
+            Some(3)
+        );
         let specular = value["palettes"][0]["finish"]["primary"]["specular"]
             .as_array()
             .expect("primary finish specular should be an array");
@@ -5401,10 +6769,22 @@ mod tests {
             .expect("paint variant palette should register");
 
         let value = build_palette_manifest_value(&records);
-        assert_eq!(palette_id, "palette/vulture_coramor_2956_purple_pink_green_iridecence");
-        assert_eq!(value["palettes"][0]["id"], serde_json::json!("palette/vulture_coramor_2956_purple_pink_green_iridecence"));
-        assert_eq!(value["palettes"][0]["source_name"], serde_json::json!("coramor_2956_purple_pink_green_iridecence"));
-        assert_eq!(value["palettes"][0]["display_name"], serde_json::json!("Vulture Heartthrob Livery"));
+        assert_eq!(
+            palette_id,
+            "palette/vulture_coramor_2956_purple_pink_green_iridecence"
+        );
+        assert_eq!(
+            value["palettes"][0]["id"],
+            serde_json::json!("palette/vulture_coramor_2956_purple_pink_green_iridecence")
+        );
+        assert_eq!(
+            value["palettes"][0]["source_name"],
+            serde_json::json!("coramor_2956_purple_pink_green_iridecence")
+        );
+        assert_eq!(
+            value["palettes"][0]["display_name"],
+            serde_json::json!("Vulture Heartthrob Livery")
+        );
     }
 
     #[test]
@@ -5416,7 +6796,11 @@ mod tests {
             material_set: Default::default(),
         };
 
-        let path = material_source_request(&materials, "Data/objects/ships/test/canonical", "Data/Objects/Ships/Test/hull.skin");
+        let path = material_source_request(
+            &materials,
+            "Data/objects/ships/test/canonical",
+            "Data/Objects/Ships/Test/hull.skin",
+        );
 
         assert_eq!(path, "Data\\Objects\\Ships\\Test\\canonical.mtl");
     }
@@ -5430,7 +6814,11 @@ mod tests {
             material_set: Default::default(),
         };
 
-        let path = material_source_request(&materials, "Data/objects/ships/test/canonical", "Data/Objects/Ships/Test/hull.skin");
+        let path = material_source_request(
+            &materials,
+            "Data/objects/ships/test/canonical",
+            "Data/Objects/Ships/Test/hull.skin",
+        );
 
         assert_eq!(path, "Data/objects/ships/test/canonical.mtl");
     }
@@ -5717,7 +7105,10 @@ mod tests {
         assert_eq!(glb_materials.materials.len(), 1);
         assert_eq!(view.mesh.submeshes.len(), 1);
         assert_eq!(view.mesh.submeshes[0].material_id, 0);
-        assert_eq!(view.mesh.submeshes[0].material_name.as_deref(), Some("hull"));
+        assert_eq!(
+            view.mesh.submeshes[0].material_name.as_deref(),
+            Some("hull")
+        );
     }
 
     #[test]
@@ -5755,9 +7146,13 @@ mod tests {
         ]);
         let nmc = sample_nmc(&["body", "shield_geo"]);
 
-        let filtered = build_decomposed_material_view(&mesh, Some(&materials), Some(&nmc), false, false);
+        let filtered =
+            build_decomposed_material_view(&mesh, Some(&materials), Some(&nmc), false, false);
         assert_eq!(filtered.mesh.submeshes.len(), 2);
-        assert_eq!(filtered.glb_nmc.as_ref().map(|combo| combo.nodes.len()), Some(2));
+        assert_eq!(
+            filtered.glb_nmc.as_ref().map(|combo| combo.nodes.len()),
+            Some(2)
+        );
     }
 
     #[test]
@@ -5795,9 +7190,13 @@ mod tests {
         ]);
         let nmc = sample_nmc(&["body", "sheild_arm_a_geo"]);
 
-        let filtered = build_decomposed_material_view(&mesh, Some(&materials), Some(&nmc), false, false);
+        let filtered =
+            build_decomposed_material_view(&mesh, Some(&materials), Some(&nmc), false, false);
         assert_eq!(filtered.mesh.submeshes.len(), 2);
-        assert_eq!(filtered.glb_nmc.as_ref().map(|combo| combo.nodes.len()), Some(2));
+        assert_eq!(
+            filtered.glb_nmc.as_ref().map(|combo| combo.nodes.len()),
+            Some(2)
+        );
     }
 
     #[test]
@@ -5823,10 +7222,14 @@ mod tests {
         }]);
         let nmc = sample_nmc(&["body", "hardpoint_weapon_mining"]);
 
-        let filtered = build_decomposed_material_view(&mesh, Some(&materials), Some(&nmc), false, false);
+        let filtered =
+            build_decomposed_material_view(&mesh, Some(&materials), Some(&nmc), false, false);
 
         assert_eq!(filtered.mesh.submeshes.len(), 1);
-        assert_eq!(filtered.glb_nmc.as_ref().map(|combo| combo.nodes.len()), Some(2));
+        assert_eq!(
+            filtered.glb_nmc.as_ref().map(|combo| combo.nodes.len()),
+            Some(2)
+        );
         assert_eq!(
             filtered
                 .glb_nmc
@@ -5906,7 +7309,10 @@ mod tests {
             parent_node_name: Some("hardpoint_weapon_left".into()),
             parent_entity_name: Some("root".into()),
             source_transform_basis: Some("gltf_y_up".into()),
-            local_transform_sc: Some(crate::socpak::build_container_transform([1.0, 2.0, 3.0], [0.0, 90.0, 0.0])),
+            local_transform_sc: Some(crate::socpak::build_container_transform(
+                [1.0, 2.0, 3.0],
+                [0.0, 90.0, 0.0],
+            )),
             resolved_no_rotation: false,
             no_rotation: false,
             offset_position: [1.0, 2.0, 3.0],
@@ -5930,7 +7336,9 @@ mod tests {
                 cgf_path: "Data/Objects/Ships/Test/interior_panel.cgf".into(),
                 material_path: Some("Data/Objects/Ships/Test/interior_panel.mtl".into()),
                 mesh_asset: "Data/Objects/Ships/Test/interior_panel.glb".into(),
-                material_sidecar: Some("Data/Objects/Ships/Test/interior_panel.materials.json".into()),
+                material_sidecar: Some(
+                    "Data/Objects/Ships/Test/interior_panel.materials.json".into(),
+                ),
                 entity_class_guid: Some("1234".into()),
                 ui_bindings: Vec::new(),
                 transform: [
@@ -5956,20 +7364,91 @@ mod tests {
             &[child],
             &[interior],
             &[],
+            None,
+            None,
             &ExportOptions::default(),
         );
 
-        assert_eq!(value["root_entity"]["mesh_asset"], serde_json::json!("Data/Objects/Ships/Test/root.glb"));
-        assert_eq!(value["children"][0]["mesh_asset"], serde_json::json!("Data/Objects/Ships/Test/child.glb"));
-        assert_eq!(value["children"][0]["parent_node_name"], serde_json::json!("hardpoint_weapon_left"));
-        assert_eq!(value["children"][0]["source_transform_basis"], serde_json::json!("gltf_y_up"));
+        assert_eq!(
+            value["root_entity"]["mesh_asset"],
+            serde_json::json!("Data/Objects/Ships/Test/root.glb")
+        );
+        assert_eq!(
+            value["children"][0]["mesh_asset"],
+            serde_json::json!("Data/Objects/Ships/Test/child.glb")
+        );
+        assert_eq!(
+            value["children"][0]["parent_node_name"],
+            serde_json::json!("hardpoint_weapon_left")
+        );
+        assert_eq!(
+            value["children"][0]["source_transform_basis"],
+            serde_json::json!("gltf_y_up")
+        );
         assert!(value["children"][0]["local_transform_sc"].is_array());
-        assert_eq!(value["children"][0]["resolved_no_rotation"], serde_json::json!(false));
-        assert_eq!(value["interiors"][0]["parent_entity_name"], serde_json::json!("child_entity"));
-        assert_eq!(value["interiors"][0]["parent_node_name"], serde_json::json!("child_root"));
-        assert_eq!(value["interiors"][0]["placements"][0]["mesh_asset"], serde_json::json!("Data/Objects/Ships/Test/interior_panel.glb"));
-        assert_eq!(value["package_rule"]["package_dir"], serde_json::json!("Packages/ARGO MOLE"));
-        assert_eq!(value["package_rule"]["normalized_p4k_relative_paths"], serde_json::json!(true));
+        assert_eq!(
+            value["children"][0]["resolved_no_rotation"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            value["interiors"][0]["parent_entity_name"],
+            serde_json::json!("child_entity")
+        );
+        assert_eq!(
+            value["interiors"][0]["parent_node_name"],
+            serde_json::json!("child_root")
+        );
+        assert_eq!(
+            value["interiors"][0]["placements"][0]["mesh_asset"],
+            serde_json::json!("Data/Objects/Ships/Test/interior_panel.glb")
+        );
+        assert_eq!(
+            value["package_rule"]["package_dir"],
+            serde_json::json!("Packages/ARGO MOLE")
+        );
+        assert_eq!(
+            value["package_rule"]["normalized_p4k_relative_paths"],
+            serde_json::json!(true)
+        );
+    }
+
+    #[test]
+    fn scene_manifest_includes_weapon_assembly_section_when_present() {
+        let weapon_assembly = serde_json::json!({
+            "root": { "entity_name": "BEHR_P4AR" },
+            "parts": [
+                {
+                    "role": "magazine",
+                    "attach_slot": "magazine",
+                    "attach_bone": "magAttach",
+                    "transform_source": "alias"
+                }
+            ],
+            "unresolved_slots": [],
+        });
+
+        let value = build_scene_manifest_value(
+            "BEHR_P4AR",
+            "BEHR_P4AR_LOD0_MIP0",
+            "Data/Objects/Weapons/FPS_Weapons/BEHR/P4AR/p4ar.cdf",
+            "Data/Objects/Weapons/FPS_Weapons/BEHR/P4AR/p4ar.mtl",
+            "Data/Objects/Weapons/FPS_Weapons/BEHR/P4AR/p4ar.blend",
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            Some("fps_weapon"),
+            Some(&weapon_assembly),
+            &ExportOptions::default(),
+        );
+
+        assert_eq!(value["assembly_kind"], serde_json::json!("fps_weapon"));
+        assert_eq!(
+            value["weapon_assembly"]["parts"][0]["attach_bone"],
+            serde_json::json!("magAttach")
+        );
     }
 
     #[test]
@@ -5989,11 +7468,14 @@ mod tests {
                 material_sidecar: "Data/Objects/Ships/Test/root.materials.json".into(),
                 entity_name: "DRAK_Clipper_Thruster_Main".into(),
                 geometry_path: "Data/Objects/Spaceships/Thrusters/DRAK/test_thruster.cga".into(),
-                mesh_asset: "Data/Objects/Spaceships/Thrusters/DRAK/test_thruster_LOD0.blend".into(),
+                mesh_asset: "Data/Objects/Spaceships/Thrusters/DRAK/test_thruster_LOD0.blend"
+                    .into(),
                 source_material_index: 7,
                 submaterial_name: "Glow_Thrusters".into(),
                 blender_material_name: "root:Glow_Thrusters".into(),
             }],
+            None,
+            None,
             &ExportOptions::default(),
         );
 
@@ -6093,8 +7575,10 @@ mod tests {
 
     #[test]
     fn resolve_no_rotation_local_matrix_suppresses_duplicate_zero_rotation_offset() {
-        let parent_world = glam::Mat4::from_translation(glam::Vec3::new(3.0, 0.0, 0.0)).to_cols_array();
-        let resolved = resolve_no_rotation_local_matrix(parent_world, [3.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+        let parent_world =
+            glam::Mat4::from_translation(glam::Vec3::new(3.0, 0.0, 0.0)).to_cols_array();
+        let resolved =
+            resolve_no_rotation_local_matrix(parent_world, [3.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
 
         assert_eq!(resolved[12], 0.0);
         assert_eq!(resolved[13], 0.0);
@@ -6103,8 +7587,10 @@ mod tests {
 
     #[test]
     fn resolve_no_rotation_local_matrix_treats_tiny_rotation_as_zero() {
-        let parent_world = glam::Mat4::from_translation(glam::Vec3::new(3.0, 0.0, 0.0)).to_cols_array();
-        let resolved = resolve_no_rotation_local_matrix(parent_world, [3.0, 0.0, 0.0], [1e-7, 0.0, 0.0]);
+        let parent_world =
+            glam::Mat4::from_translation(glam::Vec3::new(3.0, 0.0, 0.0)).to_cols_array();
+        let resolved =
+            resolve_no_rotation_local_matrix(parent_world, [3.0, 0.0, 0.0], [1e-7, 0.0, 0.0]);
 
         assert_eq!(resolved[12], 0.0);
         assert_eq!(resolved[13], 0.0);
@@ -6119,7 +7605,11 @@ mod tests {
         crate::nmc::NmcNode {
             name: name.to_string(),
             parent_index,
-            world_to_bone: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]],
+            world_to_bone: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+            ],
             bone_to_world,
             scale: [1.0, 1.0, 1.0],
             geometry_type: 0,
@@ -6151,17 +7641,29 @@ mod tests {
                 test_nmc_node(
                     "root",
                     None,
-                    [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]],
+                    [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                    ],
                 ),
                 test_nmc_node(
                     "hardpoint_docking_module",
                     Some(0),
-                    [[0.0, -1.0, 0.0, -18.9], [1.0, 0.0, 0.0, -18.38946], [0.0, 0.0, 1.0, 5.51615]],
+                    [
+                        [0.0, -1.0, 0.0, -18.9],
+                        [1.0, 0.0, 0.0, -18.38946],
+                        [0.0, 0.0, 1.0, 5.51615],
+                    ],
                 ),
                 test_nmc_node(
                     "hardpoint_docking_host",
                     Some(0),
-                    [[1.0, 0.0, 0.0, -19.15725], [0.0, 1.0, 0.0, -18.37498], [0.0, 0.0, 1.0, 7.30487]],
+                    [
+                        [1.0, 0.0, 0.0, -19.15725],
+                        [0.0, 1.0, 0.0, -18.37498],
+                        [0.0, 0.0, 1.0, 7.30487],
+                    ],
                 ),
             ],
             material_indices: Vec::new(),
@@ -6170,7 +7672,11 @@ mod tests {
             nodes: vec![test_nmc_node(
                 "hardpoint_docking_vehicle",
                 None,
-                [[1.0, 0.0, 0.0, 2.98941], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 1.0474]],
+                [
+                    [1.0, 0.0, 0.0, 2.98941],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 1.0474],
+                ],
             )],
             material_indices: Vec::new(),
         };
@@ -6197,7 +7703,8 @@ mod tests {
             textures: None,
             nmc: Some(child_nmc),
             palette: None,
-            geometry_path: "Objects/Spaceships/Ships/DRAK/command_module/exterior/test.cga".to_string(),
+            geometry_path: "Objects/Spaceships/Ships/DRAK/command_module/exterior/test.cga"
+                .to_string(),
             material_path: String::new(),
             bones: Vec::new(),
             skeleton_source_path: None,
@@ -6290,12 +7797,26 @@ mod tests {
         let view = build_decomposed_material_view(&mesh, Some(&materials), None, false, false);
 
         // GLB submesh 0 → hull (original index 1)
-        assert_eq!(view.mesh.submeshes[0].material_id, 0, "compacted material_id for hull");
-        assert_eq!(view.mesh.submeshes[0].source_material_id, Some(1), "source index for hull");
+        assert_eq!(
+            view.mesh.submeshes[0].material_id, 0,
+            "compacted material_id for hull"
+        );
+        assert_eq!(
+            view.mesh.submeshes[0].source_material_id,
+            Some(1),
+            "source index for hull"
+        );
 
         // GLB submesh 1 → decal (original index 2)
-        assert_eq!(view.mesh.submeshes[1].material_id, 1, "compacted material_id for decal");
-        assert_eq!(view.mesh.submeshes[1].source_material_id, Some(2), "source index for decal");
+        assert_eq!(
+            view.mesh.submeshes[1].material_id, 1,
+            "compacted material_id for decal"
+        );
+        assert_eq!(
+            view.mesh.submeshes[1].source_material_id,
+            Some(2),
+            "source index for decal"
+        );
     }
 
     #[test]
@@ -6389,13 +7910,20 @@ mod tests {
         let sidecar_a = view_a.sidecar_materials.as_ref().expect("sidecar A");
         let sidecar_b = view_b.sidecar_materials.as_ref().expect("sidecar B");
         assert_eq!(
-            sidecar_a.materials.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
-            sidecar_b.materials.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            sidecar_a
+                .materials
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>(),
+            sidecar_b
+                .materials
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>(),
             "sidecar material lists should be identical"
         );
         assert_eq!(
-            view_a.sidecar_original_indices,
-            view_b.sidecar_original_indices,
+            view_a.sidecar_original_indices, view_b.sidecar_original_indices,
             "sidecar original indices should be identical"
         );
         assert_eq!(view_a.sidecar_original_indices, vec![0u32, 1u32]);
@@ -6410,8 +7938,16 @@ mod tests {
     fn material_sidecar_relative_path_uses_source_mtl_not_geometry_path() {
         // Both paths reference the same logical .mtl; the sidecar must resolve
         // to the same output path regardless of the geometry file that triggers it.
-        let path_a = material_sidecar_relative_path("Data/Objects/Ships/Drak/Clipper/hull.mtl", "fallback", 0);
-        let path_b = material_sidecar_relative_path("Data/Objects/Ships/Drak/Clipper/hull.mtl", "other_fallback", 0);
+        let path_a = material_sidecar_relative_path(
+            "Data/Objects/Ships/Drak/Clipper/hull.mtl",
+            "fallback",
+            0,
+        );
+        let path_b = material_sidecar_relative_path(
+            "Data/Objects/Ships/Drak/Clipper/hull.mtl",
+            "other_fallback",
+            0,
+        );
 
         assert_eq!(path_a, path_b, "same source .mtl must produce the same sidecar path");
         assert_eq!(path_a, "Data/objects/ships/drak/clipper/hull_TEX0.materials.json");

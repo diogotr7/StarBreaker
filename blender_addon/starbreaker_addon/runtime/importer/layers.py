@@ -152,7 +152,7 @@ class LayersMixin:
             is_color=False,
         )
         self._apply_uv_tiling(nodes, links, normal_node, uv_tile, x=x - 320, y=y - 560)
-        roughness, _roughness_is_smoothness = self._roughness_socket_for_texture_reference(
+        roughness = self._roughness_socket_for_layer_surface(
             nodes, normal_ref, x=x + 180, y=y - 560
         )
         layer_channel_name = (
@@ -800,7 +800,8 @@ class LayersMixin:
         wear_layer = self._layered_wear_layer(submaterial)
         layer = None
         if wear_layer is not None and (
-            wear_layer.roughness_export_path
+            (wear_layer.roughness_texture is not None and wear_layer.roughness_texture.export_path)
+            or wear_layer.roughness_export_path
             or any(
                 texture.alpha_semantic == "smoothness" and texture.export_path
                 for texture in wear_layer.texture_slots
@@ -812,7 +813,8 @@ class LayersMixin:
                 (
                     item
                     for item in submaterial.layer_manifest
-                    if item.roughness_export_path
+                    if (item.roughness_texture is not None and item.roughness_texture.export_path)
+                    or item.roughness_export_path
                     or any(
                         texture.alpha_semantic == "smoothness" and texture.export_path
                         for texture in item.texture_slots
@@ -822,12 +824,27 @@ class LayersMixin:
             )
         if layer is None:
             return None
-        if layer.roughness_export_path:
-            image_node = self._image_node(
-                nodes, layer.roughness_export_path, x=x, y=y, is_color=False
+        if layer.roughness_texture is not None and layer.roughness_texture.export_path:
+            roughness_socket, is_smoothness = self._roughness_socket_for_texture_reference(
+                nodes,
+                layer.roughness_texture,
+                x=x,
+                y=y,
             )
-            if image_node is not None:
-                return image_node.outputs[0]
+            if roughness_socket is not None:
+                if is_smoothness:
+                    return self._invert_value_socket(nodes, roughness_socket, x=x + 180, y=y)
+                return roughness_socket
+        roughness_export_path = layer.roughness_export_path
+        if roughness_export_path:
+            roughness_socket = self._metallic_roughness_green_socket(
+                nodes,
+                roughness_export_path,
+                x=x,
+                y=y,
+            )
+            if roughness_socket is not None:
+                return roughness_socket
         smoothness_texture = next(
             (
                 texture

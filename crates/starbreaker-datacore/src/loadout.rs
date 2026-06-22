@@ -439,6 +439,14 @@ fn resolve_sub_geometry(idx: &EntityIndex, children: &mut [LoadoutNode]) {
 
     // Second pass: for unmatched children, assign the variant not claimed by siblings.
     for &ui in &unmatched {
+        if !should_use_unclaimed_sub_geometry_fallback(children[ui].geometry_path.as_deref()) {
+            log::debug!(
+                "  SubGeometry: {} kept default geometry {} after selector miss",
+                children[ui].entity_name,
+                children[ui].geometry_path.as_deref().unwrap_or("")
+            );
+            continue;
+        }
         let variants = idx.query_sub_geometry(&children[ui].record);
         let entity = children[ui].entity_name.clone();
         // Collect geometry paths already assigned to siblings with the same entity
@@ -465,6 +473,10 @@ fn should_attempt_sub_geometry_resolution(
     variants: &[SubGeometryVariant],
 ) -> bool {
     geometry_path.is_some() || !variants.is_empty()
+}
+
+fn should_use_unclaimed_sub_geometry_fallback(geometry_path: Option<&str>) -> bool {
+    geometry_path.is_none()
 }
 
 fn has_multiple_geometry_variants(variants: &[SubGeometryVariant]) -> bool {
@@ -864,6 +876,14 @@ mod tests {
 
         assert!(should_attempt_sub_geometry_resolution(None, &variants));
         assert!(!should_attempt_sub_geometry_resolution(None, &[]));
+    }
+
+    #[test]
+    fn unclaimed_sub_geometry_fallback_preserves_default_geometry() {
+        assert!(!should_use_unclaimed_sub_geometry_fallback(Some(
+            "Objects/fps_weapons/attachments/magazines/behr/mgzn_s03_behr_5rb_01.cgf"
+        )));
+        assert!(should_use_unclaimed_sub_geometry_fallback(None));
     }
 }
 

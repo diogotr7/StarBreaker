@@ -311,11 +311,13 @@ class ManifestTests(unittest.TestCase):
                 "export_kind": "source",
                 "texture_identity": "ddna_normal",
                 "alpha_semantic": "smoothness",
+                "alpha_channel": "a",
             }
         )
 
         self.assertEqual(texture.texture_identity, "ddna_normal")
         self.assertEqual(texture.alpha_semantic, "smoothness")
+        self.assertEqual(texture.alpha_channel, "a")
 
     def test_layer_manifest_preserves_texture_slots(self) -> None:
         component = MaterialSidecar.from_file(COMPONENT_MASTER)
@@ -328,6 +330,64 @@ class ManifestTests(unittest.TestCase):
         layer = next(layer for layer in layered.layer_manifest if layer.texture_slots)
         smoothness_texture = next(texture for texture in layer.texture_slots if texture.alpha_semantic == "smoothness")
         self.assertEqual(smoothness_texture.texture_identity, "ddna_normal")
+
+    def test_layer_manifest_preserves_structured_roughness_texture(self) -> None:
+        sidecar = MaterialSidecar.from_value(
+            {
+                "submaterials": [
+                    {
+                        "index": 0,
+                        "submaterial_name": "paint",
+                        "shader": "LayerBlend_V2",
+                        "shader_family": "LayerBlend_V2",
+                        "activation_state": {"state": "active", "reason": "visible"},
+                        "layer_manifest": [
+                            {
+                                "index": 0,
+                                "roughness_export_path": "Data/Textures/layers/metal_ddna_roughness_TEX0.png",
+                                "roughness_texture": {
+                                    "role": "roughness",
+                                    "source_path": "Data/Textures/layers/metal_ddna.tif",
+                                    "export_path": "Data/Textures/layers/metal_ddna_roughness_TEX0.png",
+                                    "export_kind": "derived_ddna_alpha",
+                                    "derived_from_texture_identity": "ddna_normal",
+                                    "derived_from_semantic": "smoothness",
+                                    "derived_from_channel": "a",
+                                    "value_channel": "r",
+                                    "value_transform": "sqrt_one_minus",
+                                    "packed_texture_format": "roughness_grayscale",
+                                    "packed_channel_semantics": {
+                                        "r": "roughness",
+                                        "g": "roughness",
+                                        "b": "roughness",
+                                        "a": "unused",
+                                    },
+                                    "constant_channel_values": {
+                                        "a": "1.0",
+                                    },
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+
+        roughness = sidecar.submaterials[0].layer_manifest[0].roughness_texture
+        self.assertIsNotNone(roughness)
+        assert roughness is not None
+        self.assertEqual(roughness.role, "roughness")
+        self.assertEqual(roughness.export_kind, "derived_ddna_alpha")
+        self.assertEqual(roughness.derived_from_texture_identity, "ddna_normal")
+        self.assertEqual(roughness.derived_from_semantic, "smoothness")
+        self.assertEqual(roughness.derived_from_channel, "a")
+        self.assertEqual(roughness.value_channel, "r")
+        self.assertEqual(roughness.value_transform, "sqrt_one_minus")
+        self.assertEqual(roughness.packed_texture_format, "roughness_grayscale")
+        self.assertEqual(roughness.packed_channel_semantics["r"], "roughness")
+        self.assertEqual(roughness.packed_channel_semantics["g"], "roughness")
+        self.assertEqual(roughness.packed_channel_semantics["b"], "roughness")
+        self.assertEqual(roughness.constant_channel_values["a"], "1.0")
 
     def test_layer_manifest_preserves_resolved_layer_details(self) -> None:
         exterior_path = REPO_ROOT / "ships/Data/Objects/Spaceships/Ships/ARGO/MOLE/argo_mole_exterior_TEX0.materials.json"

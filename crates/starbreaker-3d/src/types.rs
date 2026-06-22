@@ -98,7 +98,6 @@ impl Mesh {
             self.scaling_max[i] = self.scaling_max[i].max(other.scaling_max[i]);
         }
     }
-
 }
 
 /// Compute area-weighted smooth normals from geometry (fallback when stream normals unavailable).
@@ -203,7 +202,8 @@ fn split_rigid_weighted_submeshes(
                 triangle_joints[0]
             };
 
-            if triangle_joints[0] == triangle_joints[1] && triangle_joints[1] == triangle_joints[2] {
+            if triangle_joints[0] == triangle_joints[1] && triangle_joints[1] == triangle_joints[2]
+            {
                 rigid_triangles += 1;
             }
 
@@ -254,7 +254,11 @@ pub fn build_mesh(skin: &SkinMesh, materials: &[MaterialName]) -> Mesh {
 /// Interior CGFs use model bbox because IncludedObjects placements are authored
 /// for model-bbox space. The scaling bbox is expanded for GPU skinning across
 /// NMC nodes and gives wrong vertex positions for placement.
-pub fn build_mesh_with_bbox(skin: &SkinMesh, materials: &[MaterialName], use_model_bbox: bool) -> Mesh {
+pub fn build_mesh_with_bbox(
+    skin: &SkinMesh,
+    materials: &[MaterialName],
+    use_model_bbox: bool,
+) -> Mesh {
     let (dequant_min, dequant_max) = if use_model_bbox {
         (&skin.info.model_min, &skin.info.model_max)
     } else {
@@ -279,11 +283,11 @@ pub fn build_mesh_with_bbox(skin: &SkinMesh, materials: &[MaterialName], use_mod
                 .collect(),
         )
     };
-    let secondary_uvs: Option<Vec<[f32; 2]>> = skin.streams.secondary_uvs.as_ref().map(|uvs| {
-        uvs.iter()
-            .map(|uv| dequant::decode_half2(*uv))
-            .collect()
-    });
+    let secondary_uvs: Option<Vec<[f32; 2]>> = skin
+        .streams
+        .secondary_uvs
+        .as_ref()
+        .map(|uvs| uvs.iter().map(|uv| dequant::decode_half2(*uv)).collect());
 
     let submeshes = skin
         .submeshes
@@ -318,11 +322,8 @@ pub fn build_mesh_with_bbox(skin: &SkinMesh, materials: &[MaterialName], use_mod
         }
     }
 
-    let (submeshes, indices) = split_rigid_weighted_submeshes(
-        &submeshes,
-        &indices,
-        skin.streams.bone_maps.as_deref(),
-    );
+    let (submeshes, indices) =
+        split_rigid_weighted_submeshes(&submeshes, &indices, skin.streams.bone_maps.as_deref());
 
     // Decode normals and tangents from stream data.
     // Priority for normals:
@@ -334,7 +335,9 @@ pub fn build_mesh_with_bbox(skin: &SkinMesh, materials: &[MaterialName], use_mod
     let direct_normals: Option<Vec<[f32; 3]>> = match &skin.streams.normals {
         Some(NormalData::Float(data)) => Some(data.clone()),
         Some(NormalData::Packed(data)) => Some(
-            data.iter().map(|&raw| dequant::decode_packed_unit_vector(raw)).collect(),
+            data.iter()
+                .map(|&raw| dequant::decode_packed_unit_vector(raw))
+                .collect(),
         ),
         None => None,
     };
@@ -343,17 +346,29 @@ pub fn build_mesh_with_bbox(skin: &SkinMesh, materials: &[MaterialName], use_mod
         Some(TangentData::QTangents(data)) => {
             // IVOQTANGENTS: compressed tangent vectors (2× u32, 15-15-1-1 bit packing).
             // Despite the name, these are NOT quaternions — the game converts them at load time.
-            Some(data.iter().map(|raw| dequant::decode_compressed_tangent(*raw)).collect())
+            Some(
+                data.iter()
+                    .map(|raw| dequant::decode_compressed_tangent(*raw))
+                    .collect(),
+            )
         }
         Some(TangentData::Tangents(data)) => {
             // IVOTANGENTS: i16 SNorm quaternion (CryEngine SPipQTangents format)
-            Some(data.iter().map(|raw| dequant::decode_qtangent_snorm(*raw)).collect())
+            Some(
+                data.iter()
+                    .map(|raw| dequant::decode_qtangent_snorm(*raw))
+                    .collect(),
+            )
         }
         None => None,
     };
 
     let normals: Option<Vec<[f32; 3]>> = direct_normals
-        .or_else(|| tangent_decode.as_ref().map(|td| td.iter().map(|nt| nt.normal).collect()))
+        .or_else(|| {
+            tangent_decode
+                .as_ref()
+                .map(|td| td.iter().map(|nt| nt.normal).collect())
+        })
         .or_else(|| Some(compute_smooth_normals(&positions, &indices)));
 
     let tangents_out: Option<Vec<[f32; 4]>> =
@@ -390,7 +405,7 @@ pub struct MaterialTextures {
     pub normal: Vec<Option<Vec<u8>>>,
     /// Per-submaterial: Some(png_bytes) for metallic-roughness texture, None if missing.
     /// Extracted from the alpha channel of `_ddna` normal maps (per-pixel smoothness).
-    /// Stored as glTF metallicRoughness: G=roughness (1-smoothness), B=metallic (0), R=0.
+    /// Stored as glTF metallicRoughness: G=perceptual roughness, B=neutral metallic (1), R=0.
     pub roughness: Vec<Option<Vec<u8>>>,
     /// Per-submaterial: Some(png_bytes) for emissive output, None if missing.
     pub emissive: Vec<Option<Vec<u8>>>,
@@ -839,12 +854,30 @@ mod tests {
                 secondary_uvs: None,
                 indices: vec![0, 1, 2, 3, 4, 5],
                 bone_maps: Some(vec![
-                    BoneMap12 { joint_indices: [0, 0, 0, 0], weights: [255, 0, 0, 0] },
-                    BoneMap12 { joint_indices: [0, 0, 0, 0], weights: [255, 0, 0, 0] },
-                    BoneMap12 { joint_indices: [0, 0, 0, 0], weights: [255, 0, 0, 0] },
-                    BoneMap12 { joint_indices: [3, 0, 0, 0], weights: [255, 0, 0, 0] },
-                    BoneMap12 { joint_indices: [3, 0, 0, 0], weights: [255, 0, 0, 0] },
-                    BoneMap12 { joint_indices: [3, 0, 0, 0], weights: [255, 0, 0, 0] },
+                    BoneMap12 {
+                        joint_indices: [0, 0, 0, 0],
+                        weights: [255, 0, 0, 0],
+                    },
+                    BoneMap12 {
+                        joint_indices: [0, 0, 0, 0],
+                        weights: [255, 0, 0, 0],
+                    },
+                    BoneMap12 {
+                        joint_indices: [0, 0, 0, 0],
+                        weights: [255, 0, 0, 0],
+                    },
+                    BoneMap12 {
+                        joint_indices: [3, 0, 0, 0],
+                        weights: [255, 0, 0, 0],
+                    },
+                    BoneMap12 {
+                        joint_indices: [3, 0, 0, 0],
+                        weights: [255, 0, 0, 0],
+                    },
+                    BoneMap12 {
+                        joint_indices: [3, 0, 0, 0],
+                        weights: [255, 0, 0, 0],
+                    },
                 ]),
                 colors: None,
                 tangents: None,
@@ -913,9 +946,18 @@ mod tests {
                 // All vertices weighted to bone 7 — so the submesh's
                 // owning bone is 7, not 0.
                 bone_maps: Some(vec![
-                    BoneMap12 { joint_indices: [7, 0, 0, 0], weights: [255, 0, 0, 0] },
-                    BoneMap12 { joint_indices: [7, 0, 0, 0], weights: [255, 0, 0, 0] },
-                    BoneMap12 { joint_indices: [7, 0, 0, 0], weights: [255, 0, 0, 0] },
+                    BoneMap12 {
+                        joint_indices: [7, 0, 0, 0],
+                        weights: [255, 0, 0, 0],
+                    },
+                    BoneMap12 {
+                        joint_indices: [7, 0, 0, 0],
+                        weights: [255, 0, 0, 0],
+                    },
+                    BoneMap12 {
+                        joint_indices: [7, 0, 0, 0],
+                        weights: [255, 0, 0, 0],
+                    },
                 ]),
                 colors: None,
                 tangents: None,

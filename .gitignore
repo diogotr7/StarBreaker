@@ -13,6 +13,7 @@ docs-local/
 !.claude/skills/
 ships/
 .vscode/
+.dev-logs/
 __pycache__/
 *.py[cod]
 .DS_Store

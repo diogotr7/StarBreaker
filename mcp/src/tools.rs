@@ -324,6 +324,30 @@ pub struct BlendPythonDiffRequest {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DatacoreStructDefRequest {
+    #[schemars(description = "DataCore struct type name (e.g. 'BuildingBlocks_Canvas', 'EntityClassDefinition'). Case-sensitive exact match.")]
+    pub name: String,
+    #[schemars(description = "If true, include attributes inherited from parent structs. Default true.")]
+    pub include_inherited: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DatacoreEnumDefRequest {
+    #[schemars(description = "DataCore enum type name. Case-sensitive exact match.")]
+    pub name: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DatacoreTypeSearchRequest {
+    #[schemars(description = "Case-insensitive substring matched against struct AND enum type names. Empty string matches all types.")]
+    pub query: String,
+    #[schemars(description = "Restrict results: 'struct', 'enum', or 'both' (default 'both').")]
+    pub kind: Option<String>,
+    #[schemars(description = "Maximum number of results (default 50).")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct BlendRunScriptRequest {
     #[schemars(description = "Absolute filesystem path to a .blend file to open with Blender.")]
     pub blend_path: String,
@@ -3018,6 +3042,226 @@ impl StarBreakerMcp {
         } else {
             full
         }
+    }
+
+    #[tool(description = "Return the DataCore struct definition for a type name. Lists each attribute with its data_type (e.g. 'Class', 'EnumChoice', 'Single'), conversion_type (Attribute/SimpleArray/ComplexArray/ClassArray), and referenced type name (resolved for Class/Pointer/Reference/Enum properties). Also returns parent struct name, instance size, and whether attributes are inherited. Use this to enumerate the schema of any struct family (e.g. BuildingBlocks_*Widget*, BuildingBlocks_*RendererPolicy) without scraping record samples.")]
+    fn datacore_struct_def(&self, Parameters(req): Parameters<DatacoreStructDefRequest>) -> String {
+        let data = self.data();
+        let db = starbreaker_datacore::database::Database::from_bytes(&data.dcb_bytes)
+            .expect("DataCore bytes validated at load");
+
+        let Some(idx) = db.struct_index_by_name(&req.name) else {
+            // Suggest near matches
+            let q = req.name.to_lowercase();
+            let near: Vec<&str> = db
+                .struct_defs()
+                .iter()
+                .map(|s| db.resolve_string2(s.name_offset))
+                .filter(|n| n.to_lowercase().contains(&q))
+                .take(20)
+                .collect();
+            return if near.is_empty() {
+                format!("No struct named '{}'.", req.name)
+            } else {
+                format!(
+                    "No struct named '{}'. Did you mean: {}",
+                    req.name,
+                    near.join(", ")
+                )
+            };
+        };
+
+        let include_inherited = req.include_inherited.unwrap_or(true);
+        let sd = *db.struct_def(idx);
+        let parent_type_index = sd.parent_type_index;
+        let struct_size = sd.struct_size;
+        let attribute_count = sd.attribute_count;
+        let first_attribute_index = sd.first_attribute_index;
+        let parent_name = if parent_type_index >= 0 {
+            Some(db.resolve_string2(db.struct_def(parent_type_index).name_offset).to_string())
+        } else {
+            None
+        };
+
+        let format_prop = |prop: &starbreaker_datacore::types::PropertyDefinition| -> serde_json::Value {
+            use starbreaker_datacore::enums::{ConversionType, DataType};
+            let data_type_raw = prop.data_type;
+            let conv_type_raw = prop.conversion_type;
+            let referenced_index = prop.struct_index;
+            let name_offset = prop.name_offset;
+            let pname = db.resolve_string2(name_offset).to_string();
+            let dt_name = match DataType::try_from(data_type_raw) {
+                Ok(d) => format!("{d:?}"),
+                Err(_) => format!("Unknown(0x{data_type_raw:04x})"),
+            };
+            let ct_name = match ConversionType::try_from(conv_type_raw) {
+                Ok(c) => format!("{c:?}"),
+                Err(_) => format!("Unknown(0x{conv_type_raw:04x})"),
+            };
+            // Resolve referenced type for Class / pointer / reference / enum
+            let ref_name = match DataType::try_from(data_type_raw) {
+                Ok(DataType::Class)
+                | Ok(DataType::StrongPointer)
+                | Ok(DataType::WeakPointer)
+                | Ok(DataType::Reference) => {
+                    db.struct_defs()
+                        .get(referenced_index as usize)
+                        .map(|s| db.resolve_string2(s.name_offset).to_string())
+                }
+                Ok(DataType::EnumChoice) => {
+                    db.enum_defs()
+                        .get(referenced_index as usize)
+                        .map(|e| db.resolve_string2(e.name_offset).to_string())
+                }
+                _ => None,
+            };
+            serde_json::json!({
+                "name": pname,
+                "data_type": dt_name,
+                "conversion_type": ct_name,
+                "referenced_type": ref_name,
+                "referenced_index": referenced_index,
+            })
+        };
+
+        let property_defs = db.property_defs();
+        let own_first = first_attribute_index as usize;
+        let own_count = attribute_count as usize;
+        let own: Vec<serde_json::Value> = property_defs[own_first..own_first + own_count]
+            .iter()
+            .map(format_prop)
+            .collect();
+
+        let inherited: Vec<serde_json::Value> = if include_inherited && parent_type_index >= 0 {
+            let all = db.all_properties(idx);
+            let total = all.len();
+            all.iter()
+                .take(total - own_count)
+                .map(|p| format_prop(*p))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let out = serde_json::json!({
+            "name": db.resolve_string2(sd.name_offset),
+            "struct_index": idx,
+            "parent": parent_name,
+            "struct_size": struct_size,
+            "attribute_count": attribute_count,
+            "first_attribute_index": first_attribute_index,
+            "inherited_attributes": inherited,
+            "own_attributes": own,
+        });
+        serde_json::to_string_pretty(&out).unwrap_or_else(|e| format!("JSON error: {e}"))
+    }
+
+    #[tool(description = "Return the DataCore enum definition for a type name: the enum name and its list of value strings in declaration order. Use this to resolve the legal values of any EnumChoice property (e.g. the renderer-type enum referenced by BuildingBlocks widget records).")]
+    fn datacore_enum_def(&self, Parameters(req): Parameters<DatacoreEnumDefRequest>) -> String {
+        let data = self.data();
+        let db = starbreaker_datacore::database::Database::from_bytes(&data.dcb_bytes)
+            .expect("DataCore bytes validated at load");
+
+        let q = req.name.to_lowercase();
+        let mut match_idx: Option<i32> = None;
+        for (i, e) in db.enum_defs().iter().enumerate() {
+            if db.resolve_string2(e.name_offset) == req.name {
+                match_idx = Some(i as i32);
+                break;
+            }
+        }
+
+        let Some(idx) = match_idx else {
+            let near: Vec<&str> = db
+                .enum_defs()
+                .iter()
+                .map(|e| db.resolve_string2(e.name_offset))
+                .filter(|n| n.to_lowercase().contains(&q))
+                .take(20)
+                .collect();
+            return if near.is_empty() {
+                format!("No enum named '{}'.", req.name)
+            } else {
+                format!(
+                    "No enum named '{}'. Did you mean: {}",
+                    req.name,
+                    near.join(", ")
+                )
+            };
+        };
+
+        let ed = *db.enum_def(idx);
+        let value_count = ed.value_count;
+        let values: Vec<&str> = db
+            .enum_options(idx)
+            .iter()
+            .map(|sid| db.resolve_string2(*sid))
+            .collect();
+
+        let out = serde_json::json!({
+            "name": db.resolve_string2(ed.name_offset),
+            "enum_index": idx,
+            "value_count": value_count,
+            "values": values,
+        });
+        serde_json::to_string_pretty(&out).unwrap_or_else(|e| format!("JSON error: {e}"))
+    }
+
+    #[tool(description = "Substring-search DataCore struct AND enum type names. Returns kind ('struct' or 'enum'), name, and size/value_count, sorted shortest-name-first. Use kind='struct' or kind='enum' to restrict. Empty query returns the first `limit` types (useful to skim the registry).")]
+    fn datacore_type_search(&self, Parameters(req): Parameters<DatacoreTypeSearchRequest>) -> String {
+        let data = self.data();
+        let db = starbreaker_datacore::database::Database::from_bytes(&data.dcb_bytes)
+            .expect("DataCore bytes validated at load");
+        let limit = req.limit.unwrap_or(50) as usize;
+        let kind = req.kind.as_deref().unwrap_or("both").to_ascii_lowercase();
+        let q = req.query.to_lowercase();
+
+        let mut hits: Vec<serde_json::Value> = Vec::new();
+
+        if kind == "struct" || kind == "both" {
+            for (i, sd) in db.struct_defs().iter().enumerate() {
+                let sd = *sd;
+                let n = db.resolve_string2(sd.name_offset);
+                if q.is_empty() || n.to_lowercase().contains(&q) {
+                    let parent = if sd.parent_type_index >= 0 {
+                        Some(db.resolve_string2(db.struct_def(sd.parent_type_index).name_offset))
+                    } else {
+                        None
+                    };
+                    let size = sd.struct_size;
+                    let attribute_count = sd.attribute_count;
+                    hits.push(serde_json::json!({
+                        "kind": "struct",
+                        "name": n,
+                        "index": i,
+                        "size": size,
+                        "attribute_count": attribute_count,
+                        "parent": parent,
+                    }));
+                }
+            }
+        }
+
+        if kind == "enum" || kind == "both" {
+            for (i, ed) in db.enum_defs().iter().enumerate() {
+                let ed = *ed;
+                let n = db.resolve_string2(ed.name_offset);
+                if q.is_empty() || n.to_lowercase().contains(&q) {
+                    let value_count = ed.value_count;
+                    hits.push(serde_json::json!({
+                        "kind": "enum",
+                        "name": n,
+                        "index": i,
+                        "value_count": value_count,
+                    }));
+                }
+            }
+        }
+
+        hits.sort_by_key(|h| h.get("name").and_then(|v| v.as_str()).map(|s| s.len()).unwrap_or(usize::MAX));
+        hits.truncate(limit);
+
+        serde_json::to_string_pretty(&hits).unwrap_or_else(|e| format!("JSON error: {e}"))
     }
 
 }

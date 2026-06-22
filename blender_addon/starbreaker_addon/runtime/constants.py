@@ -13,6 +13,7 @@ from mathutils import Matrix, Quaternion
 
 
 PROP_PACKAGE_ROOT = "starbreaker_package_root"
+PROP_ASSEMBLY_KIND = "starbreaker_assembly_kind"
 PROP_SCENE_PATH = "starbreaker_scene_path"
 PROP_EXPORT_ROOT = "starbreaker_export_root"
 PROP_PACKAGE_NAME = "starbreaker_package_name"
@@ -30,6 +31,7 @@ PROP_TEMPLATE_KEY = "starbreaker_template_key"
 PROP_SUBMATERIAL_JSON = "starbreaker_submaterial_json"
 PROP_MATERIAL_IDENTITY = "starbreaker_material_identity"
 PROP_IMPORTED_SLOT_MAP = "starbreaker_imported_slot_map"
+PROP_IMPORTED_SLOT_NAMES = "starbreaker_imported_slot_names"
 PROP_TEMPLATE_PATH = "starbreaker_template_path"
 # Records the active paint variant's exterior material sidecar on the package root.
 # Set when a paint variant with a different material file is applied; used by
@@ -70,8 +72,8 @@ SCENE_SHARED_GLOW_PROP = "starbreaker_shared_glow_strength"
 SURFACE_SHADER_MODE_PRINCIPLED = "principled_first"
 SURFACE_SHADER_MODE_GLASS = "glass_bsdf"
 DECAL_OFFSET_MODIFIER_NAME = "StarBreaker Decal Offset"
-DECAL_OFFSET_EXTERNAL_DEFAULT = 0.005
-DECAL_OFFSET_INTERNAL_DEFAULT = 0.001
+DECAL_OFFSET_EXTERNAL_DEFAULT = 0.0005
+DECAL_OFFSET_INTERNAL_DEFAULT = 0.0001
 
 POM_DETAIL_DEFAULT = "MEDIUM"
 POM_DETAIL_ITEMS = (

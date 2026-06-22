@@ -52,6 +52,12 @@ if "bpy" not in sys.modules:
     bpy.data = types.SimpleNamespace(node_groups=[], images=[])
     sys.modules["bpy"] = bpy
 
+if "numpy" not in sys.modules:
+    numpy = types.ModuleType("numpy")
+    numpy.float32 = float
+    numpy.empty = lambda length, dtype=None: [0.0] * length
+    sys.modules["numpy"] = numpy
+
 # Ensure package hierarchy is registered.
 for _pkg in ("starbreaker_addon", "starbreaker_addon.runtime", "starbreaker_addon.runtime.importer"):
     if _pkg not in sys.modules:
@@ -70,6 +76,7 @@ from starbreaker_addon.runtime.importer.utils import (
     _material_identity,
     _managed_material_runtime_graph_is_sane,
     _remapped_submaterial_for_slot,
+    _slot_mapping_from_slot_names,
     _submaterials_by_name,
     _unique_submaterials_by_name,
 )
@@ -152,6 +159,32 @@ class _FakeManagedMaterial(dict):
         self.node_tree = node_tree
 
 
+class _FakeMaterial(dict):
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self.name = name
+
+
+class _FakeMaterialSlots(list):
+    pass
+
+
+class _FakeMesh(dict):
+    def __init__(self, names: list[str]) -> None:
+        super().__init__()
+        self.materials = _FakeMaterialSlots(_FakeMaterial(name) for name in names)
+
+    def as_pointer(self) -> int:
+        return 1
+
+
+class _FakeMeshObject:
+    type = "MESH"
+
+    def __init__(self, names: list[str]) -> None:
+        self.data = _FakeMesh(names)
+
+
 # ---------------------------------------------------------------------------
 # Tests for _submaterials_by_name
 # ---------------------------------------------------------------------------
@@ -170,6 +203,28 @@ class TestCanonicalSourceName(unittest.TestCase):
         self.assertEqual(
             _canonical_source_name("ship_mtl_screen_1x1_10"),
             "screen_1x1",
+        )
+
+    def test_decomposed_host_variant_maps_to_submaterial_name(self) -> None:
+        self.assertEqual(
+            _canonical_source_name(
+                "esmg_fps_volt_quartz_collector_03_mat:pom_mat__host_primary"
+            ),
+            "pom_mat",
+        )
+
+    def test_decomposed_hashed_host_variant_maps_to_submaterial_name(self) -> None:
+        self.assertEqual(
+            _canonical_source_name(
+                "drak_clipper_ext:Decal_POM_A#03e817cc__host_tertiary"
+            ),
+            "Decal_POM_A",
+        )
+
+    def test_decomposed_rgb_host_variant_strips_blender_numeric_suffix(self) -> None:
+        self.assertEqual(
+            _canonical_source_name("drak_vulture:pom_decals__host_rgb_1a2b3c.001"),
+            "pom_decals",
         )
 
 
@@ -243,6 +298,41 @@ class TestSubmaterialsByName(unittest.TestCase):
         self.assertNotIn("", grouped)
         self.assertNotIn("  ", grouped)
         self.assertIn("metal", grouped)
+
+    def test_native_blend_slot_names_map_to_sparse_sidecar_indices(self) -> None:
+        sidecar = _make_sidecar(
+            (1, "poms"),
+            (2, "decals"),
+            (3, "glow_mat"),
+            (17, "stencil_decal"),
+        )
+        mapping = _slot_mapping_from_slot_names(
+            [
+                "bsnp_fps_behr_p6lr_mat_mtl_poms_00",
+                "bsnp_fps_behr_p6lr_mat_mtl_decals_01",
+                "bsnp_fps_behr_p6lr_mat_mtl_glow_mat_02",
+                "bsnp_fps_behr_p6lr_mat_mtl_stencil_decal_014",
+            ],
+            _unique_submaterials_by_name(sidecar),
+            _submaterials_by_name(sidecar),
+        )
+        self.assertEqual(mapping, [1, 2, 3, 17])
+
+    def test_clear_template_material_bindings_preserves_native_blend_slot_names(self) -> None:
+        obj = _FakeMeshObject(
+            [
+                "bsnp_fps_behr_p6lr_mat_mtl_poms_00",
+                "bsnp_fps_behr_p6lr_mat_mtl_stencil_decal_014",
+            ]
+        )
+
+        MaterialsMixin._clear_template_material_bindings(object(), [obj])
+
+        self.assertEqual(
+            obj.data.get("starbreaker_imported_slot_names"),
+            '["bsnp_fps_behr_p6lr_mat_mtl_poms_00", "bsnp_fps_behr_p6lr_mat_mtl_stencil_decal_014"]',
+        )
+        self.assertEqual(list(obj.data.materials), [None, None])
 
 
 # ---------------------------------------------------------------------------

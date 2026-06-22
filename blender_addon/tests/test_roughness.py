@@ -26,6 +26,7 @@ from starbreaker_addon.runtime.importer.roughness import (
     ddna_and_palette_gloss_to_roughness,
     ddna_smoothness_to_roughness,
     glossiness_to_perceptual_roughness,
+    roughness_and_palette_gloss_to_roughness,
 )
 
 
@@ -57,6 +58,12 @@ class DdnaRoughnessTests(unittest.TestCase):
     def test_ddna_and_palette_gloss_combine_before_one_remap(self) -> None:
         self.assertAlmostEqual(
             ddna_and_palette_gloss_to_roughness(0.25, 0.5),
+            0.6123724356957945,
+        )
+
+    def test_derived_roughness_and_palette_gloss_do_not_remap_roughness_twice(self) -> None:
+        self.assertAlmostEqual(
+            roughness_and_palette_gloss_to_roughness(0.8660254037844386, 0.5),
             0.6123724356957945,
         )
 

@@ -5,6 +5,8 @@
 //! Geometry loading helpers: `resolve_geometry_files`, `load_geometry_parts`,
 //! `skeleton_source_paths`, `load_skeleton`, `apply_default_animation_pose_for_skel`.
 //! Mesh helpers: `load_nmc_and_material`, `load_single_mesh`, `rebase_mesh_submeshes_to_bone_space`.
+//! CDF exports synthesize a skeleton-backed NMC when merged skin attachments
+//! reference bone indices that the primary CGF's NMC does not cover.
 //! Public types: `GeometryPart`, `ResolvedGeometry`.
 
 use starbreaker_datacore::database::Database;
@@ -18,9 +20,9 @@ use crate::nmc;
 use crate::types::MaterialTextures;
 
 use super::{
-    bone_world_transform, datacore_path_to_p4k, load_material_textures, query_tint_palette,
-    resolve_material, synthesize_nmc_from_bones, ExportFormat, ExportKind, ExportOptions,
-    MaterialMode, PngCache,
+    ExportFormat, ExportKind, ExportOptions, MaterialMode, PngCache, bone_world_transform,
+    datacore_path_to_p4k, load_material_textures, query_tint_palette, resolve_material,
+    synthesize_nmc_from_bones,
 };
 
 /// Bundled result of extracting an entity's mesh data from the P4k archive.
@@ -45,7 +47,7 @@ fn ensure_supported_export_kind(opts: &ExportOptions) -> Result<(), Error> {
 fn ensure_supported_export_format(opts: &ExportOptions) -> Result<(), Error> {
     match opts.format {
         ExportFormat::Glb | ExportFormat::Blend => Ok(()),
-        _ => Err(Error::UnsupportedExportFormat(format!("{:?}", opts.format)))
+        _ => Err(Error::UnsupportedExportFormat(format!("{:?}", opts.format))),
     }
 }
 
@@ -111,15 +113,7 @@ fn export_entity_payload_cached(
         .query_single::<String>(&mtl_compiled, record)?
         .unwrap_or_default();
 
-    let (
-        mesh,
-        mtl_file,
-        textures,
-        nmc,
-        skeleton_bones,
-        primary_path,
-        skeleton_source_path,
-    ) =
+    let (mesh, mtl_file, textures, nmc, skeleton_bones, primary_path, skeleton_source_path) =
         load_geometry_parts(p4k, &geometry_path, &material_path, opts, png_cache, false)?;
 
     if !opts.material_mode.include_materials() {
@@ -157,7 +151,14 @@ pub(crate) fn export_entity_from_paths(
     material_path: &str,
     opts: &ExportOptions,
 ) -> Result<EntityPayload, Error> {
-    export_entity_from_paths_cached(p4k, geometry_path, material_path, opts, &mut PngCache::new(), false)
+    export_entity_from_paths_cached(
+        p4k,
+        geometry_path,
+        material_path,
+        opts,
+        &mut PngCache::new(),
+        false,
+    )
 }
 
 pub(crate) fn export_entity_from_paths_cached(
@@ -169,7 +170,14 @@ pub(crate) fn export_entity_from_paths_cached(
     use_model_bbox: bool,
 ) -> Result<EntityPayload, Error> {
     let (mesh, mtl_file, textures, nmc, skeleton_bones, primary_path, skeleton_source_path) =
-        load_geometry_parts(p4k, geometry_path, material_path, opts, png_cache, use_model_bbox)?;
+        load_geometry_parts(
+            p4k,
+            geometry_path,
+            material_path,
+            opts,
+            png_cache,
+            use_model_bbox,
+        )?;
 
     if !opts.material_mode.include_materials() {
         return Ok((
@@ -207,30 +215,33 @@ fn load_geometry_parts(
     opts: &ExportOptions,
     png_cache: &mut PngCache,
     use_model_bbox: bool,
-) -> Result<(
-    crate::types::Mesh,
-    Option<mtl::MtlFile>,
-    Option<MaterialTextures>,
-    Option<nmc::NodeMeshCombo>,
-    Vec<crate::skeleton::Bone>,
-    String,
-    Option<String>,
-), Error> {
+) -> Result<
+    (
+        crate::types::Mesh,
+        Option<mtl::MtlFile>,
+        Option<MaterialTextures>,
+        Option<nmc::NodeMeshCombo>,
+        Vec<crate::skeleton::Bone>,
+        String,
+        Option<String>,
+    ),
+    Error,
+> {
     let resolved = resolve_geometry_files(p4k, geometry_path)?;
     let primary_path = resolved.parts[0].path.clone();
-    let skeleton_source_path = skeleton_source_paths(resolved.skeleton_path.as_deref(), &primary_path)
-        .first()
-        .map(|path| (*path).to_string());
+    let skeleton_source_path =
+        skeleton_source_paths(resolved.skeleton_path.as_deref(), &primary_path)
+            .first()
+            .map(|path| (*path).to_string());
 
     let mut skeleton_bones = load_skeleton(p4k, resolved.skeleton_path.as_deref(), &primary_path);
 
     if opts.apply_default_animation_pose && !skeleton_bones.is_empty() {
         for path in skeleton_source_paths(resolved.skeleton_path.as_deref(), &primary_path) {
-            let updated = apply_default_animation_pose_for_skel(p4k, path, &mut skeleton_bones, opts);
+            let updated =
+                apply_default_animation_pose_for_skel(p4k, path, &mut skeleton_bones, opts);
             if updated > 0 {
-                log::info!(
-                    "[anim] applied default pose to {updated} bone(s) for skeleton {path}"
-                );
+                log::info!("[anim] applied default pose to {updated} bone(s) for skeleton {path}");
                 break;
             }
         }
@@ -240,8 +251,14 @@ fn load_geometry_parts(
         .material_override
         .as_deref()
         .unwrap_or(material_path);
-    let (mut mesh, mtl_file, textures, mut nmc) =
-        load_single_mesh(p4k, &primary_path, effective_material, opts, png_cache, use_model_bbox)?;
+    let (mut mesh, mtl_file, textures, mut nmc) = load_single_mesh(
+        p4k,
+        &primary_path,
+        effective_material,
+        opts,
+        png_cache,
+        use_model_bbox,
+    )?;
 
     if nmc.is_none() {
         nmc = synthesize_nmc_from_bones(&mesh, &skeleton_bones);
@@ -251,18 +268,39 @@ fn load_geometry_parts(
     }
 
     // Merge additional parts (CA_BONE/CA_SKIN attachments from CDF).
-    let no_tex_opts = ExportOptions { material_mode: MaterialMode::Colors, ..opts.clone() };
+    let no_tex_opts = ExportOptions {
+        material_mode: MaterialMode::Colors,
+        ..opts.clone()
+    };
     for part in &resolved.parts[1..] {
-        match load_single_mesh(p4k, &part.path, material_path, &no_tex_opts, png_cache, use_model_bbox) {
+        match load_single_mesh(
+            p4k,
+            &part.path,
+            material_path,
+            &no_tex_opts,
+            png_cache,
+            use_model_bbox,
+        ) {
             Ok((mut extra_mesh, _, _, _)) => {
                 if let Some(ref bone_name) = part.bone_name {
-                    if let Some(bone) = skeleton_bones.iter().find(|b| b.name.eq_ignore_ascii_case(bone_name)) {
+                    if let Some(bone) = skeleton_bones
+                        .iter()
+                        .find(|b| b.name.eq_ignore_ascii_case(bone_name))
+                    {
                         transform_mesh_by_bone(&mut extra_mesh, bone);
                     }
                 }
                 mesh.merge_from(extra_mesh);
             }
             Err(e) => log::warn!("  CDF part '{}' failed: {e}", part.path),
+        }
+    }
+
+    if !nmc_covers_mesh_submesh_nodes(nmc.as_ref(), &mesh) {
+        if let Some(skeleton_nmc) = synthesize_nmc_from_bones(&mesh, &skeleton_bones) {
+            if rebase_mesh_submeshes_to_bone_space(&mut mesh, &skeleton_bones) {
+                nmc = Some(skeleton_nmc);
+            }
         }
     }
 
@@ -278,7 +316,10 @@ fn load_geometry_parts(
 }
 
 /// Load skeleton bones from a .chr path. Returns empty vec if path is None or load fails.
-pub(crate) fn skeleton_source_paths<'a>(skel_path: Option<&'a str>, geometry_path: &'a str) -> Vec<&'a str> {
+pub(crate) fn skeleton_source_paths<'a>(
+    skel_path: Option<&'a str>,
+    geometry_path: &'a str,
+) -> Vec<&'a str> {
     let mut paths = Vec::new();
     if let Some(path) = skel_path.filter(|path| !path.is_empty()) {
         paths.push(path);
@@ -493,20 +534,24 @@ pub(crate) fn rebase_mesh_submeshes_to_bone_space(
                 if source_vertex >= source_positions.len() {
                     return false;
                 }
-                let transformed = bone_inverse.transform_point3(glam::Vec3::from(source_positions[source_vertex]));
+                let transformed = bone_inverse
+                    .transform_point3(glam::Vec3::from(source_positions[source_vertex]));
                 let new_index = rebuilt_positions.len() as u32;
                 rebuilt_positions.push(transformed.into());
 
                 if let (Some(source), Some(target)) = (&source_uvs, rebuilt_uvs.as_mut()) {
                     target.push(source[source_vertex]);
                 }
-                if let (Some(source), Some(target)) = (&source_secondary_uvs, rebuilt_secondary_uvs.as_mut()) {
+                if let (Some(source), Some(target)) =
+                    (&source_secondary_uvs, rebuilt_secondary_uvs.as_mut())
+                {
                     target.push(source[source_vertex]);
                 }
                 if let (Some(source), Some(target)) = (&source_normals, rebuilt_normals.as_mut()) {
                     target.push((inv_rot * glam::Vec3::from(source[source_vertex])).into());
                 }
-                if let (Some(source), Some(target)) = (&source_tangents, rebuilt_tangents.as_mut()) {
+                if let (Some(source), Some(target)) = (&source_tangents, rebuilt_tangents.as_mut())
+                {
                     let tangent = source[source_vertex];
                     let rotated = inv_rot * glam::Vec3::new(tangent[0], tangent[1], tangent[2]);
                     target.push([rotated.x, rotated.y, rotated.z, tangent[3]]);
@@ -620,8 +665,7 @@ pub(crate) fn resolve_geometry_files(
 
     for child in xml.node_children(root) {
         if xml.node_tag(child) == "Model" {
-            let attrs: std::collections::HashMap<&str, &str> =
-                xml.node_attributes(child).collect();
+            let attrs: std::collections::HashMap<&str, &str> = xml.node_attributes(child).collect();
             if let Some(&file) = attrs.get("File") {
                 if !file.is_empty() {
                     skeleton_path = Some(file.to_string());
@@ -643,7 +687,8 @@ pub(crate) fn resolve_geometry_files(
                         parts.push(GeometryPart {
                             path: binding.to_string(),
                             bone_name: attrs.get("BoneName").map(|s| s.to_string()),
-                            material_override: attrs.get("Material")
+                            material_override: attrs
+                                .get("Material")
                                 .filter(|s| !s.is_empty())
                                 .map(|s| s.to_string()),
                         });
@@ -667,7 +712,11 @@ pub(crate) fn resolve_geometry_files(
 
 /// Load a single mesh file from the P4k, with LOD resolution and material/NMC/texture loading.
 /// Resolve the companion file path (.cgam/.skinm) for a geometry path, with LOD fallback.
-pub(crate) fn resolve_companion_path(p4k: &MappedP4k, p4k_geom_path: &str, lod_level: u32) -> String {
+pub(crate) fn resolve_companion_path(
+    p4k: &MappedP4k,
+    p4k_geom_path: &str,
+    lod_level: u32,
+) -> String {
     if lod_level > 0 {
         let lod_geom = if let Some(dot) = p4k_geom_path.rfind('.') {
             format!(
@@ -700,15 +749,21 @@ pub(crate) fn load_nmc_and_material(
     let p4k_geom_path = datacore_path_to_p4k(geometry_path);
     let metadata_bytes = crate::socpak::read_geometry_file(p4k, &p4k_geom_path);
 
-    let mtl_file = resolve_material(p4k, material_path, &p4k_geom_path, metadata_bytes.as_deref());
+    let mtl_file = resolve_material(
+        p4k,
+        material_path,
+        &p4k_geom_path,
+        metadata_bytes.as_deref(),
+    );
 
-    let nmc = metadata_bytes
-        .as_deref()
-        .and_then(nmc::parse_nmc_full)
-        .map(|(nodes, mat_indices)| nmc::NodeMeshCombo {
-            nodes,
-            material_indices: mat_indices,
-        });
+    let nmc =
+        metadata_bytes
+            .as_deref()
+            .and_then(nmc::parse_nmc_full)
+            .map(|(nodes, mat_indices)| nmc::NodeMeshCombo {
+                nodes,
+                material_indices: mat_indices,
+            });
 
     (nmc, mtl_file)
 }
@@ -758,25 +813,26 @@ fn load_single_mesh(
     let textures = if !opts.material_mode.include_textures() {
         None
     } else {
-        mtl_file
-            .as_ref()
-            .map(|mtl| {
-                load_material_textures(
-                    p4k,
-                    mtl,
-                    None,
-                    opts.texture_mip,
-                    png_cache,
-                    opts.material_mode.include_normals(),
-                    opts.material_mode.experimental(),
-                )
-            })
+        mtl_file.as_ref().map(|mtl| {
+            load_material_textures(
+                p4k,
+                mtl,
+                None,
+                opts.texture_mip,
+                png_cache,
+                opts.material_mode.include_normals(),
+                opts.material_mode.experimental(),
+            )
+        })
     };
 
     Ok((mesh, mtl_file, textures, nmc))
 }
 
-fn material_path_is_incompatible_with_mesh(mesh: &crate::Mesh, mtl_file: Option<&mtl::MtlFile>) -> bool {
+fn material_path_is_incompatible_with_mesh(
+    mesh: &crate::Mesh,
+    mtl_file: Option<&mtl::MtlFile>,
+) -> bool {
     let Some(mtl_file) = mtl_file else {
         return false;
     };
@@ -789,9 +845,19 @@ fn mesh_material_ids_fit_material_count(mesh: &crate::Mesh, material_count: u32)
         .all(|submesh| submesh.material_id < material_count)
 }
 
+fn nmc_covers_mesh_submesh_nodes(nmc: Option<&nmc::NodeMeshCombo>, mesh: &crate::Mesh) -> bool {
+    let Some(nmc) = nmc.filter(|nmc| !nmc.nodes.is_empty()) else {
+        return false;
+    };
+    mesh.submeshes
+        .iter()
+        .all(|submesh| (submesh.node_parent_index as usize) < nmc.nodes.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nmc::{NmcNode, NodeMeshCombo};
     use crate::types::SubMesh;
 
     #[test]
@@ -834,5 +900,69 @@ mod tests {
 
         assert!(mesh_material_ids_fit_material_count(&mesh, 3));
         assert!(!mesh_material_ids_fit_material_count(&mesh, 2));
+    }
+
+    #[test]
+    fn nmc_coverage_detects_merged_skin_submeshes_outside_primary_cgf_nodes() {
+        let mesh = crate::Mesh {
+            positions: Vec::new(),
+            indices: Vec::new(),
+            uvs: None,
+            secondary_uvs: None,
+            normals: None,
+            tangents: None,
+            colors: None,
+            submeshes: vec![
+                SubMesh {
+                    material_name: None,
+                    material_id: 0,
+                    source_material_id: None,
+                    first_index: 0,
+                    num_indices: 3,
+                    first_vertex: 0,
+                    num_vertices: 3,
+                    node_parent_index: 0,
+                },
+                SubMesh {
+                    material_name: None,
+                    material_id: 1,
+                    source_material_id: None,
+                    first_index: 3,
+                    num_indices: 3,
+                    first_vertex: 3,
+                    num_vertices: 3,
+                    node_parent_index: 2,
+                },
+            ],
+            model_min: [0.0; 3],
+            model_max: [0.0; 3],
+            scaling_min: [0.0; 3],
+            scaling_max: [0.0; 3],
+        };
+        let primary_cgf_nmc = NodeMeshCombo {
+            nodes: vec![nmc_node("body", None)],
+            material_indices: Vec::new(),
+        };
+
+        assert!(!nmc_covers_mesh_submesh_nodes(
+            Some(&primary_cgf_nmc),
+            &mesh
+        ));
+    }
+
+    fn nmc_node(name: &str, parent_index: Option<u16>) -> NmcNode {
+        NmcNode {
+            name: name.to_string(),
+            parent_index,
+            world_to_bone: [[0.0; 4]; 3],
+            bone_to_world: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+            ],
+            scale: [1.0; 3],
+            geometry_type: 0,
+            properties: std::collections::HashMap::new(),
+        }
     }
 }

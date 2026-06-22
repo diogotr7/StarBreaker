@@ -56,3 +56,13 @@ def ddna_and_palette_gloss_to_roughness(
     return glossiness_to_perceptual_roughness(
         combine_glossiness_signals(ddna_glossiness, palette_glossiness)
     )
+
+
+def roughness_and_palette_gloss_to_roughness(
+    roughness: float,
+    palette_glossiness: float,
+) -> float:
+    """Combine an already-derived roughness value with palette glossiness."""
+
+    clamped_roughness = max(0.0, min(1.0, float(roughness)))
+    return clamped_roughness * glossiness_to_perceptual_roughness(palette_glossiness)

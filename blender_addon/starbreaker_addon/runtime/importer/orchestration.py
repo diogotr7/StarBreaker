@@ -21,7 +21,10 @@ import bpy
 import mathutils
 
 from ..constants import (
+    DECAL_OFFSET_EXTERNAL_DEFAULT,
+    DECAL_OFFSET_MODIFIER_NAME,
     PACKAGE_ROOT_PREFIX,
+    PROP_ASSEMBLY_KIND,
     PROP_DECAL_HOST_CHANNEL,
     PROP_DECAL_HOST_RGB,
     PROP_ENGINE_GLOW_CONTROL_JSON,
@@ -73,8 +76,10 @@ from .utils import (
     _scene_light_quaternion_to_blender,
     _scene_matrix_to_blender,
     _scene_position_to_blender,
+    _slot_mapping_from_slot_names,
     _slot_mapping_for_object,
     _slot_mapping_source_sidecar_path,
+    _slot_names_for_object,
     _should_neutralize_axis_root,
     _unique_submaterials_by_name,
 )
@@ -192,6 +197,18 @@ class OrchestrationMixin:
         if self.material_identity_index_ready:
             return
         for material in bpy.data.materials:
+            if self._material_is_decal_host_variant(material):
+                self._set_decal_host_variant_identity(
+                    material,
+                    material.name,
+                    material.get("starbreaker_decal_host_base_key"),
+                    material.get("starbreaker_decal_host_material_key"),
+                    material.get("starbreaker_decal_host_channel"),
+                    material.get("starbreaker_decal_host_rgb_key"),
+                    material.get("starbreaker_mesh_decal_variant_mode"),
+                    material.get("starbreaker_decal_host_composite_mode"),
+                )
+                continue
             material_identity = material.get(PROP_MATERIAL_IDENTITY)
             if isinstance(material_identity, str) and material_identity:
                 self.material_identity_index[material_identity] = material
@@ -601,6 +618,14 @@ class OrchestrationMixin:
         target_submaterials_by_name = self._submaterials_by_unique_name(sidecar_path, sidecar)
         target_submaterials_by_name_all = self._submaterials_by_name_all(sidecar_path, sidecar)
         if slot_mapping is None:
+            slot_names = _slot_names_for_object(obj)
+            if slot_names is not None:
+                slot_mapping = _slot_mapping_from_slot_names(
+                    slot_names,
+                    target_submaterials_by_name,
+                    target_submaterials_by_name_all,
+                )
+        if slot_mapping is None:
             inferred_slot_mapping: list[int | None] = []
             inferred_matches = 0
             if mesh_materials is not None:
@@ -758,6 +783,10 @@ class OrchestrationMixin:
                 applied += 1
             if effective_palette_id is not None:
                 obj[PROP_PALETTE_ID] = effective_palette_id
+            self._restore_generated_decal_host_variant_polygons(
+                obj,
+                protected_slot_count=min(len(slot_mapping), len(obj.material_slots)),
+            )
             # Option E2-Lite: after every slot is assigned, rebind decal
             # slots to per-host-channel clones so each decal picks up the
             # palette colour of the nearest paint material on the mesh.
@@ -775,6 +804,7 @@ class OrchestrationMixin:
                 applied,
             )
             return applied
+        assigned_slot_count = 0
         for submaterial in sorted(sidecar.submaterials, key=lambda item: item.index):
             if mesh_materials is not None:
                 while len(mesh_materials) <= submaterial.index:
@@ -798,8 +828,13 @@ class OrchestrationMixin:
             if replaced_material is not material:
                 self._remove_replaced_slot_material(replaced_material)
             applied += 1
+            assigned_slot_count = max(assigned_slot_count, submaterial.index + 1)
         if effective_palette_id is not None:
             obj[PROP_PALETTE_ID] = effective_palette_id
+        self._restore_generated_decal_host_variant_polygons(
+            obj,
+            protected_slot_count=assigned_slot_count,
+        )
         # Option E2-Lite: after every slot is assigned, rebind decal
         # slots to per-host-channel clones so each decal picks up the
         # palette colour of the nearest paint material on the mesh.
@@ -949,8 +984,23 @@ class OrchestrationMixin:
             # it overrides the container's palette so each gadget tints from
             # its own palette record.
             placement_palette_id = None
+            placement_decal_host_channel = None
+            placement_decal_host_rgb = None
             if isinstance(placement.raw, dict):
                 placement_palette_id = placement.raw.get("palette_id")
+                channel_value = placement.raw.get("decal_host_channel")
+                if channel_value:
+                    placement_decal_host_channel = str(channel_value)
+                rgb_value = placement.raw.get("decal_host_rgb")
+                if isinstance(rgb_value, (list, tuple)) and len(rgb_value) >= 3:
+                    try:
+                        placement_decal_host_rgb = (
+                            float(rgb_value[0]),
+                            float(rgb_value[1]),
+                            float(rgb_value[2]),
+                        )
+                    except (TypeError, ValueError):
+                        placement_decal_host_rgb = None
             effective_placement_palette = placement_palette_id or interior.palette_id
 
             instance = SceneInstanceRecord(
@@ -961,6 +1011,8 @@ class OrchestrationMixin:
                 mesh_asset=placement.mesh_asset,
                 palette_id=effective_placement_palette,
                 ui_bindings=list(placement.ui_bindings),
+                decal_host_channel=placement_decal_host_channel,
+                decal_host_rgb=placement_decal_host_rgb,
                 raw=placement.raw,
             )
             effective_palette_id = self._effective_palette_id(instance.palette_id)
@@ -1184,28 +1236,7 @@ class OrchestrationMixin:
         if cached is not None:
             return cached
 
-        before = {obj.as_pointer() for obj in bpy.data.objects}
-        if asset_path.suffix.lower() == ".blend":
-            with bpy.data.libraries.load(str(asset_path), link=False) as (data_from, data_to):
-                data_to.objects = list(data_from.objects)
-        else:
-            # Phase R3 perf fix: pass ``import_select_created_objects=False``
-            # to skip the Blender glTF addon's post-import O(n) selection
-            # pass directly via the official op param (replacing the prior
-            # monkey-patch on ``BlenderScene.select_imported_objects``). With
-            # hundreds of small template imports against a growing scene the
-            # selection step was costing ~24s on a Clipper import; the
-            # StarBreaker addon never reads selection state.
-            result = bpy.ops.import_scene.gltf(
-                filepath=str(asset_path),
-                import_pack_images=False,
-                merge_vertices=False,
-                import_select_created_objects=False,
-            )
-            if "FINISHED" not in result:
-                raise RuntimeError(f"Failed to import {asset_path}")
-
-        imported = [obj for obj in bpy.data.objects if obj.as_pointer() not in before]
+        imported = self._load_template_asset(asset_path)
         imported_materials_by_pointer: dict[int, bpy.types.Material] = {}
         for obj in imported:
             for slot in getattr(obj, "material_slots", []):
@@ -1239,6 +1270,35 @@ class OrchestrationMixin:
         template = ImportedTemplate(mesh_asset=mesh_asset, root_names=[obj.name for obj in root_objects])
         self.template_cache[asset_key] = template
         return template
+
+    def _load_template_asset(self, asset_path: Path) -> list[bpy.types.Object]:
+        if asset_path.suffix.lower() == ".blend":
+            return self._load_blend_template_asset(asset_path)
+        return self._load_gltf_template_asset(asset_path)
+
+    def _load_blend_template_asset(self, asset_path: Path) -> list[bpy.types.Object]:
+        with bpy.data.libraries.load(str(asset_path), link=False) as (data_from, data_to):
+            data_to.objects = list(data_from.objects)
+        return [obj for obj in data_to.objects if obj is not None]
+
+    def _load_gltf_template_asset(self, asset_path: Path) -> list[bpy.types.Object]:
+        # Phase R3 perf fix: pass ``import_select_created_objects=False``
+        # to skip the Blender glTF addon's post-import O(n) selection
+        # pass directly via the official op param (replacing the prior
+        # monkey-patch on ``BlenderScene.select_imported_objects``). With
+        # hundreds of small template imports against a growing scene the
+        # selection step was costing ~24s on a Clipper import; the
+        # StarBreaker addon never reads selection state.
+        before = {obj.as_pointer() for obj in bpy.data.objects}
+        result = bpy.ops.import_scene.gltf(
+            filepath=str(asset_path),
+            import_pack_images=False,
+            merge_vertices=False,
+            import_select_created_objects=False,
+        )
+        if "FINISHED" not in result:
+            raise RuntimeError(f"Failed to import {asset_path}")
+        return [obj for obj in bpy.data.objects if obj.as_pointer() not in before]
 
     def instantiate_template(
         self,
@@ -1282,6 +1342,7 @@ class OrchestrationMixin:
         if source.data is not None:
             clone.data = source.data
         clone.animation_data_clear()
+        OrchestrationMixin._normalize_template_decal_offset_modifier(clone)
         clone.hide_set(False)
         clone.hide_render = False
         clone[PROP_TEMPLATE_PATH] = mesh_asset
@@ -1302,6 +1363,21 @@ class OrchestrationMixin:
             child_clone.parent = clone
             child_clone.matrix_parent_inverse = child.matrix_parent_inverse.copy()
         return clone
+
+    @staticmethod
+    def _normalize_template_decal_offset_modifier(obj: bpy.types.Object) -> None:
+        modifiers = getattr(obj, "modifiers", None)
+        if modifiers is None:
+            return
+        dimensions = tuple(float(value) for value in getattr(obj, "dimensions", ()) if float(value) > 0.0)
+        relative_strength = min(dimensions) * 0.005 if dimensions else DECAL_OFFSET_EXTERNAL_DEFAULT
+        normalized_strength = min(DECAL_OFFSET_EXTERNAL_DEFAULT, max(0.00001, relative_strength))
+        for modifier in modifiers:
+            if (
+                getattr(modifier, "name", "") == DECAL_OFFSET_MODIFIER_NAME
+                and getattr(modifier, "type", "") == "DISPLACE"
+            ):
+                modifier.strength = min(float(getattr(modifier, "strength", normalized_strength)), normalized_strength)
 
     def _ensure_cycles_denoising_support(self) -> None:
         cycles = getattr(self.context.scene, "cycles", None)
@@ -1330,6 +1406,8 @@ class OrchestrationMixin:
             "mesh_asset": record.mesh_asset,
             "material_sidecar": effective_material_sidecar,
             "palette_id": record.palette_id,
+            "decal_host_channel": record.decal_host_channel,
+            "decal_host_rgb": record.decal_host_rgb,
         }, sort_keys=True)
         port_flags = {part.strip().lower() for part in record.port_flags.split() if part.strip()}
         hidden_by_port = "invisible" in port_flags
@@ -1344,6 +1422,10 @@ class OrchestrationMixin:
                 obj[PROP_MATERIAL_SIDECAR] = effective_material_sidecar
             if effective_palette_id is not None:
                 obj[PROP_PALETTE_ID] = effective_palette_id
+            if record.decal_host_channel:
+                obj[PROP_DECAL_HOST_CHANNEL] = record.decal_host_channel
+            if record.decal_host_rgb is not None:
+                obj[PROP_DECAL_HOST_RGB] = [float(component) for component in record.decal_host_rgb]
             obj[PROP_INSTANCE_JSON] = serialized
             if hidden_by_port:
                 obj.hide_viewport = True
@@ -1357,6 +1439,9 @@ class OrchestrationMixin:
         package_root[PROP_SCENE_PATH] = str(self.package.scene_path)
         package_root[PROP_EXPORT_ROOT] = str(self.package.export_root)
         package_root[PROP_PACKAGE_NAME] = self.package.package_name
+        assembly_kind = str(getattr(self.package.scene, "raw", {}).get("assembly_kind", "") or "")
+        if assembly_kind:
+            package_root[PROP_ASSEMBLY_KIND] = assembly_kind
         package_root[PROP_PALETTE_ID] = palette_id or self.package.scene.root_entity.palette_id or ""
         package_root[PROP_PALETTE_SCOPE] = uuid.uuid4().hex
         engine_glow_control = getattr(self.package.scene, "engine_glow_control", None)

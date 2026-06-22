@@ -74,7 +74,9 @@ pub(crate) fn resolve_paint_override(
     default_mtl: Option<mtl::MtlFile>,
 ) -> (Option<mtl::TintPalette>, Option<mtl::MtlFile>) {
     // Find paint item in loadout children.
-    let paint_node = root_node.children.iter()
+    let paint_node = root_node
+        .children
+        .iter()
         .find(|c| c.item_port_name.to_lowercase().contains("paint"));
     let Some(paint_node) = paint_node else {
         return (default_palette, default_mtl);
@@ -87,17 +89,26 @@ pub(crate) fn resolve_paint_override(
             "Components[SAttachableComponentParams].AttachDef.Tags",
         )
         .ok()
-        .and_then(|c| db.query_single::<String>(&c, &paint_node.record).ok().flatten())
+        .and_then(|c| {
+            db.query_single::<String>(&c, &paint_node.record)
+                .ok()
+                .flatten()
+        })
         .unwrap_or_default();
 
     // Extract @Tag from the tags string (e.g., "Paint_Gladius @GladiusPirate" → "GladiusPirate").
-    let subgeo_tag = tags.split_whitespace()
-        .find_map(|t| t.strip_prefix('@'));
+    let subgeo_tag = tags.split_whitespace().find_map(|t| t.strip_prefix('@'));
     let Some(subgeo_tag) = subgeo_tag else {
-        log::info!("  paint '{}' has no @Tag in '{tags}', using default palette", paint_node.entity_name);
+        log::info!(
+            "  paint '{}' has no @Tag in '{tags}', using default palette",
+            paint_node.entity_name
+        );
         return (default_palette, default_mtl);
     };
-    log::info!("  paint '{}' selects SubGeometry tag '{subgeo_tag}'", paint_node.entity_name);
+    log::info!(
+        "  paint '{}' selects SubGeometry tag '{subgeo_tag}'",
+        paint_node.entity_name
+    );
 
     // Query SubGeometry entries via the full SGeometryResourceParams component Value tree
     // (same approach as loadout.rs query_sub_geometry — querying SubGeometry directly
@@ -110,7 +121,9 @@ pub(crate) fn resolve_paint_override(
         Ok(c) => c,
         Err(_) => return (default_palette, default_mtl),
     };
-    let components = db.query::<Value>(&compiled, entity_record).unwrap_or_default();
+    let components = db
+        .query::<Value>(&compiled, entity_record)
+        .unwrap_or_default();
 
     for component in &components {
         let geom_node = match get_value_field(component, "Geometry") {
@@ -130,14 +143,19 @@ pub(crate) fn resolve_paint_override(
             log::info!("  matched SubGeometry[{idx}] tag='{tag}'");
 
             // Extract palette from this SubGeometry's Geometry.Palette.RootRecord.root.
-            let palette = get_value_field(sub, "Geometry")
-                .and_then(|geometry| extract_subgeometry_palette(geometry, Some(paint_node.entity_name.clone())));
+            let palette = get_value_field(sub, "Geometry").and_then(|geometry| {
+                extract_subgeometry_palette(geometry, Some(paint_node.entity_name.clone()))
+            });
 
             if let Some(ref p) = palette {
                 log::info!(
                     "  paint palette: primary=[{:.2},{:.2},{:.2}] secondary=[{:.2},{:.2},{:.2}]",
-                    p.primary[0], p.primary[1], p.primary[2],
-                    p.secondary[0], p.secondary[1], p.secondary[2],
+                    p.primary[0],
+                    p.primary[1],
+                    p.primary[2],
+                    p.secondary[0],
+                    p.secondary[1],
+                    p.secondary[2],
                 );
             }
 
@@ -195,7 +213,9 @@ pub(crate) fn enumerate_paint_variants_for_entity(
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
-    let components = db.query::<Value>(&compiled, entity_record).unwrap_or_default();
+    let components = db
+        .query::<Value>(&compiled, entity_record)
+        .unwrap_or_default();
 
     let mut variants: Vec<mtl::PaintVariant> = Vec::new();
 
@@ -216,7 +236,10 @@ pub(crate) fn enumerate_paint_variants_for_entity(
                 continue;
             }
             // Skip duplicates — some entities repeat SubGeometry entries.
-            if variants.iter().any(|v| v.subgeometry_tag.eq_ignore_ascii_case(tag)) {
+            if variants
+                .iter()
+                .any(|v| v.subgeometry_tag.eq_ignore_ascii_case(tag))
+            {
                 continue;
             }
 
@@ -253,7 +276,9 @@ pub(crate) fn enumerate_paint_variants_for_entity(
             // Try to look up a localized display name using the sanitized tag.
             let display_name = display_names.get(sanitized_tag.as_str()).cloned();
             let palette = get_value_field(sub, "Geometry")
-                .and_then(|geometry| extract_subgeometry_palette(geometry, Some(canonical_tag.to_string())))
+                .and_then(|geometry| {
+                    extract_subgeometry_palette(geometry, Some(canonical_tag.to_string()))
+                })
                 .map(|mut palette| {
                     if palette.display_name.is_none() {
                         palette.display_name = display_name.clone();
@@ -290,8 +315,8 @@ fn extend_with_palette_only_paint_variants(
     display_names: &HashMap<String, String>,
     variants: &mut Vec<mtl::PaintVariant>,
 ) {
-    use starbreaker_datacore::query::value::Value;
     use starbreaker_datacore::QueryResultExt;
+    use starbreaker_datacore::query::value::Value;
 
     let family_keys = tint_palette_family_keys(db.resolve_string2(entity_record.name_offset));
     if family_keys.is_empty() {
@@ -299,7 +324,9 @@ fn extend_with_palette_only_paint_variants(
     }
 
     let Ok(tags_compiled) = db
-        .compile_rooted::<String>("EntityClassDefinition.Components[SAttachableComponentParams].AttachDef.Tags")
+        .compile_rooted::<String>(
+            "EntityClassDefinition.Components[SAttachableComponentParams].AttachDef.Tags",
+        )
         .optional()
     else {
         return;
@@ -336,7 +363,11 @@ fn extend_with_palette_only_paint_variants(
         }
 
         let full_name = db.resolve_string2(record.name_offset);
-        let short_name = full_name.rsplit('.').next().unwrap_or(full_name).to_lowercase();
+        let short_name = full_name
+            .rsplit('.')
+            .next()
+            .unwrap_or(full_name)
+            .to_lowercase();
         let canonical_tag = short_name
             .strip_prefix("paint_")
             .unwrap_or(short_name.as_str())
@@ -386,7 +417,10 @@ fn extend_with_palette_only_paint_variants(
 }
 
 fn paint_attach_tags_match_family(tags: &str, family_keys: &[String]) -> bool {
-    let tokens: HashSet<String> = tags.split_whitespace().map(|token| token.to_lowercase()).collect();
+    let tokens: HashSet<String> = tags
+        .split_whitespace()
+        .map(|token| token.to_lowercase())
+        .collect();
     family_keys
         .iter()
         .map(|key| format!("paint_{key}"))
@@ -394,7 +428,10 @@ fn paint_attach_tags_match_family(tags: &str, family_keys: &[String]) -> bool {
 }
 
 /// Helper: get an object field from a DataCore Value.
-fn get_value_field<'v, 'a>(val: &'v starbreaker_datacore::query::value::Value<'a>, name: &str) -> Option<&'v starbreaker_datacore::query::value::Value<'a>> {
+fn get_value_field<'v, 'a>(
+    val: &'v starbreaker_datacore::query::value::Value<'a>,
+    name: &str,
+) -> Option<&'v starbreaker_datacore::query::value::Value<'a>> {
     if let starbreaker_datacore::query::value::Value::Object { fields, .. } = val {
         fields.iter().find(|(k, _)| *k == name).map(|(_, v)| v)
     } else {
@@ -403,7 +440,10 @@ fn get_value_field<'v, 'a>(val: &'v starbreaker_datacore::query::value::Value<'a
 }
 
 /// Helper: get a string field from a DataCore Value.
-fn get_value_string<'a>(val: &starbreaker_datacore::query::value::Value<'a>, name: &str) -> Option<&'a str> {
+fn get_value_string<'a>(
+    val: &starbreaker_datacore::query::value::Value<'a>,
+    name: &str,
+) -> Option<&'a str> {
     if let starbreaker_datacore::query::value::Value::Object { fields, .. } = val {
         for (k, v) in fields {
             if *k == name {
@@ -433,7 +473,10 @@ pub fn query_animation_controller_source(
 }
 
 /// Helper: get an array field from a DataCore Value.
-fn get_value_array<'v, 'a>(val: &'v starbreaker_datacore::query::value::Value<'a>, name: &str) -> Option<&'v Vec<starbreaker_datacore::query::value::Value<'a>>> {
+fn get_value_array<'v, 'a>(
+    val: &'v starbreaker_datacore::query::value::Value<'a>,
+    name: &str,
+) -> Option<&'v Vec<starbreaker_datacore::query::value::Value<'a>>> {
     if let starbreaker_datacore::query::value::Value::Object { fields, .. } = val {
         for (k, v) in fields {
             if *k == name {
@@ -518,15 +561,19 @@ fn extract_subgeometry_palette(
     })
 }
 
-fn read_palette_rgb_entry(
-    entry: Option<&starbreaker_datacore::query::value::Value>,
-) -> [f32; 3] {
+fn read_palette_rgb_entry(entry: Option<&starbreaker_datacore::query::value::Value>) -> [f32; 3] {
     let rgb = entry
         .and_then(|value| get_value_field(value, "tintColor"))
         .or(entry);
-    let r = rgb.and_then(|value| get_value_u8(value, "r")).unwrap_or(128);
-    let g = rgb.and_then(|value| get_value_u8(value, "g")).unwrap_or(128);
-    let b = rgb.and_then(|value| get_value_u8(value, "b")).unwrap_or(128);
+    let r = rgb
+        .and_then(|value| get_value_u8(value, "r"))
+        .unwrap_or(128);
+    let g = rgb
+        .and_then(|value| get_value_u8(value, "g"))
+        .unwrap_or(128);
+    let b = rgb
+        .and_then(|value| get_value_u8(value, "b"))
+        .unwrap_or(128);
     [
         srgb_to_linear(r as f32 / 255.0),
         srgb_to_linear(g as f32 / 255.0),
@@ -557,7 +604,11 @@ fn read_rgb_value_field(
 /// 2. Fallback: search for a TintPaletteTree record matching the entity name.
 pub(crate) fn query_tint_palette(db: &Database, record: &Record) -> Option<mtl::TintPalette> {
     let entity_name = db.resolve_string2(record.name_offset);
-    let short_name = entity_name.rsplit('.').next().unwrap_or(entity_name).to_lowercase();
+    let short_name = entity_name
+        .rsplit('.')
+        .next()
+        .unwrap_or(entity_name)
+        .to_lowercase();
 
     // Strategy 1: Query through the entity's Reference path.
     // This follows Components[SGeometryResourceParams].Geometry.Geometry.Palette.RootRecord
@@ -571,18 +622,13 @@ pub(crate) fn query_tint_palette(db: &Database, record: &Record) -> Option<mtl::
     let tpt_si = db.struct_id("TintPaletteTree")?;
     // Find an exact match first (e.g., "rsi_zeus_cl"), not a substring match
     // that could pick up a paint variant like "aegs_gladius_black_grey_grey_geometric".
-    let palette_record = db.records_of_type(tpt_si)
-        .find(|r| {
-            let name = db.resolve_string2(r.name_offset).to_lowercase();
-            let rec_short = name.rsplit('.').next().unwrap_or(&name);
-            rec_short == short_name
-        })?;
+    let palette_record = db.records_of_type(tpt_si).find(|r| {
+        let name = db.resolve_string2(r.name_offset).to_lowercase();
+        let rec_short = name.rsplit('.').next().unwrap_or(&name);
+        rec_short == short_name
+    })?;
 
-    query_tint_from_record(
-        db,
-        palette_record,
-        Some(short_name),
-    )
+    query_tint_from_record(db, palette_record, Some(short_name))
 }
 
 pub(crate) fn query_related_tint_palettes(
@@ -607,7 +653,9 @@ pub(crate) fn query_related_tint_palettes(
         palettes.push(palette);
     }
     for palette_record in db.records_of_type(tpt_si) {
-        let full_name = db.resolve_string2(palette_record.name_offset).to_lowercase();
+        let full_name = db
+            .resolve_string2(palette_record.name_offset)
+            .to_lowercase();
         let short_name = full_name.rsplit('.').next().unwrap_or(&full_name);
         if !tint_palette_matches_family(short_name, &family_keys) {
             continue;
@@ -615,7 +663,9 @@ pub(crate) fn query_related_tint_palettes(
         if !seen.insert(short_name.to_string()) {
             continue;
         }
-        if let Some(palette) = query_tint_from_record(db, palette_record, Some(short_name.to_string())) {
+        if let Some(palette) =
+            query_tint_from_record(db, palette_record, Some(short_name.to_string()))
+        {
             palettes.push(palette);
         }
     }
@@ -649,7 +699,9 @@ pub(crate) fn tint_palette_family_keys(name: &str) -> Vec<String> {
 }
 
 pub(crate) fn tint_palette_matches_family(short_name: &str, family_keys: &[String]) -> bool {
-    family_keys.iter().any(|key| short_name == key || short_name.starts_with(&format!("{key}_")))
+    family_keys
+        .iter()
+        .any(|key| short_name == key || short_name.starts_with(&format!("{key}_")))
 }
 
 pub(crate) fn load_localization_map(p4k: &MappedP4k) -> HashMap<String, String> {
@@ -683,7 +735,10 @@ fn parse_localization(data: &[u8]) -> HashMap<String, String> {
     map
 }
 
-pub(crate) fn build_paint_display_name_map(db: &Database, localization: &HashMap<String, String>) -> HashMap<String, String> {
+pub(crate) fn build_paint_display_name_map(
+    db: &Database,
+    localization: &HashMap<String, String>,
+) -> HashMap<String, String> {
     use starbreaker_datacore::QueryResultExt;
 
     if localization.is_empty() {
@@ -718,10 +773,16 @@ pub(crate) fn build_paint_display_name_map(db: &Database, localization: &HashMap
         };
 
         let full_name = db.resolve_string2(record.name_offset);
-        let short_name = full_name.rsplit('.').next().unwrap_or(full_name).to_lowercase();
+        let short_name = full_name
+            .rsplit('.')
+            .next()
+            .unwrap_or(full_name)
+            .to_lowercase();
         display_names.insert(short_name.clone(), display_name.clone());
         if let Some(stripped) = short_name.strip_prefix("paint_") {
-            display_names.entry(stripped.to_string()).or_insert(display_name);
+            display_names
+                .entry(stripped.to_string())
+                .or_insert(display_name);
         }
     }
 
@@ -739,14 +800,21 @@ fn localization_key_from_value(value: &Value) -> Option<String> {
     Some(key.strip_prefix('@').unwrap_or(&key).to_lowercase())
 }
 
-pub(crate) fn populate_palette_display_name(palette: &mut mtl::TintPalette, display_names: &HashMap<String, String>) {
+pub(crate) fn populate_palette_display_name(
+    palette: &mut mtl::TintPalette,
+    display_names: &HashMap<String, String>,
+) {
     if palette.display_name.is_some() {
         return;
     }
     let Some(source_name) = palette.source_name.as_deref() else {
         return;
     };
-    let key = source_name.rsplit('.').next().unwrap_or(source_name).to_lowercase();
+    let key = source_name
+        .rsplit('.')
+        .next()
+        .unwrap_or(source_name)
+        .to_lowercase();
     if let Some(display_name) = display_names.get(&key) {
         palette.display_name = Some(display_name.clone());
     }
@@ -945,10 +1013,11 @@ fn load_layer_details(
             } else {
                 Some(effective_surface_type.to_string())
             },
-            metallic: mtl::layer_metallic(
+            metallic: mtl::layer_metallic_with_surface_type(
                 material.diffuse,
                 material.specular,
                 specular_texture_mean,
+                Some(effective_surface_type),
             ),
         },
         material.resolved_layer_material(),
@@ -988,7 +1057,10 @@ mod tests {
     use super::*;
     use starbreaker_datacore::query::value::Value;
 
-    fn object(type_name: &'static str, fields: Vec<(&'static str, Value<'static>)>) -> Value<'static> {
+    fn object(
+        type_name: &'static str,
+        fields: Vec<(&'static str, Value<'static>)>,
+    ) -> Value<'static> {
         Value::Object {
             type_name,
             fields,
@@ -1007,7 +1079,15 @@ mod tests {
         )
     }
 
-    fn tint_entry(r: u8, g: u8, b: u8, spec_r: u8, spec_g: u8, spec_b: u8, glossiness: f32) -> Value<'static> {
+    fn tint_entry(
+        r: u8,
+        g: u8,
+        b: u8,
+        spec_r: u8,
+        spec_g: u8,
+        spec_b: u8,
+        glossiness: f32,
+    ) -> Value<'static> {
         object(
             "TintEntry",
             vec![

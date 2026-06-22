@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::decomposed::DecomposedInput;
-use crate::types::{Mesh, SubMesh};
 use crate::pipeline::LoadedInteriors;
+use crate::types::{Mesh, SubMesh};
 
 #[derive(Debug)]
 struct BlendBlock<'a> {
@@ -172,22 +172,44 @@ fn mesh_to_blend_exports_secondary_uv_map() {
 
     let bytes = mesh_to_blend("uv_test", &mesh, &None, None, None);
 
-    assert!(bytes.windows(b"UVMap\0".len()).any(|window| window == b"UVMap\0"));
-    assert!(bytes
-        .windows(b"UVMap.001\0".len())
-        .any(|window| window == b"UVMap.001\0"));
-    assert!(bytes
-        .windows(0.875f32.to_le_bytes().len())
-        .any(|window| window == 0.875f32.to_le_bytes()));
+    assert!(
+        bytes
+            .windows(b"UVMap\0".len())
+            .any(|window| window == b"UVMap\0")
+    );
+    assert!(
+        bytes
+            .windows(b"UVMap.001\0".len())
+            .any(|window| window == b"UVMap.001\0")
+    );
+    assert!(
+        bytes
+            .windows(0.875f32.to_le_bytes().len())
+            .any(|window| window == 0.875f32.to_le_bytes())
+    );
 
     let blocks = parse_blend_blocks(&bytes);
     let mesh_block = mesh_block_by_name(&blocks, "uv_test");
     let active_uv_ptr = u64::from_le_bytes(mesh_block.data[1584..1592].try_into().unwrap());
     let default_uv_ptr = u64::from_le_bytes(mesh_block.data[1592..1600].try_into().unwrap());
-    assert_ne!(active_uv_ptr, 0, "mesh should persist its active UV map name");
-    assert_ne!(default_uv_ptr, 0, "mesh should persist its render-active UV map name");
-    assert!(blocks.iter().any(|block| block.old_ptr == active_uv_ptr && block.data == b"UVMap\0"));
-    assert!(blocks.iter().any(|block| block.old_ptr == default_uv_ptr && block.data == b"UVMap\0"));
+    assert_ne!(
+        active_uv_ptr, 0,
+        "mesh should persist its active UV map name"
+    );
+    assert_ne!(
+        default_uv_ptr, 0,
+        "mesh should persist its render-active UV map name"
+    );
+    assert!(
+        blocks
+            .iter()
+            .any(|block| block.old_ptr == active_uv_ptr && block.data == b"UVMap\0")
+    );
+    assert!(
+        blocks
+            .iter()
+            .any(|block| block.old_ptr == default_uv_ptr && block.data == b"UVMap\0")
+    );
 }
 
 #[test]
@@ -245,7 +267,9 @@ fn mesh_to_blend_exports_decal_offset_displace_modifier_for_decal_vertex_group()
     assert_eq!(displace.old_ptr, last_modifier_ptr);
     assert_eq!(cstr_at(displace.data, 40, 64), DECAL_OFFSET_MODIFIER_NAME);
     assert_eq!(cstr_at(displace.data, 288, 64), DECAL_OFFSET_GROUP_NAME);
-    assert!((f32::from_le_bytes(displace.data[280..284].try_into().unwrap()) - 0.005).abs() < 0.000001);
+    assert!(
+        (f32::from_le_bytes(displace.data[280..284].try_into().unwrap()) - 0.005).abs() < 0.000001
+    );
 }
 
 #[test]
@@ -287,10 +311,7 @@ fn flat_mesh_assets_bake_root_rotation_without_wrappers() {
         f32::from_le_bytes(object.data[828..832].try_into().unwrap()),
         f32::from_le_bytes(object.data[832..836].try_into().unwrap()),
     ];
-    assert_eq!(
-        quat,
-        [1.0, 0.0, 0.0, 0.0,]
-    );
+    assert_eq!(quat, [1.0, 0.0, 0.0, 0.0,]);
 
     let scale = [
         f32::from_le_bytes(object.data[760..764].try_into().unwrap()),
@@ -370,7 +391,10 @@ fn scene_manifest_instances_use_material_sidecar_default_palette() {
     let instances = scene_manifest_instances(&files);
 
     assert_eq!(instances.len(), 1);
-    assert_eq!(instances[0].palette_id.as_deref(), Some("palette/rsi_interior_default"));
+    assert_eq!(
+        instances[0].palette_id.as_deref(),
+        Some("palette/rsi_interior_default")
+    );
 }
 
 #[test]
@@ -410,9 +434,18 @@ fn scene_manifest_instances_unique_parent_empty_for_repeated_interior_names() {
     let instances = scene_manifest_instances(&files);
 
     assert_eq!(instances.len(), 2);
-    assert_eq!(instances[0].parent_empty_name.as_deref(), Some("interior_crew_quarters_000"));
-    assert_eq!(instances[1].parent_empty_name.as_deref(), Some("interior_crew_quarters_001"));
-    assert_ne!(instances[0].parent_empty_name, instances[1].parent_empty_name);
+    assert_eq!(
+        instances[0].parent_empty_name.as_deref(),
+        Some("interior_crew_quarters_000")
+    );
+    assert_eq!(
+        instances[1].parent_empty_name.as_deref(),
+        Some("interior_crew_quarters_001")
+    );
+    assert_ne!(
+        instances[0].parent_empty_name,
+        instances[1].parent_empty_name
+    );
     assert_ne!(instances[0].parent_empty_loc, instances[1].parent_empty_loc);
 }
 
@@ -479,12 +512,15 @@ fn interior_placement_assets_flatten_source_hierarchy() {
         material_indices: vec![0],
     };
     let mut mesh_data_map = HashMap::new();
-    mesh_data_map.insert("data/interior_asset.blend".to_string(), MeshDataEntry {
-        mesh,
-        materials: None,
-        nmc: Some(nmc),
-        interior_placement_space: true,
-    });
+    mesh_data_map.insert(
+        "data/interior_asset.blend".to_string(),
+        MeshDataEntry {
+            mesh,
+            materials: None,
+            nmc: Some(nmc),
+            interior_placement_space: true,
+        },
+    );
     let job = BlendAssetJob {
         blend_path: "Data/interior_asset.blend".to_string(),
         mesh_name: "interior_asset".to_string(),
@@ -494,17 +530,20 @@ fn interior_placement_assets_flatten_source_hierarchy() {
     let built = build_native_blend_asset(&job, &mesh_data_map, &HashMap::new(), None).unwrap();
 
     assert!(
-        built.source_nodes.iter().all(|node| node.name != "source_offset_node"),
+        built
+            .source_nodes
+            .iter()
+            .all(|node| node.name != "source_offset_node"),
         "interior placement assets should not preserve source NMC nodes that would be applied again in scene.blend"
     );
     assert_eq!(built.linked_mesh_refs.len(), 1);
     assert_eq!(built.linked_mesh_refs[0].object_name, "source_offset_node");
     assert_eq!(built.linked_mesh_refs[0].object_loc, [0.0, 0.0, 0.0]);
+    assert_eq!(built.linked_mesh_refs[0].object_quat, [1.0, 0.0, 0.0, 0.0,]);
     assert_eq!(
-        built.linked_mesh_refs[0].object_quat,
-        [1.0, 0.0, 0.0, 0.0,]
+        built.linked_mesh_refs[0].source_parent_name.as_deref(),
+        None
     );
-    assert_eq!(built.linked_mesh_refs[0].source_parent_name.as_deref(), None);
 }
 
 #[test]
@@ -549,13 +588,17 @@ fn existing_native_blend_asset_is_reused_when_present() {
         },
     );
 
-    let built = build_native_blend_asset(&job, &mesh_data_map, &HashMap::new(), Some(&loader)).unwrap();
+    let built =
+        build_native_blend_asset(&job, &mesh_data_map, &HashMap::new(), Some(&loader)).unwrap();
 
     assert!(
         built.file.is_none(),
         "skip-existing mode should reuse the on-disk native mesh asset when it is already available"
     );
-    assert_eq!(built.relative_path, "Data/Objects/existing_asset_LOD0.blend");
+    assert_eq!(
+        built.relative_path,
+        "Data/Objects/existing_asset_LOD0.blend"
+    );
     assert_eq!(built.linked_mesh_refs.len(), 1);
     assert_eq!(built.linked_mesh_refs[0].object_name, "existing_asset");
     assert_eq!(built.linked_mesh_refs[0].mesh_name, "existing_asset");
@@ -593,13 +636,17 @@ fn missing_mesh_payload_reuses_existing_native_blend_asset() {
         (relative_path == "Data/Objects/existing_asset_LOD0.blend").then(|| existing_bytes.clone())
     };
 
-    let built = build_native_blend_asset(&job, &HashMap::new(), &HashMap::new(), Some(&loader)).unwrap();
+    let built =
+        build_native_blend_asset(&job, &HashMap::new(), &HashMap::new(), Some(&loader)).unwrap();
 
     assert!(
         built.file.is_none(),
         "reused native mesh assets should not be rebuilt when no fresh mesh payload is available"
     );
-    assert_eq!(built.relative_path, "Data/Objects/existing_asset_LOD0.blend");
+    assert_eq!(
+        built.relative_path,
+        "Data/Objects/existing_asset_LOD0.blend"
+    );
     assert_eq!(built.linked_mesh_refs.len(), 1);
     assert_eq!(built.linked_mesh_refs[0].object_name, "existing_asset");
     assert_eq!(built.linked_mesh_refs[0].mesh_name, "existing_asset");
@@ -795,7 +842,13 @@ fn empty_only_nmc_asset_writes_linkable_anchor_mesh() {
         material_indices: Vec::new(),
     };
 
-    let blend_bytes = mesh_to_blend("EmptyHelper_LOD0", &empty_anchor_mesh(), &None, Some(&nmc), None);
+    let blend_bytes = mesh_to_blend(
+        "EmptyHelper_LOD0",
+        &empty_anchor_mesh(),
+        &None,
+        Some(&nmc),
+        None,
+    );
     let blocks = parse_blend_blocks(&blend_bytes);
 
     assert_eq!(
@@ -884,9 +937,18 @@ fn collapsed_wrapper_node_preserves_non_identity_root_transform() {
         f32::from_le_bytes(wrapper.data[832..836].try_into().unwrap()),
     ];
 
-    assert!(quat[0].abs() < 1e-5, "expected 180-degree root rotation (w ~= 0), got {quat:?}");
-    assert!(quat[1].abs() < 1e-5, "expected 180-degree root rotation around Z, got {quat:?}");
-    assert!(quat[2].abs() < 1e-5, "expected 180-degree root rotation around Z, got {quat:?}");
+    assert!(
+        quat[0].abs() < 1e-5,
+        "expected 180-degree root rotation (w ~= 0), got {quat:?}"
+    );
+    assert!(
+        quat[1].abs() < 1e-5,
+        "expected 180-degree root rotation around Z, got {quat:?}"
+    );
+    assert!(
+        quat[2].abs() < 1e-5,
+        "expected 180-degree root rotation around Z, got {quat:?}"
+    );
     assert!(
         (quat[3].abs() - 1.0).abs() < 1e-5,
         "expected 180-degree root rotation around Z (|z| ~= 1), got {quat:?}"
@@ -1018,10 +1080,10 @@ fn test_create_scene_blend_links_object_ids_instead_of_empty_mesh_stubs() {
     let linked_mesh_stub = blocks.iter().find(|block| {
         block.code == b"ID\0\0"
             && block.sdna == SDNA_IDX_ID
-            && block.data[40..]
-                .starts_with(b"MErsi_aurora_mk2_airlock_door_LOD0_mesh")
+            && block.data[40..].starts_with(b"MErsi_aurora_mk2_airlock_door_LOD0_mesh")
     });
-    let linked_mesh_stub = linked_mesh_stub.expect("scene.blend should link mesh data IDs from mesh .blend files");
+    let linked_mesh_stub =
+        linked_mesh_stub.expect("scene.blend should link mesh data IDs from mesh .blend files");
 
     let local_object = object_block_by_name(&blocks, "rsi_aurora_mk2_airlock_door_LOD0");
     assert_eq!(
@@ -1032,10 +1094,12 @@ fn test_create_scene_blend_links_object_ids_instead_of_empty_mesh_stubs() {
 
     let local_empty_mesh_stub = blocks.iter().find(|block| {
         block.code == b"ME\0\0"
-            && block.data[40..]
-                .starts_with(b"MErsi_aurora_mk2_airlock_door_LOD0")
+            && block.data[40..].starts_with(b"MErsi_aurora_mk2_airlock_door_LOD0")
     });
-    assert!(local_empty_mesh_stub.is_none(), "scene.blend must not replace linked objects with empty local mesh stubs");
+    assert!(
+        local_empty_mesh_stub.is_none(),
+        "scene.blend must not replace linked objects with empty local mesh stubs"
+    );
 }
 
 #[test]
@@ -1097,7 +1161,8 @@ fn test_create_scene_blend_disambiguates_duplicate_library_basenames() {
         source_scale: [1.0, 1.0, 1.0],
         source_parent_name: None,
         parent_node_name: None,
-        blend_path: "//../../Data/Objects/Squadron42/universal/ui/ui_screen_4x3_a_LOD0.blend".to_string(),
+        blend_path: "//../../Data/Objects/Squadron42/universal/ui/ui_screen_4x3_a_LOD0.blend"
+            .to_string(),
         mesh_asset: "Data/Objects/Squadron42/universal/ui/ui_screen_4x3_a_LOD0.blend".to_string(),
         position: [0.0, 0.0, 0.0],
         rotation: [1.0, 0.0, 0.0, 0.0],
@@ -1158,7 +1223,12 @@ fn test_create_scene_blend_writes_addon_style_scene_anchors() {
             LinkedSourceAncestor {
                 name: "StarBreaker_Y_up".to_string(),
                 loc: [0.0, 0.0, 0.0],
-                quat: [std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2, 0.0, 0.0],
+                quat: [
+                    std::f32::consts::FRAC_1_SQRT_2,
+                    std::f32::consts::FRAC_1_SQRT_2,
+                    0.0,
+                    0.0,
+                ],
                 scale: [1.0, 1.0, 1.0],
             },
             LinkedSourceAncestor {
@@ -1190,7 +1260,10 @@ fn test_create_scene_blend_writes_addon_style_scene_anchors() {
     let cryengine_root = object_block_by_name(&blocks, "anchor_mesh_1_CryEngine_Z_up");
     let local_mesh = object_block_by_name(&blocks, "anchor_mesh");
 
-    assert_eq!(u64::from_le_bytes(package_root.data[496..504].try_into().unwrap()), 0);
+    assert_eq!(
+        u64::from_le_bytes(package_root.data[496..504].try_into().unwrap()),
+        0
+    );
     assert_eq!(
         u64::from_le_bytes(entity_root.data[496..504].try_into().unwrap()),
         package_root.old_ptr,
@@ -1234,17 +1307,54 @@ fn test_create_scene_blend_writes_addon_style_scene_anchors() {
         cryengine_root.old_ptr,
         "local mesh object should be parented to the cloned source hierarchy"
     );
-    assert_eq!(f32::from_le_bytes(local_mesh.data[736..740].try_into().unwrap()), 4.0);
-    assert_eq!(f32::from_le_bytes(local_mesh.data[740..744].try_into().unwrap()), 5.0);
-    assert_eq!(f32::from_le_bytes(local_mesh.data[744..748].try_into().unwrap()), 6.0);
-    assert_ne!(u64::from_le_bytes(package_root.data[344..352].try_into().unwrap()), 0);
-    assert_ne!(u64::from_le_bytes(entity_root.data[344..352].try_into().unwrap()), 0);
-    assert_ne!(u64::from_le_bytes(anchor.data[344..352].try_into().unwrap()), 0);
-    assert_ne!(u64::from_le_bytes(local_mesh.data[344..352].try_into().unwrap()), 0);
-    assert!(blend_bytes.windows(b"starbreaker_package_root".len()).any(|w| w == b"starbreaker_package_root"));
-    assert!(blend_bytes.windows(b"starbreaker_mesh_asset".len()).any(|w| w == b"starbreaker_mesh_asset"));
-    assert!(blend_bytes.windows(b"Packages/AnchorEntity/scene.json".len()).any(|w| w == b"Packages/AnchorEntity/scene.json"));
-    assert!(blend_bytes.windows(b"Data/Objects/Ships/anchor_mesh.blend".len()).any(|w| w == b"Data/Objects/Ships/anchor_mesh.blend"));
+    assert_eq!(
+        f32::from_le_bytes(local_mesh.data[736..740].try_into().unwrap()),
+        4.0
+    );
+    assert_eq!(
+        f32::from_le_bytes(local_mesh.data[740..744].try_into().unwrap()),
+        5.0
+    );
+    assert_eq!(
+        f32::from_le_bytes(local_mesh.data[744..748].try_into().unwrap()),
+        6.0
+    );
+    assert_ne!(
+        u64::from_le_bytes(package_root.data[344..352].try_into().unwrap()),
+        0
+    );
+    assert_ne!(
+        u64::from_le_bytes(entity_root.data[344..352].try_into().unwrap()),
+        0
+    );
+    assert_ne!(
+        u64::from_le_bytes(anchor.data[344..352].try_into().unwrap()),
+        0
+    );
+    assert_ne!(
+        u64::from_le_bytes(local_mesh.data[344..352].try_into().unwrap()),
+        0
+    );
+    assert!(
+        blend_bytes
+            .windows(b"starbreaker_package_root".len())
+            .any(|w| w == b"starbreaker_package_root")
+    );
+    assert!(
+        blend_bytes
+            .windows(b"starbreaker_mesh_asset".len())
+            .any(|w| w == b"starbreaker_mesh_asset")
+    );
+    assert!(
+        blend_bytes
+            .windows(b"Packages/AnchorEntity/scene.json".len())
+            .any(|w| w == b"Packages/AnchorEntity/scene.json")
+    );
+    assert!(
+        blend_bytes
+            .windows(b"Data/Objects/Ships/anchor_mesh.blend".len())
+            .any(|w| w == b"Data/Objects/Ships/anchor_mesh.blend")
+    );
 }
 
 #[test]
@@ -1328,7 +1438,9 @@ fn test_interior_meshes_do_not_parent_to_global_coordinate_nodes() {
         scale: [1.0, 1.0, 1.0],
         hidden: false,
     };
-    let blend_bytes = create_scene_blend_with_instances("InteriorParentEntity", &[exterior, interior], &[]).unwrap();
+    let blend_bytes =
+        create_scene_blend_with_instances("InteriorParentEntity", &[exterior, interior], &[])
+            .unwrap();
     let blocks = parse_blend_blocks(&blend_bytes);
 
     let exterior_y_up = object_block_by_name(&blocks, "geo_body_0_StarBreaker_Y_up");
@@ -1434,7 +1546,8 @@ fn test_create_scene_blend_uses_full_source_empty_tree_for_parent_nodes() {
         scale: [1.0, 1.0, 1.0],
         hidden: false,
     };
-    let blend_bytes = create_scene_blend_with_instances("ParentNodeEntity", &[root, child], &[]).unwrap();
+    let blend_bytes =
+        create_scene_blend_with_instances("ParentNodeEntity", &[root, child], &[]).unwrap();
     let blocks = parse_blend_blocks(&blend_bytes);
 
     let hardpoint = object_block_by_name(&blocks, "root_mesh_0_hardpoint_child");
@@ -1505,7 +1618,8 @@ fn test_create_scene_blend_parents_source_empty_to_local_mesh_object() {
         scale: [1.0, 1.0, 1.0],
         hidden: false,
     };
-    let blend_bytes = create_scene_blend_with_instances("MeshParentEntity", &[instance], &[]).unwrap();
+    let blend_bytes =
+        create_scene_blend_with_instances("MeshParentEntity", &[instance], &[]).unwrap();
     let blocks = parse_blend_blocks(&blend_bytes);
     let parent_mesh = object_block_by_name(&blocks, "parent_mesh");
     let child_empty = object_block_by_name(&blocks, "parent_mesh_0_child_empty");
@@ -1595,16 +1709,21 @@ fn test_create_scene_blend_uses_instance_local_source_parent_before_global_name(
         scale: [1.0, 1.0, 1.0],
         hidden: false,
     };
-    let blend_bytes = create_scene_blend_with_instances("LocalSourceParentEntity", &[first, second], &[]).unwrap();
+    let blend_bytes =
+        create_scene_blend_with_instances("LocalSourceParentEntity", &[first, second], &[])
+            .unwrap();
     let blocks = parse_blend_blocks(&blend_bytes);
     let first_parent = object_block_by_name(&blocks, "first_instance_mesh_0_shared_source_parent");
-    let second_parent = object_block_by_name(&blocks, "second_instance_mesh_0_shared_source_parent");
+    let second_parent =
+        object_block_by_name(&blocks, "second_instance_mesh_0_shared_source_parent");
     let first_mesh = object_block_by_name(&blocks, "first_instance_mesh");
     let second_mesh = object_block_by_name(&blocks, "second_instance_mesh");
 
-    assert!(blend_bytes
-        .windows(b"shared_source_parent".len())
-        .any(|window| window == b"shared_source_parent"));
+    assert!(
+        blend_bytes
+            .windows(b"shared_source_parent".len())
+            .any(|window| window == b"shared_source_parent")
+    );
     assert_eq!(
         u64::from_le_bytes(first_mesh.data[496..504].try_into().unwrap()),
         first_parent.old_ptr,
@@ -1730,7 +1849,11 @@ fn test_create_scene_blend_reuses_source_tree_for_same_scene_instance_mesh_refs(
 
     let blend_bytes = create_scene_blend_with_instances(
         "MavEntity",
-        &[global_decoy, instance_source_tree_holder, second_mesh_ref_same_scene_instance],
+        &[
+            global_decoy,
+            instance_source_tree_holder,
+            second_mesh_ref_same_scene_instance,
+        ],
         &[],
     )
     .unwrap();
@@ -2010,8 +2133,15 @@ fn test_create_scene_blend_parents_lights_to_entity_wrapper_with_properties() {
         u64::from_le_bytes(light_object.data[496..504].try_into().unwrap()),
         entity_root.old_ptr
     );
-    assert_ne!(u64::from_le_bytes(light_object.data[344..352].try_into().unwrap()), 0);
-    assert!(blend_bytes.windows(b"starbreaker_source_node_name".len()).any(|w| w == b"starbreaker_source_node_name"));
+    assert_ne!(
+        u64::from_le_bytes(light_object.data[344..352].try_into().unwrap()),
+        0
+    );
+    assert!(
+        blend_bytes
+            .windows(b"starbreaker_source_node_name".len())
+            .any(|w| w == b"starbreaker_source_node_name")
+    );
 }
 
 #[test]
@@ -2028,17 +2158,26 @@ fn scene_blend_makes_duplicate_light_id_names_unique() {
     let object_names = id_block_names(&blocks, b"OB\0\0");
     let lamp_names = id_block_names(&blocks, b"LA\0\0");
 
-    assert_eq!(object_names.iter().filter(|name| name.as_str() == "RepeatedLight").count(), 1);
+    assert_eq!(
+        object_names
+            .iter()
+            .filter(|name| name.as_str() == "RepeatedLight")
+            .count(),
+        1
+    );
     assert!(object_names.iter().any(|name| name == "RepeatedLight_001"));
-    assert_eq!(lamp_names.iter().filter(|name| name.as_str() == "RepeatedLight").count(), 1);
+    assert_eq!(
+        lamp_names
+            .iter()
+            .filter(|name| name.as_str() == "RepeatedLight")
+            .count(),
+        1
+    );
     assert!(lamp_names.iter().any(|name| name == "RepeatedLight_001"));
 }
 
 /// Helper to create a minimal DecomposedInput for testing
-fn create_test_input(
-    entity_name: &str,
-    num_children: usize,
-) -> DecomposedInput {
+fn create_test_input(entity_name: &str, num_children: usize) -> DecomposedInput {
     let root_mesh = Mesh {
         positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
         indices: vec![0, 1, 2],
@@ -2084,6 +2223,9 @@ fn create_test_input(
         entity_name: entity_name.to_string(),
         geometry_path: "path/to/geometry".to_string(),
         material_path: "path/to/materials".to_string(),
+        assembly_kind: None,
+        weapon_assembly: None,
+        weapon_assembly_diagnostics: None,
         root_mesh,
         root_materials: None,
         root_nmc: None,
@@ -2146,7 +2288,10 @@ fn test_scene_manifest_instances_mark_invisible_port_hidden() {
     let instances = scene_manifest_instances(&manifest);
 
     assert_eq!(instances.len(), 1);
-    assert!(instances[0].hidden, "invisible port flags should hide, not skip, the scene instance");
+    assert!(
+        instances[0].hidden,
+        "invisible port flags should hide, not skip, the scene instance"
+    );
 }
 
 #[test]
@@ -2184,13 +2329,26 @@ fn test_create_scene_blend_hides_invisible_linked_instance_objects() {
         hidden: true,
     };
 
-    let blend_bytes = create_scene_blend_package_with_instances("Test", "Test", &[instance], &[], &HashMap::new()).unwrap();
+    let blend_bytes = create_scene_blend_package_with_instances(
+        "Test",
+        "Test",
+        &[instance],
+        &[],
+        &HashMap::new(),
+    )
+    .unwrap();
     let blocks = parse_blend_blocks(&blend_bytes);
     let anchor = object_block_by_name(&blocks, "HiddenMesh_anchor");
     let mesh = object_block_by_name(&blocks, "HiddenMesh");
 
-    assert_eq!(i16::from_le_bytes(anchor.data[1082..1084].try_into().unwrap()), 0x0005);
-    assert_eq!(i16::from_le_bytes(mesh.data[1082..1084].try_into().unwrap()), 0x0005);
+    assert_eq!(
+        i16::from_le_bytes(anchor.data[1082..1084].try_into().unwrap()),
+        0x0005
+    );
+    assert_eq!(
+        i16::from_le_bytes(mesh.data[1082..1084].try_into().unwrap()),
+        0x0005
+    );
 }
 
 #[test]
@@ -2210,7 +2368,10 @@ fn test_create_scene_blend_writes_decal_offset_modifier_for_decal_mesh_asset() {
         name: "HullMesh".to_string(),
         mesh_name: "HullMesh".to_string(),
         material_names: Vec::new(),
-        material_sidecar: Some("Data/Objects/Spaceships/Ships/DRAK/Clipper/drak_clipper_ext_TEX0.materials.json".to_string()),
+        material_sidecar: Some(
+            "Data/Objects/Spaceships/Ships/DRAK/Clipper/drak_clipper_ext_TEX0.materials.json"
+                .to_string(),
+        ),
         palette_id: None,
         ui_bindings: Vec::new(),
         source_ancestors: Vec::new(),
@@ -2252,78 +2413,105 @@ fn test_create_scene_blend_writes_decal_offset_modifier_for_decal_mesh_asset() {
     assert_eq!(displace.old_ptr, last_modifier_ptr);
     assert_eq!(cstr_at(displace.data, 40, 64), DECAL_OFFSET_MODIFIER_NAME);
     assert_eq!(cstr_at(displace.data, 288, 64), DECAL_OFFSET_GROUP_NAME);
-    assert!((f32::from_le_bytes(displace.data[280..284].try_into().unwrap()) - 0.005).abs() < 0.000001);
+    assert!(
+        (f32::from_le_bytes(displace.data[280..284].try_into().unwrap()) - 0.005).abs() < 0.000001
+    );
 }
 
 #[test]
 fn test_create_scene_blend_basic() {
     let result = create_scene_blend("TestEntity", 1, "Data/Objects", &[]);
-    
+
     assert!(result.is_ok(), "Function should succeed with basic input");
-    
+
     let blend_bytes = result.unwrap();
     assert!(!blend_bytes.is_empty(), "Output should not be empty");
     assert!(blend_bytes.len() > 100, "Output should be substantial");
-    
+
     // Verify BLENDER17 magic header
-    assert_eq!(&blend_bytes[0..17], b"BLENDER17-01v0501", "Should have valid Blender header");
+    assert_eq!(
+        &blend_bytes[0..17],
+        b"BLENDER17-01v0501",
+        "Should have valid Blender header"
+    );
 }
 
 #[test]
 fn test_create_scene_blend_multiple_meshes() {
     let result = create_scene_blend("MultiMesh", 5, "Data/Objects", &[]);
-    
-    assert!(result.is_ok(), "Function should succeed with multiple children");
-    
+
+    assert!(
+        result.is_ok(),
+        "Function should succeed with multiple children"
+    );
+
     let blend_bytes = result.unwrap();
     assert!(!blend_bytes.is_empty(), "Output should not be empty");
-    
+
     // Verify BLENDER17 magic header
-    assert_eq!(&blend_bytes[0..17], b"BLENDER17-01v0501", "Should have valid Blender header");
-    
+    assert_eq!(
+        &blend_bytes[0..17],
+        b"BLENDER17-01v0501",
+        "Should have valid Blender header"
+    );
+
     // With 5 children, the file should be larger than with 1
-    let single = create_scene_blend("Single", 1, "Data/Objects", &[])
-        .unwrap();
-    assert!(blend_bytes.len() > single.len(), "Multiple meshes should produce larger file");
+    let single = create_scene_blend("Single", 1, "Data/Objects", &[]).unwrap();
+    assert!(
+        blend_bytes.len() > single.len(),
+        "Multiple meshes should produce larger file"
+    );
 }
 
 #[test]
 fn test_create_scene_blend_collections_structure() {
     let result = create_scene_blend("CollTest", 2, "Data/Objects", &[]);
-    
+
     assert!(result.is_ok(), "Function should succeed");
-    
+
     let blend_bytes = result.unwrap();
 
     // The output should contain collection markers (GRP\0 blocks).
     // We can't easily verify collection structure without parsing the binary format,
     // but we can verify the file format is valid.
-    assert!(blend_bytes.len() > 200, "Valid scene file should be substantial");
+    assert!(
+        blend_bytes.len() > 200,
+        "Valid scene file should be substantial"
+    );
 }
 
 #[test]
 fn test_create_scene_blend_file_format() {
     let result = create_scene_blend("FormatTest", 1, "Data/Objects", &[]);
-    
+
     assert!(result.is_ok(), "Function should succeed");
-    
+
     let blend_bytes = result.unwrap();
-    
+
     // Verify file structure markers
     // BLENDER17 header
     assert_eq!(&blend_bytes[0..17], b"BLENDER17-01v0501");
-    
+
     // Find GLOB block (should appear early)
     let glob_marker = b"GLOB";
-    assert!(blend_bytes.windows(4).any(|w| w == glob_marker), "Should contain GLOB block");
-    
+    assert!(
+        blend_bytes.windows(4).any(|w| w == glob_marker),
+        "Should contain GLOB block"
+    );
+
     // Find ENDB marker (should be at end)
     let endb_marker = b"ENDB";
-    assert!(blend_bytes.windows(4).any(|w| w == endb_marker), "Should contain ENDB block");
-    
+    assert!(
+        blend_bytes.windows(4).any(|w| w == endb_marker),
+        "Should contain ENDB block"
+    );
+
     // Find DNA1 (DNA structure)
     let dna1_marker = b"DNA1";
-    assert!(blend_bytes.windows(4).any(|w| w == dna1_marker), "Should contain DNA1 block");
+    assert!(
+        blend_bytes.windows(4).any(|w| w == dna1_marker),
+        "Should contain DNA1 block"
+    );
 }
 
 #[test]
@@ -2346,7 +2534,10 @@ fn test_create_scene_blend_uses_startup_ui_prefix() {
 fn test_create_scene_blend_scene_data_is_consecutive() {
     let blend_bytes = create_scene_blend("SceneData", 2, "Data/Objects", &[]).unwrap();
     let blocks = parse_blend_blocks(&blend_bytes);
-    let scene_idx = blocks.iter().position(|block| block.code == b"SC\0\0").unwrap();
+    let scene_idx = blocks
+        .iter()
+        .position(|block| block.code == b"SC\0\0")
+        .unwrap();
     let scene_block = &blocks[scene_idx];
     let mut data_sdnas = Vec::new();
 
@@ -2359,11 +2550,9 @@ fn test_create_scene_blend_scene_data_is_consecutive() {
 
     let tool_settings_ptr = u64::from_le_bytes(scene_block.data[568..576].try_into().unwrap());
     assert_ne!(tool_settings_ptr, 0);
-    assert!(blocks.iter().any(|block|
-        block.code == b"DATA"
-            && block.sdna == SDNA_IDX_TOOL_SETTINGS
-            && block.old_ptr == tool_settings_ptr
-    ));
+    assert!(blocks.iter().any(|block| block.code == b"DATA"
+        && block.sdna == SDNA_IDX_TOOL_SETTINGS
+        && block.old_ptr == tool_settings_ptr));
     assert!(data_sdnas.contains(&SDNA_IDX_TOOL_SETTINGS));
     assert!(data_sdnas.contains(&SDNA_IDX_VIEW_LAYER));
     assert!(data_sdnas.contains(&SDNA_IDX_BASE));
@@ -2397,8 +2586,8 @@ fn test_create_scene_blend_objects_do_not_parent_to_collections() {
         use_temperature: false,
         gobo_path: None,
         active_state: "default".to_string(),
-            states_json: None,
-            semantic_light_kind: "point".to_string(),
+        states_json: None,
+        semantic_light_kind: "point".to_string(),
     };
     let blend_bytes = create_scene_blend("ParentCheck", 2, "Data/Objects", &[light]).unwrap();
     let blocks = parse_blend_blocks(&blend_bytes);
@@ -2432,39 +2621,50 @@ fn test_create_scene_blend_objects_do_not_parent_to_collections() {
 #[test]
 fn test_create_scene_blend_relative_paths() {
     let result = create_scene_blend("RelPath", 2, "Data/Objects", &[]);
-    
+
     assert!(result.is_ok(), "Function should succeed");
-    
+
     let blend_bytes = result.unwrap();
-    
+
     // Verify that library paths are embedded
     // The mesh_output_dir "Data/Objects" should appear in library blocks
     let blend_str = String::from_utf8_lossy(&blend_bytes);
-    assert!(blend_str.contains("Data/Objects") || blend_bytes.windows(12).any(|w| w == b"Data/Objects"),
-        "Should contain relative path for mesh files");
+    assert!(
+        blend_str.contains("Data/Objects") || blend_bytes.windows(12).any(|w| w == b"Data/Objects"),
+        "Should contain relative path for mesh files"
+    );
 }
 
 #[test]
 fn test_create_scene_blend_empty_children() {
     let result = create_scene_blend("NoChildren", 0, "Data/Objects", &[]);
-    
-    assert!(result.is_ok(), "Function should succeed even with no children");
-    
+
+    assert!(
+        result.is_ok(),
+        "Function should succeed even with no children"
+    );
+
     let blend_bytes = result.unwrap();
     assert!(!blend_bytes.is_empty(), "Output should not be empty");
-    assert_eq!(&blend_bytes[0..17], b"BLENDER17-01v0501", "Should have valid header");
+    assert_eq!(
+        &blend_bytes[0..17],
+        b"BLENDER17-01v0501",
+        "Should have valid header"
+    );
 }
 
 #[test]
 fn test_create_scene_blend_output_not_compressed() {
     let result = create_scene_blend("NoCompress", 1, "Data/Objects", &[]);
-    
+
     assert!(result.is_ok(), "Function should succeed");
-    
+
     let blend_bytes = result.unwrap();
-    
+
     // Verify it's NOT gzip compressed
     // gzip header is 0x1f 0x8b
-    assert!(blend_bytes.len() < 2 || blend_bytes[0] != 0x1f,
-        "Output should NOT be gzip compressed (Phase 2 handles compression)");
+    assert!(
+        blend_bytes.len() < 2 || blend_bytes[0] != 0x1f,
+        "Output should NOT be gzip compressed (Phase 2 handles compression)"
+    );
 }

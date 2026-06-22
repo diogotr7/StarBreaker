@@ -132,8 +132,10 @@ def _load_orchestration() -> types.ModuleType:
     utils_stub._scene_light_quaternion_to_blender = lambda *args, **kwargs: None
     utils_stub._scene_matrix_to_blender = lambda matrix: ("converted", matrix)
     utils_stub._scene_position_to_blender = lambda *args, **kwargs: None
+    utils_stub._slot_mapping_from_slot_names = lambda *args, **kwargs: None
     utils_stub._slot_mapping_for_object = lambda *args, **kwargs: None
     utils_stub._slot_mapping_source_sidecar_path = lambda *args, **kwargs: None
+    utils_stub._slot_names_for_object = lambda *args, **kwargs: None
     utils_stub._should_neutralize_axis_root = lambda *args, **kwargs: False
     utils_stub._unique_submaterials_by_name = lambda *args, **kwargs: []
     sys.modules["sb_scene_test_runtime.importer.utils"] = utils_stub

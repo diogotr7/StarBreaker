@@ -2,6 +2,12 @@ use std::path::Path;
 
 use starbreaker_common::SpanReader;
 
+pub use crate::alpha::{AlphaMipFormat, AlphaMipLayout};
+
+use crate::alpha::{
+    decode_r8_alpha_mip, infer_alpha_mip_format_from_payload, parse_alpha_tail_mips,
+    parse_raw_alpha_tail_mips,
+};
 use crate::decode::{BlockFormat, decode_block_compressed};
 use crate::error::DdsError;
 use crate::sibling::ReadSibling;
@@ -15,6 +21,13 @@ pub struct DdsFile {
     pub mip_data: Vec<Vec<u8>>,
     /// Alpha channel mip levels (empty if none). Same ordering as mip_data.
     pub alpha_mip_data: Vec<Vec<u8>>,
+    /// Legacy summary format declared by an alpha tail DDS header, if present.
+    pub alpha_mip_format: Option<AlphaMipFormat>,
+    /// Encoding for each alpha/smoothness mip when known from headers or raw-tail splitting.
+    /// `None` means the payload has no header and must be inferred from mip dimensions.
+    pub alpha_mip_formats: Vec<Option<AlphaMipFormat>>,
+    /// Source layout for each alpha/smoothness mip, parallel to alpha_mip_data.
+    pub alpha_mip_layouts: Vec<AlphaMipLayout>,
 }
 
 impl DdsFile {
@@ -37,6 +50,9 @@ impl DdsFile {
             dxt10_header,
             mip_data: Vec::new(),
             alpha_mip_data: Vec::new(),
+            alpha_mip_format: None,
+            alpha_mip_formats: Vec::new(),
+            alpha_mip_layouts: Vec::new(),
         })
     }
 
@@ -68,7 +84,13 @@ impl DdsFile {
         // Calculate sizes for each mip level (per face)
         let mip_sizes: Vec<usize> = (0..mip_count)
             .map(|level| {
-                compute_mip_size(&header.pixel_format, dxt10_header.as_ref(), header.width, header.height, level)
+                compute_mip_size(
+                    &header.pixel_format,
+                    dxt10_header.as_ref(),
+                    header.width,
+                    header.height,
+                    level,
+                )
             })
             .collect();
 
@@ -102,6 +124,9 @@ impl DdsFile {
             dxt10_header,
             mip_data,
             alpha_mip_data: Vec::new(),
+            alpha_mip_format: None,
+            alpha_mip_formats: Vec::new(),
+            alpha_mip_layouts: Vec::new(),
         })
     }
 
@@ -136,7 +161,13 @@ impl DdsFile {
         // Calculate sizes for each mip level
         let mip_sizes: Vec<usize> = (0..mip_count)
             .map(|level| {
-                compute_mip_size(&header.pixel_format, dxt10_header.as_ref(), header.width, header.height, level)
+                compute_mip_size(
+                    &header.pixel_format,
+                    dxt10_header.as_ref(),
+                    header.width,
+                    header.height,
+                    level,
+                )
             })
             .collect();
 
@@ -209,14 +240,60 @@ impl DdsFile {
 
         // Probe for alpha sibling files: .7a, .6a, ..., .1a, then .a
         let mut alpha_mip_data: Vec<Vec<u8>> = Vec::new();
+        let mut alpha_mip_formats: Vec<Option<AlphaMipFormat>> = Vec::new();
+        let mut alpha_mip_layouts: Vec<AlphaMipLayout> = Vec::new();
+        let mut alpha_mip_format = None;
         for n in (1..=8).rev() {
             let suffix = format!(".{n}a");
             if let Some(data) = reader.read_sibling(&suffix) {
                 alpha_mip_data.push(data);
+                alpha_mip_formats.push(None);
+                alpha_mip_layouts.push(AlphaMipLayout::NumberedSibling);
             }
         }
         if let Some(data) = reader.read_sibling(".a") {
-            alpha_mip_data.push(data);
+            let numbered_alpha_mips = alpha_mip_data.len();
+            let tail_mips = parse_alpha_tail_mips(
+                &data,
+                numbered_alpha_mips,
+                mip_count,
+                header.width,
+                header.height,
+            );
+            if tail_mips.mips.is_empty() {
+                let raw_tail_mips = parse_raw_alpha_tail_mips(
+                    &data,
+                    numbered_alpha_mips,
+                    mip_count,
+                    header.width,
+                    header.height,
+                );
+                if raw_tail_mips.mips.is_empty() {
+                    alpha_mip_data.push(data);
+                    alpha_mip_formats.push(None);
+                    alpha_mip_layouts.push(AlphaMipLayout::RawSinglePayload);
+                } else {
+                    alpha_mip_format = raw_tail_mips.format;
+                    alpha_mip_formats.extend(std::iter::repeat_n(
+                        raw_tail_mips.format,
+                        raw_tail_mips.mips.len(),
+                    ));
+                    alpha_mip_layouts.extend(std::iter::repeat_n(
+                        AlphaMipLayout::RawTailSplit,
+                        raw_tail_mips.mips.len(),
+                    ));
+                    alpha_mip_data.extend(raw_tail_mips.mips);
+                }
+            } else {
+                alpha_mip_format = tail_mips.format;
+                alpha_mip_formats
+                    .extend(std::iter::repeat_n(tail_mips.format, tail_mips.mips.len()));
+                alpha_mip_layouts.extend(std::iter::repeat_n(
+                    AlphaMipLayout::HeaderedTail,
+                    tail_mips.mips.len(),
+                ));
+                alpha_mip_data.extend(tail_mips.mips);
+            }
         }
 
         Ok(Self {
@@ -224,6 +301,9 @@ impl DdsFile {
             dxt10_header,
             mip_data,
             alpha_mip_data,
+            alpha_mip_format,
+            alpha_mip_formats,
+            alpha_mip_layouts,
         })
     }
 
@@ -280,10 +360,36 @@ impl DdsFile {
         decode_block_compressed(data, w, h, block_format, is_snorm)
     }
 
+    /// Resolve the encoding used by an alpha/smoothness mip.
+    ///
+    /// Headered alpha tails declare this explicitly. Raw sibling payloads do not,
+    /// so use the payload size when it unambiguously identifies an R8 mip and
+    /// otherwise keep CryEngine's BC4 default.
+    pub fn alpha_mip_format_for_mip(&self, mip_level: usize) -> Option<AlphaMipFormat> {
+        if mip_level >= self.alpha_mip_data.len() {
+            return None;
+        }
+        if mip_level < self.alpha_mip_formats.len() {
+            if let Some(format) = self.alpha_mip_formats[mip_level] {
+                return Some(format);
+            }
+        } else if let Some(format) = self.alpha_mip_format {
+            return Some(format);
+        }
+        let (w, h) = self.dimensions(mip_level);
+        infer_alpha_mip_format_from_payload(&self.alpha_mip_data[mip_level], w, h)
+            .or(Some(AlphaMipFormat::Bc4Unorm))
+    }
+
+    /// Return how a specific alpha/smoothness mip was sourced from split DDS siblings.
+    pub fn alpha_mip_layout_for_mip(&self, mip_level: usize) -> Option<AlphaMipLayout> {
+        self.alpha_mip_layouts.get(mip_level).copied()
+    }
+
     /// Decode an alpha sibling mip to a single-channel grayscale buffer.
     ///
     /// Alpha mips are stored in separate `.7a`, `.6a`, ..., `.a` sibling files
-    /// and contain per-pixel smoothness data (EFTT_SMOOTHNESS) as BC4 compressed.
+    /// and contain per-pixel smoothness data (EFTT_SMOOTHNESS) as BC4 or raw R8.
     /// Returns a `Vec<u8>` with 1 byte per pixel (smoothness value).
     pub fn decode_alpha_mip(&self, mip_level: usize) -> Result<Vec<u8>, DdsError> {
         if mip_level >= self.alpha_mip_data.len() {
@@ -294,11 +400,24 @@ impl DdsFile {
         }
         let (w, h) = self.dimensions(mip_level);
         let data = &self.alpha_mip_data[mip_level];
-        // Alpha mips are BC4 compressed (single channel).
-        // Use the main decode path (which returns RGBA with R=G=B=value),
-        // then extract just the R channel.
-        let rgba = crate::decode::decode_block_compressed(data, w, h, crate::decode::BlockFormat::BC4, false)?;
-        Ok(rgba.iter().step_by(4).copied().collect())
+        match self
+            .alpha_mip_format_for_mip(mip_level)
+            .unwrap_or(AlphaMipFormat::Bc4Unorm)
+        {
+            AlphaMipFormat::Bc4Unorm | AlphaMipFormat::Bc4Snorm => {
+                let is_snorm =
+                    self.alpha_mip_format_for_mip(mip_level) == Some(AlphaMipFormat::Bc4Snorm);
+                let rgba = crate::decode::decode_block_compressed(
+                    data,
+                    w,
+                    h,
+                    crate::decode::BlockFormat::BC4,
+                    is_snorm,
+                )?;
+                Ok(rgba.iter().step_by(4).copied().collect())
+            }
+            AlphaMipFormat::R8Unorm => decode_r8_alpha_mip(data, w, h),
+        }
     }
 
     /// Decode a BC6H gobo (projector texture) to float RGB preserving HDR values.
@@ -310,7 +429,10 @@ impl DdsFile {
     /// Returns `None` if the DDS is not a BC6H format.
     /// Returns `Some((width, height, rgb_floats))` where rgb_floats is in row-major order
     /// with 3 floats per pixel (R, G, B).
-    pub fn decode_bc6h_to_float_rgb(&self, mip_level: usize) -> Result<Option<(u32, u32, Vec<f32>)>, DdsError> {
+    pub fn decode_bc6h_to_float_rgb(
+        &self,
+        mip_level: usize,
+    ) -> Result<Option<(u32, u32, Vec<f32>)>, DdsError> {
         if mip_level >= self.mip_data.len() {
             return Err(DdsError::MipOutOfRange {
                 level: mip_level,
@@ -342,7 +464,6 @@ impl DdsFile {
     pub fn has_alpha_mips(&self) -> bool {
         !self.alpha_mip_data.is_empty()
     }
-
 
     /// Save a specific mip level as a PNG file.
     pub fn save_png(&self, path: &Path, mip_level: usize) -> Result<(), DdsError> {
@@ -599,7 +720,7 @@ fn decode_dxgi_uncompressed(
                 let off = i * 4;
                 out.push(data[off + 2]); // R
                 out.push(data[off + 1]); // G
-                out.push(data[off]);     // B
+                out.push(data[off]); // B
                 out.push(data[off + 3]); // A
             }
             Ok(Some(out))
@@ -612,10 +733,10 @@ fn decode_dxgi_uncompressed(
 /// Returns `None` for block-compressed or unknown formats.
 fn dxgi_uncompressed_bpp(dxgi_format: u32) -> Option<usize> {
     match dxgi_format {
-        61 => Some(1),  // R8_UNORM
-        49 => Some(2),  // R8G8_UNORM
-        28 | 29 => Some(4),  // R8G8B8A8_UNORM / SRGB
-        87 | 91 => Some(4),  // B8G8R8A8_UNORM / SRGB
+        61 => Some(1),      // R8_UNORM
+        49 => Some(2),      // R8G8_UNORM
+        28 | 29 => Some(4), // R8G8B8A8_UNORM / SRGB
+        87 | 91 => Some(4), // B8G8R8A8_UNORM / SRGB
         _ => None,
     }
 }

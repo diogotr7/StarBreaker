@@ -22,6 +22,16 @@ Within that export root:
   (`parent_entity_name`, `parent_node_name`), placement records, and exported
   light data
 - material sidecar and palette references for every scene instance
+- optional decal-host hints for scene instances that carry projected decal
+  geometry:
+  - `decal_host_channel` is a palette channel hint such as `primary`,
+    `secondary`, `tertiary`, or `glass`
+  - `decal_host_rgb` is a fixed linear RGB host-colour fallback when no
+    palette channel is available
+  - these fields are advisory. Non-FPS importers may use them to rebind
+    MeshDecal `Host Tint` directly. FPS weapon importers may additionally fall
+    back to local spatial host-material matching for control-only POM overlays
+    when these hints are absent.
 - optional additive `controls.engine_glow` metadata for engine-emission tuning in importers:
   - absolute emission-strength range metadata (`min_strength`, `max_strength`, `default_strength`)
   - `targets[]` keyed by `mesh_asset` + `material_sidecar` + `source_material_index`
@@ -160,7 +170,8 @@ Each `*.materials.json` sidecar preserves:
   - `generated_ui.source_path`, `generated_ui.identity`,
     `generated_ui.frame_selection`, and `generated_ui.provenance` explain how
     the exported `export_path` was selected
-- DDNA identity markers on exported normal-gloss source PNGs plus `alpha_semantic` markers such as `smoothness` when the source texture alpha carries shader-relevant data
+- DDNA identity markers on exported normal-gloss source PNGs plus `alpha_semantic` / `alpha_channel` markers such as `smoothness` in alpha when the source texture carries shader-relevant data
+- derived DDNA roughness references that describe their source texture identity, source channel, value transform, packed output channel, and constant packed channels
 - structured `texture_transform` objects derived from authored `TexMod` blocks when texture UV animation or tiling metadata is present
 - public params as structured JSON values where simple coercion is safe
 - layer manifests including source material paths, authored layer attrs, `Submtl`-selected resolved layer-material metadata, palette routing, UV tiling, resolved layer snapshots, per-layer semantic `texture_slots`, and exported layer texture references
@@ -172,6 +183,22 @@ Each `*.materials.json` sidecar preserves:
 - resolved paint-override selectors when equipped paints choose a palette or material through `SubGeometry` tag matching
 - variant-membership hints for palette-routed and layered materials
 
+Blender importer note:
+
+- Control-only `MeshDecal` POM materials are not treated as visible colour
+  decals. When they have POM enabled but no structural decal/stencil/tint-mask
+  signals, `TexSlot1` is used as a coverage alpha mask, `TexSlot3` as
+  normal-gloss input, and `TexSlot4` as height.
+- For FPS weapon packages (`assembly_kind = "fps_weapon"`), Blender represents
+  the game-style GBuffer overlay by cloning the matched host material and
+  injecting only the POM alpha/normal/height into that clone, so the host
+  material remains the owner of base colour, roughness, metallic, and specular
+  response.
+- For non-FPS packages, the importer keeps the authored `SB_MeshDecal_v1`
+  material and applies the existing `Host Tint` channel/RGB rebind. This
+  preserves ship-style POM decals that intentionally render as coloured
+  MeshDecal overlays rather than FPS weapon relief-only host clones.
+
 The current sidecar contract is now substantially closer to the raw `.mtl` XML surface, but it is still intentionally split into two layers:
 
 - curated semantic fields meant for Blender reconstruction and stable downstream use
@@ -180,8 +207,15 @@ The current sidecar contract is now substantially closer to the raw `.mtl` XML s
 ### Texture Export Rules
 
 - Decomposed exports now write source textures as `.png` using the original `Data/...` filename with only the extension changed.
-- Rust no longer emits derived `.roughness.png` exports for DDNA textures in the decomposed material contract.
-- DDNA normal-gloss exports preserve smoothness in the PNG alpha channel so Blender shader groups can derive roughness with node logic instead of relying on Rust-side image reinterpretation.
+- DDNA normal-gloss exports preserve smoothness in the source PNG alpha channel and mark that slot with `texture_identity = ddna_normal`, `alpha_semantic = smoothness`, and `alpha_channel = a` only when the same source has an exported `ddna_derivations[]` smoothness payload. DDNA sources with `status = missing` keep `texture_identity = ddna_normal` but must not claim `alpha_semantic = smoothness`. The DDNA identity is detected from the source filename stem token `ddna`, not from directory names or arbitrary path substrings.
+- Rust also emits derived DDNA roughness PNGs when alpha mips are available. Any texture slot classified as `normal_gloss` with `texture_identity = ddna_normal` is eligible, even when the authored DDNA sampler is not the conventional TexSlot2 field. Derived roughness refs are written to `derived_textures[]` for direct material normal-gloss slots and to per-layer `roughness_texture` for layer-material normal-gloss slots.
+- Newer sidecars also emit `ddna_derivations[]` beside direct submaterial textures and inside each layer manifest. These records are diagnostic coverage entries for every eligible DDNA normal-gloss source. Each record carries the DDNA transform contract (`derived_from_texture_identity = ddna_normal`, `derived_from_semantic = smoothness`, `derived_from_channel = a`, `value_transform = sqrt_one_minus`, `value_channel = r`, `packed_texture_format = roughness_grayscale`, packed channel semantics, and alpha channel constants) so even `status = missing` entries describe how the source would have been converted. `status = exported` also includes the derived `export_path` plus mip selection and parse metadata (`requested_mip`, `selected_mip`, `mip_selection`, `alpha_mip_format`, `alpha_mip_layout`, `width`, `height`, `alpha_mip_count`), decoded source smoothness statistics (`smoothness_min`, `smoothness_max`, `smoothness_mean`, byte range 0-255), and derived roughness statistics (`roughness_min`, `roughness_max`, `roughness_mean`, byte range 0-255). `mip_selection = requested` means the requested texture mip had a matching alpha mip; `mip_selection = clamped_to_available_alpha_mip` means the requested mip exceeded available DDNA alpha mips and the exporter used the last available alpha mip. `alpha_mip_format` is one of `bc4_unorm`, `bc4_snorm`, or `r8_unorm`. `alpha_mip_layout` is one of `numbered_sibling`, `headered_tail`, `raw_tail_split`, or `raw_single_payload` and describes how the selected alpha mip was sourced from split CryEngine DDS siblings. `status = missing` includes a structural `reason` such as `missing_alpha_mips` when the source DDNA has no alpha/smoothness payload.
+- Split DDNA alpha/smoothness mips are decoded according to their alpha tail DDS header when present. Raw `.a` tail payloads without headers are split across the remaining mip levels when their total byte size exactly matches raw `R8_UNORM` or BC4 mip sizes; otherwise they keep the legacy single-payload fallback. Raw alpha sibling payloads are inferred from the current mip dimensions when the byte size unambiguously identifies raw `R8_UNORM`; otherwise BC4 remains the default. DX10 `R8_UNORM` alpha tails and inferred raw R8 siblings are treated as one-byte-per-pixel smoothness.
+- Every texture ref with `role = normal_gloss` and `texture_identity = ddna_normal` must have a matching `ddna_derivations[]` record by normalized `source_path`, including identity-only refs whose smoothness payload is missing.
+- Derived DDNA roughness references use `export_kind = derived_ddna_alpha`, `derived_from_texture_identity = ddna_normal`, `derived_from_semantic = smoothness`, `derived_from_channel = a`, `value_transform = sqrt_one_minus`, `value_channel = r`, and `packed_texture_format = roughness_grayscale`.
+- A derived DDNA roughness reference must match an exported `ddna_derivations[]` record with the same normalized `source_path`; its `export_path` is the derivation `export_path`. Direct submaterial refs live in `derived_textures[]`; layer refs live in the layer's `roughness_texture` object.
+- Derived DDNA roughness PNGs are decomposed-friendly grayscale roughness images: RGB all store perceptual roughness (`sqrt(1 - smoothness)`) and alpha is unused (`1.0`). The same data is described by `packed_channel_semantics` and `constant_channel_values` on the texture reference. GLB export may still use glTF metallic-roughness packing internally, but decomposed `*_roughness_TEX*.png` assets are grayscale parameter maps.
+- Validation checks exported DDNA source alpha and derived roughness PNGs both by metadata statistics and by per-pixel transform: each roughness RGB value must match `round(sqrt(1 - source_alpha / 255) * 255)`.
 - Contract groups may expose paired `*_alpha` inputs next to diffuse-style color sockets. The Blender importer resolves those inputs from the alpha channel of the same source-slot texture automatically.
 
 ### Remaining XML-first Expansion Priorities

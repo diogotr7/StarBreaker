@@ -440,6 +440,11 @@ pub enum EntityCommand {
         #[arg(long, env = "SC_DATA_P4K")]
         p4k: Option<PathBuf>,
     },
+    /// Validate an existing decomposed entity export directory
+    Validate {
+        /// Decomposed export root directory
+        output: PathBuf,
+    },
 }
 
 impl EntityCommand {
@@ -453,8 +458,53 @@ impl EntityCommand {
                 opts,
             } => export(name, output, p4k, dump_hierarchy, opts),
             Self::Loadout { name, p4k } => loadout(name, p4k),
+            Self::Validate { output } => validate(output),
         }
     }
+}
+
+fn validate(output: PathBuf) -> Result<()> {
+    let report = starbreaker_3d::validate_decomposed_export(&output)?;
+    println!("Valid:              {}", report.is_valid);
+    println!("Meshes:             {}", report.mesh_count);
+    println!("Lights:             {}", report.light_count);
+    println!("Empties:            {}", report.empty_count);
+    println!("Materials:          {}", report.material_count);
+    println!("Vertex groups:      {}", report.vertex_group_count);
+    println!("Warnings:           {}", report.warnings.len());
+    println!("Errors:             {}", report.errors.len());
+
+    if !report.metadata.is_empty() {
+        println!();
+        println!("Metadata:");
+        let mut metadata: Vec<_> = report.metadata.iter().collect();
+        metadata.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+        for (key, value) in metadata {
+            println!("  {key}: {value}");
+        }
+    }
+
+    if !report.warnings.is_empty() {
+        println!();
+        println!("Warnings:");
+        for warning in &report.warnings {
+            println!("  {warning}");
+        }
+    }
+
+    if !report.errors.is_empty() {
+        println!();
+        println!("Errors:");
+        for error in &report.errors {
+            println!("  {error}");
+        }
+        return Err(CliError::InvalidInput(format!(
+            "decomposed export validation failed: {} error(s)",
+            report.errors.len()
+        )));
+    }
+
+    Ok(())
 }
 
 fn find_candidates<'a>(db: &'a Database, search: &str) -> Result<Vec<&'a Record>> {

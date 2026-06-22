@@ -377,7 +377,9 @@ impl SubMaterial {
     }
 
     pub fn public_param_rgb(&self, names: &[&str]) -> Option<[f32; 3]> {
-        names.iter().find_map(|name| self.public_param(name).map(parse_rgb))
+        names
+            .iter()
+            .find_map(|name| self.public_param(name).map(parse_rgb))
     }
 
     pub fn first_texture_path_for_role(&self, role: TextureSemanticRole) -> Option<String> {
@@ -388,9 +390,9 @@ impl SubMaterial {
     }
 
     pub fn has_virtual_input(&self, input: &str) -> bool {
-        self.texture_slots.iter().any(|binding| {
-            binding.is_virtual && binding.path.eq_ignore_ascii_case(input)
-        })
+        self.texture_slots
+            .iter()
+            .any(|binding| binding.is_virtual && binding.path.eq_ignore_ascii_case(input))
     }
 
     pub fn primary_uv_tiling(&self) -> Option<f32> {
@@ -403,10 +405,7 @@ impl SubMaterial {
         })
     }
 
-    pub fn resolved_palette_color(
-        &self,
-        palette: Option<&TintPalette>,
-    ) -> Option<[f32; 3]> {
+    pub fn resolved_palette_color(&self, palette: Option<&TintPalette>) -> Option<[f32; 3]> {
         let palette = palette?;
         match self.palette_tint {
             1 => Some(palette.primary),
@@ -440,7 +439,7 @@ impl SubMaterial {
             "LayerBlend_V2" => ShaderFamily::LayerBlendV2,
             "Illum" => ShaderFamily::Illum,
             "MeshDecal" => ShaderFamily::MeshDecal,
-            "GlassPBR" => ShaderFamily::GlassPbr,
+            "GlassPBR" | "ScopePBR" => ShaderFamily::GlassPbr,
             "DisplayScreen" => ShaderFamily::DisplayScreen,
             "Monitor" => ShaderFamily::Monitor,
             "UIPlane" => ShaderFamily::UiPlane,
@@ -466,7 +465,11 @@ impl SubMaterial {
             .filter(|token| !token.is_empty())
             .map(|token| token.to_string())
             .collect();
-        let has_token = |needle: &str| tokens.iter().any(|token| token.eq_ignore_ascii_case(needle));
+        let has_token = |needle: &str| {
+            tokens
+                .iter()
+                .any(|token| token.eq_ignore_ascii_case(needle))
+        };
 
         DecodedStringGenMask {
             has_decal: has_token("DECAL"),
@@ -542,9 +545,9 @@ impl SubMaterial {
         mask.contains("%DECAL") || self.shader == "MeshDecal"
     }
 
-    /// Whether this material uses a glass shader (GlassPBR).
+    /// Whether this material uses a glass shader family.
     pub fn is_glass(&self) -> bool {
-        self.shader == "GlassPBR"
+        self.shader_family() == ShaderFamily::GlassPbr
     }
 
     /// glTF roughness factor derived from CryEngine Shininess.
@@ -574,10 +577,7 @@ impl SubMaterial {
     /// the scalar Shininess value.
     fn uses_per_pixel_smoothness(&self) -> bool {
         let s = self.shader.to_lowercase();
-        s.contains("hardsurface")
-            || s.contains("layerblend")
-            || s == "illum"
-            || s == "glasspbr"
+        s.contains("hardsurface") || s.contains("layerblend") || s == "illum" || s == "glasspbr"
     }
 
     /// glTF metallic factor derived from authored response data.
@@ -586,7 +586,12 @@ impl SubMaterial {
     /// without optional sentinel `_spec` sampling because generic submaterials do
     /// not carry the resolved layer texture context here.
     pub fn metallic(&self) -> f32 {
-        layer_metallic(self.diffuse, self.specular, None)
+        layer_metallic_with_surface_type(
+            self.diffuse,
+            self.specular,
+            None,
+            Some(self.surface_type.as_str()),
+        )
     }
 
     /// For metallic materials, the base color should come from the specular color
@@ -621,10 +626,11 @@ impl SubMaterial {
     }
 }
 
-/// Classify a layer material as metallic from authored response data alone.
+/// Classify a layer material as metallic from authored response data.
 ///
 /// The first rule uses explicit authored PBR scalars: dark diffuse + high
-/// specular means conductor. For the common authored sentinel case
+/// specular means conductor. A metal SurfaceType plus high specular also means
+/// conductor even when diffuse is bright. For the common authored sentinel case
 /// (`Diffuse=[1,1,1]`, `Specular=[1,1,1]`) the real F0 response lives in the
 /// linked `_spec` texture, so an optional mean-RGB sample can be supplied.
 pub fn layer_metallic(
@@ -632,10 +638,27 @@ pub fn layer_metallic(
     specular: [f32; 3],
     specular_texture_mean: Option<f32>,
 ) -> f32 {
+    layer_metallic_with_surface_type(diffuse, specular, specular_texture_mean, None)
+}
+
+pub fn layer_metallic_with_surface_type(
+    diffuse: [f32; 3],
+    specular: [f32; 3],
+    specular_texture_mean: Option<f32>,
+    surface_type: Option<&str>,
+) -> f32 {
     let max_diffuse = diffuse.into_iter().fold(f32::MIN, f32::max);
     let max_specular = specular.into_iter().fold(f32::MIN, f32::max);
 
     if max_diffuse < 0.10 && max_specular > 0.25 {
+        return 1.0;
+    }
+
+    if surface_type
+        .map(|surface_type| surface_type.to_ascii_lowercase().contains("metal"))
+        .unwrap_or(false)
+        && max_specular > 0.25
+    {
         return 1.0;
     }
 
@@ -984,7 +1007,7 @@ fn classify_texture_role(
     let has_stencil_semantics = flags.has_stencil_map || has_public_param(&["stencil"]);
     let has_height_semantics = flags.has_parallax_occlusion_mapping
         || has_public_param(&["pom", "height", "displacement"]);
-    let is_normal_like = has_name(&["ddn", "ddna", "normal", "bump"]);
+    let is_normal_like = texture_path_looks_normal_gloss(&binding.path);
     let is_breakup_like = has_name(&["breakup", "grime", "rust", "bleed", "dirt"]);
     let is_height_like = has_name(&["disp", "height", "pom"]);
     let is_iridescence_like = has_name(&["irid", "irides"]);
@@ -992,15 +1015,25 @@ fn classify_texture_role(
     let is_decal_like = has_name(&["decal", "sticker", "emblem", "atlas"]);
     let is_pixel_layout_like = has_name(&["pixel", "crt", "grid"]);
 
+    if is_normal_like && matches!(binding.slot.as_str(), "TexSlot1" | "TexSlot2" | "TexSlot3") {
+        return TextureSemanticRole::NormalGloss;
+    }
+
     match family {
         ShaderFamily::Layer | ShaderFamily::LayerBlendV2 => match binding.slot.as_str() {
             "TexSlot1" => TextureSemanticRole::BaseColor,
-            "TexSlot2" if !has_slot("TexSlot3") || is_normal_like => TextureSemanticRole::NormalGloss,
+            "TexSlot2" if !has_slot("TexSlot3") || is_normal_like => {
+                TextureSemanticRole::NormalGloss
+            }
             "TexSlot3" if is_normal_like => TextureSemanticRole::NormalGloss,
-            "TexSlot3" | "TexSlot9" if flags.has_decal || is_decal_like => TextureSemanticRole::DecalSheet,
+            "TexSlot3" | "TexSlot9" if flags.has_decal || is_decal_like => {
+                TextureSemanticRole::DecalSheet
+            }
             "TexSlot3" | "TexSlot9" => TextureSemanticRole::AlternateBaseColor,
             "TexSlot4" => TextureSemanticRole::SpecularSupport,
-            "TexSlot5" if flags.has_iridescence || is_iridescence_like => TextureSemanticRole::Iridescence,
+            "TexSlot5" if flags.has_iridescence || is_iridescence_like => {
+                TextureSemanticRole::Iridescence
+            }
             "TexSlot8" if has_height_semantics || is_height_like => TextureSemanticRole::Height,
             "TexSlot11" => TextureSemanticRole::WearMask,
             "TexSlot12" => TextureSemanticRole::BlendMask,
@@ -1013,7 +1046,9 @@ fn classify_texture_role(
             "TexSlot4" if has_height_semantics || is_height_like => TextureSemanticRole::Height,
             "TexSlot4" => TextureSemanticRole::SpecularSupport,
             "TexSlot5" if is_breakup_like => TextureSemanticRole::Breakup,
-            "TexSlot7" if has_stencil_semantics || has_name(&["stencil"]) => TextureSemanticRole::Stencil,
+            "TexSlot7" if has_stencil_semantics || has_name(&["stencil"]) => {
+                TextureSemanticRole::Stencil
+            }
             "TexSlot8" | "TexSlot9" if is_breakup_like => TextureSemanticRole::Breakup,
             "TexSlot8" if has_height_semantics || is_height_like => TextureSemanticRole::Height,
             "TexSlot9" if flags.has_decal || is_decal_like => TextureSemanticRole::DecalSheet,
@@ -1022,10 +1057,14 @@ fn classify_texture_role(
         ShaderFamily::DisplayScreen | ShaderFamily::UiPlane => match binding.slot.as_str() {
             "TexSlot1" => TextureSemanticRole::BaseColor,
             "TexSlot2" | "TexSlot3" if is_normal_like => TextureSemanticRole::NormalGloss,
-            "TexSlot6" if is_mask_like || has_public_param(&["screen", "monitor", "wipe", "mask"]) => {
+            "TexSlot6"
+                if is_mask_like || has_public_param(&["screen", "monitor", "wipe", "mask"]) =>
+            {
                 TextureSemanticRole::ScreenMask
             }
-            "TexSlot10" | "TexSlot16" if is_mask_like || has_name(&["crack", "wipe", "pattern"]) => {
+            "TexSlot10" | "TexSlot16"
+                if is_mask_like || has_name(&["crack", "wipe", "pattern"]) =>
+            {
                 TextureSemanticRole::PatternMask
             }
             "TexSlot11" if is_breakup_like => TextureSemanticRole::Dirt,
@@ -1038,7 +1077,9 @@ fn classify_texture_role(
         },
         ShaderFamily::Organic => match binding.slot.as_str() {
             "TexSlot1" => TextureSemanticRole::BlendMask,
-            "TexSlot2" if is_normal_like || !has_slot("TexSlot3") => TextureSemanticRole::NormalGloss,
+            "TexSlot2" if is_normal_like || !has_slot("TexSlot3") => {
+                TextureSemanticRole::NormalGloss
+            }
             "TexSlot3" => TextureSemanticRole::BaseColor,
             "TexSlot8" if has_height_semantics || is_height_like => TextureSemanticRole::Height,
             "TexSlot17" if is_mask_like => TextureSemanticRole::Opacity,
@@ -1048,7 +1089,9 @@ fn classify_texture_role(
         ShaderFamily::GlassPbr => match binding.slot.as_str() {
             "TexSlot2" if is_normal_like || !is_mask_like => TextureSemanticRole::NormalGloss,
             "TexSlot6" => TextureSemanticRole::WearGloss,
-            "TexSlot10" | "TexSlot13" | "TexSlot16" if is_mask_like || has_name(&["crack", "pattern"]) => {
+            "TexSlot10" | "TexSlot13" | "TexSlot16"
+                if is_mask_like || has_name(&["crack", "pattern"]) =>
+            {
                 TextureSemanticRole::PatternMask
             }
             "TexSlot11" if is_breakup_like => TextureSemanticRole::Dirt,
@@ -1076,19 +1119,40 @@ fn classify_texture_role(
             "TexSlot1" => TextureSemanticRole::BaseColor,
             "TexSlot2" if is_normal_like || !is_mask_like => TextureSemanticRole::NormalGloss,
             "TexSlot3" if is_normal_like => TextureSemanticRole::NormalGloss,
-            "TexSlot3" | "TexSlot9" if flags.has_decal || is_decal_like => TextureSemanticRole::DecalSheet,
+            "TexSlot3" | "TexSlot9" if flags.has_decal || is_decal_like => {
+                TextureSemanticRole::DecalSheet
+            }
             "TexSlot3" | "TexSlot9" => TextureSemanticRole::AlternateBaseColor,
             "TexSlot4" => TextureSemanticRole::SpecularSupport,
-            "TexSlot7" if has_stencil_semantics || has_name(&["stencil"]) => TextureSemanticRole::Stencil,
+            "TexSlot7" if has_stencil_semantics || has_name(&["stencil"]) => {
+                TextureSemanticRole::Stencil
+            }
             "TexSlot8" if has_stencil_semantics && is_breakup_like => TextureSemanticRole::Breakup,
             "TexSlot8" if has_height_semantics || is_height_like => TextureSemanticRole::Height,
-            "TexSlot10" if flags.has_iridescence || is_iridescence_like => TextureSemanticRole::Iridescence,
+            "TexSlot10" if flags.has_iridescence || is_iridescence_like => {
+                TextureSemanticRole::Iridescence
+            }
             "TexSlot11" if is_breakup_like => TextureSemanticRole::Dirt,
             "TexSlot12" if is_mask_like => TextureSemanticRole::BlendMask,
             "TexSlot17" if is_mask_like => TextureSemanticRole::Opacity,
             _ => TextureSemanticRole::Unknown,
         },
     }
+}
+
+pub(crate) fn texture_path_looks_normal_gloss(path: &str) -> bool {
+    texture_path_has_file_stem_token(path, &["ddn", "ddna", "normal", "norm", "bump"])
+}
+
+pub(crate) fn texture_path_has_file_stem_token(path: &str, tokens: &[&str]) -> bool {
+    let file_name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    let stem = file_name
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(file_name)
+        .to_ascii_lowercase();
+    stem.split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|token| tokens.iter().any(|expected| token == *expected))
 }
 
 fn parse_rgb(s: &str) -> [f32; 3] {
@@ -1183,11 +1247,30 @@ mod tests {
 
     #[test]
     fn shader_family_classifies_known_families() {
-        assert_eq!(dummy_submaterial("HardSurface", "").shader_family(), ShaderFamily::HardSurface);
-        assert_eq!(dummy_submaterial("HologramCIG", "").shader_family(), ShaderFamily::HologramCig);
-        assert_eq!(dummy_submaterial("Monitor", "").shader_family(), ShaderFamily::Monitor);
-        assert_eq!(dummy_submaterial("NoDraw", "").shader_family(), ShaderFamily::NoDraw);
-        assert_eq!(dummy_submaterial("SomethingElse", "").shader_family(), ShaderFamily::Unknown);
+        assert_eq!(
+            dummy_submaterial("HardSurface", "").shader_family(),
+            ShaderFamily::HardSurface
+        );
+        assert_eq!(
+            dummy_submaterial("HologramCIG", "").shader_family(),
+            ShaderFamily::HologramCig
+        );
+        assert_eq!(
+            dummy_submaterial("Monitor", "").shader_family(),
+            ShaderFamily::Monitor
+        );
+        assert_eq!(
+            dummy_submaterial("ScopePBR", "").shader_family(),
+            ShaderFamily::GlassPbr
+        );
+        assert_eq!(
+            dummy_submaterial("NoDraw", "").shader_family(),
+            ShaderFamily::NoDraw
+        );
+        assert_eq!(
+            dummy_submaterial("SomethingElse", "").shader_family(),
+            ShaderFamily::Unknown
+        );
     }
 
     #[test]
@@ -1367,6 +1450,32 @@ mod tests {
     }
 
     #[test]
+    fn layer_metallic_marks_metal_surface_high_specular_bright_diffuse_as_metal() {
+        assert_eq!(
+            layer_metallic_with_surface_type(
+                [1.0, 1.0, 1.0],
+                [0.61, 0.61, 0.61],
+                None,
+                Some("metal_dense"),
+            ),
+            1.0
+        );
+    }
+
+    #[test]
+    fn layer_metallic_keeps_metal_surface_low_specular_as_dielectric() {
+        assert_eq!(
+            layer_metallic_with_surface_type(
+                [1.0, 1.0, 1.0],
+                [0.04, 0.04, 0.04],
+                None,
+                Some("metal_dense"),
+            ),
+            0.0
+        );
+    }
+
+    #[test]
     fn submaterial_metallic_uses_authored_data_not_name() {
         let material = SubMaterial {
             name: "chrome".to_string(),
@@ -1459,6 +1568,77 @@ mod tests {
     }
 
     #[test]
+    fn scope_pbr_materials_are_glass_with_rtt_lens_inputs() {
+        let mut material = dummy_submaterial("ScopePBR", "");
+        material.surface_type = "glass_thin".into();
+        material.texture_slots = vec![
+            TextureSlotBinding {
+                slot: "TexSlot1".into(),
+                path: "$RenderToTexture".into(),
+                is_virtual: true,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot2".into(),
+                path: "objects/fps_weapons/attachments/sights_scopes/textures/lens_01_ddn.tif"
+                    .into(),
+                is_virtual: false,
+            },
+        ];
+
+        let roles: Vec<TextureSemanticRole> = material
+            .semantic_texture_slots()
+            .into_iter()
+            .map(|binding| binding.role)
+            .collect();
+
+        assert_eq!(material.shader_family(), ShaderFamily::GlassPbr);
+        assert!(material.is_glass());
+        assert_eq!(
+            roles,
+            vec![
+                TextureSemanticRole::RenderToTexture,
+                TextureSemanticRole::NormalGloss,
+            ]
+        );
+    }
+
+    #[test]
+    fn normal_named_texslot1_is_not_classified_as_base_color() {
+        let mut material = dummy_submaterial("HardSurface", "");
+        material.texture_slots = vec![TextureSlotBinding {
+            slot: "TexSlot1".into(),
+            path: "objects/fps_weapons/weapons_v7/test/test_surface_ddna.tif".into(),
+            is_virtual: false,
+        }];
+
+        let roles: Vec<TextureSemanticRole> = material
+            .semantic_texture_slots()
+            .into_iter()
+            .map(|binding| binding.role)
+            .collect();
+
+        assert_eq!(roles, vec![TextureSemanticRole::NormalGloss]);
+    }
+
+    #[test]
+    fn base_color_names_containing_bump_substring_stay_base_color() {
+        let mut material = dummy_submaterial("HardSurface", "");
+        material.texture_slots = vec![TextureSlotBinding {
+            slot: "TexSlot1".into(),
+            path: "objects/vehicles/test/bumper_diff.tif".into(),
+            is_virtual: false,
+        }];
+
+        let roles: Vec<TextureSemanticRole> = material
+            .semantic_texture_slots()
+            .into_iter()
+            .map(|binding| binding.role)
+            .collect();
+
+        assert_eq!(roles, vec![TextureSemanticRole::BaseColor]);
+    }
+
+    #[test]
     fn layer_blend_semantic_slots_follow_family_patterns() {
         let mut material = dummy_submaterial("LayerBlend_V2", "%DECAL%IRIDESCENCE");
         material.texture_slots = vec![
@@ -1510,7 +1690,10 @@ mod tests {
 
     #[test]
     fn mesh_decal_semantic_slots_capture_stencil_and_height_contracts() {
-        let mut material = dummy_submaterial("MeshDecal", "%STENCIL_MAP%STENCIL_AS_STICKER%PARALLAX_OCCLUSION_MAPPING");
+        let mut material = dummy_submaterial(
+            "MeshDecal",
+            "%STENCIL_MAP%STENCIL_AS_STICKER%PARALLAX_OCCLUSION_MAPPING",
+        );
         material.texture_slots = vec![
             TextureSlotBinding {
                 slot: "TexSlot4".into(),
@@ -1679,10 +1862,12 @@ mod tests {
         assert_eq!(material.texture_slots.len(), 3);
         assert_eq!(material.public_params.len(), 2);
         assert_eq!(material.diffuse_tex.as_deref(), Some("textures/base.tif"));
-        assert!(material
-            .texture_slots
-            .iter()
-            .any(|slot| slot.is_virtual && slot.path == "$RenderToTexture"));
+        assert!(
+            material
+                .texture_slots
+                .iter()
+                .any(|slot| slot.is_virtual && slot.path == "$RenderToTexture")
+        );
     }
 
     #[test]
@@ -1723,7 +1908,10 @@ mod tests {
         assert_eq!(slots[0].authored_attributes[1].name, "Used");
         assert_eq!(slots[0].authored_attributes[1].value, "1");
         assert_eq!(slots[0].authored_child_blocks[0].tag, "TexMod");
-        assert_eq!(slots[0].authored_child_blocks[0].attributes[0].name, "TileU");
+        assert_eq!(
+            slots[0].authored_child_blocks[0].attributes[0].name,
+            "TileU"
+        );
         assert_eq!(slots[0].authored_child_blocks[0].attributes[0].value, "2");
     }
 }

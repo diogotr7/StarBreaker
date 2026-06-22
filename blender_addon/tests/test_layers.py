@@ -47,17 +47,27 @@ if "mathutils" not in sys.modules:
 if "bpy" not in sys.modules:
     bpy = types.ModuleType("bpy")
     bpy.types = types.SimpleNamespace(Nodes=object, NodeLinks=object, Node=object)
+    bpy.data = types.SimpleNamespace(node_groups=[], images=[], materials=None)
     sys.modules["bpy"] = bpy
+
+if "numpy" not in sys.modules:
+    numpy = types.ModuleType("numpy")
+    numpy.float32 = float
+    numpy.empty = lambda length, dtype=None: [0.0] * length
+    sys.modules["numpy"] = numpy
 
 
 from starbreaker_addon.runtime.importer.builders import (
     _clamp_unit_float,
     _layered_wear_base_layer,
+    _layered_wear_base_palette_fallback,
     _layered_wear_first_diffuse_layer,
     _layered_wear_metallic_values,
     _layered_wear_first_non_neutral_tint,
+    _layered_wear_uses_neutral_synthetic_palette_base,
 )
 from starbreaker_addon.runtime.importer.layers import _detail_strength_or_zero, _stencil_override_selection
+from starbreaker_addon.runtime.importer.materials import _texture_reference_uses_packed_roughness_green
 
 
 class LayerDetailTests(unittest.TestCase):
@@ -158,6 +168,33 @@ class LayerDetailTests(unittest.TestCase):
         submaterial = types.SimpleNamespace(layer_manifest=[layer_a, layer_b])
         self.assertIsNone(_layered_wear_first_non_neutral_tint(submaterial))
 
+    def test_layered_wear_neutral_synthetic_palette_base_stays_white(self) -> None:
+        layer = types.SimpleNamespace(
+            palette_channel=types.SimpleNamespace(name="tertiary"),
+            tint_color=(1.0, 1.0, 1.0),
+            source_material_path="Data/Materials/Layers/synthetic/weapon_paint_01.mtl",
+        )
+
+        self.assertTrue(_layered_wear_uses_neutral_synthetic_palette_base(layer))
+
+    def test_layered_wear_non_neutral_synthetic_palette_base_keeps_diffuse(self) -> None:
+        layer = types.SimpleNamespace(
+            palette_channel=types.SimpleNamespace(name="secondary"),
+            tint_color=(0.7, 0.7, 0.7),
+            source_material_path="Data/Materials/Layers/synthetic/weapon_paint_01.mtl",
+        )
+
+        self.assertFalse(_layered_wear_uses_neutral_synthetic_palette_base(layer))
+
+    def test_layered_wear_non_synthetic_palette_base_keeps_diffuse(self) -> None:
+        layer = types.SimpleNamespace(
+            palette_channel=types.SimpleNamespace(name="secondary"),
+            tint_color=(1.0, 1.0, 1.0),
+            source_material_path="Data/Materials/Layers/weapons/weapon_metal_01.mtl",
+        )
+
+        self.assertFalse(_layered_wear_uses_neutral_synthetic_palette_base(layer))
+
     def test_clamp_unit_float(self) -> None:
         self.assertEqual(_clamp_unit_float(-0.5), 0.0)
         self.assertEqual(_clamp_unit_float(0.25), 0.25)
@@ -177,6 +214,58 @@ class LayerDetailTests(unittest.TestCase):
             _layered_wear_metallic_values(None, wear_layer),
             (1.0, 1.0),
         )
+
+    def test_layered_wear_base_palette_fallback_uses_specular_for_metal(self) -> None:
+        base_layer = types.SimpleNamespace(
+            tint_color=(1.0, 1.0, 1.0),
+            layer_snapshot={
+                "metallic": 1.0,
+                "diffuse": [0.0065, 0.0065, 0.0065],
+                "specular": [0.3712, 0.2195, 0.1170],
+            },
+        )
+        submaterial = types.SimpleNamespace(layer_manifest=[base_layer])
+
+        self.assertEqual(
+            _layered_wear_base_palette_fallback(submaterial, base_layer),
+            (0.3712, 0.2195, 0.1170),
+        )
+
+    def test_layered_wear_base_palette_fallback_keeps_non_neutral_tint_for_dielectric(self) -> None:
+        base_layer = types.SimpleNamespace(
+            tint_color=(0.2, 0.3, 0.4),
+            layer_snapshot={
+                "metallic": 0.0,
+                "specular": [0.8, 0.6, 0.4],
+            },
+        )
+        submaterial = types.SimpleNamespace(layer_manifest=[base_layer])
+
+        self.assertEqual(
+            _layered_wear_base_palette_fallback(submaterial, base_layer),
+            (0.2, 0.3, 0.4),
+        )
+
+    def test_packed_mr_roughness_reference_uses_green_channel(self) -> None:
+        roughness_texture = types.SimpleNamespace(
+            role="roughness",
+            packed_texture_format="gltf_metallic_roughness",
+            value_channel="g",
+        )
+        smoothness_texture = types.SimpleNamespace(
+            role="normal_gloss",
+            packed_texture_format=None,
+            value_channel=None,
+        )
+        grayscale_roughness = types.SimpleNamespace(
+            role="roughness",
+            packed_texture_format="roughness_grayscale",
+            value_channel="r",
+        )
+
+        self.assertTrue(_texture_reference_uses_packed_roughness_green(roughness_texture))
+        self.assertFalse(_texture_reference_uses_packed_roughness_green(smoothness_texture))
+        self.assertFalse(_texture_reference_uses_packed_roughness_green(grayscale_roughness))
 
 
 if __name__ == "__main__":

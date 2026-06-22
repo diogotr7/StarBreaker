@@ -9,6 +9,9 @@ fn assign_decal_materials_basic() {
         entity_name: "test_ship".to_string(),
         geometry_path: "/test".to_string(),
         material_path: "/test".to_string(),
+        assembly_kind: None,
+        weapon_assembly: None,
+        weapon_assembly_diagnostics: None,
         root_mesh: Mesh {
             positions: vec![
                 [0.0, 0.0, 0.0],
@@ -49,6 +52,9 @@ fn assign_decal_materials_no_materials() {
         entity_name: "test_ship".to_string(),
         geometry_path: "/test".to_string(),
         material_path: "/test".to_string(),
+        assembly_kind: None,
+        weapon_assembly: None,
+        weapon_assembly_diagnostics: None,
         root_mesh: Mesh {
             positions: vec![[0.0, 0.0, 0.0]],
             indices: vec![],
@@ -85,6 +91,9 @@ fn assign_decal_materials_empty_mesh() {
         entity_name: "empty_ship".to_string(),
         geometry_path: "/test".to_string(),
         material_path: "/test".to_string(),
+        assembly_kind: None,
+        weapon_assembly: None,
+        weapon_assembly_diagnostics: None,
         root_mesh: Mesh {
             positions: vec![],
             indices: vec![],
@@ -121,6 +130,9 @@ fn assign_decal_materials_multiple_children() {
         entity_name: "test_ship".to_string(),
         geometry_path: "/test".to_string(),
         material_path: "/test".to_string(),
+        assembly_kind: None,
+        weapon_assembly: None,
+        weapon_assembly_diagnostics: None,
         root_mesh: Mesh {
             positions: vec![[0.0, 0.0, 0.0]],
             indices: vec![],
@@ -193,6 +205,9 @@ fn assign_decal_materials_with_child_mesh() {
         entity_name: "test_ship".to_string(),
         geometry_path: "/test".to_string(),
         material_path: "/test".to_string(),
+        assembly_kind: None,
+        weapon_assembly: None,
+        weapon_assembly_diagnostics: None,
         root_mesh: Mesh {
             positions: vec![[0.0, 0.0, 0.0]],
             indices: vec![],

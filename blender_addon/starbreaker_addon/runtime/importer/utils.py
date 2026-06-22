@@ -24,6 +24,7 @@ from ..constants import (
     MATERIAL_IDENTITY_SCHEMA,
     NON_COLOR_INPUT_KEYWORDS,
     PROP_IMPORTED_SLOT_MAP,
+    PROP_IMPORTED_SLOT_NAMES,
     PROP_MATERIAL_IDENTITY,
     PROP_MATERIAL_SIDECAR,
     PROP_PALETTE_SCOPE,
@@ -240,8 +241,15 @@ def _canonical_source_name(name: str) -> str:
         material_name = name.rsplit("_mtl_", 1)[1]
         stem, separator, suffix = material_name.rpartition("_")
         if separator and suffix.isdigit():
-            return stem
-        return material_name
+            name = stem
+        else:
+            name = material_name
+    if ":" in name:
+        name = name.rsplit(":", 1)[1]
+    if "__" in name:
+        name = name.split("__", 1)[0]
+    if "#" in name:
+        name = name.split("#", 1)[0]
     return name
 
 
@@ -462,6 +470,56 @@ def _slot_mapping_for_object(obj: bpy.types.Object) -> list[int | None] | None:
         except (TypeError, ValueError):
             mapping.append(None)
     return mapping
+
+
+def _slot_names_for_object(obj: bpy.types.Object) -> list[str | None] | None:
+    data = getattr(obj, "data", None)
+    if data is None:
+        return None
+    names_raw = data.get(PROP_IMPORTED_SLOT_NAMES)
+    if not isinstance(names_raw, str) or not names_raw:
+        return None
+    try:
+        parsed = json.loads(names_raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    names: list[str | None] = []
+    for value in parsed:
+        if isinstance(value, str) and value.strip():
+            names.append(value)
+        else:
+            names.append(None)
+    return names
+
+
+def _slot_mapping_from_slot_names(
+    slot_names: list[str | None],
+    target_submaterials_by_name: dict[str, SubmaterialRecord],
+    target_submaterials_by_name_all: dict[str, list[SubmaterialRecord]],
+) -> list[int | None] | None:
+    mapping: list[int | None] = []
+    matches = 0
+    for slot_index, slot_name in enumerate(slot_names):
+        if not slot_name:
+            mapping.append(None)
+            continue
+        canonical_slot_name = _canonical_source_name(slot_name)
+        matched_submaterial = target_submaterials_by_name.get(canonical_slot_name)
+        if matched_submaterial is None:
+            candidates = target_submaterials_by_name_all.get(canonical_slot_name)
+            if candidates:
+                matched_submaterial = min(
+                    candidates,
+                    key=lambda item: abs(item.index - slot_index),
+                )
+        if matched_submaterial is None:
+            mapping.append(None)
+            continue
+        mapping.append(matched_submaterial.index)
+        matches += 1
+    return mapping if matches else None
 
 
 def _slot_mapping_source_sidecar_path(obj: bpy.types.Object, current_sidecar_path: str) -> str:

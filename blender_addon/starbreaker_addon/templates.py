@@ -98,7 +98,14 @@ def first_texture_export(submaterial: SubmaterialRecord, roles: tuple[str, ...])
 def representative_textures(submaterial: SubmaterialRecord) -> dict[str, str | None]:
     layer_base = next((layer.diffuse_export_path for layer in submaterial.layer_manifest if layer.diffuse_export_path), None)
     layer_normal = next((layer.normal_export_path for layer in submaterial.layer_manifest if layer.normal_export_path), None)
-    layer_roughness = next((layer.roughness_export_path for layer in submaterial.layer_manifest if layer.roughness_export_path), None)
+    layer_roughness = next(
+        (
+            (layer.roughness_texture.export_path if layer.roughness_texture else None) or layer.roughness_export_path
+            for layer in submaterial.layer_manifest
+            if (layer.roughness_texture and layer.roughness_texture.export_path) or layer.roughness_export_path
+        ),
+        None,
+    )
     return {
         "base_color": first_texture_export(submaterial, BASE_COLOR_ROLES) or layer_base,
         "normal": first_texture_export(submaterial, NORMAL_ROLES) or layer_normal,

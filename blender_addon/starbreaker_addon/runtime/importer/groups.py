@@ -479,7 +479,7 @@ class GroupsMixin:
     def _ensure_runtime_layer_surface_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime LayerSurface",
-            "layer_surface_v6",
+            "layer_surface_v8",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -488,7 +488,7 @@ class GroupsMixin:
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime LayerSurface",
-            signature="layer_surface_v6",
+            signature="layer_surface_v8",
             inputs=[
                 ("Base Color", "NodeSocketColor"),
                 ("Base Alpha", "NodeSocketFloat"),
@@ -517,7 +517,7 @@ class GroupsMixin:
                 ("Metallic", "NodeSocketFloat"),
             ],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "layer_surface_v6":
+        if group_tree.get("starbreaker_runtime_built_signature") == "layer_surface_v8":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -558,20 +558,18 @@ class GroupsMixin:
         links.new(palette_mix.outputs[0], final_color.inputs[1])
         links.new(detail_mix.outputs[0], final_color.inputs[2])
 
-        combined_gloss = nodes.new("ShaderNodeMix")
-        combined_gloss.location = (-560, -300)
-        if hasattr(combined_gloss, "data_type"):
-            combined_gloss.data_type = "FLOAT"
-        links.new(_output_socket(group_input, "Palette Glossiness"), combined_gloss.inputs[0])
-        links.new(_output_socket(group_input, "Roughness Source"), combined_gloss.inputs[2])
-        combined_gloss.inputs[3].default_value = 1.0
+        palette_roughness = nodes.new("ShaderNodeGroup")
+        palette_roughness.node_tree = self._ensure_runtime_ddna_roughness_group()
+        _refresh_group_node_sockets(palette_roughness)
+        palette_roughness.location = (-520, -300)
+        palette_roughness.label = "StarBreaker Palette Roughness"
+        links.new(_output_socket(group_input, "Palette Glossiness"), palette_roughness.inputs["Smoothness"])
 
-        ddna_roughness = nodes.new("ShaderNodeGroup")
-        ddna_roughness.node_tree = self._ensure_runtime_ddna_roughness_group()
-        _refresh_group_node_sockets(ddna_roughness)
-        ddna_roughness.location = (-360, -300)
-        ddna_roughness.label = "StarBreaker DDNA Roughness"
-        links.new(combined_gloss.outputs[0], ddna_roughness.inputs["Smoothness"])
+        palette_scaled_roughness = nodes.new("ShaderNodeMath")
+        palette_scaled_roughness.location = (-120, -300)
+        palette_scaled_roughness.operation = "MULTIPLY"
+        links.new(_output_socket(group_input, "Roughness Source"), palette_scaled_roughness.inputs[0])
+        links.new(palette_roughness.outputs["Roughness"], palette_scaled_roughness.inputs[1])
 
         detail_gloss = nodes.new("ShaderNodeMix")
         detail_gloss.location = (80, -240)
@@ -584,7 +582,7 @@ class GroupsMixin:
         roughness = nodes.new("ShaderNodeMath")
         roughness.location = (280, -240)
         roughness.operation = "MULTIPLY"
-        links.new(ddna_roughness.outputs["Roughness"], roughness.inputs[0])
+        links.new(palette_scaled_roughness.outputs[0], roughness.inputs[0])
         links.new(detail_gloss.outputs[0], roughness.inputs[1])
 
         specular = nodes.new("ShaderNodeMath")
@@ -597,6 +595,16 @@ class GroupsMixin:
         normal_map = nodes.new("ShaderNodeNormalMap")
         normal_map.location = (-520, -620)
         links.new(_output_socket(group_input, "Normal Color"), _input_socket(normal_map, "Color"))
+        normal_alpha = nodes.new("ShaderNodeMath")
+        normal_alpha.location = (-720, -640)
+        normal_alpha.label = "Normal strength x base alpha"
+        normal_alpha.operation = "MULTIPLY"
+        normal_alpha.use_clamp = True
+        normal_alpha.inputs[0].default_value = 1.0
+        links.new(_output_socket(group_input, "Base Alpha"), normal_alpha.inputs[1])
+        strength_input = _input_socket(normal_map, "Strength")
+        if strength_input is not None:
+            links.new(normal_alpha.outputs[0], strength_input)
 
         bump = nodes.new("ShaderNodeBump")
         bump.location = (-320, -620)
@@ -617,7 +625,7 @@ class GroupsMixin:
         links.new(specular.outputs[0], group_output.inputs["Specular"])
         links.new(bump.outputs[0], group_output.inputs["Normal"])
         links.new(_output_socket(group_input, "Metallic"), group_output.inputs["Metallic"])
-        group_tree["starbreaker_runtime_built_signature"] = "layer_surface_v6"
+        group_tree["starbreaker_runtime_built_signature"] = "layer_surface_v8"
         return group_tree
 
     def _ensure_runtime_hard_surface_group(self) -> bpy.types.ShaderNodeTree:
