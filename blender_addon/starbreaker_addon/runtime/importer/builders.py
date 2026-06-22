@@ -299,16 +299,47 @@ def _height_image_background_bias(image: Any) -> float | None:
     """
     if image is None:
         return None
+    cache_key = "starbreaker_pom_bg_bias"
     try:
-        size = getattr(image, "size", None)
-        if not size or size[0] <= 0 or size[1] <= 0:
-            return None
-        pixels = image.pixels[0:4]
-        if len(pixels) < 3:
-            return None
-        return float(0.299 * pixels[0] + 0.587 * pixels[1] + 0.114 * pixels[2])
+        cached = image.get(cache_key)
+        if cached is not None:
+            return float(cached)
     except Exception:
+        pass
+
+    def _luma(buf) -> float | None:
+        if buf is None or len(buf) < 4:
+            return None
+        return float(0.299 * buf[0] + 0.587 * buf[1] + 0.114 * buf[2])
+
+    # Reading the existing datablock's ``pixels`` is unreliable during a full
+    # import — Blender evicts image buffers under load pressure, so the read
+    # returns empty and Bias falls back to 0.5. A fresh temporary load straight
+    # from the source file decodes reliably; fall back to the shared buffer only
+    # if the file can't be loaded.
+    bias = None
+    try:
+        path = bpy.path.abspath(getattr(image, "filepath", "") or "")
+        if path:
+            tmp = bpy.data.images.load(path, check_existing=False)
+            try:
+                bias = _luma(tmp.pixels[:])
+            finally:
+                bpy.data.images.remove(tmp)
+    except Exception:
+        bias = None
+    if bias is None:
+        try:
+            bias = _luma(image.pixels[:])
+        except Exception:
+            bias = None
+    if bias is None:
         return None
+    try:
+        image[cache_key] = bias
+    except Exception:
+        pass
+    return bias
 
 
 def _mesh_decal_pom_submaterial_is_control_only(submaterial: SubmaterialRecord) -> bool:
@@ -471,7 +502,7 @@ class BuildersMixin:
         height_node: bpy.types.Node,
         target_image_nodes: list[bpy.types.Node],
         scale_value: float,
-        bias_value: float = 0.5,
+        bias_value: float | None = None,
         location: tuple[float, float] = (-1280, 720),
         uv_tile: float = 1.0,
     ) -> bpy.types.Node | None:
@@ -550,6 +581,14 @@ class BuildersMixin:
             _input_socket(parallax_node, "Bias"),
             self._resolve_parallax_bias(bias_value, height_node),
         )
+        # The background-bias read can fail at build time — Blender frees image
+        # buffers under a full import's load pressure, so the top-left read
+        # returns empty and Bias falls back to 0.5. Tag nodes that depend on the
+        # background so a deferred post-import pass (when buffers reliably load)
+        # can re-resolve them. See ``_apply_deferred_pom_background_bias``.
+        _bg_image = getattr(height_node, "image", None)
+        if (bias_value is None or bias_value <= 0.0) and _bg_image is not None:
+            parallax_node["sb_pom_height_image"] = _bg_image.name
         self._set_socket_default(_input_socket(parallax_node, "Non-planar"), True)
 
         offset_vec = _output_socket(parallax_node, "Vector")
@@ -609,6 +648,40 @@ class BuildersMixin:
         if background is not None:
             return max(0.0, min(1.0, background))
         return 0.5
+
+    def _apply_deferred_pom_background_bias(self) -> None:
+        """Re-resolve POM ``Bias`` from the height-map background post-import.
+
+        The build-time top-left read can return an empty buffer (Blender frees
+        image buffers under the load pressure of a full import), leaving Bias at
+        the 0.5 fallback. ``_wire_runtime_parallax`` tags every background-driven
+        POM node with ``sb_pom_height_image``; by now the buffers load reliably,
+        so recompute each tagged node's background and update its Bias once.
+        """
+        background_by_image: dict[str, float | None] = {}
+        for material in bpy.data.materials:
+            tree = getattr(material, "node_tree", None)
+            if tree is None:
+                continue
+            for node in tree.nodes:
+                if node.bl_idname != "ShaderNodeGroup":
+                    continue
+                image_name = node.get("sb_pom_height_image")
+                if not image_name:
+                    continue
+                if image_name not in background_by_image:
+                    background_by_image[image_name] = _height_image_background_bias(
+                        bpy.data.images.get(image_name)
+                    )
+                background = background_by_image[image_name]
+                if background is not None:
+                    socket = _input_socket(node, "Bias")
+                    if socket is not None and hasattr(socket, "default_value"):
+                        socket.default_value = max(0.0, min(1.0, background))
+                try:
+                    del node["sb_pom_height_image"]
+                except Exception:
+                    pass
 
     def _build_managed_material(
         self,
@@ -1428,7 +1501,12 @@ class BuildersMixin:
             # Stash the resolved POM parameters so host-material variants can
             # rebuild the same parallax/relief without re-reading the submaterial.
             material["starbreaker_pom_displacement"] = pom_scale
-            material["starbreaker_pom_bias"] = pom_bias
+            # Only stash a real authored HeightBias; ``None`` means "resolve from
+            # the height-map background", which host variants must do too (custom
+            # props can't hold None, and a 0.5 fallback would skip the
+            # background-referenced flush mid-level).
+            if pom_bias is not None:
+                material["starbreaker_pom_bias"] = pom_bias
             material["starbreaker_pom_bump_strength"] = bump_strength
 
         self._wire_surface_shader_to_output(
@@ -4444,13 +4522,15 @@ class BuildersMixin:
                 pom_scale = 0.05
             pom_bias = pom_material.get("starbreaker_pom_bias")
             if not isinstance(pom_bias, (int, float)):
-                pom_bias = 0.5
+                # No authored HeightBias stashed -> resolve from the height-map
+                # background (the flush mid-level), same as the relief material.
+                pom_bias = None
             self._wire_runtime_parallax(
                 clone,
                 height_node=height_node,
                 target_image_nodes=parallax_targets,
                 scale_value=min(0.2, float(pom_scale)),
-                bias_value=float(pom_bias),
+                bias_value=pom_bias,
                 location=(-1700, 360),
             )
 

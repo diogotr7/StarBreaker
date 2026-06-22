@@ -574,6 +574,9 @@ class OrchestrationMixin:
         # vertically). The per-template bake covers shared templates, but
         # instantiated meshes that bypass the template loader still need it.
         self._bake_pom_mesh_bitangent_signs(package_root)
+        # Re-resolve POM Bias from the height-map background now that image
+        # buffers load reliably (the build-time read races buffer eviction).
+        self._apply_deferred_pom_background_bias()
 
         # Final flush in case anything else deferred a depsgraph update.
         self._flush_pending_view_layer_update()
