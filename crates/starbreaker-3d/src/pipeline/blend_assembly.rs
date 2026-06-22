@@ -5862,7 +5862,10 @@ pub fn identify_decal_material_flags(
     let upper_mask = string_gen_mask.to_ascii_uppercase();
     let tokens = string_gen_mask_tokens(string_gen_mask);
     let is_mesh_decal = shader.eq_ignore_ascii_case("MeshDecal");
-    let is_glass_shader = shader.eq_ignore_ascii_case("GlassPBR");
+    // GlassPBR and ScopePBR both map to the glass shader family (see mtl::shader_family);
+    // keep this in sync so scope-lens materials are not classified as decal receivers.
+    let is_glass_shader =
+        shader.eq_ignore_ascii_case("GlassPBR") || shader.eq_ignore_ascii_case("ScopePBR");
     let is_decal = if is_glass_shader {
         false
     } else if is_mesh_decal {

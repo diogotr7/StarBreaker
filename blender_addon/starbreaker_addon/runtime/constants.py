@@ -72,10 +72,22 @@ SCENE_SHARED_GLOW_PROP = "starbreaker_shared_glow_strength"
 SURFACE_SHADER_MODE_PRINCIPLED = "principled_first"
 SURFACE_SHADER_MODE_GLASS = "glass_bsdf"
 DECAL_OFFSET_MODIFIER_NAME = "StarBreaker Decal Offset"
-DECAL_OFFSET_EXTERNAL_DEFAULT = 0.0005
-DECAL_OFFSET_INTERNAL_DEFAULT = 0.0001
+# Ship-facing decal Displace defaults. These mirror the values the Rust .blend
+# writer bakes per instance (exterior hull 0.005, interior/loadout 0.001 — see
+# `instance_decal_offset_strength` in crates/starbreaker-3d) so the addon UI
+# default and the baked modifier agree.
+DECAL_OFFSET_EXTERNAL_DEFAULT = 0.005
+DECAL_OFFSET_INTERNAL_DEFAULT = 0.001
+# Duplicated reusable templates (e.g. control-only MeshDecal POM host overlays on
+# FPS weapons) cap their decal Displace offset tighter than the ship hull default
+# so the relief overlay does not visibly lift off small geometry.
+DECAL_OFFSET_TEMPLATE_CAP = 0.0005
 
 POM_DETAIL_DEFAULT = "MEDIUM"
+# Neutral roughness applied to control-only MeshDecal POM relief overlays (POM
+# height/normal with no authored decal colour or gloss). Aesthetic neutral knob,
+# not a value derived from game data.
+CONTROL_ONLY_POM_DEFAULT_ROUGHNESS = 0.55
 POM_DETAIL_ITEMS = (
     ("LOW", "Low", "20 layers with reduced scale for faster viewport playback"),
     ("MEDIUM", "Medium", "50 layers with balanced scale; default"),

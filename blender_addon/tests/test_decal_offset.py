@@ -947,6 +947,40 @@ class DecalOffsetTests(unittest.TestCase):
         self.assertTrue(_builder_mesh_decal_pom_payload_is_control_only(payload))
         self.assertTrue(_materials_mesh_decal_pom_payload_is_control_only(payload))
 
+    def test_mesh_decal_pom_payload_handles_null_tokens(self) -> None:
+        # decoded_feature_flags.tokens may be explicitly null; both copies must
+        # treat it as empty rather than raising TypeError while iterating.
+        payload = {
+            "shader_family": "MeshDecal",
+            "decoded_feature_flags": {
+                "tokens": None,
+                "has_decal": False,
+                "has_stencil_map": False,
+                "has_parallax_occlusion_mapping": True,
+            },
+            "texture_slots": [
+                {
+                    "slot": "TexSlot1",
+                    "role": "base_color",
+                    "export_path": "Data/Objects/fps_weapons/weapons_v7/behr/textures/behr_pom_diff_TEX0.png",
+                    "is_virtual": False,
+                },
+                {
+                    "slot": "TexSlot3",
+                    "role": "normal_gloss",
+                    "export_path": "Data/Objects/fps_weapons/weapons_v7/behr/textures/behr_pom_ddna_TEX0.png",
+                },
+                {
+                    "slot": "TexSlot4",
+                    "role": "height",
+                    "export_path": "Data/Objects/fps_weapons/weapons_v7/behr/textures/behr_pom_height_TEX0.png",
+                },
+            ],
+        }
+
+        self.assertTrue(_builder_mesh_decal_pom_payload_is_control_only(payload))
+        self.assertTrue(_materials_mesh_decal_pom_payload_is_control_only(payload))
+
     def test_invalid_material_datablock_is_detected(self) -> None:
         self.assertFalse(_material_datablock_is_valid(FakeInvalidMaterial()))
 

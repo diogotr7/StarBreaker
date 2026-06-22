@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover - Blender provides this at runtime.
     _mathutils_kdtree = None
 
 from ..constants import (
+    CONTROL_ONLY_POM_DEFAULT_ROUGHNESS,
     MATERIAL_IDENTITY_SCHEMA,
     NON_COLOR_INPUT_KEYWORDS,
     POM_DETAIL_DEFAULT,
@@ -248,7 +249,7 @@ def _mesh_decal_pom_payload_is_control_only(payload: dict[str, Any]) -> bool:
         return False
     tokens = {
         str(token).strip().upper()
-        for token in flags.get("tokens", [])
+        for token in flags.get("tokens", []) or []
         if str(token).strip()
     }
     if tokens.intersection({"DECAL", "STENCIL_MAP", "DECAL_OPACITY_MAP"}):
@@ -300,7 +301,7 @@ def _payload_tokens(payload: dict[str, Any]) -> set[str]:
     flags = payload.get("decoded_feature_flags") or {}
     return {
         str(token).strip().upper()
-        for token in flags.get("tokens", [])
+        for token in flags.get("tokens", []) or []
         if str(token).strip()
     }
 
@@ -1284,7 +1285,9 @@ class BuildersMixin:
         shader_group["starbreaker_mesh_decal_material_mode"] = CONTROL_ONLY_POM_RELIEF_MODE
 
         self._set_socket_default(_input_socket(shader_group, "Base Color"), (0.5, 0.5, 0.5, 1.0))
-        self._set_socket_default(_input_socket(shader_group, "Roughness"), 0.55)
+        self._set_socket_default(
+            _input_socket(shader_group, "Roughness"), CONTROL_ONLY_POM_DEFAULT_ROUGHNESS
+        )
         self._set_socket_default(_input_socket(shader_group, "Metallic"), 0.0)
         self._set_socket_default(_input_socket(shader_group, "Normal Color"), (0.5, 0.5, 1.0, 1.0))
         self._set_socket_default(_input_socket(shader_group, "Normal Strength"), 1.0)
@@ -2652,7 +2655,7 @@ class BuildersMixin:
             return False
         tokens = {
             str(token).strip().upper()
-            for token in flags.get("tokens", [])
+            for token in flags.get("tokens", []) or []
             if str(token).strip()
         }
         if tokens.intersection({"DECAL", "STENCIL_MAP", "DECAL_OPACITY_MAP"}):

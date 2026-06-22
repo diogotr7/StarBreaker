@@ -577,7 +577,10 @@ impl SubMaterial {
     /// the scalar Shininess value.
     fn uses_per_pixel_smoothness(&self) -> bool {
         let s = self.shader.to_lowercase();
-        s.contains("hardsurface") || s.contains("layerblend") || s == "illum" || s == "glasspbr"
+        s.contains("hardsurface")
+            || s.contains("layerblend")
+            || s == "illum"
+            || self.shader_family() == ShaderFamily::GlassPbr
     }
 
     /// glTF metallic factor derived from authored response data.
@@ -1600,6 +1603,16 @@ mod tests {
                 TextureSemanticRole::NormalGloss,
             ]
         );
+    }
+
+    #[test]
+    fn scope_pbr_uses_per_pixel_smoothness_for_roughness() {
+        // ScopePBR is glass-family; with the per-pixel smoothness placeholder
+        // (Shininess = 255 -> roughness 0) it must fall back to the glass default
+        // rather than rendering an unrealistic mirror finish.
+        let mut material = dummy_submaterial("ScopePBR", "");
+        material.shininess = 255.0;
+        assert_eq!(material.roughness(), 0.5);
     }
 
     #[test]

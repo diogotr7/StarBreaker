@@ -21,8 +21,8 @@ import bpy
 import mathutils
 
 from ..constants import (
-    DECAL_OFFSET_EXTERNAL_DEFAULT,
     DECAL_OFFSET_MODIFIER_NAME,
+    DECAL_OFFSET_TEMPLATE_CAP,
     PACKAGE_ROOT_PREFIX,
     PROP_ASSEMBLY_KIND,
     PROP_DECAL_HOST_CHANNEL,
@@ -196,19 +196,12 @@ class OrchestrationMixin:
     def _ensure_material_identity_index(self) -> None:
         if self.material_identity_index_ready:
             return
+        # Index every material (including decal-host variants) by the identity that
+        # builders stamped at creation. Re-deriving the identity here is unsafe:
+        # builders computes it from call-site-specific parts, so a fixed-arity
+        # reconstruction would not match the stamped value, defeating reuse and
+        # accumulating duplicate host-variant materials across re-imports.
         for material in bpy.data.materials:
-            if self._material_is_decal_host_variant(material):
-                self._set_decal_host_variant_identity(
-                    material,
-                    material.name,
-                    material.get("starbreaker_decal_host_base_key"),
-                    material.get("starbreaker_decal_host_material_key"),
-                    material.get("starbreaker_decal_host_channel"),
-                    material.get("starbreaker_decal_host_rgb_key"),
-                    material.get("starbreaker_mesh_decal_variant_mode"),
-                    material.get("starbreaker_decal_host_composite_mode"),
-                )
-                continue
             material_identity = material.get(PROP_MATERIAL_IDENTITY)
             if isinstance(material_identity, str) and material_identity:
                 self.material_identity_index[material_identity] = material
@@ -1370,8 +1363,8 @@ class OrchestrationMixin:
         if modifiers is None:
             return
         dimensions = tuple(float(value) for value in getattr(obj, "dimensions", ()) if float(value) > 0.0)
-        relative_strength = min(dimensions) * 0.005 if dimensions else DECAL_OFFSET_EXTERNAL_DEFAULT
-        normalized_strength = min(DECAL_OFFSET_EXTERNAL_DEFAULT, max(0.00001, relative_strength))
+        relative_strength = min(dimensions) * 0.005 if dimensions else DECAL_OFFSET_TEMPLATE_CAP
+        normalized_strength = min(DECAL_OFFSET_TEMPLATE_CAP, max(0.00001, relative_strength))
         for modifier in modifiers:
             if (
                 getattr(modifier, "name", "") == DECAL_OFFSET_MODIFIER_NAME
