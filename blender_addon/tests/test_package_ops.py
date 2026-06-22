@@ -1497,6 +1497,21 @@ class PackageOpsTests(unittest.TestCase):
         # Slot index 1 has no submaterial in the sidecar -> not refreshable.
         self.assertFalse(po._material_slot_can_refresh(obj, 1, material, sidecar))
 
+    def test_unnamed_submaterial_index_fallback_gated_on_slot_map_none(self) -> None:
+        """When a slot map sends this slot to None (a deliberate "no match"),
+        the raw-slot_index fallback for an unnamed submaterial must not widen
+        it back to refreshable."""
+        po = self.package_ops
+        sidecar = types.SimpleNamespace(submaterials=[types.SimpleNamespace(index=0)])
+        material = FakeMaterial("rtt_comms_opaque_hightech_mtl__00")  # node_tree=None
+        obj = FakeObject("screen_16x9_a")
+        obj.type = "MESH"
+        obj.material_slots = [FakeSlot(material)]
+        # The mesh data carries a slot map that maps slot 0 to None.
+        obj.data = {self.package_ops.PROP_IMPORTED_SLOT_MAP: "[null]"}
+
+        self.assertFalse(po._material_slot_can_refresh(obj, 0, material, sidecar))
+
 
 class AnimationDisplayNameTests(unittest.TestCase):
     """Tests for _animation_display_name and _entity_name_prefix."""
