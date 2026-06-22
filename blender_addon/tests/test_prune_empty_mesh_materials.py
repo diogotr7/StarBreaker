@@ -37,6 +37,12 @@ class _FakeSlot:
         self.material = material
 
 
+class _FakeMaterial:
+    def __init__(self, name: str, *, node_tree=None):
+        self.name = name
+        self.node_tree = node_tree
+
+
 class _FakeMesh:
     def __init__(self, npolys: int):
         self.polygons = list(range(npolys))
@@ -137,6 +143,52 @@ class TestPruneEmptyMeshMaterials(unittest.TestCase):
         self.assertIsNone(mixed.material_slots[1].material)
         self.assertIsNone(mixed.material_slots[2].material)
         self.assertIsNone(mixed.material_slots[3].material)
+
+
+class TestDetachUnresolvedEmptyMaterials(unittest.TestCase):
+    def test_detaches_empty_node_tree_material_on_face_mesh(self) -> None:
+        (detach,) = _load_ui_functions("_detach_unresolved_empty_materials")
+        root = _FakeObject("root", npolys=0, material=None)
+        # A face-bearing mesh whose material never got a node tree (the case the
+        # targeted fixes did not catch) must be detached and reported.
+        broken = _FakeObject(
+            "panel", npolys=12, material=_FakeMaterial("mtl_broken", node_tree=None)
+        )
+        good = _FakeObject(
+            "hull", npolys=18, material=_FakeMaterial("mtl_ok", node_tree=object())
+        )
+        root.children = [broken, good]
+
+        detached = detach(root)
+
+        self.assertEqual(detached, ["panel / mtl_broken"])
+        self.assertIsNone(broken.material_slots[0].material)
+        self.assertEqual(good.material_slots[0].material.name, "mtl_ok")
+
+    def test_returns_empty_list_when_all_materials_resolved(self) -> None:
+        (detach,) = _load_ui_functions("_detach_unresolved_empty_materials")
+        root = _FakeObject("root", npolys=0, material=None)
+        good = _FakeObject(
+            "hull", npolys=18, material=_FakeMaterial("mtl_ok", node_tree=object())
+        )
+        root.children = [good]
+
+        self.assertEqual(detach(root), [])
+        self.assertEqual(good.material_slots[0].material.name, "mtl_ok")
+
+    def test_skips_non_mesh_and_none_slots(self) -> None:
+        (detach,) = _load_ui_functions("_detach_unresolved_empty_materials")
+        root = _FakeObject("root", npolys=0, material=None)
+        empty_obj = _FakeObject("locator", obj_type="EMPTY")
+        multi = _FakeObject(
+            "multi", npolys=4, materials=[None, _FakeMaterial("x", node_tree=None)]
+        )
+        root.children = [empty_obj, multi]
+
+        detached = detach(root)
+
+        self.assertEqual(detached, ["multi / x"])
+        self.assertIsNone(multi.material_slots[1].material)
 
 
 if __name__ == "__main__":
