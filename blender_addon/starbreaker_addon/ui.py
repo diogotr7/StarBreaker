@@ -850,6 +850,32 @@ def _make_package_linked_object_data_local(package_root: bpy.types.Object) -> in
     return localized_count
 
 
+def _prune_empty_mesh_material_slots(package_root: bpy.types.Object) -> int:
+    """Detach material slots from geometry-less meshes under ``package_root``.
+
+    A mesh with zero polygons (e.g. a seat-access interaction proxy the
+    exporter writes with no geometry) shades nothing, yet it still carries a
+    placeholder material with no node tree. Blender's FBX exporter wraps every
+    material slot on a selected object and crashes on ``node_tree is None``.
+    Detaching the material is a structural cleanup keyed on geometry (polygon
+    count), not on any asset name, so it generalises to every package.
+    """
+    cleared = 0
+    candidates = [package_root, *list(getattr(package_root, "children_recursive", ()))]
+    for obj in candidates:
+        if getattr(obj, "type", None) != "MESH":
+            continue
+        data = getattr(obj, "data", None)
+        polygons = getattr(data, "polygons", None) if data is not None else None
+        if polygons is None or len(polygons) != 0:
+            continue
+        for slot in getattr(obj, "material_slots", ()):
+            if getattr(slot, "material", None) is not None:
+                slot.material = None
+                cleared += 1
+    return cleared
+
+
 def _selected_package(context: bpy.types.Context) -> PackageBundle | None:
     package_root = _package_root_from_context(context)
     if package_root is None:
@@ -1327,10 +1353,11 @@ class STARBREAKER_OT_make_instances_real(Operator):
 
         realized_instances = _make_package_collection_instances_real(context, package_root)
         localized_data = _make_package_linked_object_data_local(package_root)
-        if realized_instances == 0 and localized_data == 0:
+        pruned_slots = _prune_empty_mesh_material_slots(package_root)
+        if realized_instances == 0 and localized_data == 0 and pruned_slots == 0:
             self.report(
                 {"INFO"},
-                "No collection instances or linked object data found under the selected StarBreaker package",
+                "No collection instances, linked object data, or empty-mesh materials found under the selected StarBreaker package",
             )
             return {"FINISHED"}
 
@@ -1338,8 +1365,9 @@ class STARBREAKER_OT_make_instances_real(Operator):
         self.report(
             {"INFO"},
             (
-                f"Made {realized_instances} instance container(s) real and "
-                f"localized {localized_data} linked datablock(s)"
+                f"Made {realized_instances} instance container(s) real, "
+                f"localized {localized_data} linked datablock(s), and "
+                f"pruned {pruned_slots} empty-mesh material slot(s)"
             ),
         )
         return {"FINISHED"}
