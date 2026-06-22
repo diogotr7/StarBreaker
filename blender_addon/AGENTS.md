@@ -328,13 +328,30 @@ per-phase history (stored outside this repo).
   targets (Phases 14, 21).
 - POM node groups collapse to a small fixed set instead of one per
   texture (Phase 17).
+- **POM (parallax-occlusion) relief** is a port of the old StarFab
+  `scorg_tools` addon (`reference/Blender-Tools/scorg_tools/`). Before
+  touching it read `../docs/blender-pom-parallax-occlusion.md` — it
+  documents the `POM_Vector` chain, the `Scale`/`Bias`/`Layers`
+  parameters, and the failure modes that cost real time. The non-obvious
+  ones: the height sampler **must be `REPEAT`** (`CLIP` collapses the
+  ray-march → inert Bias + a constant UV shift); `Bias` is the
+  **reference plane** = the height-map background (top-left pixel), not
+  0.5 — getting it wrong reads as a recessed "hole", and that is a
+  mid-level problem, **not** a `Scale` problem; mirrored-UV faces need
+  the `starbreaker_bitangent_sign` correction or vertical parallax
+  inverts; and `image.pixels`/`image.size` are unreliable mid-import
+  (read the background from a fresh throwaway image load). Diagnose POM
+  with data (Bias/Scale distribution across nodes, pixel-diffs, UV
+  winding), not by eyeballing renders — motion artifacts don't show in
+  stills.
 - All imported meshes get a **Weighted Normal modifier** (Face Area,
   Weight=50, Threshold=0.01) to smooth shading across flat faces
   (Phase 19).
 
 See `../docs/blender-material-contract-naming-rules.md` for the
-in-repo material contract. Higher-level material research lives in
-the workspace-root `AGENTS.md`.
+in-repo material contract and `../docs/blender-pom-parallax-occlusion.md`
+for the POM runbook. Higher-level material research lives in the
+workspace-root `AGENTS.md`.
 
 ## Phased Plan
 

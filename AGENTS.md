@@ -446,6 +446,11 @@ the `//!` first line of each file in the module directory.
   derive the naming rules.
 - `docs/blender-material-template-authoring.md` — how to author
   reusable Blender material node templates.
+- `docs/blender-pom-parallax-occlusion.md` — POM (parallax-occlusion)
+  relief runbook: the `POM_Vector` ray-march pipeline, its
+  `Scale`/`Bias`/`Layers` parameters, and the failure modes (REPEAT vs
+  CLIP, background-referenced reference plane, mirrored-UV bitangent
+  sign). Read before changing POM.
 - `docs/blender-shader-family-inventory.json` — the canonical list of
   CryEngine shader families we know about.
 - `crates/starbreaker-ui/docs/ui-workflow.md` — THE UI parity process (TDD loop, review

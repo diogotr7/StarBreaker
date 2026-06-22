@@ -83,6 +83,12 @@ regular `SB_MeshDecal_v1` group and rely on runtime `Host Tint` channel/RGB
 rebinds; do not move that behaviour into the static template, or ship POM
 decals will lose their authored visible tint and fall back to white.
 
+The parallax-occlusion *rendering* itself (the `POM_Vector` ray-march, its
+`Scale`/`Bias`/`Layers` parameters, and the failure modes — REPEAT-vs-CLIP,
+the background-referenced reference plane, mirrored-UV bitangent sign) is
+documented separately in
+[`blender-pom-parallax-occlusion.md`](blender-pom-parallax-occlusion.md).
+
 ## Editing Rules
 
 - Do not silently rename top-level shader groups.
