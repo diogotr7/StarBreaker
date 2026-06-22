@@ -31,7 +31,9 @@ from ..constants import (
     CONTROL_ONLY_POM_DEFAULT_ROUGHNESS,
     MATERIAL_IDENTITY_SCHEMA,
     POM_SCALE_MAX,
+    POM_SCALE_MIN,
     POM_SCALE_MULTIPLIER,
+    POM_VECTOR_LAYERS,
     NON_COLOR_INPUT_KEYWORDS,
     POM_DETAIL_DEFAULT,
     PROP_ASSEMBLY_KIND,
@@ -170,16 +172,20 @@ def _clamp_unit_float(value: float) -> float:
 
 
 def _parallax_height_sampler_extension(uv_tile: float) -> str:
-    """Mirror authored repeat intent for runtime POM height samplers.
+    """Wrap mode for the runtime POM height sampler — always ``REPEAT``.
 
-    POM materials only need sampler wrap mode ``REPEAT`` when the authored
-    material explicitly tiles the underlying surface beyond the base 0-1 UV
-    range. The exported layer manifest preserves that as ``uv_tiling``; every
-    other case should stay on ``CLIP`` to avoid sampling neighboring atlas
-    islands at glancing angles.
+    The POM ray-march walks the UV across the height field, so the height
+    sampler must wrap. With ``CLIP``, samples that step outside the 0-1 range
+    return transparent black, which collapses the march: the reference plane
+    (Bias) goes inert and the parallax degenerates to a constant UV shift
+    (decals render offset, e.g. "SEMI" reads as "EMI-F"). ``REPEAT`` matches the
+    original StarFab / reference ``pom.blend`` behaviour. Cross-cell bleed on
+    atlas decals is prevented instead by the background-referenced Bias keeping
+    the parallax offset small (see ``_resolve_parallax_bias``), not by clamping
+    the height sampler. ``uv_tile`` is retained for call-site compatibility.
     """
 
-    return "REPEAT" if float(uv_tile) > 1.0 + 1e-4 else "CLIP"
+    return "REPEAT"
 
 
 def _layered_wear_metallic_values(
@@ -281,6 +287,28 @@ def _mesh_decal_pom_payload_is_control_only(payload: dict[str, Any]) -> bool:
     if virtual_inputs.intersection({"$tintpalettedecal", "$rendertotexture"}):
         return False
     return True
+
+
+def _height_image_background_bias(image: Any) -> float | None:
+    """Luminance of a height image's top-left pixel — its atlas background.
+
+    Used as the POM reference plane (``Bias``) when no authored ``HeightBias``
+    exists: a decal atlas's corner is the flat surface level, so referencing
+    the parallax to it keeps the mid-level flush. Returns ``None`` when the
+    image has no readable pixel data.
+    """
+    if image is None:
+        return None
+    try:
+        size = getattr(image, "size", None)
+        if not size or size[0] <= 0 or size[1] <= 0:
+            return None
+        pixels = image.pixels[0:4]
+        if len(pixels) < 3:
+            return None
+        return float(0.299 * pixels[0] + 0.587 * pixels[1] + 0.114 * pixels[2])
+    except Exception:
+        return None
 
 
 def _mesh_decal_pom_submaterial_is_control_only(submaterial: SubmaterialRecord) -> bool:
@@ -506,22 +534,23 @@ class BuildersMixin:
         parallax_node.location = (location[0], location[1])
         parallax_node.label = "StarBreaker POM"
 
-        # POM_Vector inputs: Scale (Float), Bias (Float), Non-planar
-        # (Bool), UV Scale X/Y (Float). Layer count is controlled inside
-        # the runtime POM root group based on the active scene profile.
-        # Drive Scale from the authored PomDisplacement (CryEngine-space,
-        # typically tiny ≈0.003–0.05) rescaled by POM_SCALE_MULTIPLIER —
-        # faithful to the authored subtle relief, capped at POM_SCALE_MAX.
-        # See constants.py for why this is kept small (atlas height maps).
+        # POM_Vector inputs (original StarFab pipeline): Layers, Scale, Bias,
+        # Non-planar. Layers is the ray-march resolution (reference = 40). Scale
+        # is the parallax depth from the authored PomDisplacement, clamped into
+        # the visible-but-stable range. Bias is the reference plane = the
+        # height-map background so the mid-level renders flush and Scale stays
+        # independent of depth (the compensation the broken UV-Scale variant
+        # lost). See constants.py and ``_resolve_parallax_bias``.
+        self._set_socket_default(_input_socket(parallax_node, "Layers"), POM_VECTOR_LAYERS)
         self._set_socket_default(
             _input_socket(parallax_node, "Scale"),
-            min(POM_SCALE_MAX, scale_value * POM_SCALE_MULTIPLIER),
+            max(POM_SCALE_MIN, min(POM_SCALE_MAX, scale_value * POM_SCALE_MULTIPLIER)),
         )
-        self._set_socket_default(_input_socket(parallax_node, "Bias"), max(0.0, min(1.0, bias_value)))
+        self._set_socket_default(
+            _input_socket(parallax_node, "Bias"),
+            self._resolve_parallax_bias(bias_value, height_node),
+        )
         self._set_socket_default(_input_socket(parallax_node, "Non-planar"), True)
-        clamped_tile = max(0.001, uv_tile)
-        self._set_socket_default(_input_socket(parallax_node, "UV Scale X"), clamped_tile)
-        self._set_socket_default(_input_socket(parallax_node, "UV Scale Y"), clamped_tile)
 
         offset_vec = _output_socket(parallax_node, "Vector")
         if offset_vec is None:
@@ -543,20 +572,43 @@ class BuildersMixin:
         return parallax_node
 
     @staticmethod
-    def _parallax_bias_value(submaterial: SubmaterialRecord) -> float:
-        return max(
-            0.0,
-            min(
-                1.0,
-                _float_public_param(
-                    submaterial,
-                    "HeightBias",
-                    "POMHeightBias",
-                    "POM_HeightBias",
-                )
-                or 0.5,
-            ),
+    def _parallax_bias_value(submaterial: SubmaterialRecord) -> float | None:
+        """Game-authored POM reference plane (``HeightBias``), or ``None``.
+
+        Returns the authored value clamped to [0, 1] when the material carries a
+        usable ``HeightBias`` public param; ``None`` otherwise so the caller can
+        fall back to the height-map background (the original StarFab behaviour —
+        most decal atlases ship no ``HeightBias`` and rely on the background).
+        """
+        value = _float_public_param(
+            submaterial,
+            "HeightBias",
+            "POMHeightBias",
+            "POM_HeightBias",
         )
+        if value is None or value <= 0.0:
+            return None
+        return max(0.0, min(1.0, value))
+
+    def _resolve_parallax_bias(
+        self,
+        bias_value: float | None,
+        height_node: bpy.types.Node | None,
+    ) -> float:
+        """Resolve the POM reference plane (POM_Vector ``Bias``).
+
+        Game-authored ``HeightBias`` wins when present; otherwise derive it from
+        the height map's background — the top-left pixel luminance, which for a
+        decal atlas is the flat surface level — so the mid-level sits flush
+        (matching the original StarFab POM). Falls back to 0.5 if no pixels are
+        readable.
+        """
+        if bias_value is not None and bias_value > 0.0:
+            return max(0.0, min(1.0, bias_value))
+        background = _height_image_background_bias(getattr(height_node, "image", None))
+        if background is not None:
+            return max(0.0, min(1.0, background))
+        return 0.5
 
     def _build_managed_material(
         self,

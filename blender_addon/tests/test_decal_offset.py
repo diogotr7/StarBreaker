@@ -3626,12 +3626,24 @@ class DecalOffsetTests(unittest.TestCase):
 
         self.assertAlmostEqual(importer._parallax_bias_value(submaterial), 0.75)
 
-    def test_parallax_height_sampler_extension_clips_default_uv_range(self) -> None:
-        self.assertEqual(_parallax_height_sampler_extension(1.0), "CLIP")
-        self.assertEqual(_parallax_height_sampler_extension(0.75), "CLIP")
-
-    def test_parallax_height_sampler_extension_repeats_explicit_tiling(self) -> None:
+    def test_parallax_height_sampler_extension_always_repeats(self) -> None:
+        # The POM ray-march walks the UV across the height field, so the height
+        # sampler must REPEAT regardless of authored tiling. CLIP returns black
+        # outside the 0-1 range and collapses the march (the reference plane
+        # goes inert and the parallax degenerates to a constant UV shift, so a
+        # decal like "SEMI" renders offset as "EMI-F").
+        self.assertEqual(_parallax_height_sampler_extension(1.0), "REPEAT")
+        self.assertEqual(_parallax_height_sampler_extension(0.75), "REPEAT")
         self.assertEqual(_parallax_height_sampler_extension(3.0), "REPEAT")
+
+    def test_parallax_bias_value_none_without_authored_height_bias(self) -> None:
+        # No HeightBias -> None so the caller falls back to the height-map
+        # background (decal atlases ship no HeightBias).
+        importer = ImporterUnderTest()
+        submaterial = SubmaterialRecord.from_value(
+            {"public_params": {"PomDisplacement": 0.04}}
+        )
+        self.assertIsNone(importer._parallax_bias_value(submaterial))
 
     def test_missing_mesh_decal_texture_defaults_alpha_to_zero(self) -> None:
         submaterial = SubmaterialRecord.from_value({"shader_family": "MeshDecal"})

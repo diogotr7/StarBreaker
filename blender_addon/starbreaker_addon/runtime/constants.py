@@ -88,19 +88,20 @@ POM_DETAIL_DEFAULT = "MEDIUM"
 # height/normal with no authored decal colour or gloss). Aesthetic neutral knob,
 # not a value derived from game data.
 CONTROL_ONLY_POM_DEFAULT_ROUGHNESS = 0.55
-# Parallax-occlusion depth calibration. The runtime POM_Vector group's "Scale"
-# input is the parallax depth, driven from the authored CryEngine PomDisplacement
-# (POM_SCALE_MULTIPLIER calibrated so the reference pom.blend's single-decal POM
-# reads at Scale ~1.5). PomDisplacement is authored small (e.g. behr weapons
-# ~0.003) because the intended relief is subtle, so this stays faithful rather
-# than amplifying it. NOTE: the library's POM reference-plane (Bias) is fixed and
-# assumes a single-decal height map; atlas height maps (FPS weapons pack many
-# decals per texture) only sit flush at small displacement -- a larger Scale both
-# reads recessed and walks the march out of the decal's UV cell into neighbouring
-# atlas cells. Atlas-aware POM (cell-space march + per-cell reference) is a
-# separate, larger effort; until then keep displacement authored-faithful.
+# Parallax-occlusion calibration. The bundled POM_Vector (original StarFab
+# pipeline) is driven from game data: Scale (parallax depth) from the authored
+# CryEngine PomDisplacement times POM_SCALE_MULTIPLIER, clamped into the
+# proven-good [MIN, MAX] range so relief is always visible (floor) but never
+# swims (cap) -- the reference pom.blend reads at ~1.5. Bias (the reference
+# plane) is set per-material to the height-map background so the mid-level sits
+# flush and Scale can grow independently (see ``_resolve_parallax_bias``); this
+# is the functional compensation that the earlier runtime POM_Vector
+# modification (Layers->UV Scale) had broken. POM_VECTOR_LAYERS is the ray-march
+# resolution; the reference uses 40.
 POM_SCALE_MULTIPLIER = 30.0
+POM_SCALE_MIN = 1.5
 POM_SCALE_MAX = 3.0
+POM_VECTOR_LAYERS = 40
 POM_DETAIL_ITEMS = (
     ("LOW", "Low", "20 layers with reduced scale for faster viewport playback"),
     ("MEDIUM", "Medium", "50 layers with balanced scale; default"),

@@ -39,12 +39,6 @@ _POM_LIBRARY_ROOT_GROUPS = (
     "Clamp",
     "tangent_space",
 )
-_POM_DETAIL_GROUP_NAME = "StarBreaker Runtime POM Detail"
-_POM_DETAIL_GROUP_SIGNATURE = "pom_detail_v3"
-_POM_DETAIL_CONTROL_NODE_NAME = "StarBreaker POM Detail"
-_POM_DETAIL_SCALE_NODE_NAME = "StarBreaker POM Detail Scale"
-_POM_DETAIL_LAYERS_NODE_NAME = "StarBreaker Detail Layers"
-_POM_DETAIL_SCALE_MULTIPLIER_NODE_NAME = "StarBreaker Detail Scale Multiplier"
 _SCREEN_EFFECT_GROUP_NAMES = ("Pixelate", "RGB_grid")
 
 
@@ -58,357 +52,30 @@ def _set_node_input_default(node: Any, socket_name: str, value: Any) -> None:
         pass
 
 
-def _ensure_runtime_pom_detail_group() -> bpy.types.ShaderNodeTree:
-    group_tree = bpy.data.node_groups.get(_POM_DETAIL_GROUP_NAME)
-    if group_tree is None:
-        group_tree = bpy.data.node_groups.new(_POM_DETAIL_GROUP_NAME, "ShaderNodeTree")
-    if (
-        group_tree.get("starbreaker_runtime_signature") == _POM_DETAIL_GROUP_SIGNATURE
-        and group_tree.get("starbreaker_runtime_built_signature") == _POM_DETAIL_GROUP_SIGNATURE
-        and group_tree.nodes.get(_POM_DETAIL_LAYERS_NODE_NAME) is not None
-        and group_tree.nodes.get(_POM_DETAIL_SCALE_MULTIPLIER_NODE_NAME) is not None
-    ):
-        return group_tree
-
-    group_tree.use_fake_user = False
-    group_tree.nodes.clear()
-    for item in list(group_tree.interface.items_tree):
-        group_tree.interface.remove(item)
-    group_tree.interface.new_socket(name="Layers", in_out="OUTPUT", socket_type="NodeSocketFloat")
-    group_tree.interface.new_socket(name="Layers Vector", in_out="OUTPUT", socket_type="NodeSocketVector")
-    group_tree.interface.new_socket(name="Scale Multiplier", in_out="OUTPUT", socket_type="NodeSocketFloat")
-
-    nodes = group_tree.nodes
-    links = group_tree.links
-    group_output = nodes.new("NodeGroupOutput")
-    group_output.location = (240, 0)
-
-    detail_layers = nodes.new("ShaderNodeValue")
-    detail_layers.name = _POM_DETAIL_LAYERS_NODE_NAME
-    detail_layers.label = "Detail Layers"
-    detail_layers.location = (-320, 80)
-
-    scale_multiplier = nodes.new("ShaderNodeValue")
-    scale_multiplier.name = _POM_DETAIL_SCALE_MULTIPLIER_NODE_NAME
-    scale_multiplier.label = "Scale Multiplier"
-    scale_multiplier.location = (-320, -60)
-
-    layers_vector = nodes.new("ShaderNodeCombineXYZ")
-    layers_vector.location = (-40, 120)
-
-    links.new(detail_layers.outputs[0], layers_vector.inputs[0])
-    links.new(detail_layers.outputs[0], layers_vector.inputs[1])
-    links.new(detail_layers.outputs[0], layers_vector.inputs[2])
-    links.new(detail_layers.outputs[0], group_output.inputs["Layers"])
-    links.new(layers_vector.outputs[0], group_output.inputs["Layers Vector"])
-    links.new(scale_multiplier.outputs[0], group_output.inputs["Scale Multiplier"])
-
-    group_tree["starbreaker_runtime_signature"] = _POM_DETAIL_GROUP_SIGNATURE
-    group_tree["starbreaker_runtime_built_signature"] = _POM_DETAIL_GROUP_SIGNATURE
-    return group_tree
-
-
-def _configure_runtime_pom_detail_group(mode: str) -> bpy.types.ShaderNodeTree:
-    group_tree = _ensure_runtime_pom_detail_group()
-    layers, scale_multiplier = pom_detail_settings(mode)
-    detail_layers = group_tree.nodes.get(_POM_DETAIL_LAYERS_NODE_NAME)
-    if detail_layers is not None:
-        detail_layers.outputs[0].default_value = float(layers)
-    multiplier_node = group_tree.nodes.get(_POM_DETAIL_SCALE_MULTIPLIER_NODE_NAME)
-    if multiplier_node is not None:
-        multiplier_node.outputs[0].default_value = float(scale_multiplier)
-    group_tree["starbreaker_pom_detail_mode"] = str(mode or POM_DETAIL_DEFAULT).upper()
-    return group_tree
-
-
-def _ensure_pom_detail_control_on_tree(
-    group_tree: bpy.types.ShaderNodeTree,
-    mode: str,
-) -> bool:
-    """Install direct internal Value/Math nodes inside a top-level POM root.
-
-    We do not rely on a shared helper node group because routing values
-    through a nested group + implicit socket conversions caused the
-    parallax to evaluate to zero (div-by-zero on Vector Math.002 input[1]
-    was also observed). Instead each top-level ``StarBreaker POM [...]``
-    root now owns two Value nodes (``Detail Layers`` and ``Scale
-    Multiplier``) plus an internal Multiply math node for the scale.
-    ``apply_pom_detail_mode`` only has to update the two Value defaults.
-    """
-
-    if (
-        group_tree is None
-        or not group_tree.name.startswith("StarBreaker POM [")
-        or " / " in group_tree.name
-    ):
-        return False
-
-    nodes = group_tree.nodes
-    links = group_tree.links
-    layers, scale_multiplier = pom_detail_settings(mode)
-
-    changed = False
-
-    # Remove legacy "Layers" interface input socket so external 40.0 default
-    # cannot override our internal value through Group Input.x nodes.
-    legacy_layers_item = next(
-        (
-            item
-            for item in list(group_tree.interface.items_tree)
-            if getattr(item, "in_out", None) == "INPUT" and getattr(item, "name", None) == "Layers"
-        ),
-        None,
-    )
-    if legacy_layers_item is not None:
-        group_tree.interface.remove(legacy_layers_item)
-        changed = True
-
-    # Remove the old shared-helper control node if still present (deprecated).
-    stale_control = nodes.get(_POM_DETAIL_CONTROL_NODE_NAME)
-    if stale_control is not None and stale_control.bl_idname == "ShaderNodeGroup":
-        nodes.remove(stale_control)
-        changed = True
-
-    # Internal Value node: number of POM layers (num_layers / denominator).
-    layers_node = nodes.get(_POM_DETAIL_LAYERS_NODE_NAME)
-    if layers_node is None or layers_node.bl_idname != "ShaderNodeValue":
-        if layers_node is not None:
-            nodes.remove(layers_node)
-        layers_node = nodes.new("ShaderNodeValue")
-        layers_node.name = _POM_DETAIL_LAYERS_NODE_NAME
-        layers_node.label = "Detail Layers"
-        layers_node.location = (-420, 220)
-        changed = True
-    if float(layers_node.outputs[0].default_value) != float(layers):
-        layers_node.outputs[0].default_value = float(layers)
-        changed = True
-
-    # Internal Value node: scale multiplier (layers / 40) to keep perceived depth constant.
-    mult_node = nodes.get(_POM_DETAIL_SCALE_MULTIPLIER_NODE_NAME)
-    if mult_node is None or mult_node.bl_idname != "ShaderNodeValue":
-        if mult_node is not None:
-            nodes.remove(mult_node)
-        mult_node = nodes.new("ShaderNodeValue")
-        mult_node.name = _POM_DETAIL_SCALE_MULTIPLIER_NODE_NAME
-        mult_node.label = "Scale Multiplier"
-        mult_node.location = (-420, 80)
-        changed = True
-    if float(mult_node.outputs[0].default_value) != float(scale_multiplier):
-        mult_node.outputs[0].default_value = float(scale_multiplier)
-        changed = True
-
-    # Internal Multiply math: Scale * multiplier -> feeds Math.003 input[0].
-    scale_math = nodes.get(_POM_DETAIL_SCALE_NODE_NAME)
-    if scale_math is None or scale_math.bl_idname != "ShaderNodeMath":
-        if scale_math is not None:
-            nodes.remove(scale_math)
-        scale_math = nodes.new("ShaderNodeMath")
-        scale_math.name = _POM_DETAIL_SCALE_NODE_NAME
-        scale_math.label = "POM Detail Scale"
-        scale_math.operation = "MULTIPLY"
-        scale_math.location = (-200, 160)
-        changed = True
-
-    # Find a Group Input node that exposes "Scale".
-    source_scale_output = None
-    for node in nodes:
-        if node.bl_idname == "NodeGroupInput":
-            out = _output_socket(node, "Scale")
-            if out is not None:
-                source_scale_output = out
-                break
-    if source_scale_output is None:
-        return changed
-
-    def _ensure_direct_link(output_socket, input_socket) -> None:
-        nonlocal changed
-        if output_socket is None or input_socket is None:
-            return
-        for link in list(input_socket.links):
-            if (
-                link.from_socket.as_pointer() == output_socket.as_pointer()
-                and link.to_socket.as_pointer() == input_socket.as_pointer()
-            ):
-                return
-            links.remove(link)
-            changed = True
-        links.new(output_socket, input_socket)
-        changed = True
-
-    # Wire scale_math inputs: [0]=source Scale, [1]=multiplier Value.
-    _ensure_direct_link(source_scale_output, scale_math.inputs[0])
-    _ensure_direct_link(mult_node.outputs[0], scale_math.inputs[1])
-
-    # Math.003 (DIVIDE): [0]=scale*multiplier, [1]=layers. (Unchanged from the
-    # previous approach — it was already correct.)
-    layer_divide = nodes.get("Math.003")
-    if layer_divide is not None and len(layer_divide.inputs) > 1:
-        _ensure_direct_link(scale_math.outputs[0], layer_divide.inputs[0])
-        _ensure_direct_link(layers_node.outputs[0], layer_divide.inputs[1])
-
-    # Vector Math.002 (DIVIDE): [0]=delta numerator (leave original link
-    # intact!), [1]=layers (float -> implicit vector). The previous code
-    # wrote layers to input[0], clobbering the numerator -> flat POM.
-    vector_math = nodes.get("Vector Math.002")
-    if vector_math is not None and len(vector_math.inputs) > 1:
-        _ensure_direct_link(layers_node.outputs[0], vector_math.inputs[1])
-
-    # Group.001 first POM_10x_Layer_Steps: num_layers=layers, Scale=raw Scale.
-    pom_group = nodes.get("Group.001")
-    if pom_group is not None:
-        _ensure_direct_link(layers_node.outputs[0], _input_socket(pom_group, "num layers"))
-        _ensure_direct_link(source_scale_output, _input_socket(pom_group, "Scale"))
-
-    return changed
-
-
-def _ensure_uv_scale_on_pom_tree(
-    group_tree: bpy.types.ShaderNodeTree,
-) -> bool:
-    """Add UV Scale X / UV Scale Y inputs to a POM root group and interpose
-    internal scale nodes on both the starting UV and the delta_coordinates.
-
-    The POM ray march reads UVs entirely from its internal ``Texture
-    Coordinate`` node and computes delta_coordinates from the tangent-space
-    view ray.  When UV tiling != 1.0 *both* the starting UV and the delta
-    must be scaled by the same factor S so the march operates consistently
-    in tiled UV space:
-
-    - ``UV Scale Vector`` (CombineXYZ): assembles ``(UV_Scale_X, UV_Scale_Y, 1.0)``
-    - ``UV Scale UV`` (VectorMath MULTIPLY): ``TexCoord.UV * scale_vec``
-      → ``Group.001.Vector``
-    - ``UV Scale Delta`` (VectorMath MULTIPLY): ``Vector Math.002 * scale_vec``
-      → ``Group.001.delta coordinates``
-
-    With default values ``UV Scale X = UV Scale Y = 1.0`` the nodes are
-    identity operations and existing behaviour is unchanged.  Called from
-    ``_ensure_runtime_parallax_group`` on both the cached and newly-appended
-    code paths; fully idempotent.
-    """
-    if (
-        group_tree is None
-        or not group_tree.name.startswith("StarBreaker POM [")
-        or " / " in group_tree.name
-    ):
-        return False
-
-    nodes = group_tree.nodes
-    links = group_tree.links
-    changed = False
-
-    # -- 1. Add interface inputs if missing --
-    existing_input_names = {
-        item.name
-        for item in group_tree.interface.items_tree
-        if getattr(item, "item_type", None) == "SOCKET"
-        and getattr(item, "in_out", None) == "INPUT"
-    }
-    for axis in ("UV Scale X", "UV Scale Y"):
-        if axis not in existing_input_names:
-            sock = group_tree.interface.new_socket(
-                name=axis, in_out="INPUT", socket_type="NodeSocketFloat"
-            )
-            if hasattr(sock, "default_value"):
-                sock.default_value = 1.0
-            if hasattr(sock, "min_value"):
-                sock.min_value = 0.001
-            changed = True
-
-    # -- 2. Guard: if scale nodes are already present, skip node creation --
-    existing_scale_uv = nodes.get("UV Scale UV")
-    if (
-        existing_scale_uv is not None
-        and existing_scale_uv.bl_idname == "ShaderNodeVectorMath"
-    ):
-        return changed
-
-    # -- 3. Locate required source nodes --
-    tex_coord = nodes.get("Texture Coordinate")
-    vector_math_002 = nodes.get("Vector Math.002")
-    group_001 = nodes.get("Group.001")
-    if tex_coord is None or vector_math_002 is None or group_001 is None:
-        return changed
-
-    # -- 4. Find a GroupInput node that now exposes UV Scale X/Y --
-    gi_node = None
-    for node in nodes:
-        if node.bl_idname == "NodeGroupInput":
-            out = _output_socket(node, "UV Scale X")
-            if out is not None:
-                gi_node = node
-                break
-    if gi_node is None:
-        gi_node = nodes.new("NodeGroupInput")
-        gi_node.name = "Group Input.UV Scale"
-        gi_node.location = (-1200, -300)
-        changed = True
-
-    # -- 5. Add CombineXYZ to assemble the (X, Y, 1.0) scale vector --
-    combine = nodes.new("ShaderNodeCombineXYZ")
-    combine.name = "UV Scale Vector"
-    combine.label = "UV Scale"
-    combine.location = (-960, -300)
-    combine.inputs["Z"].default_value = 1.0
-    changed = True
-
-    # -- 6. Add VectorMath MULTIPLY for starting UV --
-    scale_uv = nodes.new("ShaderNodeVectorMath")
-    scale_uv.name = "UV Scale UV"
-    scale_uv.label = "UV Scale UV"
-    scale_uv.operation = "MULTIPLY"
-    scale_uv.location = (-720, -200)
-    changed = True
-
-    # -- 7. Add VectorMath MULTIPLY for delta coordinates --
-    scale_delta = nodes.new("ShaderNodeVectorMath")
-    scale_delta.name = "UV Scale Delta"
-    scale_delta.label = "UV Scale Delta"
-    scale_delta.operation = "MULTIPLY"
-    scale_delta.location = (-720, -400)
-    changed = True
-
-    def _ensure_direct_link(output_socket, input_socket) -> None:
-        nonlocal changed
-        if output_socket is None or input_socket is None:
-            return
-        for link in list(input_socket.links):
-            if (
-                link.from_socket.as_pointer() == output_socket.as_pointer()
-                and link.to_socket.as_pointer() == input_socket.as_pointer()
-            ):
-                return
-            links.remove(link)
-            changed = True
-        links.new(output_socket, input_socket)
-        changed = True
-
-    # -- 8. Wire GroupInput.UV Scale X/Y → CombineXYZ X/Y --
-    _ensure_direct_link(_output_socket(gi_node, "UV Scale X"), combine.inputs["X"])
-    _ensure_direct_link(_output_socket(gi_node, "UV Scale Y"), combine.inputs["Y"])
-
-    # -- 9. Wire UV Scale UV: TexCoord.UV → input[0], scale_vec → input[1] --
-    _ensure_direct_link(_output_socket(tex_coord, "UV"), scale_uv.inputs[0])
-    _ensure_direct_link(combine.outputs[0], scale_uv.inputs[1])
-
-    # -- 10. Wire UV Scale Delta: VectorMath.002 → input[0], scale_vec → input[1] --
-    _ensure_direct_link(vector_math_002.outputs[0], scale_delta.inputs[0])
-    _ensure_direct_link(combine.outputs[0], scale_delta.inputs[1])
-
-    # -- 11. Rewire Group.001 inputs from the scaled nodes --
-    _ensure_direct_link(scale_uv.outputs[0], _input_socket(group_001, "Vector"))
-    _ensure_direct_link(scale_delta.outputs[0], _input_socket(group_001, "delta coordinates"))
-
-    return changed
-
-
 def apply_pom_detail_mode(mode: str) -> int:
-    # Keep the shared detail group datablock around for back-compat / deletion
-    # of its runtime signature, but do not wire it into any material.
-    _configure_runtime_pom_detail_group(mode)
+    """Set the ray-march resolution (POM_Vector ``Layers``) on every POM
+    material node from the detail profile.
+
+    Only touches ``Layers`` — Scale and Bias (the reference plane) are left
+    intact so depth and flush mid-level stay correct. Returns the number of
+    POM_Vector instance nodes updated.
+    """
+    layers, _ = pom_detail_settings(mode)
     updated = 0
-    for group_tree in bpy.data.node_groups:
-        if _ensure_pom_detail_control_on_tree(group_tree, mode):
-            updated += 1
+    for material in bpy.data.materials:
+        node_tree = material.node_tree
+        if node_tree is None:
+            continue
+        for node in node_tree.nodes:
+            if (
+                node.bl_idname == "ShaderNodeGroup"
+                and node.node_tree is not None
+                and node.node_tree.name.startswith("StarBreaker POM [")
+            ):
+                socket = node.inputs.get("Layers")
+                if socket is not None:
+                    socket.default_value = int(layers)
+                    updated += 1
     return updated
 
 
@@ -2490,17 +2157,15 @@ class GroupsMixin:
         sampler_extension = "REPEAT" if str(sampler_extension).upper() == "REPEAT" else "CLIP"
         cached_name = f"StarBreaker POM [{image_key}] [{sampler_extension}]"
         cached = bpy.data.node_groups.get(cached_name)
-        current_mode = self._current_pom_detail_mode()
-        _configure_runtime_pom_detail_group(current_mode)
 
         def _configure_pom_sampler_nodes(root_tree: bpy.types.ShaderNodeTree) -> None:
-            """Bind the cached height image and mirror the authored wrap mode.
+            """Bind the cached height image and set the sampler wrap mode.
 
-            The authored POM library ships with CLIP extension on its internal
-            height samplers. Materials with explicit surface tiling need REPEAT
-            so their parallax walk samples the same repeated field as the color
-            samplers; atlas-backed materials must stay on CLIP so glancing rays
-            cannot wrap into neighbouring atlas islands.
+            The POM ray-march walks the UV across the height field, so the
+            height sampler must wrap (``REPEAT`` — see
+            ``_parallax_height_sampler_extension``). CLIP returns black outside
+            0-1 and collapses the march (inert reference plane + constant UV
+            shift), so callers always pass REPEAT here.
             """
 
             seen: set[int] = set()
@@ -2520,8 +2185,6 @@ class GroupsMixin:
 
         if cached is not None:
             _configure_pom_sampler_nodes(cached)
-            _ensure_pom_detail_control_on_tree(cached, current_mode)
-            _ensure_uv_scale_on_pom_tree(cached)
             return cached
 
         library_path = _POM_LIBRARY_PATH
@@ -2644,9 +2307,6 @@ class GroupsMixin:
             # been excluded by the ``before`` snapshot above.
             g.name = f"{prefix}{base}"
             g.use_fake_user = False
-
-        _ensure_pom_detail_control_on_tree(pom_vector_new, current_mode)
-        _ensure_uv_scale_on_pom_tree(pom_vector_new)
 
         return pom_vector_new
 
