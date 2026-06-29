@@ -352,6 +352,7 @@ export async function dcGetBacklinks(recordId: string): Promise<BacklinkDto[]> {
 export interface AudioInitResult {
   trigger_count: number;
   bank_count: number;
+  external_source_count: number;
 }
 
 export interface AudioBankResult {
@@ -381,9 +382,12 @@ export interface AudioTriggerDetail {
 
 export interface AudioSoundResult {
   media_id: number;
+  label: string;
   source_type: string;
   bank_name: string;
   path_description: string;
+  media_path: string | null;
+  playable: boolean;
 }
 
 export interface AudioExportInfo {
@@ -405,6 +409,11 @@ export async function audioSearchEntities(query: string): Promise<AudioEntityRes
 /** Search ATL index by trigger name substring. */
 export async function audioSearchTriggers(query: string): Promise<AudioTriggerResult[]> {
   return invoke<AudioTriggerResult[]>("audio_search_triggers", { query });
+}
+
+/** Search ATL external sources by source name or WEM path. */
+export async function audioSearchExternalSources(query: string): Promise<AudioTriggerDetail[]> {
+  return invoke<AudioTriggerDetail[]>("audio_search_external_sources", { query });
 }
 
 /** List all soundbanks with trigger counts. */
@@ -432,13 +441,19 @@ export async function audioResolveTrigger(triggerName: string): Promise<AudioSou
   return invoke<AudioSoundResult[]>("audio_resolve_trigger", { triggerName });
 }
 
+/** Resolve an ATL external source to its WEM path. */
+export async function audioResolveExternalSource(sourceName: string): Promise<AudioSoundResult[]> {
+  return invoke<AudioSoundResult[]>("audio_resolve_external_source", { sourceName });
+}
+
 /** Decode a WEM to Ogg bytes for browser playback. */
 export async function audioDecodeWem(
   mediaId: number,
   sourceType: string,
   bankName: string,
+  mediaPath?: string | null,
 ): Promise<number[]> {
-  return invoke<number[]>("audio_decode_wem", { mediaId, sourceType, bankName });
+  return invoke<number[]>("audio_decode_wem", { mediaId, sourceType, bankName, mediaPath });
 }
 
 /** Get recommended export extension for a media file (ogg for Vorbis, else wem). */
@@ -446,8 +461,9 @@ export async function audioExportInfo(
   mediaId: number,
   sourceType: string,
   bankName: string,
+  mediaPath?: string | null,
 ): Promise<AudioExportInfo> {
-  return invoke<AudioExportInfo>("audio_export_info", { mediaId, sourceType, bankName });
+  return invoke<AudioExportInfo>("audio_export_info", { mediaId, sourceType, bankName, mediaPath });
 }
 
 /** Export a media file to disk, decoding Vorbis to OGG when applicable. */
@@ -455,9 +471,16 @@ export async function audioExportMedia(
   mediaId: number,
   sourceType: string,
   bankName: string,
+  mediaPath: string | null | undefined,
   outputPath: string,
 ): Promise<void> {
-  return invoke<void>("audio_export_media", { mediaId, sourceType, bankName, outputPath });
+  return invoke<void>("audio_export_media", {
+    mediaId,
+    sourceType,
+    bankName,
+    mediaPath,
+    outputPath,
+  });
 }
 
 export interface FolderExtractProgress {
