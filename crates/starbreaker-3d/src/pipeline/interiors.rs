@@ -792,6 +792,26 @@ fn interior_ui_bindings_for_mesh(
     db: &Database,
     mesh: &crate::types::InteriorMesh,
 ) -> Vec<UiBinding> {
+    // A transit-peripheral screen (elevator call console / in-lift display)
+    // authors its canvas inline on its `.soc` `EntityComponentUIBuildingBlocks`,
+    // overriding the entity class default. When present, that per-instance
+    // canvas is authoritative — the inline-geometry entity carries neither an
+    // `entity_class_name` nor an `entity_class_guid`, so the class-record path
+    // below would otherwise yield nothing and the screen would render blank.
+    if let Some(canvas_guid) = mesh.ui_canvas_guid.as_deref()
+        && let Some(mut binding) =
+            super::child_payload::ui_binding_for_building_blocks_canvas(db, canvas_guid)
+    {
+        binding.source_entity_name = mesh
+            .cgf_path
+            .rsplit(['/', '\\'])
+            .next()
+            .and_then(|file| file.strip_suffix(".cgf"))
+            .unwrap_or_default()
+            .to_string();
+        return vec![binding];
+    }
+
     let source = mesh
         .entity_class_name
         .as_ref()
@@ -1442,7 +1462,7 @@ pub(crate) fn preload_interior_textures(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_root_container_parenting, child_interior_parent_target,
+        apply_root_container_parenting, build_interiors_from_payloads, child_interior_parent_target,
         compose_helper_relative_container_transform,
         inherit_colocated_ui_rotations,
         prune_colocated_standard_canvas_overlays,
@@ -1454,6 +1474,54 @@ mod tests {
     };
     use crate::pipeline::nmc_bridge::mat4_from_array;
     use crate::types::{InteriorPlacement, UiBinding};
+
+    /// Real-P4K regression: the transit-peripheral inline canvas override must
+    /// flow through to an emitted `physical` UI binding. The Carrack in-lift
+    /// screen resolves `OLD_TransitUIPanelInterior_ANVL` (`4a8bbd52-…`), NOT the
+    /// generic class default. Skips when `SC_DATA_P4K` is unavailable.
+    #[test]
+    fn transit_peripheral_inline_canvas_emits_ui_binding() {
+        let Ok(p4k_path) = std::env::var("SC_DATA_P4K") else {
+            eprintln!("SC_DATA_P4K not set; skipping transit binding test");
+            return;
+        };
+        let Ok(p4k) = starbreaker_p4k::MappedP4k::open(std::path::Path::new(&p4k_path)) else {
+            eprintln!("SC_DATA_P4K set but Data.p4k could not be opened; skipping");
+            return;
+        };
+        let dcb = p4k
+            .read_file("Data\\Game2.dcb")
+            .or_else(|_| p4k.read_file("Data\\Game.dcb"))
+            .expect("Game.dcb should be readable");
+        let db = starbreaker_datacore::database::Database::from_bytes(&dcb)
+            .expect("Game.dcb should parse");
+        let identity = glam::Mat4::IDENTITY.to_cols_array_2d();
+        let payload = crate::socpak::load_interior_from_socpak(
+            &p4k,
+            "Data\\ObjectContainers\\Ships\\ANVL\\Carrack\\elevators.socpak",
+            identity,
+            identity,
+            &[],
+        )
+        .expect("elevators.socpak should load");
+        let interiors = build_interiors_from_payloads(&db, &p4k, &[payload], false, 0);
+        let binding = interiors
+            .containers
+            .iter()
+            .flat_map(|c| &c.placements)
+            .flat_map(|p| &p.ui_bindings)
+            .find(|b| b.canvas_guid.as_deref() == Some("4a8bbd52-234f-4888-87fe-e157ec147ee5"))
+            .expect("a placement should emit the inline transit-panel canvas binding");
+        assert_eq!(binding.binding_kind, "physical");
+        assert!(
+            binding
+                .canvas_record_name
+                .as_deref()
+                .is_some_and(|name| name.ends_with("OLD_TransitUIPanelInterior_ANVL")),
+            "binding should resolve the ANVL interior panel record name, got {:?}",
+            binding.canvas_record_name
+        );
+    }
 
     fn test_ui_binding() -> UiBinding {
         UiBinding {

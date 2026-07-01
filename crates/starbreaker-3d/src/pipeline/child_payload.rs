@@ -883,6 +883,49 @@ pub(crate) fn ui_binding_for_record(db: &Database, record: &Record) -> Option<Ui
     })
 }
 
+/// Build a `physical` UI binding directly from a UIBuildingBlocks canvas GUID.
+///
+/// Transit-peripheral entities (elevator call consoles / in-lift screens) author
+/// their display canvas inline on their `.soc`
+/// `EntityComponentUIBuildingBlocks` component, which OVERRIDES the entity class
+/// record's default canvas — e.g. the Carrack consoles author
+/// `OLD_TransitUIPanelExterior_ANVL` over the generic class
+/// `OLD_TransitUIPanelExterior`. That per-instance override is captured during
+/// `.soc` parsing as `InteriorMesh::ui_canvas_guid`; this resolves it into a
+/// binding the same way the UIBuildingBlocks branch of [`ui_binding_for_record`]
+/// resolves a class-record canvas. Returns `None` for an absent/zero/shell
+/// canvas.
+pub(crate) fn ui_binding_for_building_blocks_canvas(
+    db: &Database,
+    canvas_guid: &str,
+) -> Option<UiBinding> {
+    if canvas_guid.is_empty() || canvas_guid == "null" || is_zero_guid(canvas_guid) {
+        return None;
+    }
+    if is_shell_canvas_guid(db, canvas_guid) {
+        return None;
+    }
+    let (canvas_record_name, canvas_record_path) = resolve_record_metadata(db, canvas_guid);
+    let (
+        canvas_widget_canvas_path,
+        canvas_widget_url_postfix,
+        canvas_widget_url_optional,
+        canvas_variable_binding,
+    ) = canvas_widget_context_for_guid(db, canvas_guid);
+    Some(UiBinding {
+        binding_kind: "physical".to_string(),
+        canvas_guid: Some(canvas_guid.to_string()),
+        canvas_record_name,
+        canvas_record_path,
+        canvas_widget_canvas_path,
+        canvas_widget_url_postfix,
+        canvas_widget_url_optional,
+        canvas_variable_binding,
+        default_view: Some("_default".to_string()),
+        ..Default::default()
+    })
+}
+
 /// Return `true` when the canvas at `canvas_guid` is a *shell* — i.e. its
 /// content is selected at runtime via a `BindingsStringField` operation on
 /// `CanvasReferenceRecord`. Such canvases (e.g. `DigitalSignageCanvas`) have

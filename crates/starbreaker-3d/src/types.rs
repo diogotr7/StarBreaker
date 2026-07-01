@@ -704,6 +704,14 @@ pub struct InteriorMesh {
     /// `IncludedObjects.tint_palette_paths`. `None` means the object carries no
     /// palette override (index 0xFFFF).
     pub tint_palette_name: Option<String>,
+    /// Per-instance UI canvas GUID authored inline on this entity's
+    /// `EntityComponentUIBuildingBlocks` component in the `.soc`
+    /// (`layers[].views[].component.canvas`). This OVERRIDES the entity class
+    /// record's default canvas — e.g. transit elevator consoles author the
+    /// manufacturer-specific `OLD_TransitUIPanelExterior_ANVL` here even though
+    /// their class default is the generic `OLD_TransitUIPanelExterior`. `None`
+    /// when the entity authors no inline UIBuildingBlocks canvas.
+    pub ui_canvas_guid: Option<String>,
 }
 
 /// A resolved mesh placement from a .soc interior container.

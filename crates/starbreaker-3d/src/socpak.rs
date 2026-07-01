@@ -916,6 +916,7 @@ fn push_item_port_mesh(
         entity_class_guid: None,
         entity_class_name: Some(entity_class_name),
         tint_palette_name: None,
+        ui_canvas_guid: None,
     });
 }
 
@@ -1142,6 +1143,7 @@ fn included_objects_to_meshes(io: &IncludedObjects) -> Vec<InteriorMesh> {
                 tint_palette_name: obj
                     .tint_palette_index
                     .and_then(|i| io.tint_palette_paths.get(i as usize).cloned()),
+                ui_canvas_guid: None,
             })
         })
         .collect()
@@ -1277,6 +1279,12 @@ fn process_entity_children(
         let transform = pos_rot_scale_to_4x4(&pos, &rot, &scale);
         let material_path = attrs.get("Material").map(|s| s.to_string());
 
+        // A transit-peripheral / interactive-screen entity authors its display
+        // canvas inline on its `EntityComponentUIBuildingBlocks` component, which
+        // OVERRIDES the entity class default (e.g. an elevator call console picks
+        // `OLD_TransitUIPanelExterior_ANVL` over the generic class canvas). Capture
+        // it here so the UI binding renders the correct per-instance canvas.
+        let ui_canvas_guid = extract_entity_ui_canvas(xml, entity);
         if let Some(geom_path) = extract_entity_geometry(xml, entity) {
             meshes.push(InteriorMesh {
                 cgf_path: geom_path,
@@ -1285,6 +1293,7 @@ fn process_entity_children(
                 entity_class_guid: None,
                 entity_class_name: None,
                 tint_palette_name: None,
+                ui_canvas_guid,
             });
         } else if let Some(guid) = attrs.get("EntityClassGUID") {
             // No inline geometry — resolve via DataCore using EntityClassGUID
@@ -1295,6 +1304,7 @@ fn process_entity_children(
                 entity_class_guid: Some(guid.to_string()),
                 entity_class_name: None,
                 tint_palette_name: None,
+                ui_canvas_guid,
             });
         }
     }
@@ -1337,6 +1347,58 @@ fn extract_entity_geometry(
         }
     }
     None
+}
+
+/// Extract the per-instance UI canvas GUID authored inline on an entity's
+/// `EntityComponentUIBuildingBlocks` component, if any.
+///
+/// Structure (from the `.soc` CryXMLB, sibling of `EntityGeometryResource`):
+/// `PropertiesDataCore → EntityComponentUIBuildingBlocks →
+///  layers → BuildingBlocksLayer → views → BuildingBlocksView →
+///  component[@canvas]`. The `canvas` attribute carries the GUID and OVERRIDES
+/// the entity class record's default canvas. The same component subtree also
+/// appears (without a real canvas) under `specialWeakPointers` as a
+/// `weakPointer`, so we search the subtree for the first node whose `canvas`
+/// attribute is a non-zero GUID rather than assuming a fixed depth.
+fn extract_entity_ui_canvas(xml: &CryXml, entity: &starbreaker_cryxml::CryXmlNode) -> Option<String> {
+    for child in xml.node_children(entity) {
+        if xml.node_tag(child) != "PropertiesDataCore" {
+            continue;
+        }
+        for prop in xml.node_children(child) {
+            if xml.node_tag(prop) != "EntityComponentUIBuildingBlocks" {
+                continue;
+            }
+            if let Some(canvas) = find_canvas_attribute(xml, prop) {
+                return Some(canvas);
+            }
+        }
+    }
+    None
+}
+
+/// Recursively search `node`'s subtree for a `canvas` attribute holding a
+/// non-zero GUID. Returns the first such value found (depth-first).
+fn find_canvas_attribute(xml: &CryXml, node: &starbreaker_cryxml::CryXmlNode) -> Option<String> {
+    let attrs: HashMap<&str, &str> = xml.node_attributes(node).collect();
+    if let Some(canvas) = attrs.get("canvas")
+        && is_nonzero_guid(canvas)
+    {
+        return Some(canvas.to_string());
+    }
+    for child in xml.node_children(node) {
+        if let Some(canvas) = find_canvas_attribute(xml, child) {
+            return Some(canvas);
+        }
+    }
+    None
+}
+
+/// `true` when `value` looks like a non-empty, non-null, non-zero GUID.
+fn is_nonzero_guid(value: &str) -> bool {
+    !value.is_empty()
+        && !value.eq_ignore_ascii_case("null")
+        && value != "00000000-0000-0000-0000-000000000000"
 }
 
 /// Parse light properties from CryXML entity.
@@ -1928,9 +1990,56 @@ mod tests {
     use super::{
         build_container_transform, collect_object_container_refs,
         extract_item_port_meshes_from_text_xml, filter_item_port_meshes_to_editor_bounds,
-        normalize_item_port_entity_name, parse_child_socpak_refs_from_text_xml, parse_container_ref,
-        quat_mul, quat_rotate_vec, semantic_light_kind_for_light, split_socpak_internal_path,
+        is_nonzero_guid, load_interior_from_socpak, normalize_item_port_entity_name,
+        parse_child_socpak_refs_from_text_xml, parse_container_ref, quat_mul, quat_rotate_vec,
+        semantic_light_kind_for_light, split_socpak_internal_path,
     };
+
+    #[test]
+    fn is_nonzero_guid_rejects_empty_null_and_zero() {
+        assert!(is_nonzero_guid("a2c5fae4-f018-4d05-8ab7-e4f17a4d8ae4"));
+        assert!(!is_nonzero_guid(""));
+        assert!(!is_nonzero_guid("null"));
+        assert!(!is_nonzero_guid("NULL"));
+        assert!(!is_nonzero_guid("00000000-0000-0000-0000-000000000000"));
+    }
+
+    /// Real-P4K regression: the Carrack elevator transit panels author their
+    /// display canvas inline on `EntityComponentUIBuildingBlocks`, which
+    /// OVERRIDES the entity class default. The in-lift interior screen
+    /// (`anvl_crk_lift_screen.cgf`) must capture `OLD_TransitUIPanelInterior_ANVL`
+    /// (`4a8bbd52-…`) as its per-instance `ui_canvas_guid`. Skips when
+    /// `SC_DATA_P4K` is not available (hosted CI).
+    #[test]
+    fn transit_panel_entity_captures_inline_ui_canvas_guid() {
+        let Ok(p4k_path) = std::env::var("SC_DATA_P4K") else {
+            eprintln!("SC_DATA_P4K not set; skipping transit-panel canvas test");
+            return;
+        };
+        let Ok(p4k) = starbreaker_p4k::MappedP4k::open(std::path::Path::new(&p4k_path)) else {
+            eprintln!("SC_DATA_P4K set but Data.p4k could not be opened; skipping");
+            return;
+        };
+        let identity = glam::Mat4::IDENTITY.to_cols_array_2d();
+        let payload = load_interior_from_socpak(
+            &p4k,
+            "Data\\ObjectContainers\\Ships\\ANVL\\Carrack\\elevators.socpak",
+            identity,
+            identity,
+            &[],
+        )
+        .expect("elevators.socpak should load");
+        let screen = payload
+            .meshes
+            .iter()
+            .find(|m| m.cgf_path.to_lowercase().contains("anvl_crk_lift_screen"))
+            .expect("lift screen entity mesh should be present in elevators.socpak");
+        assert_eq!(
+            screen.ui_canvas_guid.as_deref(),
+            Some("4a8bbd52-234f-4888-87fe-e157ec147ee5"),
+            "lift screen should capture the inline OLD_TransitUIPanelInterior_ANVL canvas override"
+        );
+    }
 
     #[test]
     fn split_socpak_internal_path_isolates_archive_and_inner_entry() {
@@ -2231,6 +2340,7 @@ mod tests {
             entity_class_guid: None,
             entity_class_name: Some("InsideControl".to_string()),
             tint_palette_name: None,
+            ui_canvas_guid: None,
         };
         let outside = InteriorMesh {
             cgf_path: String::new(),
@@ -2240,6 +2350,7 @@ mod tests {
             entity_class_guid: None,
             entity_class_name: Some("OutsideControl".to_string()),
             tint_palette_name: None,
+            ui_canvas_guid: None,
         };
 
         let filtered = filter_item_port_meshes_to_editor_bounds(
