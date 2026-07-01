@@ -1103,6 +1103,11 @@ pub(crate) fn write_decomposed_export(
             _ => HashMap::new(),
         };
     let mut texture_cache: HashMap<(String, TextureFlavor), String> = HashMap::new();
+    // Memo for the DDNA→roughness derivation (exported ref + status metadata);
+    // shared across root/paint/child/interior sidecars so each DDNA source is
+    // decoded and statistics-scanned exactly once per export.
+    let mut ddna_status_cache: HashMap<String, (Option<TextureExportRef>, TextureDerivationStatus)> =
+        HashMap::new();
     let mut mtl_cache: HashMap<String, Option<MtlFile>> = HashMap::new();
     // Caller may pre-fill this with parallel-decoded textures (see
     // `prewarm_decomposed_textures`); otherwise it starts empty.
@@ -1171,6 +1176,7 @@ pub(crate) fn write_decomposed_export(
                 p4k,
                 &mut png_cache,
                 &mut texture_cache,
+                &mut ddna_status_cache,
                 &palettes_manifest_path,
                 &input.entity_name,
                 &input.geometry_path,
@@ -1226,6 +1232,7 @@ pub(crate) fn write_decomposed_export(
                     p4k,
                     &mut png_cache,
                     &mut texture_cache,
+                    &mut ddna_status_cache,
                     &palettes_manifest_path,
                     &input.entity_name,
                     &input.geometry_path,
@@ -1369,6 +1376,7 @@ pub(crate) fn write_decomposed_export(
                     p4k,
                     &mut png_cache,
                     &mut texture_cache,
+                    &mut ddna_status_cache,
                     &palettes_manifest_path,
                     &child.entity_name,
                     &child.geometry_path,
@@ -1686,6 +1694,7 @@ pub(crate) fn write_decomposed_export(
                                 p4k,
                                 &mut png_cache,
                                 &mut texture_cache,
+                                &mut ddna_status_cache,
                                 &palettes_manifest_path,
                                 &entry.name,
                                 &entry.cgf_path,
@@ -2454,6 +2463,7 @@ fn write_material_sidecar(
     p4k: &MappedP4k,
     png_cache: &mut PngCache,
     texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    ddna_status_cache: &mut HashMap<String, (Option<TextureExportRef>, TextureDerivationStatus)>,
     palettes_manifest_path: &str,
     fallback_name: &str,
     geometry_path: &str,
@@ -2491,6 +2501,7 @@ fn write_material_sidecar(
                 p4k,
                 png_cache,
                 texture_cache,
+                ddna_status_cache,
                 material,
                 texture_mip,
                 existing_asset_paths,
@@ -2560,6 +2571,7 @@ fn extract_material_entry(
     p4k: &MappedP4k,
     png_cache: &mut PngCache,
     texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    ddna_status_cache: &mut HashMap<String, (Option<TextureExportRef>, TextureDerivationStatus)>,
     material: &SubMaterial,
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
@@ -2573,6 +2585,7 @@ fn extract_material_entry(
             files,
             p4k,
             texture_cache,
+            ddna_status_cache,
             &path,
             texture_mip,
             existing_asset_paths,
@@ -2694,6 +2707,7 @@ fn extract_material_entry(
                         files,
                         p4k,
                         texture_cache,
+                        ddna_status_cache,
                         &path,
                         texture_mip,
                         existing_asset_paths,
@@ -4868,6 +4882,7 @@ fn export_ddna_roughness_asset_with_status(
     files: &mut OutputFiles,
     p4k: &MappedP4k,
     texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    ddna_status_cache: &mut HashMap<String, (Option<TextureExportRef>, TextureDerivationStatus)>,
     source_path: &str,
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
@@ -4899,12 +4914,25 @@ fn export_ddna_roughness_asset_with_status(
         );
     };
 
+    // The derivation result — the exported ref AND the rich status metadata —
+    // is a pure function of the source path (the mip is constant across one
+    // export). Without this memo every sidecar referencing the same DDNA paid a
+    // FULL mip-level decode + smoothness-statistics pass + PNG encode
+    // (`load_roughness_texture_result` runs before the byte-level
+    // `texture_cache` check because the status needs the decoded statistics),
+    // which turned capital-ship exports from minutes into hours. Keyed by the
+    // RAW source path so a cache hit replays exactly what an uncached repeat
+    // call would have produced.
+    if let Some(cached) = ddna_status_cache.get(source_path) {
+        return cached.clone();
+    }
+
     let normalized_source = normalize_source_path(p4k, source_path);
     let cache_key = texture_cache_key(&normalized_source, TextureFlavor::Roughness);
     let requested_path =
         texture_relative_path(p4k, source_path, TextureFlavor::Roughness, texture_mip);
 
-    match crate::pipeline::load_roughness_texture_result(p4k, source_path, texture_mip) {
+    let result = match crate::pipeline::load_roughness_texture_result(p4k, source_path, texture_mip) {
         Ok(loaded) => {
             let selected_mip = loaded.selected_mip;
             let requested_mip = loaded.requested_mip;
@@ -4985,7 +5013,9 @@ fn export_ddna_roughness_asset_with_status(
                 None,
             ),
         ),
-    }
+    };
+    ddna_status_cache.insert(source_path.to_string(), result.clone());
+    result
 }
 
 fn ddna_roughness_derivation_status(

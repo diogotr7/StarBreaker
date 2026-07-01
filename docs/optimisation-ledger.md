@@ -40,6 +40,27 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
    with a lowercase-prefix→canonical-segment `case_index`, canonicalising in
    O(path-depth). Same first-seen casing → byte-identical. Wall **46.7→43.7s**
    (3-run, this machine).
+4. **DDNA→roughness derivation memo** (2026-07-02; workload `anvl_carrack --kind
+   decomposed --lod 0 --mip 0 --materials all`). Observed: post-PR29 the Carrack
+   export regressed from ~1.5min to HOURS — `child_assets` 280s and the interior
+   placement loop <1000/6168 placements in 23min, all on ONE core, with ZERO
+   `png_cache` misses. Finding: `export_ddna_roughness_asset_with_status` (new in
+   PR #29, `694fb8485`) runs `load_roughness_texture_result` — a full mip-level
+   DDS decode + smoothness-statistics scan + PNG encode — **before** consulting
+   `texture_cache`, because the sidecar status needs the decoded statistics; so
+   the cost was O(sidecar references) instead of O(unique DDNA sources), and it
+   bypasses `cached_load_keyed`/prewarm entirely (which is why `[tex-miss]`
+   probes stayed silent — instrument the RIGHT layer). Action: memoize the whole
+   `(TextureExportRef, TextureDerivationStatus)` result per raw source path
+   (`ddna_status_cache`), shared across root/paint/child/interior sidecars.
+   Carrack hours→**1:19**; Clipper same-flags **10:47.8→0:50.6** (12.8×) with a
+   **0-line `diff -rq`** (excl. export_stamp) unfixed-vs-fixed, and a 0-line
+   two-run determinism diff. Diagnosis trail: prior-session "42s baseline" was a
+   STALE BINARY (June-20 build predating PR #29) — old hashed binaries under
+   `target/release/deps/starbreaker-<hash>` let you time-travel-bisect without
+   rebuilding; gdb/perf are locked down (ptrace_scope, perf_event_paranoid=4) so
+   thread run-state (`/proc/<pid>/task/*/stat`) + staged eprintln probes are the
+   available localisation tools.
 
 ### Dead-ends — do NOT re-attempt
 
@@ -70,3 +91,10 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
 - Remaining `interior_asset_resolve` is `write_material_sidecar` JSON build + file
   inserts (memory-bound per the dead-end above — a parallel rewrite is off the
   table; look for redundant work / a cheaper serialization instead).
+- First-decode of each unique DDNA source in `export_ddna_roughness_asset_with_status`
+  is still serial inside the child/interior loops (~20s of Carrack's interior
+  phase at mip 0). A `par_iter` prewarm of the unique DDNA set into
+  `ddna_status_cache` (mirroring `prewarm_decomposed_textures`) is the natural
+  next lever — the per-source result is a pure function, so it stays
+  byte-identical; profile before building (DDS decode is CPU-bound, unlike the
+  sidecar JSON dead-end).
