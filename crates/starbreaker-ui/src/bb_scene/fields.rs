@@ -229,7 +229,7 @@ pub(super) fn parse_text(node: &serde_json::Value) -> BbText {
     }
 }
 
-pub(super) fn parse_icon(node: &serde_json::Value, ty: &BbNodeType) -> BbIcon {
+pub(crate) fn parse_icon(node: &serde_json::Value, ty: &BbNodeType) -> BbIcon {
     let image_record = node
         .get("iconProperties")
         .and_then(|ip| ip.get("customIcon"))

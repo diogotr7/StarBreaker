@@ -1422,6 +1422,12 @@ fn button_secondary_component_standard_path() -> &'static str {
     "file://./../../../../../../../libs/foundry/records/ui/buildingblocks/modularkit/standard/components/buttongeneralsecondarycomponentstandard.json"
 }
 
+/// Framework record path of the PRIMARY general-button component standard
+/// (the `Filled` call-to-action variant used by e.g. transit call consoles).
+fn button_general_component_standard_path() -> &'static str {
+    "file://./../../../../../../../libs/foundry/records/ui/buildingblocks/modularkit/standard/components/buttongeneralcomponentstandard.json"
+}
+
 /// Framework record path of the tag database.
 fn tag_database_path() -> &'static str {
     "file://./../../../../../../../libs/foundry/records/tagdatabase/tagdatabase.tagdatabase.json"
@@ -1433,6 +1439,7 @@ fn tag_database_path() -> &'static str {
 fn implicit_host_tag_name(ty: &BbNodeType) -> Option<&'static str> {
     match ty {
         BbNodeType::WidgetIcon => Some("icon"),
+        BbNodeType::ComponentGeneralButton => Some("general-button-primary"),
         BbNodeType::ComponentGeneralButtonSecondary => Some("general-button-secondary"),
         _ => None,
     }
@@ -1463,6 +1470,10 @@ enum ParamValue {
     Int(i64),
     Bool(bool),
     Str(String),
+    /// A localization KEY (e.g. `@ui_interactor_call_elevator`) for a
+    /// `BindingsLocalizedComponentParameter` op — resolved through the
+    /// localization table at bind time, unlike `Str` which is a literal.
+    Loc(String),
 }
 
 /// Inject synthetic resolved-parameter ops into a standard template's child
@@ -1507,6 +1518,12 @@ fn inject_standard_params(
                 "_Pointer_": ptr,
                 "_HostNodeId_": host_id,
                 "resolvedString": value,
+            }),
+            ParamValue::Loc(key) => serde_json::json!({
+                "_Type_": "_SynthLocalizedParam_",
+                "_Pointer_": ptr,
+                "_HostNodeId_": host_id,
+                "resolvedLocKey": key,
             }),
         };
         synthetics.push(synth);
@@ -1564,6 +1581,44 @@ fn button_fill_style_index(node: &crate::bb_scene::BbNode) -> i64 {
 /// instance's `IsActive` stays bound to the template's `ShowIcon` parameter.
 /// Only the expansion-band subtree is walked; the host's authored children
 /// (e.g. a sibling custom `WidgetIcon`) keep their own identity.
+/// Add `tag_id` to every merged expansion instance of type `instance_ty` under
+/// `host_id` (skipping nodes that already carry it). Used to attach the widget
+/// standards' `*-element-instance` styling tags to a component standard's
+/// instance widgets — the identity the modular-kit sheets' state entries
+/// (Filled/Ghost foreground colours) select on.
+fn tag_expanded_instances(
+    scene: &mut BbScene,
+    host_id: BbNodeId,
+    instance_ty: &BbNodeType,
+    tag_id: &str,
+) {
+    let Some(host) = scene.nodes.get(&host_id) else {
+        return;
+    };
+    let mut stack: Vec<BbNodeId> = host
+        .children
+        .iter()
+        .copied()
+        .filter(|id| *id >= EXPANSION_ID_BASE)
+        .collect();
+    while let Some(id) = stack.pop() {
+        let Some(node) = scene.nodes.get_mut(&id) else {
+            continue;
+        };
+        stack.extend(node.children.iter().copied().filter(|c| *c >= EXPANSION_ID_BASE));
+        if node.ty != *instance_ty {
+            continue;
+        }
+        if !node
+            .style_tag_uuids
+            .iter()
+            .any(|tag| tag.eq_ignore_ascii_case(tag_id))
+        {
+            node.style_tag_uuids.push(tag_id.to_string());
+        }
+    }
+}
+
 fn forward_host_icon_identity(scene: &mut BbScene, host_id: BbNodeId) {
     let Some(host) = scene.nodes.get(&host_id) else {
         return;
@@ -1605,6 +1660,9 @@ fn forward_host_icon_identity(scene: &mut BbScene, host_id: BbNodeId) {
             if let Some(custom) = custom.clone() {
                 obj.insert("customIcon".to_string(), custom);
             }
+            // The parse-time `BbIcon` bakes the preset→SVG resolution; rebuild
+            // it or the draw keeps the template's authored default glyph.
+            node.icon = Some(crate::bb_scene::parse_icon(&node.raw, &node.ty));
         }
     }
 }
@@ -1641,7 +1699,9 @@ fn expand_widget_standards(
         .filter(|(_, node)| {
             (matches!(
                 node.ty,
-                BbNodeType::WidgetIcon | BbNodeType::ComponentGeneralButtonSecondary
+                BbNodeType::WidgetIcon
+                    | BbNodeType::ComponentGeneralButton
+                    | BbNodeType::ComponentGeneralButtonSecondary
             ) || is_scrollbar_component(&node.ty))
                 && node.is_active
         })
@@ -1667,6 +1727,7 @@ fn expand_widget_standards(
         };
         let template_path = match host_ty {
             BbNodeType::WidgetIcon => icon_widget_standard_path(),
+            BbNodeType::ComponentGeneralButton => button_general_component_standard_path(),
             BbNodeType::ComponentGeneralButtonSecondary => {
                 button_secondary_component_standard_path()
             }
@@ -1710,11 +1771,27 @@ fn expand_widget_standards(
                 }
                 params
             }
-            BbNodeType::ComponentGeneralButtonSecondary => vec![
-                ("FillStyle", ParamValue::Int(button_fill_style_index(host))),
-                ("ShowIcon", ParamValue::Bool(icon_properties_show(host))),
-                ("ShowLabel", ParamValue::Bool(label_properties_show(host))),
-            ],
+            BbNodeType::ComponentGeneralButton
+            | BbNodeType::ComponentGeneralButtonSecondary => {
+                let mut params = vec![
+                    ("FillStyle", ParamValue::Int(button_fill_style_index(host))),
+                    ("ShowIcon", ParamValue::Bool(icon_properties_show(host))),
+                    ("ShowLabel", ParamValue::Bool(label_properties_show(host))),
+                ];
+                // The instance's text field binds its content from the `Label`
+                // component parameter (a localized key); without it the
+                // template's authored default renders instead of the host's.
+                if let Some(label) = host
+                    .raw
+                    .get("labelProperties")
+                    .and_then(|lp| lp.get("label"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                {
+                    params.push(("Label", ParamValue::Loc(label.to_string())));
+                }
+                params
+            }
             // `_Show` reflects the runtime "content overflows" check; the
             // at-rest assumption is corrected by the layout-time scroll
             // model, which hides the bar again when nothing overflows.
@@ -1727,13 +1804,54 @@ fn expand_widget_standards(
             collected_embedded_entries.extend(template_embedded_style_entries(&template_json));
             mark_scrollbar_standard_nodes(&mut child_scene);
         }
+        // A button standard's embedded styles carry its state-tag-driven
+        // visuals (e.g. the `Filled` backplate fill selected by the FillStyle
+        // tag switch); without them the merged custom-shape instances have no
+        // fill and the button renders as bare text.
+        if matches!(
+            host_ty,
+            BbNodeType::ComponentGeneralButton | BbNodeType::ComponentGeneralButtonSecondary
+        ) {
+            collected_embedded_entries.extend(template_embedded_style_entries(&template_json));
+        }
         merge_child_scene(scene, child_scene, "", Some(host_id), true);
 
         // The engine routes a button's authored icon identity through the
         // template's IconPreset/CustomIcon parameters into its nested icon
         // instance; reproduce that flow onto the merged instance nodes.
-        if matches!(host_ty, BbNodeType::ComponentGeneralButtonSecondary) {
+        if matches!(
+            host_ty,
+            BbNodeType::ComponentGeneralButton | BbNodeType::ComponentGeneralButtonSecondary
+        ) {
             forward_host_icon_identity(scene, host_id);
+            // The engine nests each instance widget's OWN standard (icon /
+            // text-field widget standards), whose inner element carries the
+            // `*-element-instance` styling tag the modular-kit button sheets
+            // target (e.g. the Filled state's dark `FillColor`). Expansion here
+            // is single-level, so attach those element tags to the merged
+            // instances directly — resolved from the tag database by NAME.
+            // Only SHOWN elements get their styling identity: the kit's base
+            // entries (`RootTextFieldElementInstance` → IsActive=true) would
+            // otherwise reveal an element the host authored hidden.
+            let host_shows = scene
+                .nodes
+                .get(&host_id)
+                .map(|host| (icon_properties_show(host), label_properties_show(host)))
+                .unwrap_or((false, false));
+            for (instance_ty, tag_name, shown) in [
+                (BbNodeType::WidgetIcon, "icon-element-instance", host_shows.0),
+                (BbNodeType::WidgetTextField, "text-element-instance", host_shows.1),
+            ] {
+                if !shown {
+                    continue;
+                }
+                let tag_id = tag_cache
+                    .entry(tag_name)
+                    .or_insert_with(|| tag_id_by_name(&tag_database, tag_name))
+                    .clone();
+                let Some(tag_id) = tag_id else { continue };
+                tag_expanded_instances(scene, host_id, &instance_ty, &tag_id);
+            }
         }
 
         if let Some(host) = scene.nodes.get_mut(&host_id) {
@@ -1741,10 +1859,25 @@ fn expand_widget_standards(
             // fallback would draw a duplicate.
             if matches!(
                 host_ty,
-                BbNodeType::WidgetIcon | BbNodeType::ComponentGeneralButtonSecondary
+                BbNodeType::WidgetIcon
+                    | BbNodeType::ComponentGeneralButton
+                    | BbNodeType::ComponentGeneralButtonSecondary
             ) && let Some(icon) = host.icon.as_mut()
             {
                 icon.image_record = None;
+            }
+            // Likewise the instance's text field renders the label (bound via
+            // the injected `Label` parameter); blank the host's own authored
+            // label key or the text draws twice at slightly different rects.
+            if matches!(
+                host_ty,
+                BbNodeType::ComponentGeneralButton | BbNodeType::ComponentGeneralButtonSecondary
+            ) && let Some(lp) = host
+                .raw
+                .get_mut("labelProperties")
+                .and_then(|v| v.as_object_mut())
+            {
+                lp.insert("label".to_string(), serde_json::json!(""));
             }
             if let Some(tag_name) = implicit_host_tag_name(&host_ty) {
                 let tag_id = tag_cache
@@ -2205,6 +2338,75 @@ mod tests_expansion {
         assert!(
             host.icon.as_ref().is_none_or(|icon| icon.image_record.is_none()),
             "button host parse-time icon fallback must be cleared after expansion"
+        );
+    }
+
+    /// Host canvas: a PRIMARY `ComponentGeneralButton` authored with the
+    /// transit call-console's contract (fillStyle `Filled`, double-caret icon
+    /// above an `@ui_interactor_call_elevator` label).
+    fn primary_button_host_scene() -> BbScene {
+        let canvas = serde_json::json!({
+            "_RecordName_": "test_primary_button_host",
+            "_RecordId_": "00000000-0000-0000-0000-00000000c002",
+            "_RecordValue_": {
+                "_Type_": "BuildingBlocks_Canvas",
+                "size": {"_Type_": "Vec3", "x": 512.0, "y": 740.0, "z": 0.0},
+                "scene": [
+                    {"_Pointer_": "ptr:1", "_Type_": "BuildingBlocks_DisplayWidget", "name": "root"},
+                    {
+                        "_Pointer_": "ptr:2",
+                        "_Type_": "BuildingBlocks_ComponentGeneralButton",
+                        "name": "Button_Call", "parent": "_PointsTo_:ptr:1",
+                        "fillStyle": "Filled",
+                        "iconPosition": "Top",
+                        "iconProperties": {
+                            "_Type_": "BuildingBlocks_ComponentIconProperties",
+                            "show": true, "iconPreset": "ArrowCaratDoubleUp", "customIcon": ""
+                        },
+                        "labelProperties": {
+                            "_Type_": "BuildingBlocks_ComponentLabelProperties",
+                            "show": true, "label": "@ui_interactor_call_elevator"
+                        }
+                    }
+                ],
+                "operations": []
+            }
+        });
+        parse_bb_canvas(&canvas).expect("host canvas should parse")
+    }
+
+    fn primary_expansion_fetcher(path: &str) -> Result<serde_json::Value, String> {
+        if path == tag_database_path() {
+            Ok(tag_database_fixture())
+        } else if path == button_general_component_standard_path() {
+            Ok(button_template_fixture())
+        } else {
+            Err(format!("test fetcher: no record for '{path}'"))
+        }
+    }
+
+    /// A PRIMARY `ComponentGeneralButton` (e.g. a transit console's CALL
+    /// ELEVATOR button) expands through its component standard exactly like
+    /// the secondary variant: the merged icon instance carries the HOST's
+    /// authored glyph identity.
+    #[test]
+    fn primary_button_expansion_forwards_host_icon_identity() {
+        let mut scene = primary_button_host_scene();
+        expand_widget_standards(&mut scene, &primary_expansion_fetcher);
+
+        let icon_instance = scene
+            .nodes
+            .values()
+            .find(|n| matches!(n.ty, BbNodeType::WidgetIcon) && n.id >= EXPANSION_ID_BASE)
+            .expect("expansion should merge the primary standard's WidgetIcon instance");
+        assert_eq!(
+            icon_instance
+                .raw
+                .get("iconProperties")
+                .and_then(|p| p.get("iconPreset"))
+                .and_then(|v| v.as_str()),
+            Some("ArrowCaratDoubleUp"),
+            "icon instance must inherit the primary host's authored iconPreset"
         );
     }
 
