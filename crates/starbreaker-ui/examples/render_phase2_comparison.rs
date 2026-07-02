@@ -122,6 +122,7 @@ fn synthetic_hybrid_document() -> UiIrDocument {
             stroke_colour: None,
             stroke_colour_token: None,
             stroke_extent: None,
+            separator_strip: None,
             colour_blend_mode: None,
             icon_tint_colour: None,
             icon_tint_colour_token: None,

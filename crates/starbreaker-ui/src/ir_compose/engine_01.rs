@@ -2761,7 +2761,7 @@ fn draw_widget_separator(
     rect: TskRect,
     alpha: f32,
 ) {
-    let draw_rect = widget_separator_draw_rect(rect, node.stroke_extent);
+    let draw_rect = widget_separator_draw_rect(rect, node.stroke_extent, node.separator_strip.as_ref());
     let colour = node
         .stroke_colour
         .or_else(|| {
@@ -2788,7 +2788,36 @@ fn node_colour_blend_mode(node: &UiIrNode) -> BlendMode {
     }
 }
 
-pub(crate) fn widget_separator_draw_rect(rect: TskRect, stroke_extent: Option<f32>) -> TskRect {
+/// The visible separator rect inside the authored slot box. Priority:
+/// 1. the widget-standard's `separator_strip` — per-axis Min/MaxSize clamp
+///    placed by the entry's Anchor/Pivot (0.5/0.5 = centred; the Carrack
+///    lift-call bar is a 16px slot clamped to the uilo_a Primary 6px strip);
+/// 2. the authored svgFill `stroke_extent` centreline fallback;
+/// 3. the slot box itself.
+pub(crate) fn widget_separator_draw_rect(
+    rect: TskRect,
+    stroke_extent: Option<f32>,
+    strip: Option<&crate::ui_ir::UiIrSeparatorStrip>,
+) -> TskRect {
+    if let Some(strip) = strip {
+        let clamp_axis = |size: f32, min: Option<f32>, max: Option<f32>| -> f32 {
+            let mut clamped = size;
+            if let Some(max) = max {
+                clamped = clamped.min(max);
+            }
+            if let Some(min) = min {
+                clamped = clamped.max(min);
+            }
+            clamped
+        };
+        let w = clamp_axis(rect.width(), strip.min_w, strip.max_w);
+        let h = clamp_axis(rect.height(), strip.min_h, strip.max_h);
+        let x = rect.x() + strip.anchor_x.unwrap_or(0.5) * rect.width()
+            - strip.pivot_x.unwrap_or(0.5) * w;
+        let y = rect.y() + strip.anchor_y.unwrap_or(0.5) * rect.height()
+            - strip.pivot_y.unwrap_or(0.5) * h;
+        return TskRect::from_xywh(x, y, w, h).unwrap_or(rect);
+    }
     let Some(stroke_extent) = stroke_extent else {
         return rect;
     };

@@ -451,8 +451,14 @@ mod tests_d {
         assert_eq!(layout.flip_vertical, None);
     }
 
+    /// The authored svgFill strokeExtent is preserved regardless of the slot's
+    /// fixed height — the visible strip THICKNESS is the widget-standard's
+    /// Min/MaxSize clamp (`separator_strip`), never a magic height gate. (The
+    /// former fixed-16px "procedural strip" special case suppressed the stroke
+    /// extent so the whole slot filled; the Carrack lift-call bottom bar
+    /// proved the reference draws the standard's clamped strip instead.)
     #[test]
-    fn compile_ir_treats_authored_procedural_separator_strip_as_fill() {
+    fn compile_ir_keeps_stroke_extent_for_fixed_height_separator_slots() {
         let canvas = serde_json::json!({
             "_RecordName_": "BuildingBlocks_Canvas.TestAuthoredSeparatorStrip",
             "_RecordValue_": {
@@ -498,7 +504,136 @@ mod tests_d {
 
         let node = ir.nodes.iter().find(|node| node.name == "separator").expect("separator node");
         assert_eq!(node.computed_rect.h, 16.0);
-        assert_eq!(node.stroke_extent, None);
+        assert_eq!(node.stroke_extent, Some(1.0));
+    }
+
+    /// The widget-standard brand entry's Min/MaxSize clamp + inner
+    /// Anchor/Pivot land on the IR node as `separator_strip`, so the draw
+    /// renders the clamped strip inside the authored slot box (synthetic
+    /// values — real standards author e.g. uilo_a Primary 6/6 @0.5/0.5).
+    #[test]
+    fn compile_ir_separator_standard_strip_clamp_reaches_ir() {
+        let canvas = serde_json::json!({
+            "_RecordName_": "BuildingBlocks_Canvas.TestSeparatorStripClamp",
+            "_RecordValue_": {
+                "size": {"x": 100, "y": 100},
+                "scene": [
+                    {
+                        "_Pointer_": "ptr:1",
+                        "_Type_": "BuildingBlocks_WidgetSeparator",
+                        "name": "primary_separator",
+                        "isActive": true,
+                        "alpha": 1.0,
+                        "direction": "Horizontal",
+                        "style": "Primary",
+                        "sizing": {
+                            "width": {"behavior": "Fixed", "value": 80.0},
+                            "height": {"behavior": "Fixed", "value": 16.0}
+                        },
+                        "svgFill": {
+                            "svgPath": "",
+                            "renderShape": true,
+                            "enableColorOverlay": true,
+                            "enableNineSliceRect": true,
+                            "strokeExtent": 1.0
+                        }
+                    }
+                ],
+                "operations": []
+            }
+        });
+        let standard_separator = serde_json::json!({
+            "_RecordName_": "BuildingBlocks_Canvas.HorizontalSeparatorPrimaryWidgetStandard",
+            "_RecordValue_": {
+                "brandStyles": [
+                    {
+                        "brandIdentifier": "file://./../../../../../../../../libs/foundry/records/ui/buildingblocks/styles/s_bioc.json",
+                        "entries": [
+                            {
+                                "name": "Root",
+                                "modifiers": [
+                                    {
+                                        "_Type_": "BuildingBlocks_FieldModifierBoolean",
+                                        "field": "EnableMinHeight",
+                                        "value": true
+                                    },
+                                    {
+                                        "_Type_": "BuildingBlocks_FieldModifierBoolean",
+                                        "field": "EnableMaxHeight",
+                                        "value": true
+                                    },
+                                    {
+                                        "_Type_": "BuildingBlocks_FieldModifierNumber",
+                                        "field": "MinSizeY",
+                                        "value": 5.0
+                                    },
+                                    {
+                                        "_Type_": "BuildingBlocks_FieldModifierNumber",
+                                        "field": "MaxSizeY",
+                                        "value": 5.0
+                                    },
+                                    {
+                                        "_Type_": "BuildingBlocks_FieldModifierNumber",
+                                        "field": "PivotY",
+                                        "value": 0.5
+                                    },
+                                    {
+                                        "_Type_": "BuildingBlocks_FieldModifierNumber",
+                                        "field": "AnchorY",
+                                        "value": 0.5
+                                    },
+                                    {
+                                        "_Type_": "BuildingBlocks_FieldModifierColor",
+                                        "field": "BackgroundColor",
+                                        "color": {
+                                            "_Type_": "BuildingBlocks_ColorStyle",
+                                            "color": "Base",
+                                            "alpha": 1.0
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        });
+        let fetcher = TestCanvasFetcher {
+            by_guid: std::collections::HashMap::new(),
+            by_path: std::collections::HashMap::from([(
+                "horizontal-primary".to_string(),
+                standard_separator,
+            )]),
+        };
+
+        let scene = crate::bb_scene::parse_bb_canvas(&canvas).expect("scene parse");
+        let ir = compile_ui_ir_from_scene(
+            &scene,
+            Some(&fetcher),
+            "guid-separator-strip-clamp",
+            Some("BuildingBlocks_Canvas.TestSeparatorStripClamp"),
+            (100, 100),
+            &defaults(),
+            Some("canvas:s_bioc".to_owned()),
+            None,
+            &[],
+            Vec::new(),
+            Vec::new(),
+            100,
+        );
+
+        let node = ir
+            .nodes
+            .iter()
+            .find(|node| node.name == "primary_separator")
+            .expect("primary separator node");
+        let strip = node.separator_strip.as_ref().expect("separator strip from the standard");
+        assert_eq!(strip.min_h, Some(5.0));
+        assert_eq!(strip.max_h, Some(5.0));
+        assert_eq!(strip.anchor_y, Some(0.5));
+        assert_eq!(strip.pivot_y, Some(0.5));
+        assert_eq!(strip.min_w, None);
+        assert_eq!(node.stroke_colour_token.as_deref(), Some("Base"));
     }
 
     #[test]
@@ -993,6 +1128,7 @@ mod tests_e {
                 stroke_colour: None,
                 stroke_colour_token: None,
                 stroke_extent: None,
+                separator_strip: None,
                 colour_blend_mode: None,
                 icon_tint_colour: None,
                 icon_tint_colour_token: None,

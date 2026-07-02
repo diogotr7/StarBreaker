@@ -280,68 +280,11 @@ pub(crate) fn parse_nine_slice_rect(value: &serde_json::Value) -> Option<[f32; 4
 }
 
 pub(crate) fn separator_stroke_extent_from_raw(node: &crate::bb_scene::BbNode) -> Option<f32> {
-    let stroke_extent = node
-        .raw
+    node.raw
         .get("strokeExtent")
         .or_else(|| node.raw.get("svgFill").and_then(|svg_fill| svg_fill.get("strokeExtent")))
         .and_then(|value| value.as_f64())
-        .map(|value| value as f32);
-
-    if is_authored_procedural_separator_strip(node) {
-        return None;
-    }
-
-    stroke_extent
-}
-
-fn is_authored_procedural_separator_strip(node: &crate::bb_scene::BbNode) -> bool {
-    if !matches!(node.ty, BbNodeType::Other(ref ty) if ty.eq_ignore_ascii_case("BuildingBlocks_WidgetSeparator")) {
-        return false;
-    }
-
-    let Some(svg_fill) = node.raw.get("svgFill") else {
-        return false;
-    };
-    let svg_path_empty = svg_fill
-        .get("svgPath")
-        .and_then(|value| value.as_str())
-        .is_none_or(|path| path.trim().is_empty());
-    if !svg_path_empty {
-        return false;
-    }
-    if !svg_fill
-        .get("renderShape")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false)
-    {
-        return false;
-    }
-    if !svg_fill
-        .get("enableColorOverlay")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false)
-    {
-        return false;
-    }
-    if !svg_fill
-        .get("enableNineSliceRect")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false)
-    {
-        return false;
-    }
-
-    let authored_fixed_height = node.raw.get("sizing").and_then(|sizing| sizing.get("height"));
-    let is_fixed_sixteen_px = authored_fixed_height
-        .and_then(|height| height.get("behavior"))
-        .and_then(|value| value.as_str())
-        .is_some_and(|behavior| behavior.eq_ignore_ascii_case("Fixed"))
-        && authored_fixed_height
-            .and_then(|height| height.get("value"))
-            .and_then(|value| value.as_f64())
-            .is_some_and(|value| (value - 16.0).abs() <= f64::EPSILON);
-
-    is_fixed_sixteen_px
+        .map(|value| value as f32)
 }
 
 pub(crate) fn separator_colour_blend_mode_from_raw(
@@ -405,6 +348,10 @@ pub(crate) struct SeparatorStyleSource {
     pub(crate) svg_path: Option<String>,
     pub(crate) nine_slice_rect: Option<[f32; 4]>,
     pub(crate) enable_color_overlay: Option<bool>,
+    /// The entry's Min/MaxSize clamp + inner Anchor/Pivot bounding the
+    /// visible strip inside the authored slot box (uilo_a Horizontal
+    /// Primary/Secondary/Tertiary = 6/4/2 px, centred).
+    pub(crate) strip: Option<UiIrSeparatorStrip>,
 }
 
 pub(crate) fn separator_standard_style_from_source(
@@ -551,6 +498,14 @@ fn separator_style_from_standard_record(
         }
 
         let mut source = SeparatorStyleSource::default();
+        // Strip clamp collection: each Min/Max bound applies unless its
+        // Enable* boolean is explicitly authored false; Anchor/Pivot place
+        // the clamped strip inside the slot. Assembled after the loop.
+        let mut strip = UiIrSeparatorStrip::default();
+        let mut enable_min_h = None;
+        let mut enable_max_h = None;
+        let mut enable_min_w = None;
+        let mut enable_max_w = None;
         for modifier in brand_style
             .get("entries")
             .and_then(|entries| entries.as_array())
@@ -566,6 +521,23 @@ fn separator_style_from_standard_record(
                     .and_then(|value| value.as_f64())
                     .map(|value| (value as f32).clamp(0.0, 1.0));
                 continue;
+            }
+            let number = || modifier.get("value").and_then(|value| value.as_f64()).map(|v| v as f32);
+            let boolean = || modifier.get("value").and_then(|value| value.as_bool());
+            match field.to_ascii_lowercase().as_str() {
+                "minsizey" => { strip.min_h = number(); continue; }
+                "maxsizey" => { strip.max_h = number(); continue; }
+                "minsizex" => { strip.min_w = number(); continue; }
+                "maxsizex" => { strip.max_w = number(); continue; }
+                "anchory" => { strip.anchor_y = number(); continue; }
+                "pivoty" => { strip.pivot_y = number(); continue; }
+                "anchorx" => { strip.anchor_x = number(); continue; }
+                "pivotx" => { strip.pivot_x = number(); continue; }
+                "enableminheight" => { enable_min_h = boolean(); continue; }
+                "enablemaxheight" => { enable_max_h = boolean(); continue; }
+                "enableminwidth" => { enable_min_w = boolean(); continue; }
+                "enablemaxwidth" => { enable_max_w = boolean(); continue; }
+                _ => {}
             }
             if field.eq_ignore_ascii_case("SvgPath") {
                 if extract_svg {
@@ -620,10 +592,27 @@ fn separator_style_from_standard_record(
                 .or_else(|| source.colour.map(|colour| colour[3]));
         }
 
+        // A bound is live unless its Enable* boolean is explicitly false; the
+        // strip only exists when at least one CLAMP is live (anchor/pivot
+        // without a clamp is a no-op — those entries keep the stroke-extent
+        // draw, e.g. drak Horizontal Primary authors only PivotY/AnchorY).
+        if enable_min_h == Some(false) { strip.min_h = None; }
+        if enable_max_h == Some(false) { strip.max_h = None; }
+        if enable_min_w == Some(false) { strip.min_w = None; }
+        if enable_max_w == Some(false) { strip.max_w = None; }
+        if strip.min_h.is_some()
+            || strip.max_h.is_some()
+            || strip.min_w.is_some()
+            || strip.max_w.is_some()
+        {
+            source.strip = Some(strip);
+        }
+
         if source.colour.is_some()
             || source.colour_token.is_some()
             || source.alpha_override.is_some()
             || source.svg_path.is_some()
+            || source.strip.is_some()
         {
             return Some(source);
         }

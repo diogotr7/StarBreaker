@@ -465,6 +465,7 @@ mod tests {
             stroke_colour: None,
             stroke_colour_token: None,
             stroke_extent: None,
+            separator_strip: None,
             colour_blend_mode: None,
             icon_tint_colour: None,
             icon_tint_colour_token: None,
@@ -602,21 +603,59 @@ mod tests {
     #[test]
     fn widget_separator_uses_centered_svg_stroke_extent() {
         let rect = TskRect::from_xywh(10.0, 20.0, 80.0, 8.0).expect("test rect");
-        let draw_rect = widget_separator_draw_rect(rect, Some(1.0));
+        let draw_rect = widget_separator_draw_rect(rect, Some(1.0), None);
         assert_eq!(draw_rect.x(), 10.0);
         assert_eq!(draw_rect.y(), 23.0);
         assert_eq!(draw_rect.width(), 80.0);
         assert_eq!(draw_rect.height(), 2.0);
 
-        let fallback = widget_separator_draw_rect(rect, None);
+        let fallback = widget_separator_draw_rect(rect, None, None);
         assert_eq!(fallback, rect);
     }
 
 
+    /// The widget-standard's Min/MaxSize clamp bounds the VISIBLE strip inside
+    /// the authored slot box, placed by the entry's Anchor/Pivot (0.5/0.5 =
+    /// centred). The strip wins over the svgFill stroke-extent fallback.
     #[test]
-    fn widget_separator_preserves_sixteen_pixel_authored_rects() {
+    fn widget_separator_strip_clamps_and_places_within_slot() {
         let rect = TskRect::from_xywh(10.0, 20.0, 80.0, 16.0).expect("test rect");
-        let draw_rect = widget_separator_draw_rect(rect, None);
+        let strip = crate::ui_ir::UiIrSeparatorStrip {
+            min_h: Some(5.0),
+            max_h: Some(5.0),
+            anchor_y: Some(0.5),
+            pivot_y: Some(0.5),
+            ..Default::default()
+        };
+        let draw_rect = widget_separator_draw_rect(rect, Some(1.0), Some(&strip));
+        assert_eq!(draw_rect.x(), 10.0);
+        assert_eq!(draw_rect.y(), 25.5, "strip centred in the 16px slot");
+        assert_eq!(draw_rect.width(), 80.0);
+        assert_eq!(draw_rect.height(), 5.0);
+
+        // Width-axis clamp (vertical separators author Min/MaxSizeX).
+        let strip_x = crate::ui_ir::UiIrSeparatorStrip {
+            min_w: Some(4.0),
+            max_w: Some(4.0),
+            anchor_x: Some(0.5),
+            pivot_x: Some(0.5),
+            ..Default::default()
+        };
+        let draw_rect = widget_separator_draw_rect(rect, None, Some(&strip_x));
+        assert_eq!(draw_rect.x(), 48.0, "strip centred across the 80px slot");
+        assert_eq!(draw_rect.width(), 4.0);
+        assert_eq!(draw_rect.y(), 20.0);
+        assert_eq!(draw_rect.height(), 16.0);
+    }
+
+
+    /// No standard strip and no stroke extent → the slot box itself fills
+    /// (the pre-existing fallback for separators no widget-standard entry
+    /// matches).
+    #[test]
+    fn widget_separator_without_style_or_stroke_fills_rect() {
+        let rect = TskRect::from_xywh(10.0, 20.0, 80.0, 16.0).expect("test rect");
+        let draw_rect = widget_separator_draw_rect(rect, None, None);
 
         assert_eq!(draw_rect, rect);
     }
@@ -1133,6 +1172,7 @@ mod tests_c {
             stroke_colour: None,
             stroke_colour_token: None,
             stroke_extent: None,
+            separator_strip: None,
             colour_blend_mode: None,
             icon_tint_colour: None,
             icon_tint_colour_token: None,
@@ -1733,6 +1773,7 @@ mod tests_c {
                 stroke_colour: None,
                 stroke_colour_token: None,
                 stroke_extent: None,
+                separator_strip: None,
                 colour_blend_mode: None,
                 icon_tint_colour: None,
                 icon_tint_colour_token: None,
@@ -1942,6 +1983,7 @@ mod tests_c {
             stroke_colour: None,
             stroke_colour_token: None,
             stroke_extent: None,
+            separator_strip: None,
             colour_blend_mode: None,
             icon_tint_colour: None,
             icon_tint_colour_token: None,
@@ -2150,6 +2192,7 @@ mod tests_d {
             stroke_colour: None,
             stroke_colour_token: None,
             stroke_extent: None,
+            separator_strip: None,
             colour_blend_mode: None,
             icon_tint_colour: None,
             icon_tint_colour_token: None,
@@ -2231,6 +2274,7 @@ mod tests_d {
                 stroke_colour: None,
                 stroke_colour_token: None,
                 stroke_extent: None,
+                separator_strip: None,
                 colour_blend_mode: None,
                 icon_tint_colour: None,
                 icon_tint_colour_token: None,
@@ -2613,6 +2657,7 @@ mod tests_e {
             stroke_colour: None,
             stroke_colour_token: None,
             stroke_extent: None,
+            separator_strip: None,
             colour_blend_mode: None,
             icon_tint_colour: None,
             icon_tint_colour_token: None,
@@ -2681,6 +2726,7 @@ mod tests_e {
             stroke_colour: None,
             stroke_colour_token: None,
             stroke_extent: None,
+            separator_strip: None,
             colour_blend_mode: None,
             icon_tint_colour: None,
             icon_tint_colour_token: None,
@@ -2768,6 +2814,7 @@ mod tests_e {
             stroke_colour: None,
             stroke_colour_token: None,
             stroke_extent: None,
+            separator_strip: None,
             colour_blend_mode: None,
             icon_tint_colour: None,
             icon_tint_colour_token: None,

@@ -125,6 +125,14 @@ pub struct UiIrNode {
     pub stroke_colour_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stroke_extent: Option<f32>,
+    /// Widget-standard separator strip: the matching brand entry's
+    /// Min/MaxSize clamp bounds the VISIBLE strip inside the authored slot
+    /// box, placed by the entry's Anchor/Pivot (0.5/0.5 = centred). Set only
+    /// when a separator widget-standard entry authors size clamps (e.g.
+    /// uilo_a Horizontal Primary/Secondary/Tertiary = 6/4/2 px); wins over
+    /// the svgFill `stroke_extent` fallback at draw time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub separator_strip: Option<UiIrSeparatorStrip>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub colour_blend_mode: Option<UiIrColourBlendMode>,
     pub icon_tint_colour: Option<[f32; 4]>,
@@ -251,6 +259,34 @@ pub struct UiIrPolygon {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fill_colour_token: Option<String>,
     pub fill_alpha: f32,
+}
+
+/// Data-driven separator strip bounds from the separator widget-standard's
+/// matching brand entry: per-axis Min/MaxSize clamps on the VISIBLE strip
+/// plus the entry's Anchor/Pivot placing it inside the authored slot box
+/// (0.5/0.5 = centred — every observed standard authors centred strips).
+/// Horizontal separators author the Y fields (uilo_a Primary MinSizeY =
+/// MaxSizeY = 6), vertical ones the X fields; each axis applies
+/// independently so mixed-authoring entries (drak V-Secondary: X clamp +
+/// Y anchor only) stay faithful.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct UiIrSeparatorStrip {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_w: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_w: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_x: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pivot_x: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_h: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_h: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_y: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pivot_y: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1532,6 +1568,7 @@ fn build_ui_ir_nodes(
             stroke_colour,
             stroke_colour_token,
             stroke_extent,
+            separator_strip: separator_style.as_ref().and_then(|style| style.strip),
             colour_blend_mode,
             icon_tint_colour,
             icon_tint_colour_token,

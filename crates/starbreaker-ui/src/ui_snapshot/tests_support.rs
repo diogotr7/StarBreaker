@@ -44,6 +44,7 @@ pub(super) fn base_node(id: u32, layer: i32) -> UiIrNode {
         stroke_colour: None,
         stroke_colour_token: None,
         stroke_extent: Some(1.0),
+        separator_strip: None,
         colour_blend_mode: Some(UiIrColourBlendMode::SourceOver),
         icon_tint_colour: None,
         icon_tint_colour_token: None,

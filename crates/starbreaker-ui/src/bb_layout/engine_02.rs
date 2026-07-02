@@ -359,8 +359,16 @@ mod tests_b {
         assert!((rect.x - 3.0).abs() < 0.5, "expected x≈3 from 1% row anchor, got {}", rect.x);
     }
 
+    /// A filled-shape WidgetSeparator honours its AUTHORED pivot like every
+    /// other overlay-anchored node: the slot box's TOP edge lands at the
+    /// anchor when `pivot.y == 0`. The Carrack lift-call console authors all
+    /// four of its separators this way (pivot.y 0, anchors 0.07/0.47/0.81/
+    /// 0.94) and the in-game reference places every line at the
+    /// pivot-honoured position; the visible thin strip inside the slot is
+    /// the widget-standard's Min/MaxSize clamp (ui_ir `separator_strip`),
+    /// NOT a re-anchoring of the slot itself.
     #[test]
-    fn horizontal_filled_separator_uses_centerline_anchor() {
+    fn horizontal_filled_separator_honours_authored_top_pivot() {
         use crate::bb_scene::{BbNode, BbNodeType, BbSizing, BbTrbl, BbValue, Vec2, Vec3};
 
         let separator = BbNode {
@@ -399,7 +407,7 @@ mod tests_b {
         let scene = BbScene { coordinate_method: crate::bb_scene::BbCoordinateMethod::UseRaw, canvas_size: (100.0, 100.0), roots: vec![1], nodes, operations: vec![] };
         let result = layout(&scene, 100, 100);
         let rect = result.rects[&1];
-        assert!((rect.y - 10.0).abs() < 0.5, "expected centerline y=18 minus half height 8, got {}", rect.y);
+        assert!((rect.y - 18.0).abs() < 0.5, "expected slot top at anchor y=18 (pivot.y 0 honoured), got {}", rect.y);
     }
 
     #[test]

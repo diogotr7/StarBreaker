@@ -534,12 +534,11 @@ fn layout_node(
         } else {
             node.anchor.x
         };
-        let pivot_y = effective_pivot_y(node);
         let anchor_world_x = parent_inner.x + parent_inner.w * anchor_x + pos_x;
         let anchor_world_y = parent_inner.y + parent_inner.h * node.anchor.y + pos_y;
         (
             anchor_world_x - outer_w * node.pivot.x,
-            anchor_world_y - outer_h * pivot_y,
+            anchor_world_y - outer_h * node.pivot.y,
         )
     };
 
@@ -692,45 +691,6 @@ fn parent_canvas_is_surface_host(node: &crate::bb_scene::BbNode, scene: &BbScene
                 && matches!(parent.sizing.width, BbValue::Percent(p) if (p - 1.0).abs() < 0.0001)
                 && matches!(parent.sizing.height, BbValue::Percent(p) if p > 0.90)
         })
-}
-
-fn effective_pivot_y(node: &crate::bb_scene::BbNode) -> f32 {
-    if horizontal_filled_separator_uses_centerline_anchor(node) {
-        0.5
-    } else {
-        node.pivot.y
-    }
-}
-
-fn horizontal_filled_separator_uses_centerline_anchor(node: &crate::bb_scene::BbNode) -> bool {
-    let is_separator = matches!(
-        &node.ty,
-        BbNodeType::Other(kind) if kind.eq_ignore_ascii_case("BuildingBlocks_WidgetSeparator")
-    );
-    if !is_separator || node.pivot.y.abs() > f32::EPSILON {
-        return false;
-    }
-    let is_horizontal = node
-        .raw
-        .get("direction")
-        .and_then(|value| value.as_str())
-        .is_some_and(|direction| direction.eq_ignore_ascii_case("Horizontal"));
-    let is_filled_shape = node
-        .raw
-        .get("svgFill")
-        .is_some_and(|svg_fill| {
-            svg_fill
-                .get("renderShape")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false)
-                && svg_fill
-                    .get("svgPath")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default()
-                    .is_empty()
-        });
-    let fixed_visual_height = matches!(node.sizing.height, BbValue::Fixed(height) if height > 1.0);
-    is_horizontal && is_filled_shape && fixed_visual_height
 }
 
 fn sampled_sizing_value(
