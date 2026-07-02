@@ -201,6 +201,23 @@ pub fn load_interior_from_socpak(
         return Err(Error::MissingSocpak(format!("No .soc in {p4k_path}")));
     }
 
+    // Transit destinations authored in the socpak's metadata sidecar
+    // (`<name>/metadata/sctransitdestination.xml`): floor positions + loc
+    // keys, socpak-pivot-relative — the SAME raw space as the `.soc` entity
+    // transforms, so the spatial association below runs before any container
+    // or item-port delta transform is applied.
+    let mut transit_destinations = Vec::new();
+    for entry in inner.entries() {
+        let lowered = entry.name.to_ascii_lowercase().replace('\\', "/");
+        if !lowered.ends_with("metadata/sctransitdestination.xml") {
+            continue;
+        }
+        match inner.read(entry) {
+            Ok(data) => transit_destinations.extend(parse_transit_destinations(&data)),
+            Err(e) => log::warn!("failed to read {}: {e}", entry.name),
+        }
+    }
+
     let mut meshes = Vec::new();
     let mut lights = Vec::new();
     let mut tint_palette_names = Vec::new();
@@ -215,7 +232,8 @@ pub fn load_interior_from_socpak(
         };
 
         match parse_soc(&soc_data, &soc_entry.name, container_transform) {
-            Ok((payload, palette_names)) => {
+            Ok((mut payload, palette_names)) => {
+                associate_transit_locations(&mut payload.meshes, &transit_destinations);
                 log::debug!(
                     "  .soc '{}' → {} meshes, {} lights",
                     soc_entry.name,
@@ -513,6 +531,135 @@ fn split_socpak_internal_path(p4k_path: &str) -> Option<(String, String)> {
 /// pak-mounted geometry — e.g. designer "brush" meshes baked into a container).
 /// These entries are absent from the main P4k tree, so they are read from the
 /// owning archive identified by [`split_socpak_internal_path`].
+/// A transit destination (elevator floor) authored in the socpak's
+/// `metadata/sctransitdestination.xml` sidecar.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransitDestination {
+    /// Floor-name localization key (`nameIdentifier`, e.g.
+    /// `@ui_interactor_carrack_garage` → "Sub Deck").
+    pub name_identifier: String,
+    /// Socpak-pivot-relative position (`PivotRelativePos`).
+    pub position: [f32; 3],
+    /// Association radius (`Radius`): a transit peripheral within this
+    /// distance is served by the destination.
+    pub radius: f32,
+}
+
+/// Parse `metadata/sctransitdestination.xml` (binary CryXMLB or plain text)
+/// into the authored transit destinations.
+pub(crate) fn parse_transit_destinations(data: &[u8]) -> Vec<TransitDestination> {
+    if let Ok(xml) = starbreaker_cryxml::from_bytes(data) {
+        let mut destinations = Vec::new();
+        fn walk(
+            xml: &CryXml,
+            node: &starbreaker_cryxml::CryXmlNode,
+            destinations: &mut Vec<TransitDestination>,
+        ) {
+            if xml.node_tag(node) == "Entity" {
+                let attrs: HashMap<&str, &str> = xml.node_attributes(node).collect();
+                push_transit_destination(&attrs, destinations);
+            }
+            for child in xml.node_children(node) {
+                walk(xml, child, destinations);
+            }
+        }
+        walk(&xml, xml.root(), &mut destinations);
+        return destinations;
+    }
+
+    let Ok(text) = std::str::from_utf8(data) else {
+        return Vec::new();
+    };
+    let mut reader = Reader::from_str(text);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut destinations = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().as_ref() == b"Entity" => {
+                let mut attrs: HashMap<String, String> = HashMap::new();
+                for attr in e.attributes().flatten() {
+                    let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
+                    if let Ok(value) = attr.decode_and_unescape_value(reader.decoder()) {
+                        attrs.insert(key, value.into_owned());
+                    }
+                }
+                let borrowed: HashMap<&str, &str> = attrs
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value.as_str()))
+                    .collect();
+                push_transit_destination(&borrowed, &mut destinations);
+            }
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(e) => {
+                log::warn!("failed to parse transit destination xml: {e}");
+                break;
+            }
+        }
+        buf.clear();
+    }
+    destinations
+}
+
+fn push_transit_destination(attrs: &HashMap<&str, &str>, destinations: &mut Vec<TransitDestination>) {
+    let Some(name_identifier) = attrs.get("nameIdentifier").filter(|s| !s.trim().is_empty()) else {
+        return;
+    };
+    if attrs.get("enabled").copied() == Some("false") {
+        return;
+    }
+    let Some(position) = attrs.get("PivotRelativePos").and_then(|s| parse_vec3_csv(s)) else {
+        return;
+    };
+    let radius = attrs
+        .get("Radius")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.0);
+    destinations.push(TransitDestination {
+        name_identifier: name_identifier.trim().to_string(),
+        position,
+        radius,
+    });
+}
+
+/// Associate each canvas-bearing transit screen with the NEAREST authored
+/// `TransitDestination` within that destination's radius. The console entity
+/// carries no destination reference — the engine's transit system associates
+/// peripherals spatially, so the exporter mirrors that: both positions are
+/// socpak-pivot-relative (destination `PivotRelativePos` vs the entity's raw
+/// `.soc` transform), and real data separates cleanly (Carrack: every
+/// lift-call screen is ≤2.2 m from exactly one destination; radii are 16–20 m
+/// with floors many metres apart).
+fn associate_transit_locations(meshes: &mut [InteriorMesh], destinations: &[TransitDestination]) {
+    if destinations.is_empty() {
+        return;
+    }
+    for mesh in meshes.iter_mut() {
+        if mesh.ui_canvas_guid.is_none() {
+            continue;
+        }
+        let pos = [mesh.transform[3][0], mesh.transform[3][1], mesh.transform[3][2]];
+        let mut best: Option<(&TransitDestination, f32)> = None;
+        for destination in destinations {
+            let d = [
+                destination.position[0] - pos[0],
+                destination.position[1] - pos[1],
+                destination.position[2] - pos[2],
+            ];
+            let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            if dist <= destination.radius
+                && best.is_none_or(|(_, best_dist)| dist < best_dist)
+            {
+                best = Some((destination, dist));
+            }
+        }
+        if let Some((destination, _)) = best {
+            mesh.ui_location_loc_key = Some(destination.name_identifier.clone());
+        }
+    }
+}
+
 pub(crate) fn read_socpak_internal_geometry(p4k: &MappedP4k, p4k_path: &str) -> Option<Vec<u8>> {
     let (socpak_path, inner_entry) = split_socpak_internal_path(p4k_path)?;
     let entry = p4k.entry_case_insensitive(&socpak_path)?;
@@ -917,6 +1064,7 @@ fn push_item_port_mesh(
         entity_class_name: Some(entity_class_name),
         tint_palette_name: None,
         ui_canvas_guid: None,
+        ui_location_loc_key: None,
     });
 }
 
@@ -1144,6 +1292,7 @@ fn included_objects_to_meshes(io: &IncludedObjects) -> Vec<InteriorMesh> {
                     .tint_palette_index
                     .and_then(|i| io.tint_palette_paths.get(i as usize).cloned()),
                 ui_canvas_guid: None,
+                ui_location_loc_key: None,
             })
         })
         .collect()
@@ -1294,6 +1443,7 @@ fn process_entity_children(
                 entity_class_name: None,
                 tint_palette_name: None,
                 ui_canvas_guid,
+                ui_location_loc_key: None,
             });
         } else if let Some(guid) = attrs.get("EntityClassGUID") {
             // No inline geometry — resolve via DataCore using EntityClassGUID
@@ -1305,6 +1455,7 @@ fn process_entity_children(
                 entity_class_name: None,
                 tint_palette_name: None,
                 ui_canvas_guid,
+                ui_location_loc_key: None,
             });
         }
     }
@@ -2042,6 +2193,113 @@ mod tests {
     }
 
     #[test]
+    fn parse_transit_destinations_reads_text_xml_entities() {
+        // Synthetic fixture mirroring the metadata sidecar shape (values arbitrary).
+        let xml = r#"
+            <SCTransitDestination>
+              <Entity nameIdentifier="@ui_interactor_test_floor_a" enabled="true"
+                      PivotRelativePos="1.5,-2.25,3.0" Radius="16" CryGUID="0">
+                <Tags />
+              </Entity>
+              <Entity nameIdentifier="@ui_interactor_test_floor_b" enabled="true"
+                      PivotRelativePos="-4.0,5.5,-6.75" Radius="20" CryGUID="1" />
+              <Entity nameIdentifier="@ui_interactor_test_disabled" enabled="false"
+                      PivotRelativePos="0,0,0" Radius="16" CryGUID="2" />
+            </SCTransitDestination>
+        "#;
+        let destinations = super::parse_transit_destinations(xml.as_bytes());
+        assert_eq!(destinations.len(), 2, "disabled destination must be skipped");
+        assert_eq!(destinations[0].name_identifier, "@ui_interactor_test_floor_a");
+        assert_eq!(destinations[0].position, [1.5, -2.25, 3.0]);
+        assert_eq!(destinations[0].radius, 16.0);
+        assert_eq!(destinations[1].name_identifier, "@ui_interactor_test_floor_b");
+        assert_eq!(destinations[1].radius, 20.0);
+    }
+
+    #[test]
+    fn associate_transit_locations_picks_nearest_destination_within_radius() {
+        let mesh = |canvas: Option<&str>, x: f32, y: f32, z: f32| InteriorMesh {
+            cgf_path: "test.cgf".into(),
+            material_path: None,
+            transform: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [x, y, z, 1.0],
+            ],
+            entity_class_guid: None,
+            entity_class_name: None,
+            tint_palette_name: None,
+            ui_canvas_guid: canvas.map(str::to_string),
+            ui_location_loc_key: None,
+        };
+        let destinations = vec![
+            super::TransitDestination {
+                name_identifier: "@floor_a".into(),
+                position: [0.0, 0.0, 0.0],
+                radius: 10.0,
+            },
+            super::TransitDestination {
+                name_identifier: "@floor_b".into(),
+                position: [0.0, 8.0, 0.0],
+                radius: 10.0,
+            },
+        ];
+        let mut meshes = vec![
+            mesh(Some("canvas-a"), 0.0, 1.0, 0.0),  // nearest floor_a
+            mesh(Some("canvas-b"), 0.0, 7.0, 0.0),  // nearest floor_b
+            mesh(Some("canvas-c"), 0.0, 50.0, 0.0), // outside every radius
+            mesh(None, 0.0, 1.0, 0.0),              // no canvas → never associated
+        ];
+        super::associate_transit_locations(&mut meshes, &destinations);
+        assert_eq!(meshes[0].ui_location_loc_key.as_deref(), Some("@floor_a"));
+        assert_eq!(meshes[1].ui_location_loc_key.as_deref(), Some("@floor_b"));
+        assert_eq!(meshes[2].ui_location_loc_key, None, "beyond radius stays unassociated");
+        assert_eq!(meshes[3].ui_location_loc_key, None, "non-canvas mesh stays unassociated");
+    }
+
+    /// Real-P4K regression: the Carrack middle section authors its floors in
+    /// `middle/metadata/sctransitdestination.xml`; every canvas-bearing
+    /// lift-call screen must resolve its floor loc key spatially — including
+    /// one on the sub deck (`@ui_interactor_carrack_garage`, the localized
+    /// "Sub Deck" heading the in-game console shows). Skips without SC_DATA_P4K.
+    #[test]
+    fn carrack_middle_lift_screens_resolve_transit_floor_loc_keys() {
+        let Ok(p4k_path) = std::env::var("SC_DATA_P4K") else {
+            eprintln!("SC_DATA_P4K not set; skipping transit-floor association test");
+            return;
+        };
+        let Ok(p4k) = starbreaker_p4k::MappedP4k::open(std::path::Path::new(&p4k_path)) else {
+            eprintln!("SC_DATA_P4K set but Data.p4k could not be opened; skipping");
+            return;
+        };
+        let identity = glam::Mat4::IDENTITY.to_cols_array_2d();
+        let payload = load_interior_from_socpak(
+            &p4k,
+            "Data\\ObjectContainers\\Ships\\ANVL\\Carrack\\middle.socpak",
+            identity,
+            identity,
+            &[],
+        )
+        .expect("middle.socpak should load");
+        let keys: std::collections::BTreeSet<String> = payload
+            .meshes
+            .iter()
+            .filter(|m| m.cgf_path.to_lowercase().contains("screen_liftcall"))
+            .filter_map(|m| m.ui_location_loc_key.clone())
+            .collect();
+        assert!(
+            keys.contains("@ui_interactor_carrack_garage"),
+            "a middle-section lift screen serves the sub deck (garage); got {keys:?}"
+        );
+        assert!(
+            keys.contains("@ui_interactor_carrack_crew_deck")
+                && keys.contains("@ui_interactor_carrack_technical"),
+            "middle-section lift screens cover crew deck + technical; got {keys:?}"
+        );
+    }
+
+    #[test]
     fn split_socpak_internal_path_isolates_archive_and_inner_entry() {
         // CIG authors pak-internal brush geometry with a doubled separator at the
         // `.socpak` mount point.
@@ -2341,6 +2599,7 @@ mod tests {
             entity_class_name: Some("InsideControl".to_string()),
             tint_palette_name: None,
             ui_canvas_guid: None,
+            ui_location_loc_key: None,
         };
         let outside = InteriorMesh {
             cgf_path: String::new(),
@@ -2351,6 +2610,7 @@ mod tests {
             entity_class_name: Some("OutsideControl".to_string()),
             tint_palette_name: None,
             ui_canvas_guid: None,
+            ui_location_loc_key: None,
         };
 
         let filtered = filter_item_port_meshes_to_editor_bounds(

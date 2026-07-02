@@ -213,6 +213,15 @@ pub struct UiBindingView<'a> {
     /// Localization key for the MFD screen name (e.g. `"@ui_MFD_View_TargetStatus"`).
     /// Injected into `text_ScreenName` nodes when rendering the MFD frame canvas.
     pub screen_name_loc_key: Option<&'a str>,
+    /// Localization key of the transit location this screen serves (the
+    /// exporter's nearest-`SCTransitDestination` association, e.g.
+    /// `"@ui_interactor_carrack_garage"` → "Sub Deck"). When set, the render's
+    /// default registry is overlaid with the LOCALIZED floor name at
+    /// [`TRANSIT_PANEL_LOCATION_PATH`] — the engine variable the transit
+    /// display component pushes and the console canvas's
+    /// `BindingsLocalizedVariable` caption reads. `None` for non-transit
+    /// screens.
+    pub transit_location_loc_key: Option<&'a str>,
     /// P4K path of the Flash movie hosting this screen's render-target (the
     /// binding's `owner_source_file`, e.g.
     /// `UI/BuildingBlocks/assets/SWF/BuildingBlocks_root.swf`). The engine
@@ -274,6 +283,41 @@ pub struct UiRenderOutput {
     pub diagnostics: UiRenderDiagnostics,
 }
 
+/// The engine variable a transit display component pushes its floor name
+/// into; the transit panel canvases read it via a `BindingsLocalizedVariable`
+/// caption (`OLD_TransitUIPanelExterior*` `Label_ThisFloor`). A binding path
+/// (schema identifier, like the compass `SVehicleHudParams` paths), not a
+/// game-data value — the VALUE comes from the socpak's authored
+/// `SCTransitDestination` metadata via the binding's loc key.
+const TRANSIT_PANEL_LOCATION_PATH: &str = "transitdisplay.panelLocation";
+
+/// Per-binding registry overlay for a transit screen: resolve the binding's
+/// floor loc key to its LOCALIZED name and pin it at
+/// [`TRANSIT_PANEL_LOCATION_PATH`] (the engine pushes the already-localized
+/// string; `BindingsLocalizedVariable` stringifies the variable verbatim).
+/// Returns `None` for non-transit bindings so the shared registry is reused
+/// untouched — the clone (incl. the localization map) is paid only by the few
+/// transit screens per ship.
+fn transit_overlay_registry(
+    binding: &UiBindingView<'_>,
+    defaults: &DefaultValueRegistry,
+) -> Option<DefaultValueRegistry> {
+    let key = binding.transit_location_loc_key?.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let localized = defaults
+        .lookup_localization(key)
+        .unwrap_or(key.trim_start_matches('@'))
+        .to_string();
+    let mut overlay = defaults.clone();
+    overlay.insert_path(
+        TRANSIT_PANEL_LOCATION_PATH,
+        crate::canvas::Value::Str(localized),
+    );
+    Some(overlay)
+}
+
 /// Compile canonical UI IR for a binding.
 pub fn compile_ir_for_binding(inputs: &PipelineInputs<'_>) -> Result<UiIrDocument, UiError> {
     let defaults = DefaultValueRegistry::with_pipeline_defaults_and_derived_values(
@@ -294,6 +338,10 @@ pub fn compile_ir_for_binding_with(
     inputs: &PipelineInputs<'_>,
     defaults: &DefaultValueRegistry,
 ) -> Result<UiIrDocument, UiError> {
+    // A transit screen overlays its floor name onto the shared registry
+    // (per-binding value; see `transit_overlay_registry`).
+    let transit_overlay = transit_overlay_registry(inputs.binding, defaults);
+    let defaults = transit_overlay.as_ref().unwrap_or(defaults);
     let b = inputs.binding;
 
     // Phase 6: for mfd bindings with a distinct frame canvas, compile the frame

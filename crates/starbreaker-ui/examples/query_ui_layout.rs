@@ -305,6 +305,7 @@ fn main() -> Result<(), String> {
         default_view_index: None,
         default_screen_slot: None,
         screen_name_loc_key: None,
+        transit_location_loc_key: None,
         host_swf_path: None,
         screen_aspect_w_over_h: None,
     };

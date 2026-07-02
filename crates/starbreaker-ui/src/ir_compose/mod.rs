@@ -7,10 +7,12 @@
 
 mod engine_01;
 mod fill_primitives;
+mod text_secondary;
 mod engine_02;
 
 pub use engine_01::*;
 pub(crate) use fill_primitives::*;
+pub(crate) use text_secondary::*;
 // engine_02 currently exports no `pub` items — its cross-module surface is
 // `pub(crate)`; widen to `pub use` if it ever gains public API.
 pub(crate) use engine_02::*;

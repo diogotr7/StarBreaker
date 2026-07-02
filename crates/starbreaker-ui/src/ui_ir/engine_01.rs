@@ -1067,17 +1067,41 @@ fn build_ui_ir_nodes(
         let has_text_intent = node_has_text_intent(node);
         let resolved_text = has_text_intent
             .then(|| binding_resolver.resolve_text_detailed(id, &node.raw, defaults));
-        let text_payload = resolved_text.as_ref().map(|resolved| {
-            // An empty component-parameter-driven label (inactive alert at rest)
-            // stays blank — don't let classify re-derive its placeholder label.
-            if resolved.text.trim().is_empty()
-                && binding_resolver.is_component_param_label(id, &node.raw)
-            {
-                UiIrTextPayload::Empty
-            } else {
-                classify_text_payload(Some(resolved.text.as_str()), &node.raw, defaults)
-            }
-        });
+        // A ComponentLabelCaptionPair's authored `show` flags gate each text:
+        // the engine hides a `show:false` label/caption outright (the
+        // lift-call console's floor heading authors label show=false +
+        // caption show=true, so only the floor-name caption renders).
+        let is_label_caption_pair = node_type_name(&node.ty)
+            .eq_ignore_ascii_case("BuildingBlocks_ComponentLabelCaptionPair");
+        let pair_label_hidden = is_label_caption_pair
+            && node
+                .raw
+                .get("labelProperties")
+                .and_then(|lp| lp.get("show"))
+                .and_then(|v| v.as_bool())
+                == Some(false);
+        let pair_caption_hidden = is_label_caption_pair
+            && node
+                .raw
+                .get("captionProperties")
+                .and_then(|cp| cp.get("show"))
+                .and_then(|v| v.as_bool())
+                == Some(false);
+        let text_payload = if pair_label_hidden {
+            None
+        } else {
+            resolved_text.as_ref().map(|resolved| {
+                // An empty component-parameter-driven label (inactive alert at rest)
+                // stays blank — don't let classify re-derive its placeholder label.
+                if resolved.text.trim().is_empty()
+                    && binding_resolver.is_component_param_label(id, &node.raw)
+                {
+                    UiIrTextPayload::Empty
+                } else {
+                    classify_text_payload(Some(resolved.text.as_str()), &node.raw, defaults)
+                }
+            })
+        };
         let resolved_style_tags = resolved_style_tags_for_node(
             canvas_fetcher,
             scene,
@@ -1232,6 +1256,11 @@ fn build_ui_ir_nodes(
                         .and_then(|lp| lp.get("textAlignment"))
                         .and_then(|v| v.as_str())
                 })
+                .or_else(|| {
+                    is_label_caption_pair
+                        .then(|| pair_component_alignment(&node.raw))
+                        .flatten()
+                })
                 .unwrap_or("Left")
                 .to_string();
 
@@ -1322,12 +1351,23 @@ fn build_ui_ir_nodes(
             None
         };
 
-        let secondary_text_payload = if node_type_name(&node.ty)
-            .eq_ignore_ascii_case("BuildingBlocks_ComponentLabelCaptionPair")
-        {
+        let secondary_text_payload = if is_label_caption_pair && !pair_caption_hidden {
             binding_resolver
                 .resolve_field_text(id, "ParamInput1", defaults)
-                .map(|text| classify_text_payload(Some(text.as_str()), &node.raw, defaults))
+                .map(|text| {
+                    // The caption applies ITS OWN authored case modifier
+                    // (`captionProperties.caseModifier`, e.g. Upper → the
+                    // lift-call "SUB DECK" heading), like every other text
+                    // resolution path.
+                    let case = node
+                        .raw
+                        .get("captionProperties")
+                        .and_then(|cp| cp.get("caseModifier"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let cased = crate::bb_bindings::apply_case_modifier(&text, case);
+                    classify_text_payload(Some(cased.as_str()), &node.raw, defaults)
+                })
         } else {
             None
         };
@@ -1630,6 +1670,17 @@ fn build_ui_ir_nodes(
     nodes
 }
 
+/// The pair component's authored `alignment` enum ("Left"/"Center"/"Right") —
+/// the field the labelcaptionpair widget-standard's RootCenter/RootRight
+/// entries select on to align the pair's content (the lift-call floor heading
+/// authors "Center").
+fn pair_component_alignment(raw: &serde_json::Value) -> Option<&str> {
+    raw.get("alignment")
+        .and_then(|v| v.as_str())
+        .map(|s| if s == "End" { "Right" } else { s })
+        .filter(|s| !s.is_empty())
+}
+
 /// Build the value-side (secondary) text style of a `ComponentLabelCaptionPair`. The
 /// value is plain, data-bound text, so it gets the same per-font imageSizePercent boost
 /// as other plain text; its colour role prefers the caption style's brand `FillColor`.
@@ -1646,6 +1697,7 @@ fn caption_pair_secondary_text_style(
         .get("captionProperties")
         .and_then(|cp| cp.get("textAlignment"))
         .and_then(|v| v.as_str())
+        .or_else(|| pair_component_alignment(&node.raw))
         .unwrap_or("Left")
         .to_string();
     let caption_style = node
@@ -1696,7 +1748,22 @@ fn caption_pair_secondary_text_style(
             .raw
             .get("verticalTextAlignment")
             .and_then(|v| v.as_str())
-            .unwrap_or("Center")
+            .unwrap_or_else(|| {
+                // The pair's template text fields are TOP-anchored and stack
+                // from the box top; with the label hidden
+                // (`labelProperties.show=false`) the caption is the first
+                // stacked field, so it tops the box (the lift-call floor
+                // heading sits above its separator like the reference). A
+                // VISIBLE label keeps the stacked-band model (secondary rect
+                // is placed below the primary band), where Center holds.
+                let label_hidden = node
+                    .raw
+                    .get("labelProperties")
+                    .and_then(|lp| lp.get("show"))
+                    .and_then(|v| v.as_bool())
+                    == Some(false);
+                if label_hidden { "Top" } else { "Center" }
+            })
             .to_string(),
         anchor_to_parent_x: node
             .raw

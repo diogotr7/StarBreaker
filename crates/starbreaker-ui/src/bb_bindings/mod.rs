@@ -19,6 +19,8 @@ mod tests_numeric_ops;
 mod tests_state_tags;
 mod util;
 
+pub(crate) use util::apply_case_modifier;
+
 /// Resolves text content for `WidgetTextField` and `WidgetText` nodes from operations.
 pub struct BindingResolver {
     pub(super) widget_to_path: HashMap<BbNodeId, String>,

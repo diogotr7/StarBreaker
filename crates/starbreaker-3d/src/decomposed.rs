@@ -2421,6 +2421,7 @@ fn ui_binding_json(binding: &UiBinding) -> serde_json::Value {
         "content_canvas_guid": binding.content_canvas_guid,
         "content_canvas_record_name": binding.content_canvas_record_name,
         "screen_name_loc_key": binding.screen_name_loc_key,
+        "transit_location_loc_key": binding.transit_location_loc_key,
         "dashboard_view_index": binding.dashboard_view_index,
         "dashboard_screen_slot": binding.dashboard_screen_slot,
         "owner_source_file": binding.owner_source_file,
@@ -3400,6 +3401,15 @@ fn generated_ui_asset_name(binding: &UiBinding) -> String {
     for candidate in candidates.into_iter().flatten() {
         let cleaned = sanitize_identifier(candidate);
         if !cleaned.is_empty() {
+            // Transit screens render per FLOOR (the loc key is part of the
+            // render identity) — suffix the floor so per-floor PNGs don't
+            // collide on the shared canvas name.
+            if let Some(loc_key) = binding.transit_location_loc_key.as_deref() {
+                let floor = sanitize_identifier(loc_key.trim_start_matches('@'));
+                if !floor.is_empty() {
+                    return format!("{cleaned}_{floor}");
+                }
+            }
             return cleaned;
         }
     }
@@ -3512,6 +3522,7 @@ mod manufacturer_id_tests {
             content_canvas_guid: None,
             content_canvas_record_name: None,
             screen_name_loc_key: None,
+            transit_location_loc_key: None,
             dashboard_view_index: None,
             dashboard_screen_slot: None,
             owner_source_file: None,
@@ -4715,6 +4726,9 @@ struct UiRenderKey {
     dashboard_view_index: Option<u32>,
     dashboard_screen_slot: Option<u32>,
     screen_name_loc_key: Option<String>,
+    /// Per-floor transit location: two lift-call consoles on different floors
+    /// render different headings, so the loc key is part of render identity.
+    transit_location_loc_key: Option<String>,
     owner_source_file: Option<String>,
     screen_aspect_bits: Option<u32>,
 }
@@ -4729,6 +4743,7 @@ fn ui_render_key(binding: &UiBinding) -> UiRenderKey {
         dashboard_view_index: binding.dashboard_view_index,
         dashboard_screen_slot: binding.dashboard_screen_slot,
         screen_name_loc_key: binding.screen_name_loc_key.clone(),
+        transit_location_loc_key: binding.transit_location_loc_key.clone(),
         owner_source_file: binding.owner_source_file.clone(),
         screen_aspect_bits: binding.ui_screen_aspect_w_over_h.map(f32::to_bits),
     }

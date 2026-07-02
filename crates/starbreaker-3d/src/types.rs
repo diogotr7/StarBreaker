@@ -539,6 +539,13 @@ pub struct UiBinding {
     /// (e.g. `"@ui_MFD_View_TargetStatus"`). Injected into the frame canvas's
     /// `text_ScreenName` node to label the footer. `None` for non-MFD bindings.
     pub screen_name_loc_key: Option<String>,
+    /// Localization key of the transit location this screen serves
+    /// (`InteriorMesh::ui_location_loc_key` — the nearest `SCTransitDestination`
+    /// within its radius). Pins the render's `transitdisplay.panelLocation`
+    /// engine variable so a lift-call console's floor-name heading resolves
+    /// (e.g. `@ui_interactor_carrack_garage` → "SUB DECK"). Part of the render
+    /// identity: two consoles on different floors render different images.
+    pub transit_location_loc_key: Option<String>,
     /// View index in the parent dashboard's `SCItemUIView_DashboardCanvasDef.View[]`
     /// array that provided `content_canvas_guid`, if resolved.
     pub dashboard_view_index: Option<u32>,
@@ -712,6 +719,14 @@ pub struct InteriorMesh {
     /// their class default is the generic `OLD_TransitUIPanelExterior`. `None`
     /// when the entity authors no inline UIBuildingBlocks canvas.
     pub ui_canvas_guid: Option<String>,
+    /// Localization key of the transit location this canvas-bearing screen
+    /// serves (`@ui_interactor_carrack_garage` → "Sub Deck"), resolved at
+    /// socpak parse time as the nearest `SCTransitDestination` metadata entry
+    /// within its authored `Radius` (the console entity carries no destination
+    /// reference — the engine associates transit peripherals spatially). Feeds
+    /// the render's `transitdisplay.panelLocation` variable so each lift-call
+    /// console shows ITS floor name. `None` for non-transit screens.
+    pub ui_location_loc_key: Option<String>,
 }
 
 /// A resolved mesh placement from a .soc interior container.

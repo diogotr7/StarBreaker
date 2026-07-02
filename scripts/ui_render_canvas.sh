@@ -9,7 +9,9 @@
 #
 # Usage:
 #   bash scripts/ui_render_canvas.sh --canvas <guid> --entity <EntityClassName> \
-#       [--kind physical|mfd|radar] [--helper <name>] [--out <dir>] [--ir]
+#       [--kind physical|mfd|radar] [--helper <name>] [--out <dir>] [--ir] \
+#       [--transit-loc-key <@loc_key>]   # transit screen floor (pins
+#                                        # transitdisplay.panelLocation)
 # Example (Carrack lift-call console):
 #   bash scripts/ui_render_canvas.sh --canvas a2c5fae4-f018-4d05-8ab7-e4f17a4d8ae4 \
 #       --entity ANVL_Carrack --helper console_liftcall
@@ -18,7 +20,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-CANVAS="" ENTITY="" KIND="physical" HELPER="" OUT="" DUMP_IR=0
+CANVAS="" ENTITY="" KIND="physical" HELPER="" OUT="" DUMP_IR=0 TRANSIT_LOC_KEY=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --canvas) CANVAS="$2"; shift 2 ;;
@@ -27,6 +29,7 @@ while [[ $# -gt 0 ]]; do
         --helper) HELPER="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
         --ir) DUMP_IR=1; shift ;;
+        --transit-loc-key) TRANSIT_LOC_KEY="$2"; shift 2 ;;
         -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -49,7 +52,7 @@ cat > "$SCENE" <<EOF
       "source_entity_name": "$HELPER",
       "helper_name": "$HELPER",
       "default_view": "_default",
-      "canvas_guid": "$CANVAS"
+      "canvas_guid": "$CANVAS"$([[ -n "$TRANSIT_LOC_KEY" ]] && printf ',\n      "transit_location_loc_key": "%s"' "$TRANSIT_LOC_KEY")
     }
   ]
 }

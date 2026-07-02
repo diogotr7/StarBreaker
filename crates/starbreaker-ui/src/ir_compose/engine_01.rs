@@ -1500,10 +1500,14 @@ fn draw_text_node(
     ctx: &ComposeContext<'_>,
     seen_rects: &mut HashSet<(i32, i32, i32, i32)>,
 ) {
-    let Some(text) = resolved_text_payload(node) else {
-        return;
-    };
-    if text.is_empty() {
+    // A pair whose primary label is hidden (`labelProperties.show=false` —
+    // the lift-call floor heading) still draws its resolved caption.
+    let text = resolved_text_payload(node).filter(|t| !t.is_empty());
+    let has_secondary = matches!(
+        &node.secondary_text_payload,
+        Some(UiIrTextPayload::Resolved { text }) if !text.is_empty()
+    );
+    if text.is_none() && !has_secondary {
         return;
     }
 
@@ -1553,6 +1557,21 @@ fn draw_text_node(
     );
     let secondary_fallback_font_size =
         (secondary_nominal_font_size * secondary_font_style_scale).max(1.0);
+
+    let Some(text) = text else {
+        // Primary hidden/empty — draw only the caption.
+        draw_pair_secondary_text(
+            img,
+            node,
+            renderer,
+            ctx,
+            secondary_rect,
+            secondary_nominal_font_size,
+            secondary_fallback_font_size,
+            secondary_font_style_scale,
+        );
+        return;
+    };
 
     let center_anchored_heading = node
         .text_style
@@ -1735,86 +1754,20 @@ fn draw_text_node(
         );
     }
 
-    if let Some(UiIrTextPayload::Resolved { text: secondary }) = node.secondary_text_payload.as_ref() {
-        let mut secondary_colour = resolved_text_colour(node, node.secondary_text_style.as_ref(), ctx);
-        secondary_colour[3] = ((secondary_colour[3] as f32) * node.alpha.clamp(0.0, 1.0)).round() as u8;
-        let secondary_align = node
-            .secondary_text_style
-            .as_ref()
-            .map(|style| TextAlign::from_bb_str(&style.alignment))
-            .unwrap_or(TextAlign::Left);
-        let secondary_vertical_align = node
-            .secondary_text_style
-            .as_ref()
-            .map(|style| VerticalAlign::from_bb_str(&style.vertical_alignment))
-            .unwrap_or(VerticalAlign::Centre);
-        let secondary_selected_font = select_imported_ui_font(
-            ctx,
-            node.secondary_text_style
-                .as_ref()
-                .or(node.text_style.as_ref()),
-        );
-        let secondary_line_spacing = node
-            .secondary_text_style
-            .as_ref()
-            .or(node.text_style.as_ref())
-            .and_then(|style| style.line_spacing);
-        let secondary_ttf_font_scale = secondary_font_style_scale;
-        let mut secondary_swf_font_size = secondary_nominal_font_size.max(1.0);
-        let secondary_rect = apply_font_style_vertical_offset(
-            secondary_rect,
-            node.secondary_text_style.as_ref().or(node.text_style.as_ref()),
-        );
-        if let Some(selection) = secondary_selected_font.as_ref() {
-            if node.auto_font_size {
-                secondary_swf_font_size = fit_swf_font_size_to_rect(
-                    renderer,
-                    secondary,
-                    selection.font,
-                    secondary_rect,
-                    secondary_swf_font_size,
-                    secondary_align,
-                    secondary_vertical_align,
-                    secondary_line_spacing,
-                );
-            }
-        }
-            let secondary_used_swf = secondary_selected_font.as_ref().is_some_and(|selection| {
-            renderer.draw_swf_font(
-                img,
-                secondary,
-                secondary_rect,
-                selection.font,
-                ctx.assets.font_edit_text_metrics(&selection.symbol),
-                secondary_swf_font_size,
-                secondary_colour,
-                secondary_align,
-                secondary_vertical_align,
-                secondary_line_spacing,
-                node.secondary_text_style
-                    .as_ref()
-                    .or(node.text_style.as_ref())
-                    .and_then(|style| style.letter_spacing)
-                    .unwrap_or(0.0),
-            )
-        });
-        if !secondary_used_swf {
-            renderer.draw(
-                img,
-                secondary,
-                secondary_rect,
-                FontKind::Sans,
-                secondary_fallback_font_size,
-                secondary_colour,
-                secondary_align,
-                secondary_vertical_align,
-                scale_line_spacing(secondary_line_spacing, secondary_ttf_font_scale),
-            );
-        }
-    }
+    draw_pair_secondary_text(
+        img,
+        node,
+        renderer,
+        ctx,
+        secondary_rect,
+        secondary_nominal_font_size,
+        secondary_fallback_font_size,
+        secondary_font_style_scale,
+    );
 }
 
-fn scale_line_spacing(line_spacing: Option<f32>, font_scale: f32) -> Option<f32> {
+
+pub(crate) fn scale_line_spacing(line_spacing: Option<f32>, font_scale: f32) -> Option<f32> {
     line_spacing.map(|spacing| spacing * font_scale)
 }
 
@@ -2380,7 +2333,7 @@ pub(crate) struct SelectedImportedFont<'a> {
     source: FontSelectionSource,
 }
 
-fn select_imported_ui_font<'a>(
+pub(crate) fn select_imported_ui_font<'a>(
     ctx: &'a ComposeContext<'_>,
     text_style: Option<&UiIrTextStyle>,
 ) -> Option<SelectedImportedFont<'a>> {
@@ -2503,7 +2456,7 @@ pub(crate) fn font_symbol_from_text_style(style: Option<&UiIrTextStyle>) -> Opti
 /// in the size, the result is independent of `requested_size`'s magnitude (it only
 /// seeds the measurement). Non-`autoFontSize` text is never passed here; it renders at
 /// its resolved style size and relies on word-wrap/clipping for overflow.
-fn fit_swf_font_size_to_rect(
+pub(crate) fn fit_swf_font_size_to_rect(
     renderer: &TextRenderer,
     text: &str,
     font: &FontGlyphSet,

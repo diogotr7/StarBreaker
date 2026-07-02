@@ -809,6 +809,10 @@ fn interior_ui_bindings_for_mesh(
             .and_then(|file| file.strip_suffix(".cgf"))
             .unwrap_or_default()
             .to_string();
+        // The floor this transit screen serves (nearest SCTransitDestination,
+        // resolved at socpak parse) — pins `transitdisplay.panelLocation` so
+        // the console's floor-name heading renders (e.g. "SUB DECK").
+        binding.transit_location_loc_key = mesh.ui_location_loc_key.clone();
         return vec![binding];
     }
 
@@ -1543,6 +1547,7 @@ mod tests {
             content_canvas_guid: None,
             content_canvas_record_name: None,
             screen_name_loc_key: None,
+            transit_location_loc_key: None,
             dashboard_view_index: None,
             dashboard_screen_slot: None,
             owner_source_file: None,

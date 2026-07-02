@@ -1721,6 +1721,169 @@ mod tests_f {
             .any(|uuid| uuid == "1477f18d-9b3e-4e5c-8047-dc60ba606ddb"));
     }
 
+    /// A `ComponentLabelCaptionPair` honours its authored component fields:
+    /// `labelProperties.show=false` hides the primary label, the caption
+    /// applies `captionProperties.caseModifier`, and the pair's `alignment`
+    /// field ("Center" — the enum the widget-standard's RootCenter entry
+    /// selects on) centres the caption text. The Carrack lift-call console's
+    /// `Label_ThisFloor` authors exactly this shape for its floor heading.
+    #[test]
+    fn compile_ir_label_caption_pair_show_case_and_alignment() {
+        let canvas = serde_json::json!({
+            "_RecordName_": "BuildingBlocks_Canvas.PairShowCaseAlignment",
+            "_RecordValue_": {
+                "size": {"x": 100, "y": 100},
+                "scene": [
+                    {
+                        "_Pointer_": "ptr:1",
+                        "_Type_": "BuildingBlocks_ComponentLabelCaptionPair",
+                        "name": "FloorHeading",
+                        "isActive": true,
+                        "alignment": "Center",
+                        "labelProperties": {
+                            "show": false,
+                            "label": "@test_label_key",
+                            "style": "Heading6",
+                            "caseModifier": "Upper"
+                        },
+                        "captionProperties": {
+                            "show": true,
+                            "caption": "@LOC_PLACEHOLDER",
+                            "style": "Heading3",
+                            "caseModifier": "Upper"
+                        },
+                        "size": {
+                            "width": {"behavior": "Auto", "value": 64.0},
+                            "height": {"behavior": "Auto", "value": 64.0}
+                        }
+                    }
+                ],
+                "operations": [
+                    {
+                        "_Type_": "BuildingBlocks_BindingsStringField",
+                        "widget": "_PointsTo_:ptr:1",
+                        "field": "ParamInput1",
+                        "input": "_PointsTo_:ptr:2"
+                    },
+                    {
+                        "_Pointer_": "ptr:2",
+                        "_Type_": "BuildingBlocks_BindingsStringComponentParameter",
+                        "name": "floor value",
+                        "parameter": "ParamInput1",
+                        "defaultValue": "Test Floor"
+                    }
+                ]
+            }
+        });
+
+        let mut defaults = defaults();
+        defaults.insert_localization("test_label_key", "Test Label".to_string());
+
+        let scene = crate::bb_scene::parse_bb_canvas(&canvas).expect("scene parse");
+        let ir = compile_ui_ir_from_scene(
+            &scene,
+            None,
+            "guid-pair-show-case-alignment",
+            Some("BuildingBlocks_Canvas.PairShowCaseAlignment"),
+            (100, 100),
+            &defaults,
+            None,
+            None,
+            &[],
+            Vec::new(),
+            Vec::new(),
+            100,
+        );
+
+        let node = ir.nodes.iter().find(|n| n.name == "FloorHeading").expect("pair node");
+        assert_eq!(node.text_payload, None, "show=false hides the primary label");
+        assert_eq!(
+            node.secondary_text_payload,
+            Some(UiIrTextPayload::Resolved { text: "TEST FLOOR".to_string() }),
+            "caption applies its authored caseModifier"
+        );
+        let style = node.secondary_text_style.as_ref().expect("secondary style");
+        assert_eq!(style.alignment, "Center", "pair alignment field centres the caption");
+    }
+
+    /// A caption authored `show=false` renders no secondary text even when its
+    /// bound value resolves.
+    #[test]
+    fn compile_ir_label_caption_pair_hidden_caption_stays_empty() {
+        let canvas = serde_json::json!({
+            "_RecordName_": "BuildingBlocks_Canvas.PairHiddenCaption",
+            "_RecordValue_": {
+                "size": {"x": 100, "y": 100},
+                "scene": [
+                    {
+                        "_Pointer_": "ptr:1",
+                        "_Type_": "BuildingBlocks_ComponentLabelCaptionPair",
+                        "name": "HiddenCaption",
+                        "isActive": true,
+                        "labelProperties": {
+                            "show": true,
+                            "label": "@test_label_key",
+                            "style": "Heading6",
+                            "caseModifier": "None"
+                        },
+                        "captionProperties": {
+                            "show": false,
+                            "caption": "@LOC_PLACEHOLDER",
+                            "style": "Heading3",
+                            "caseModifier": "None"
+                        },
+                        "size": {
+                            "width": {"behavior": "Auto", "value": 64.0},
+                            "height": {"behavior": "Auto", "value": 64.0}
+                        }
+                    }
+                ],
+                "operations": [
+                    {
+                        "_Type_": "BuildingBlocks_BindingsStringField",
+                        "widget": "_PointsTo_:ptr:1",
+                        "field": "ParamInput1",
+                        "input": "_PointsTo_:ptr:2"
+                    },
+                    {
+                        "_Pointer_": "ptr:2",
+                        "_Type_": "BuildingBlocks_BindingsStringComponentParameter",
+                        "name": "hidden value",
+                        "parameter": "ParamInput1",
+                        "defaultValue": "Hidden Value"
+                    }
+                ]
+            }
+        });
+
+        let mut defaults = defaults();
+        defaults.insert_localization("test_label_key", "Test Label".to_string());
+
+        let scene = crate::bb_scene::parse_bb_canvas(&canvas).expect("scene parse");
+        let ir = compile_ui_ir_from_scene(
+            &scene,
+            None,
+            "guid-pair-hidden-caption",
+            Some("BuildingBlocks_Canvas.PairHiddenCaption"),
+            (100, 100),
+            &defaults,
+            None,
+            None,
+            &[],
+            Vec::new(),
+            Vec::new(),
+            100,
+        );
+
+        let node = ir.nodes.iter().find(|n| n.name == "HiddenCaption").expect("pair node");
+        assert_eq!(node.secondary_text_payload, None, "show=false hides the caption");
+        assert!(
+            matches!(&node.text_payload, Some(UiIrTextPayload::Resolved { text }) if text == "Test Label"),
+            "the shown label still renders: {:?}",
+            node.text_payload
+        );
+    }
+
     #[test]
     fn compile_ir_suppresses_placeholder_only_label_caption_pairs() {
         let canvas = serde_json::json!({

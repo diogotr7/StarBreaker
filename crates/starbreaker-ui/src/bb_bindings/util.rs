@@ -84,8 +84,7 @@ pub(super) fn is_placeholder_label(s: &str) -> bool {
         || t.eq_ignore_ascii_case("LOC_EMPTY")
 }
 
-#[allow(dead_code)]
-pub(super) fn apply_case_modifier(s: &str, modifier: &str) -> String {
+pub(crate) fn apply_case_modifier(s: &str, modifier: &str) -> String {
     match modifier {
         "Upper" | "AllCaps" => s.to_uppercase(),
         "Lower" => s.to_lowercase(),
