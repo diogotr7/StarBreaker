@@ -2,27 +2,29 @@ use std::fs;
 use std::path::Path;
 
 fn load_engine_module_source(module_dir: &str) -> String {
+    // The stage engines are real submodules since review F1 (formerly
+    // `engine.inc` + `engine_parts/*.part` include-splices): merge every
+    // `.rs` file in the module directory.
     let module_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(module_dir);
-    let mut merged = fs::read_to_string(module_root.join("engine.inc"))
-        .unwrap_or_else(|err| panic!("failed to read {module_dir}/engine.inc: {err}"));
-
-    let parts_dir = module_root.join("engine_parts");
-    if parts_dir.is_dir() {
-        let mut part_paths: Vec<_> = fs::read_dir(&parts_dir)
-            .unwrap_or_else(|err| panic!("failed to read {}: {err}", parts_dir.display()))
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("part"))
-            .collect();
-        part_paths.sort();
-        for path in part_paths {
-            let chunk = fs::read_to_string(&path)
-                .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
-            merged.push('\n');
-            merged.push_str(&chunk);
-        }
+    let mut paths: Vec<_> = fs::read_dir(&module_root)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", module_root.display()))
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("rs"))
+        .collect();
+    paths.sort();
+    assert!(
+        !paths.is_empty(),
+        "no .rs sources found under {}",
+        module_root.display()
+    );
+    let mut merged = String::new();
+    for path in paths {
+        let chunk = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+        merged.push('\n');
+        merged.push_str(&chunk);
     }
-
     merged
 }
 
