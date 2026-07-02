@@ -2234,3 +2234,25 @@ reveal hidden ones — caught by the medical bed's hidden close-button label).
 **Action:** DONE (`29c2c1fc3`, `fd5147062`, re-freeze `819fa7e79` — metadata-only, before/after renders
 md5-identical on all drifted frozen screens). OPEN: border CHAMFER draw support (the button standards author
 `EnableTopLeft/BottomRightBorderChamfer`), text-field line-box fit for 2-line wrapped labels.
+
+### 104 — Full-crate review 2026-07-02: landed cleanups + the engine_parts question (OWNER-GATED)
+**Observed:** a structured review of `crates/starbreaker-ui` (findings + plan:
+`docs/superpowers/plans/2026-07-02-ui-crate-review.md`). LANDED (behaviour-identical, each
+test-verified): F3 shared expansion-instance traversal (`35b0298aa`), F4 one modular-kit sheet
+path builder (`cdb217738`), F5 literal-colour token-drop for ALL colour fields (`e32d6962f`,
+TDD), F6 shared `png_cache_key` builder (`3f92c3f9c`), F7 style-engine header drift (`300af3b4f`).
+**Recorded, not actioned:** (F1, OWNER-GATED) the four stage engines are 12 flat `.part` chunks
+(~31k lines) spliced by `include!` into single-namespace modules — no graphify indexing (the
+skill carries two red-flag rows just to warn about the blind spot), no `//!` docs, no boundary
+enforcement, no rustfmt; proposal = convert ONE stage (`bb_resolve`) to real `engine_NN.rs`
+submodules as a pilot (pure code motion, compiler-driven `pub(super)` promotions, verified by
+the full suite + `ui_check` + a frozen-screen render md5) before deciding on the rest — the
+highest-churn files in the repo, hence gated. (F8) single-level expansion + element-instance
+tags approximate the engine's nested standards; a fixed-point loop is truer but re-shifts every
+button-bearing frozen IR baseline for zero pixel change — revisit only when a screen needs
+deeper nesting. (F9) MCP backlog: `ui_tag_lookup` + `ui_kit_sheet_entries` (ports of
+`ui_canvas_query.py`) are cheap wins for a between-sessions MCP deploy; a `ui_render_canvas`
+MCP tool is NOT recommended (the deployed server goes stale against working-tree engine
+changes — the script builds the current tree).
+**Action:** cleanups DONE (commits above); F1 awaits owner decision; F9 queued for the next
+MCP deploy window.
