@@ -231,6 +231,11 @@ Replay-render → compare → catalog → TDD fix → check → re-render. Per c
 - **Guard trips:** that is the system working — adjudicate via workflow §5
   (structural discriminator, never a name). Baseline genuinely wrong → that's a
   freeze (a STOP). Known deferred miss → register a §6 known-outlier.
+- **Perf side-questions** ("the export got slow") are the
+  `starbreaker-optimisation` skill's job — invoke it rather than ad-hoc timing.
+  Its first move: pin BOTH baselines' binary provenance
+  (`target/release/deps/starbreaker-<hash>` mtimes are a no-rebuild bisect
+  ladder) before attributing anything to this arc's changes.
 
 Work the catalog in priority order, highest first. When an item is fixed,
 deferred, or blocked, take the next-highest open item yourself — **in automatic
@@ -541,6 +546,7 @@ needed is a doc bug — fix it before closing.
 | "I'll grep the source to find which stage/function owns this" | Query graphify first (`graphify query`/`explain`, `/graphify`, `graphify-mcp`) — relationship-aware over `.rs`/`.py`, answers with `file:line`, no API cost (ui-reference §4b). It's CODE structure only — not a data-value source (MCP trio / parse-JSON still rule). |
 | "graphify shows nothing / `No path` there — so that code doesn't exist" | graphify does NOT index the `engine_*.part` UI-engine core (~31k lines) — a miss there is the blind spot, not proof. Grep `crates/starbreaker-ui/src/*/engine_parts/` WITHOUT `--include="*.rs"` (it hides `.part`); and `.map(foo)` won't match `foo(`. |
 | "My quick check refutes the subagent — move on" | Refuting a careful subagent finding needs the SAME rigour as the claim. If your refutation is the weaker read, IT'S the unreliable one — verify with parse/probe before acting (ledger 68). |
+| "That fix landed — a natural checkpoint, I'll ask whether to continue" | A landed sub-fix is NOT an arc boundary. Re-read the confirmed catalog and take the next open item (fully-auto never asks which/whether). If context is genuinely short, SAY so and hand the state to memory/handoff — do not convert budget anxiety into a permission question. |
 | "This render looks identical to the last — my change did nothing" | The wrapper writes a FIXED path; the user's viewer caches by name and shows the OLD image. Copy each iteration the user sees to a unique filename; confirm via the printed `png md5:` before concluding no-op (ledger 69). |
 | "Each narrower scope regresses the next frozen sibling — no-discriminator blocker proven" | NO — that's the signal you're at the WRONG STAGE, symptom-scoping render-side a fix that belongs UPSTREAM. Four arcs (velocity-num/compass/master-mode/LR-indicator) "blocked" on size/colour, all dissolved on reading the INSTANTIATED variant's authored `defaultStyles`/`brandStyles`/`embeddedStyles` (value authored but NOT applied). Re-read the variant (parse JSON) + verify it reaches the node before ANY blocker claim; keep `--full` for auto-canvas drift (ledger 76). |
 | "Font's too small but there's no authored FontSize — undecoded engine scaling, defer it" | TWO non-blocker causes before any "undecoded" defer, not one. (1) **Unapplied authored size:** you probably read the GENERIC master or only `labelProperties` — re-read the INSTANTIATED brand sub-canvas (`drak_*_cutlass_*`, not `generic_*`) incl. its canvas-root `embeddedStyles` `Type(Text)` selectors (the LR-indicator's FontSize 100 lived ONLY there; velocity-num/master-mode bug a 4th time). (2) **Per-screen RENDER scale:** even with the size applied, a portrait cockpit screen needs a `ui_ir` font screen scale — and the obvious `bb_layout` `canvas_scale` knob is INERT (the IR renderer reads `font_size` directly; a byte-identical render via the printed `png md5` proves you edited a dead stage). Apply BOTH, trace the lever to where the glyph px is actually read, THEN judge any residual (ledger 94/96/97). |

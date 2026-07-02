@@ -211,6 +211,21 @@ Via `AskUserQuestion`, ask whether to run another pass against the NEW baseline
    order can make output vary run-to-run. Run the workload twice and diff.
 6. **The allocator is rarely the answer.** jemalloc via `LD_PRELOAD` was measured
    SLOWER here — the pipeline is not allocator-bound. Don't reach for it.
+7. **Validate the baseline's PROVENANCE.** A "fast prior run" may be a STALE
+   BINARY from before the regressing commit — stat the binary mtime against
+   `git log` before trusting any endpoint. Old hashed executables under
+   `target/release/deps/starbreaker-<hash>` are a free no-rebuild time-travel
+   bisect ladder.
+8. **A silent probe means the WRONG LAYER, not "no cost".** Instrument the
+   phase boundary first (per-item heartbeats), then descend — the DDNA
+   regression bypassed `cached_load_keyed`, so a `[tex-miss]` probe there
+   stayed silent through a 280s phase.
+9. **Profilers may be locked down** (`ptrace_scope`, `perf_event_paranoid=4`):
+   `/proc/<pid>/task/*/stat` run-state counts (1 R + N S = a serial
+   main-thread phase) distinguish serial vs parallel phases for free.
+10. **Budget /tmp (tmpfs) for bench outputs** — multi-GB export dirs fill it;
+    a later run then dies mid-write ("Disk quota exceeded") and poisons the
+    comparison. Clean bench dirs between runs.
 
 ## Strict rules
 

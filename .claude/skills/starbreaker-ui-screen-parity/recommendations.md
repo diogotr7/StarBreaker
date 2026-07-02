@@ -461,3 +461,25 @@ under **Open recommendations** above.
   `feedback-find-indata-sources-before-inventing`; the skill carries the principle +
   rationalization-counters and points at the docs for the probe chain. Cleared the
   Open rec.
+
+- **FOLDED into SKILL.md 2026-07-02** (both entries below: the red-flag row
+  "That fix landed — a natural checkpoint…" and the perf side-question bullet
+  in the autonomous loop):
+- **2026-07-02 (Carrack lift-call console arc) — premature arc pause.** After the
+  exporter binding fix landed (blank→renders, 5/8 elements), the session STOPPED
+  and asked "want me to take on the button, or is this the stopping point?" —
+  despite fully-automated mode, a user-confirmed catalog with the button elements
+  on it, and a completed root-cause diagnosis (nothing was blocked). The owner had
+  to push ("continue to fix all items until you have parity"). The rationalization
+  was "a clean milestone is a natural checkpoint" + context-budget anxiety; neither
+  is a skill-sanctioned stop (the only interruptions are the active checkpoints:
+  catalog gate, freezes, semi-auto commits). Counter for the SKILL: a landed
+  sub-fix is NOT an arc boundary — after each landed fix, re-read the confirmed
+  catalog and take the next open item without asking. If context is genuinely
+  short, say so explicitly and hand off state to memory — do not convert it into
+  a permission question.
+- **2026-07-02 — perf side-finding worth keeping.** A "the export got slow"
+  side-question inside a parity arc is an optimisation-skill job (it was invoked
+  and worked): the decisive early move is pinning BOTH baselines' binary
+  provenance (`target/release/deps/starbreaker-<hash>` mtimes = free time-travel
+  bisect) before attributing anything to the arc's own changes.
