@@ -1,3 +1,35 @@
+#[allow(unused_imports)]
+use super::*;
+#[allow(unused_imports)]
+use image::RgbaImage;
+#[allow(unused_imports)]
+use image::imageops;
+#[allow(unused_imports)]
+use std::collections::{HashMap, HashSet, VecDeque};
+#[allow(unused_imports)]
+use std::sync::OnceLock;
+#[allow(unused_imports)]
+use tiny_skia::{BlendMode, Color, Paint, PathBuilder, Pixmap, PixmapPaint, Rect as TskRect, Stroke, Transform};
+#[allow(unused_imports)]
+use crate::bb_atlas::AtlasLibrary;
+#[allow(unused_imports)]
+use crate::bb_assets::UiAssetResolver;
+#[allow(unused_imports)]
+use crate::bb_layout::Rect;
+#[allow(unused_imports)]
+use crate::compose::ComposeContext;
+#[allow(unused_imports)]
+use crate::error::UiError;
+#[allow(unused_imports)]
+use crate::text::{FontKind, TextAlign, TextRenderer, VerticalAlign};
+#[allow(unused_imports)]
+use crate::swf_assets::{FontGlyphSet, SwfAssetLibrary};
+#[allow(unused_imports)]
+use crate::ui_ir::{
+    validate_ui_ir_document, UiIrAssetLayout, UiIrBorder, UiIrColourBlendMode, UiIrDocument,
+    UiIrNode, UiIrPolygon, UiIrRect, UiIrTextPayload, UiIrTextStyle, UiIrValue,
+};
+
 // Consolidated engine chunk 02 (formerly: clip.part, polygon_draw.part, part_08.part, part_09.part, part_10.part, part_11.part, part_12.part).
 //   clip.part: Ancestor-overflow clipping (`UiIrNode::clip_rect`).
 //   polygon_draw.part: WidgetPolygon rendering (the power pip selector arrow).
@@ -21,7 +53,7 @@
 /// Returns the spoke list plus the brand-resolved spoke material path (the
 /// fetcher reads its `Gradient`/`InnerAlpha`/`OuterAlpha`/`Glow` for the soft-glow
 /// look). Nothing is invented — an empty list means no spoke nodes were loaded.
-fn collect_radar_spokes<'a>(
+pub(crate) fn collect_radar_spokes<'a>(
     nodes: &'a [UiIrNode],
     ctx: &ComposeContext<'_>,
 ) -> (Vec<crate::pipeline::RadarSpokeInput>, Option<&'a str>) {
@@ -64,7 +96,7 @@ fn collect_radar_spokes<'a>(
 /// discriminator vs the single-cell `NorthPoint`/readout glyphs that share the
 /// material. Returns its brand-resolved material + authored UV window + fill alpha
 /// (the brand `Base` ~0.3), all data. `None` when no tape is loaded.
-fn collect_radar_heading_tape(nodes: &[UiIrNode]) -> Option<crate::pipeline::RadarHeadingTape<'_>> {
+pub(crate) fn collect_radar_heading_tape(nodes: &[UiIrNode]) -> Option<crate::pipeline::RadarHeadingTape<'_>> {
     nodes.iter().find_map(|n| {
         let material = n
             .primitive_material
@@ -114,7 +146,7 @@ fn classify_clip(clip: &UiIrRect, rect: Rect) -> ClipRelation {
 }
 
 /// Run `draw` against `pixmap`, restricted to the node's clip region.
-fn with_node_clip(
+pub(crate) fn with_node_clip(
     pixmap: &mut Pixmap,
     clip: Option<&UiIrRect>,
     node_rect: Rect,
@@ -171,7 +203,7 @@ fn composite_clip_region_pixmap(dst: &mut Pixmap, src: &Pixmap, clip: &UiIrRect)
 
 /// Run `draw` against a straight-alpha image, restricted to the clip region
 /// (the text pass draws after the pixmap is converted to an `RgbaImage`).
-fn with_node_clip_image(
+pub(crate) fn with_node_clip_image(
     img: &mut RgbaImage,
     clip: Option<&UiIrRect>,
     node_rect: Rect,
@@ -228,7 +260,7 @@ fn composite_clip_region_image(dst: &mut RgbaImage, src: &RgbaImage, clip: &UiIr
 /// Draw a `WidgetPolygon` as a filled regular n-gon inscribed in the node
 /// rect (the power pip selector arrow: 3 sides, startAngle 270 with a 90°
 /// orientation offset = a right-pointing triangle in the brand Bright role).
-fn draw_ir_polygon(
+pub(crate) fn draw_ir_polygon(
     node: &UiIrNode,
     polygon: &UiIrPolygon,
     rect: Rect,
@@ -1613,7 +1645,7 @@ mod tests_c {
     #[test]
     fn render_ui_ir_document_renders_text_from_golden_fixture() {
         let document: UiIrDocument = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/ui_ir/expected_testroot_ir.json"
+            "../../tests/fixtures/ui_ir/expected_testroot_ir.json"
         ))
         .expect("golden fixture should parse");
         let fetcher = StubFetcher { images: HashMap::new() };
@@ -1774,7 +1806,7 @@ mod tests_c {
         }
 
         let mut document: UiIrDocument = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/ui_ir/expected_testroot_ir.json"
+            "../../tests/fixtures/ui_ir/expected_testroot_ir.json"
         ))
         .expect("golden fixture should parse");
         // One own-vehicle runtime-image node with a BLUE authored holo tint.
@@ -1838,7 +1870,7 @@ mod tests_c {
     #[test]
     fn text_field_stroke_does_not_draw_rect_box() {
         let document: UiIrDocument = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/ui_ir/expected_testroot_ir.json"
+            "../../tests/fixtures/ui_ir/expected_testroot_ir.json"
         ))
         .expect("golden fixture should parse");
         let mut node = document.nodes[0].clone();
@@ -1865,7 +1897,7 @@ mod tests_c {
     #[test]
     fn render_ui_ir_document_clips_fill_to_clip_rect() {
         let mut document: UiIrDocument = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/ui_ir/expected_testroot_ir.json"
+            "../../tests/fixtures/ui_ir/expected_testroot_ir.json"
         ))
         .expect("golden fixture should parse");
         document.nodes = vec![UiIrNode {
@@ -2240,7 +2272,20 @@ mod tests_d {
 
     #[test]
     fn compose_source_does_not_reintroduce_forbidden_hardcoded_markers() {
-        let source = include_str!("../engine.inc");
+        // Scan the REAL engine sources line-by-line. (The pre-F1 version read
+        // `engine.inc` — 2 include! lines — so the guard was silently vacuous.)
+        // Comments and `test_palettes::` provenance-fixture lines are exempt:
+        // tests reference real brand records THROUGH the sanctioned fixture;
+        // the ban is on marker-based gating in PRODUCTION composition code.
+        let source: String = [include_str!("engine_01.rs"), include_str!("engine_02.rs")]
+            .iter()
+            .flat_map(|src| src.lines())
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !trimmed.starts_with("//") && !line.contains("test_palettes::")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         // Hard rule: do not add heuristic marker names. If this trips, fix the
         // structural root cause so composition remains generic across screens.
         // Renaming around this assertion is not an acceptable workaround.
@@ -2812,7 +2857,7 @@ mod tests_e {
 // (e.g. the modular-kit ghost button's `RootGhost` 3px Accent1 border with
 // 6px corners). Non-uniform or square borders keep per-side fills.
 
-fn rounded_rect_path(rect: TskRect, radius: f32) -> Option<tiny_skia::Path> {
+pub(crate) fn rounded_rect_path(rect: TskRect, radius: f32) -> Option<tiny_skia::Path> {
     let r = radius.max(0.0).min(rect.width() * 0.5).min(rect.height() * 0.5);
     let x = rect.x();
     let y = rect.y();
@@ -2883,7 +2928,7 @@ fn uniform_border_style(
 /// (the stroke stays inside the node rect like the per-side fills do).
 /// Returns `false` when the border is not expressible as one rounded stroke,
 /// so the caller can fall back to per-side drawing.
-fn draw_rounded_uniform_border(
+pub(crate) fn draw_rounded_uniform_border(
     pixmap: &mut Pixmap,
     rect: Rect,
     border: &UiIrBorder,

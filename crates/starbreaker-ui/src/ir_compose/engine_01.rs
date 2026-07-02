@@ -1,3 +1,5 @@
+#[allow(unused_imports)]
+use super::*;
 // Consolidated engine chunk 01 (formerly: part_01.part, part_02.part, part_03.part, part_04.part, part_05.part, part_06.part, part_07.part).
 //   part_01.part: Canonical UI IR renderer for generic BuildingBlocks output.
 //   part_06.part: Registered fallback (crates/starbreaker-ui/docs/ui-fallback-register.md): the word-space gap inserted between
@@ -27,7 +29,7 @@ use crate::text::{FontKind, TextAlign, TextRenderer, VerticalAlign};
 use crate::swf_assets::{FontGlyphSet, SwfAssetLibrary};
 use crate::ui_ir::{
     validate_ui_ir_document, UiIrAssetLayout, UiIrBorder, UiIrColourBlendMode, UiIrDocument,
-    UiIrNode, UiIrPolygon, UiIrRect, UiIrTextPayload, UiIrTextStyle, UiIrValue,
+    UiIrNode, UiIrRect, UiIrTextPayload, UiIrTextStyle, UiIrValue,
 };
 
 // The TTF (DejaVu) fallback follows the same data-backed em model as the SWF
@@ -525,7 +527,7 @@ fn draw_non_text_node(
 /// `StrokeColor` is its GLYPH outline drawn via the text path, not a box around
 /// the field rect (the DRAK velocity-num readouts author a white ~0.64α text
 /// StrokeColor that must outline the digits, not box them).
-fn node_draws_rect_stroke(node: &UiIrNode) -> bool {
+pub(crate) fn node_draws_rect_stroke(node: &UiIrNode) -> bool {
     node.stroke_colour.is_some()
         && node.stroke_extent.unwrap_or(0.0) > 0.0
         && !node
@@ -675,7 +677,7 @@ fn draw_manufacturer_logo_ir(
     }
 }
 
-fn manufacturer_logo_tint(node: &UiIrNode, ctx: &ComposeContext<'_>) -> [f32; 4] {
+pub(crate) fn manufacturer_logo_tint(node: &UiIrNode, ctx: &ComposeContext<'_>) -> [f32; 4] {
     node.icon_tint_colour
         .or_else(|| {
             node.icon_tint_colour_token
@@ -725,7 +727,7 @@ fn brand_title(slug: &str) -> String {
 ///   field reference rather than a slot index).
 /// Non-enum aliases were deleted 2026-06-12 — they occur in no DataCore
 /// record (2026-06-12 token audit — no game record contains them).
-fn resolve_colour_token(ctx: &ComposeContext<'_>, token: &str) -> Option<[f32; 4]> {
+pub(crate) fn resolve_colour_token(ctx: &ComposeContext<'_>, token: &str) -> Option<[f32; 4]> {
     let key = token.trim().to_ascii_lowercase();
     if key.is_empty() {
         return None;
@@ -752,7 +754,7 @@ fn resolve_colour_token(ctx: &ComposeContext<'_>, token: &str) -> Option<[f32; 4
 /// SURFACE (shape-fill) token resolution: pure enum indexing — `Accent1`
 /// keeps its enum surface slot 4 (the medical fingerprint's darker blue),
 /// unlike the foreground path above.
-fn resolve_surface_colour_token(ctx: &ComposeContext<'_>, token: &str) -> Option<[f32; 4]> {
+pub(crate) fn resolve_surface_colour_token(ctx: &ComposeContext<'_>, token: &str) -> Option<[f32; 4]> {
     let key = token.trim().to_ascii_lowercase();
     match key.as_str() {
         "accent1" => style_colour_slot_rgba(ctx, 4),
@@ -775,7 +777,7 @@ fn svg_colorstyle_fill_override(svg_bytes: &[u8], ctx: &ComposeContext<'_>) -> O
     Some(rgba)
 }
 
-fn style_colour_slot_rgba(ctx: &ComposeContext<'_>, index: usize) -> Option<[f32; 4]> {
+pub(crate) fn style_colour_slot_rgba(ctx: &ComposeContext<'_>, index: usize) -> Option<[f32; 4]> {
     ctx.style.colour_slots.get(index).map(|colour| {
         [
             colour.r as f32 / 255.0,
@@ -797,7 +799,7 @@ fn style_primary_rgba_local(ctx: &ComposeContext<'_>) -> [f32; 4] {
 }
 
 
-fn custom_shape_fill_override(node: &UiIrNode, ctx: &ComposeContext<'_>) -> Option<[f32; 4]> {
+pub(crate) fn custom_shape_fill_override(node: &UiIrNode, ctx: &ComposeContext<'_>) -> Option<[f32; 4]> {
     let render_shape = node
         .custom_shape
         .as_ref()
@@ -833,7 +835,7 @@ fn custom_shape_fill_override(node: &UiIrNode, ctx: &ComposeContext<'_>) -> Opti
         })
 }
 
-fn image_tint_for_blit(
+pub(crate) fn image_tint_for_blit(
     node: &UiIrNode,
     asset_ref: &str,
     fill_override: Option<[f32; 4]>,
@@ -907,7 +909,7 @@ fn linear_channel_to_srgb(l: f32) -> f32 {
 /// ~(68,38,8) at the chiclet edge. Scoped to the white-mask overlay path;
 /// the renderer-wide linear migration is a separate gated workstream
 /// (crates/starbreaker-ui/docs/ui-clipper-parity-handoff.md item 10).
-fn blit_white_mask_overlay_linear(
+pub(crate) fn blit_white_mask_overlay_linear(
     pixmap: &mut Pixmap,
     img: &RgbaImage,
     dx: i32,
@@ -986,7 +988,7 @@ fn image_is_white_alpha_mask(img: &RgbaImage) -> bool {
     visible > 0
 }
 
-fn image_blend_mode_for_node(node: &UiIrNode, asset_ref: &str) -> BlendMode {
+pub(crate) fn image_blend_mode_for_node(node: &UiIrNode, asset_ref: &str) -> BlendMode {
     let normalised = UiAssetResolver::normalise_path(asset_ref);
     let render_shape = node
         .custom_shape
@@ -1008,7 +1010,7 @@ fn image_blend_mode_for_node(node: &UiIrNode, asset_ref: &str) -> BlendMode {
     }
 }
 
-fn rasterize_custom_shape_svg(
+pub(crate) fn rasterize_custom_shape_svg(
     node: &UiIrNode,
     svg_bytes: &[u8],
     target_w: u32,
@@ -1042,7 +1044,7 @@ fn rasterize_custom_shape_svg(
     }
 }
 
-fn rasterize_svg_for_node(
+pub(crate) fn rasterize_svg_for_node(
     node: &UiIrNode,
     svg_bytes: &[u8],
     target_w: u32,
@@ -1112,7 +1114,7 @@ fn flip_adjusted_contain_position(layout: &UiIrAssetLayout) -> (f32, f32) {
     (cx, cy)
 }
 
-fn apply_asset_layout_flip(node: &UiIrNode, image: RgbaImage) -> RgbaImage {
+pub(crate) fn apply_asset_layout_flip(node: &UiIrNode, image: RgbaImage) -> RgbaImage {
     let Some(layout) = node.asset_layout.as_ref() else {
         return image;
     };
@@ -1215,7 +1217,7 @@ fn sample_bilinear_rgba(img: &RgbaImage, x: f32, y: f32) -> Option<image::Rgba<u
 }
 
 
-fn strip_custom_shape_uniform_matte(img: &RgbaImage) -> RgbaImage {
+pub(crate) fn strip_custom_shape_uniform_matte(img: &RgbaImage) -> RgbaImage {
     let (width, height) = img.dimensions();
     let total_pixels = (width as usize).saturating_mul(height as usize).max(1);
 
@@ -1468,7 +1470,7 @@ fn resolved_linear_progress_meter_rect(node: &UiIrNode, document: &UiIrDocument)
     Some(rect)
 }
 
-fn segmented_count_for_width(total_width: f32, segment_width: f32, segment_gap: f32) -> usize {
+pub(crate) fn segmented_count_for_width(total_width: f32, segment_width: f32, segment_gap: f32) -> usize {
     if total_width <= 0.0 || segment_width <= 0.0 {
         return 0;
     }
@@ -1805,7 +1807,7 @@ fn scale_line_spacing(line_spacing: Option<f32>, font_scale: f32) -> Option<f32>
     line_spacing.map(|spacing| spacing * font_scale)
 }
 
-fn draw_line_spacing_for_node(
+pub(crate) fn draw_line_spacing_for_node(
     node: &UiIrNode,
     text: &str,
     text_style: Option<&UiIrTextStyle>,
@@ -1825,7 +1827,7 @@ fn draw_line_spacing_for_node(
     }
 }
 
-fn apply_font_style_vertical_offset(rect: Rect, text_style: Option<&UiIrTextStyle>) -> Rect {
+pub(crate) fn apply_font_style_vertical_offset(rect: Rect, text_style: Option<&UiIrTextStyle>) -> Rect {
     let offset = font_style_top_margin_offset_px(text_style);
     if offset.abs() <= f32::EPSILON {
         rect
@@ -1854,7 +1856,7 @@ fn is_large_wrapped_title3_heading(
         && text.split_whitespace().count() >= 3
 }
 
-fn resolved_text_colour(
+pub(crate) fn resolved_text_colour(
     node: &UiIrNode,
     style: Option<&crate::ui_ir::UiIrTextStyle>,
     ctx: &ComposeContext<'_>,
@@ -2062,7 +2064,7 @@ fn center_anchored_heading_textfield_text_rect(
     Some(Rect { y: top, h: height, ..rect })
 }
 
-fn inline_nested_textfield_text_rect(
+pub(crate) fn inline_nested_textfield_text_rect(
     node: &UiIrNode,
     rect: Rect,
     document: &UiIrDocument,
@@ -2240,7 +2242,7 @@ fn text_origin_in_rect(
     (x, y)
 }
 
-fn stacked_label_caption_pair_text_rects(
+pub(crate) fn stacked_label_caption_pair_text_rects(
     rect: Rect,
     primary_text_h: f32,
     secondary_text_h: f32,
@@ -2469,7 +2471,7 @@ fn resolved_font_record_value(style: Option<&UiIrTextStyle>) -> Option<&serde_js
     Some(record.get("_RecordValue_").unwrap_or(record))
 }
 
-fn font_symbol_from_text_style(style: Option<&UiIrTextStyle>) -> Option<&str> {
+pub(crate) fn font_symbol_from_text_style(style: Option<&UiIrTextStyle>) -> Option<&str> {
     resolved_font_record_value(style)
         .and_then(|value| value.get("font"))
         .and_then(|value| value.as_str())
@@ -2550,7 +2552,7 @@ pub(crate) fn swf_line_box_px(font: &FontGlyphSet, size_px: f32) -> f32 {
     ((units_per_em + leading) / units_per_em) * size_px
 }
 
-fn font_style_scale_modifier(style: Option<&UiIrTextStyle>) -> f32 {
+pub(crate) fn font_style_scale_modifier(style: Option<&UiIrTextStyle>) -> f32 {
     resolved_font_record_value(style)
         .and_then(|value| value.get("scaleModifier"))
         .and_then(|value| value.as_f64())
@@ -2558,7 +2560,7 @@ fn font_style_scale_modifier(style: Option<&UiIrTextStyle>) -> f32 {
         .unwrap_or(1.0)
 }
 
-fn font_style_leading_modifier_px(style: Option<&UiIrTextStyle>) -> f32 {
+pub(crate) fn font_style_leading_modifier_px(style: Option<&UiIrTextStyle>) -> f32 {
     let modifier = resolved_font_record_value(style)
         .and_then(|value| value.get("leadingModifier"))
         .and_then(|value| value.as_f64())
@@ -2568,7 +2570,7 @@ fn font_style_leading_modifier_px(style: Option<&UiIrTextStyle>) -> f32 {
     modifier * size_px
 }
 
-fn font_style_top_margin_offset_px(style: Option<&UiIrTextStyle>) -> f32 {
+pub(crate) fn font_style_top_margin_offset_px(style: Option<&UiIrTextStyle>) -> f32 {
     let modifier = resolved_font_record_value(style)
         .and_then(|value| value.get("topMarginModifier"))
         .and_then(|value| value.as_f64())
@@ -2610,7 +2612,7 @@ fn resolved_text_payload(node: &UiIrNode) -> Option<&str> {
     }
 }
 
-fn draw_ir_border(
+pub(crate) fn draw_ir_border(
     pixmap: &mut Pixmap,
     rect: Rect,
     border: &UiIrBorder,
@@ -2667,7 +2669,7 @@ fn draw_ir_border(
     );
 }
 
-fn border_side_colour(side: &crate::ui_ir::UiIrBorderSide, ctx: &ComposeContext<'_>) -> Option<[f32; 4]> {
+pub(crate) fn border_side_colour(side: &crate::ui_ir::UiIrBorderSide, ctx: &ComposeContext<'_>) -> Option<[f32; 4]> {
     side.colour.or_else(|| {
         side.colour_token
             .as_deref()
@@ -2775,7 +2777,7 @@ fn node_colour_blend_mode(node: &UiIrNode) -> BlendMode {
     }
 }
 
-fn widget_separator_draw_rect(rect: TskRect, stroke_extent: Option<f32>) -> TskRect {
+pub(crate) fn widget_separator_draw_rect(rect: TskRect, stroke_extent: Option<f32>) -> TskRect {
     let Some(stroke_extent) = stroke_extent else {
         return rect;
     };
@@ -2938,7 +2940,7 @@ fn pixmap_to_rgba_image(pixmap: Pixmap) -> Result<RgbaImage, UiError> {
         .ok_or_else(|| UiError::RenderError("failed to build image from pixmap".into()))
 }
 
-fn to_skia_color(rgba: [f32; 4], global_alpha: f32) -> Color {
+pub(crate) fn to_skia_color(rgba: [f32; 4], global_alpha: f32) -> Color {
     let a = (rgba[3] * global_alpha).clamp(0.0, 1.0);
     Color::from_rgba8(
         (rgba[0].clamp(0.0, 1.0) * 255.0) as u8,
@@ -2949,7 +2951,7 @@ fn to_skia_color(rgba: [f32; 4], global_alpha: f32) -> Color {
 }
 
 #[cfg(test)]
-fn style_primary_rgba(ctx: &ComposeContext<'_>) -> [f32; 4] {
+pub(crate) fn style_primary_rgba(ctx: &ComposeContext<'_>) -> [f32; 4] {
     let pt = &ctx.style.primary_tint;
     [
         pt.r as f32 / 255.0,
@@ -2959,7 +2961,7 @@ fn style_primary_rgba(ctx: &ComposeContext<'_>) -> [f32; 4] {
     ]
 }
 
-fn rgba_to_u8(rgba: [f32; 4]) -> [u8; 4] {
+pub(crate) fn rgba_to_u8(rgba: [f32; 4]) -> [u8; 4] {
     [
         (rgba[0].clamp(0.0, 1.0) * 255.0).round() as u8,
         (rgba[1].clamp(0.0, 1.0) * 255.0).round() as u8,
@@ -2968,7 +2970,7 @@ fn rgba_to_u8(rgba: [f32; 4]) -> [u8; 4] {
     ]
 }
 
-fn ir_rect_to_layout_rect(rect: UiIrRect) -> Rect {
+pub(crate) fn ir_rect_to_layout_rect(rect: UiIrRect) -> Rect {
     Rect {
         x: rect.x,
         y: rect.y,
@@ -2977,7 +2979,7 @@ fn ir_rect_to_layout_rect(rect: UiIrRect) -> Rect {
     }
 }
 
-fn ir_value_to_px(value: &UiIrValue) -> f32 {
+pub(crate) fn ir_value_to_px(value: &UiIrValue) -> f32 {
     match value {
         UiIrValue::Fixed { value } | UiIrValue::Percent { value } | UiIrValue::Other { value, .. } => *value,
     }
