@@ -2188,3 +2188,49 @@ at-rest activation by the engine-STATE NAMESPACE driving it (flightcontroller vs
 (2) a per-canvas guard reads the WORKSPACE `ships/` (CARGO_MANIFEST_DIR/../.. then workspace parent), NOT the
 stale `StarBreaker/ships/` copy — when a Generated PNG looks blank/stale, check the workspace path before
 concluding the artifact is wrong (cost a detour here).
+
+### 101 — A blank INTERIOR screen can be an EXPORTER binding gap, not a render bug (Carrack lift-call console)
+**Observed:** `console_liftcall_009` rendered 100% blank; the material (`RTT_screens`, TexSlot9 `$RenderToTexture`)
+was fine and no UI-pipeline stage was at fault — the decomposed scene simply carried NO `ui_binding` for the mesh.
+Transit peripherals (elevator call consoles, in-lift screens) author their display canvas INLINE on the `.soc`
+`EntityComponentUIBuildingBlocks` component (`layers[].views[].component.canvas`), OVERRIDING the entity class
+default (`OLD_TransitUIPanelExterior_ANVL` vs the generic class canvas), and such entities carry inline geometry
+(no `EntityClassGUID`) so every class-record resolution path returns nothing.
+**Improvement:** when a physical screen is blank, FIRST check the exported `ui_bindings` for the node before
+theorising render-side; if absent, look for a per-instance `.soc` component override (beware the decoy copy under
+`specialWeakPointers`).
+**Action:** DONE (`a65b4927c`): `InteriorMesh::ui_canvas_guid` + `extract_entity_ui_canvas` +
+`ui_binding_for_building_blocks_canvas`; P4K-gated regression tests. A hand-written tiny `scene.json` with one
+`physical` binding + `ui render --scene` is a ~1s iteration harness for any single canvas (no export needed).
+
+### 102 — Validate a perf baseline's PROVENANCE before attributing a regression (stale-binary trap)
+**Observed:** the Carrack export "regressed from 42s to hours" — but the 42s run used a June-20
+`target/release/starbreaker` predating PR #29; every rebuilt binary was slow. Two sessions of suspicion fell on
+the (innocent) new binding code. Old hashed binaries under `target/release/deps/starbreaker-<hash>` allowed a
+no-rebuild time-travel bisect; gdb/perf are locked down on this machine (ptrace_scope / perf_event_paranoid=4),
+so `/proc/<pid>/task/*/stat` run-state counts (1 R + 16 S = serial main-thread phase) plus staged `[timing]`
+heartbeats were the localisation tools. Root cause was PR #29's `export_ddna_roughness_asset_with_status`
+decoding the full DDNA per sidecar REFERENCE (before its cache check, because the status wants decode stats).
+**Improvement:** before calling something a regression, pin BOTH endpoints' binaries to commits (stat the binary
+mtime vs `git log`); instrument the layer the cost actually flows through (the `[tex-miss]` probe on
+`cached_load_keyed` stayed silent because the hot path bypassed it — a silent probe means the WRONG LAYER, not
+"no cost").
+**Action:** DONE (`5c08e3434`, `ddna_status_cache` memo): Carrack hours→1:19, Clipper 10:48→0:51, byte-identical
+(full-export 0-diff oracle + two-run determinism). Details in `docs/optimisation-ledger.md` §4.
+
+### 103 — Widget-standard completion: probe the layer the RENDERER reads, and mind literal-vs-token shadowing
+**Observed:** the primary `ComponentGeneralButton` was missing from the expansion dispatch (only Secondary was
+wired) — one function-table gap repeated at THREE levels: the host dispatch, the params match, and the
+`<kit>_buttonprimarystyles` module-sheet list. Completing it surfaced two general traps: (1) icon forwarding
+mutated `raw.iconProperties` and the fixture test asserted raw — but the draw reads the PARSE-TIME `BbIcon`
+(preset→SVG baked at parse), so the real render kept the template glyph while the test passed; (2) the kit's
+solid-black icon `FillColor` (a literal `ColorSolid`) applied its RGBA but the stale lower-tier `FillColorToken`
+("Base") survived and the draw's token-first resolution shadowed the literal. `BB_A3_STYLE_PROBE=1` (the
+matched-entry dump) localised both in one run — grep the probe for the entry name, not the render.
+**Improvement:** when forwarding onto merged instances, rebuild any parse-time baked struct (`parse_icon`)
+after mutating raw; a token-less colour application must REMOVE the stale token; attach the widget standards'
+`*-element-instance` styling tags only to SHOWN elements (the kit base entries author `IsActive=true` and will
+reveal hidden ones — caught by the medical bed's hidden close-button label).
+**Action:** DONE (`29c2c1fc3`, `fd5147062`, re-freeze `819fa7e79` — metadata-only, before/after renders
+md5-identical on all drifted frozen screens). OPEN: border CHAMFER draw support (the button standards author
+`EnableTopLeft/BottomRightBorderChamfer`), text-field line-box fit for 2-line wrapped labels.
