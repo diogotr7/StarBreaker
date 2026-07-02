@@ -1592,6 +1592,28 @@ fn tag_expanded_instances(
     instance_ty: &BbNodeType,
     tag_id: &str,
 ) {
+    for_each_expanded_instance(scene, host_id, |node| {
+        if node.ty != *instance_ty {
+            return;
+        }
+        if !node
+            .style_tag_uuids
+            .iter()
+            .any(|tag| tag.eq_ignore_ascii_case(tag_id))
+        {
+            node.style_tag_uuids.push(tag_id.to_string());
+        }
+    });
+}
+
+/// Visit every merged expansion-instance node under `host_id` (depth-first over
+/// children in the expansion id band). The shared traversal behind the
+/// post-merge forwarding/tagging passes — they differ only in the visit body.
+fn for_each_expanded_instance(
+    scene: &mut BbScene,
+    host_id: BbNodeId,
+    mut visit: impl FnMut(&mut crate::bb_scene::BbNode),
+) {
     let Some(host) = scene.nodes.get(&host_id) else {
         return;
     };
@@ -1606,16 +1628,7 @@ fn tag_expanded_instances(
             continue;
         };
         stack.extend(node.children.iter().copied().filter(|c| *c >= EXPANSION_ID_BASE));
-        if node.ty != *instance_ty {
-            continue;
-        }
-        if !node
-            .style_tag_uuids
-            .iter()
-            .any(|tag| tag.eq_ignore_ascii_case(tag_id))
-        {
-            node.style_tag_uuids.push(tag_id.to_string());
-        }
+        visit(node);
     }
 }
 
@@ -1636,19 +1649,9 @@ fn forward_host_label_case(scene: &mut BbScene, host_id: BbNodeId) {
     else {
         return;
     };
-    let mut stack: Vec<BbNodeId> = host
-        .children
-        .iter()
-        .copied()
-        .filter(|id| *id >= EXPANSION_ID_BASE)
-        .collect();
-    while let Some(id) = stack.pop() {
-        let Some(node) = scene.nodes.get_mut(&id) else {
-            continue;
-        };
-        stack.extend(node.children.iter().copied().filter(|c| *c >= EXPANSION_ID_BASE));
+    for_each_expanded_instance(scene, host_id, |node| {
         if !matches!(node.ty, BbNodeType::WidgetTextField) {
-            continue;
+            return;
         }
         if let Some(lp) = node
             .raw
@@ -1661,7 +1664,7 @@ fn forward_host_label_case(scene: &mut BbScene, host_id: BbNodeId) {
         {
             lp.insert("caseModifier".to_string(), case.clone());
         }
-    }
+    });
 }
 
 fn forward_host_icon_identity(scene: &mut BbScene, host_id: BbNodeId) {
@@ -1676,19 +1679,9 @@ fn forward_host_icon_identity(scene: &mut BbScene, host_id: BbNodeId) {
     if preset.is_none() && custom.is_none() {
         return;
     }
-    let mut stack: Vec<BbNodeId> = host
-        .children
-        .iter()
-        .copied()
-        .filter(|id| *id >= EXPANSION_ID_BASE)
-        .collect();
-    while let Some(id) = stack.pop() {
-        let Some(node) = scene.nodes.get_mut(&id) else {
-            continue;
-        };
-        stack.extend(node.children.iter().copied().filter(|c| *c >= EXPANSION_ID_BASE));
+    for_each_expanded_instance(scene, host_id, |node| {
         if !matches!(node.ty, BbNodeType::WidgetIcon) {
-            continue;
+            return;
         }
         let raw = node
             .raw
@@ -1709,7 +1702,7 @@ fn forward_host_icon_identity(scene: &mut BbScene, host_id: BbNodeId) {
             // it or the draw keeps the template's authored default glyph.
             node.icon = Some(crate::bb_scene::parse_icon(&node.raw, &node.ty));
         }
-    }
+    });
 }
 
 /// True when `host` already has an expanded template instance (a child carrying
