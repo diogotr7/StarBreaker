@@ -161,6 +161,24 @@ pub struct UiIrQueryRequest {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct UiTagLookupRequest {
+    #[schemars(description = "Tag UUID (full or prefix) or case-insensitive tag-name substring to resolve against the live tag database (e.g. 'icon-element' or 'f530a994').")]
+    pub query: String,
+    #[schemars(description = "Maximum number of matches to return. Default 40.")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct UiKitSheetEntriesRequest {
+    #[schemars(description = "BuildingBlocks_Style record to inspect, by name substring (e.g. sk_uilo_a_buttonprimarystyles, s_uilo_a) or GUID — including modular-kit component sheets.")]
+    pub record: String,
+    #[schemars(description = "Optional case-insensitive substring filter on entry names (e.g. Filled).")]
+    pub entry_filter: Option<String>,
+    #[schemars(description = "Maximum entries to return. Default 100.")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImagePreviewRequest {
     #[schemars(description = "File path within P4k (DDS, PNG, JPG, etc.). For DDS, .tif extension is auto-converted to .dds")]
     pub path: String,
@@ -1069,6 +1087,128 @@ fn modifier_field_name(modifier: &serde_json::Value) -> Option<String> {
         }))
 }
 
+/// Walk the live tag database record for `"_Type_": "Tag"` nodes, returning
+/// `(uuid, tagName)` pairs. The database is one `TagDatabase` record with the
+/// full tag tree nested inside (the identity layer behind node `styleTags`
+/// and kit-sheet entry conditions).
+fn load_tag_names(db: &Database<'static>) -> Result<Vec<(String, String)>, String> {
+    let struct_id = db
+        .struct_id("TagDatabase")
+        .ok_or_else(|| "DataCore has no TagDatabase struct".to_string())?;
+    let record = db
+        .records_of_type(struct_id)
+        .next()
+        .ok_or_else(|| "no TagDatabase record".to_string())?;
+    let bytes = starbreaker_datacore::export::to_json(db, record)
+        .map_err(|e| format!("TagDatabase JSON export failed: {e}"))?;
+    let json: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("TagDatabase JSON parse failed: {e}"))?;
+    let mut tags = Vec::new();
+    collect_tag_nodes(&json, &mut tags);
+    Ok(tags)
+}
+
+fn collect_tag_nodes(value: &serde_json::Value, out: &mut Vec<(String, String)>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if map.get("_Type_").and_then(|v| v.as_str()) == Some("Tag") {
+                if let (Some(id), Some(name)) = (
+                    map.get("_RecordId_").and_then(|v| v.as_str()),
+                    map.get("tagName").and_then(|v| v.as_str()),
+                ) {
+                    out.push((id.to_string(), name.to_string()));
+                }
+            }
+            for v in map.values() {
+                collect_tag_nodes(v, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for v in items {
+                collect_tag_nodes(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Compact one style-entry condition with tag UUIDs resolved to names
+/// (`Tag(text-element-instance)`, `Ancestor breakConditions[...] ...`).
+fn summarize_tagged_condition(
+    cond: &serde_json::Value,
+    tags: &std::collections::HashMap<String, String>,
+) -> String {
+    let ty = cond
+        .get("_Type_")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .replace("BuildingBlocks_StyleSelectorCondition", "");
+    let tag_name = |id: &str| tags.get(id).cloned().unwrap_or_else(|| format!("{}?", &id[..id.len().min(8)]));
+    let mut parts = Vec::new();
+    let tag_id = cond
+        .get("tag")
+        .and_then(|t| t.get("_RecordId_"))
+        .and_then(|v| v.as_str());
+    match tag_id {
+        Some(id) => parts.push(format!("{ty}({})", tag_name(id))),
+        None => parts.push(ty),
+    }
+    for key in ["breakConditions", "conditions"] {
+        if let Some(items) = cond.get(key).and_then(|v| v.as_array()) {
+            if !items.is_empty() {
+                let inner: Vec<String> = items
+                    .iter()
+                    .map(|c| summarize_tagged_condition(c, tags))
+                    .collect();
+                parts.push(format!("{key}[{}]", inner.join(", ")));
+            }
+        }
+    }
+    if let Some(anyof) = cond.get("tags").and_then(|v| v.as_array()) {
+        if !anyof.is_empty() {
+            let names: Vec<String> = anyof
+                .iter()
+                .filter_map(|t| t.get("_RecordId_").and_then(|v| v.as_str()))
+                .map(tag_name)
+                .collect();
+            parts.push(format!("anyOf[{}]", names.join(", ")));
+        }
+    }
+    parts.join(" ")
+}
+
+/// Compact one style-entry modifier: `Field = ColorStyle:<role> a=<alpha>`,
+/// `Field = ColorSolid rgba(...)`, or `Field = <value>`.
+fn summarize_typed_modifier(modifier: &serde_json::Value) -> String {
+    let field = modifier.get("field").and_then(|v| v.as_str()).unwrap_or("?");
+    if let Some(colour) = modifier.get("color") {
+        if colour.get("_Type_").and_then(|v| v.as_str()) == Some("BuildingBlocks_ColorStyle") {
+            return format!(
+                "{field} = ColorStyle:{} a={}",
+                colour.get("color").and_then(|v| v.as_str()).unwrap_or("?"),
+                colour.get("alpha").and_then(|v| v.as_f64()).unwrap_or(1.0)
+            );
+        }
+        if let Some(inner) = colour.get("color") {
+            if inner.get("_Type_").and_then(|v| v.as_str()) == Some("SRGBA8") {
+                return format!(
+                    "{field} = ColorSolid rgba({},{},{},{})",
+                    inner.get("r").and_then(|v| v.as_u64()).unwrap_or(0),
+                    inner.get("g").and_then(|v| v.as_u64()).unwrap_or(0),
+                    inner.get("b").and_then(|v| v.as_u64()).unwrap_or(0),
+                    inner.get("a").and_then(|v| v.as_u64()).unwrap_or(0)
+                );
+            }
+        }
+        return format!("{field} = {}", serde_json::to_string(colour).unwrap_or_default());
+    }
+    format!(
+        "{field} = {}",
+        serde_json::to_string(modifier.get("value").unwrap_or(&serde_json::Value::Null))
+            .unwrap_or_default()
+    )
+}
+
 #[tool_router]
 impl StarBreakerMcp {
     #[tool(description = "Return the currently active Data.p4k path used by StarBreaker MCP tools.")]
@@ -1548,6 +1688,128 @@ impl StarBreakerMcp {
             "matched_node_count": nodes.len(),
             "node_limit": limit,
             "nodes": nodes,
+        }))
+        .unwrap_or_else(|e| format!("JSON error: {e}"))
+    }
+
+    #[tool(description = "Resolve UI style-tag identity against the live tag database: a UUID (or prefix) returns its tag name; a name substring returns matching tags. Tags are the identity layer behind node styleTags and kit-sheet entry conditions.")]
+    fn ui_tag_lookup(&self, Parameters(req): Parameters<UiTagLookupRequest>) -> String {
+        let tags = match load_tag_names(&self.data().db) {
+            Ok(t) => t,
+            Err(e) => return mcp_error_json("tag_database_unavailable", e),
+        };
+        let query = req.query.to_ascii_lowercase();
+        let limit = req.limit.unwrap_or(40).max(1) as usize;
+        let mut matches: Vec<(String, String)> = tags
+            .into_iter()
+            .filter(|(id, name)| {
+                id.to_ascii_lowercase().starts_with(&query)
+                    || name.to_ascii_lowercase().contains(&query)
+            })
+            .collect();
+        matches.sort_by(|a, b| a.1.cmp(&b.1));
+        let total = matches.len();
+        matches.truncate(limit);
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "query": req.query,
+            "matched": total,
+            "returned": matches.len(),
+            "tags": matches
+                .into_iter()
+                .map(|(uuid, tag_name)| serde_json::json!({"uuid": uuid, "tag_name": tag_name}))
+                .collect::<Vec<_>>(),
+        }))
+        .unwrap_or_else(|e| format!("JSON error: {e}"))
+    }
+
+    #[tool(description = "Dump a BuildingBlocks_Style record's entries (modular-kit component sheets like sk_uilo_a_buttonprimarystyles included) with tag-NAME-resolved conditions and compact modifier values (ColorStyle roles / ColorSolid RGBA). MCP-native form of scripts/ui_canvas_query.py entries.")]
+    fn ui_kit_sheet_entries(&self, Parameters(req): Parameters<UiKitSheetEntriesRequest>) -> String {
+        let data = self.data();
+        let db = &data.db;
+        let Some(style_struct_id) = db.struct_id("BuildingBlocks_Style") else {
+            return mcp_error_json(
+                "style_struct_missing",
+                "DataCore has no BuildingBlocks_Style struct".to_string(),
+            );
+        };
+        let search = req.record.to_lowercase();
+        let mut candidates: Vec<_> = db
+            .records_of_type(style_struct_id)
+            .filter(|r| {
+                db.resolve_string2(r.name_offset).to_lowercase().contains(&search)
+                    || format!("{}", r.id) == req.record
+            })
+            .collect();
+        candidates.sort_by_key(|r| db.resolve_string2(r.name_offset).len());
+        let Some(record) = candidates.first() else {
+            return mcp_error_json(
+                "style_record_not_found",
+                format!("no BuildingBlocks_Style record matching '{}'", req.record),
+            );
+        };
+        let record_name = db.resolve_string2(record.name_offset).to_string();
+        let json = match starbreaker_datacore::export::to_json(db, record)
+            .map_err(|e| format!("record JSON export failed: {e}"))
+            .and_then(|bytes| {
+                serde_json::from_slice::<serde_json::Value>(&bytes)
+                    .map_err(|e| format!("record JSON parse failed: {e}"))
+            }) {
+            Ok(v) => v,
+            Err(e) => return mcp_error_json("record_export_failed", e),
+        };
+        let record_value = json.get("_RecordValue_").unwrap_or(&json);
+        let tag_names: std::collections::HashMap<String, String> =
+            load_tag_names(db).unwrap_or_default().into_iter().collect();
+        let filter = req.entry_filter.map(|s| s.to_ascii_lowercase());
+        let limit = req.limit.unwrap_or(100).max(1) as usize;
+        let all_entries = record_value
+            .get("entries")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let mut entries = Vec::new();
+        for entry in &all_entries {
+            if entries.len() >= limit {
+                break;
+            }
+            let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            if let Some(ref needle) = filter {
+                if !name.to_ascii_lowercase().contains(needle) {
+                    continue;
+                }
+            }
+            let mut conditions = Vec::new();
+            for list in entry
+                .get("conditionsList")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+            {
+                for cond in list.get("conditions").and_then(|v| v.as_array()).into_iter().flatten() {
+                    conditions.push(summarize_tagged_condition(cond, &tag_names));
+                }
+            }
+            let modifiers: Vec<String> = entry
+                .get("modifiers")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .map(summarize_typed_modifier)
+                .collect();
+            entries.push(serde_json::json!({
+                "name": name,
+                "when": conditions.join(" AND "),
+                "modifiers": modifiers,
+            }));
+        }
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_name": record_name,
+            "record_id": format!("{}", record.id),
+            "entry_count": all_entries.len(),
+            "returned": entries.len(),
+            "entries": entries,
         }))
         .unwrap_or_else(|e| format!("JSON error: {e}"))
     }
@@ -3760,6 +4022,44 @@ mod ui_regression_registry_tests {
             assert_eq!(json.get("error_code"), None, "{json:#}");
             let nodes = json.get("nodes").and_then(|v| v.as_array()).expect("nodes array");
             assert!(nodes.len() >= 1);
+        });
+    }
+
+    #[test]
+    fn ui_tag_lookup_resolves_element_instance_tags() {
+        with_p4k_test(|server| {
+            let response = server.ui_tag_lookup(Parameters(UiTagLookupRequest {
+                query: "icon-element".to_string(),
+                limit: None,
+            }));
+            let json: serde_json::Value = serde_json::from_str(&response).expect("valid JSON");
+            assert_eq!(json.get("error_code"), None, "{json:#}");
+            let tags = json.get("tags").and_then(|v| v.as_array()).expect("tags array");
+            assert!(
+                tags.iter().any(|t| t.get("tag_name").and_then(|v| v.as_str())
+                    == Some("icon-element-instance")),
+                "{json:#}"
+            );
+        });
+    }
+
+    #[test]
+    fn ui_kit_sheet_entries_resolves_condition_tag_names() {
+        with_p4k_test(|server| {
+            let response = server.ui_kit_sheet_entries(Parameters(UiKitSheetEntriesRequest {
+                record: "sk_uilo_a_buttonprimarystyles".to_string(),
+                entry_filter: Some("FilledText".to_string()),
+                limit: None,
+            }));
+            let json: serde_json::Value = serde_json::from_str(&response).expect("valid JSON");
+            assert_eq!(json.get("error_code"), None, "{json:#}");
+            let entries = json.get("entries").and_then(|v| v.as_array()).expect("entries");
+            assert!(!entries.is_empty(), "{json:#}");
+            let when = entries[0].get("when").and_then(|v| v.as_str()).unwrap_or("");
+            assert!(
+                when.contains("text-element-instance"),
+                "conditions should carry resolved tag names, got: {when}"
+            );
         });
     }
 
