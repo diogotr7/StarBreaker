@@ -1061,6 +1061,15 @@ pub(crate) fn cached_load(
 /// slots instead of aliasing to one "first decode wins" entry. The discriminator
 /// is `""` for the legacy/Generic key and a short tag (e.g. `"@n"` for Normal,
 /// `"@r"` for derived Roughness) for other flavors.
+/// Build the canonical `PngCache` key for a texture decode. The SAME format
+/// must be used by every writer (the prewarm pass) and reader
+/// (`cached_load_keyed`) — a hand-formatted duplicate drifting from this is
+/// exactly the silent cache-miss class behind the `@n` flavor-aliasing hunt
+/// (review F6).
+pub(crate) fn png_cache_key(path: &str, mip: u32, key_discriminator: &str) -> String {
+    format!("{path}@mip{mip}{key_discriminator}")
+}
+
 pub(crate) fn cached_load_keyed(
     p4k: &MappedP4k,
     path: &str,
@@ -1069,7 +1078,7 @@ pub(crate) fn cached_load_keyed(
     cache: &mut PngCache,
     loader: fn(&MappedP4k, &str, u32) -> Option<Vec<u8>>,
 ) -> Option<Vec<u8>> {
-    let key = format!("{path}@mip{mip}{key_discriminator}");
+    let key = png_cache_key(path, mip, key_discriminator);
     if let Some(cached) = cache.get(&key) {
         return cached.clone();
     }

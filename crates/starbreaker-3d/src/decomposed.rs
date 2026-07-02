@@ -4816,15 +4816,15 @@ pub(crate) fn prewarm_decomposed_textures(
     jobs.par_iter()
         .map(|(path, flavor)| match flavor {
             TextureFlavor::Generic => (
-                format!("{path}@mip{texture_mip}"),
+                crate::pipeline::png_cache_key(path, texture_mip, ""),
                 crate::pipeline::load_diffuse_texture(p4k, path, texture_mip),
             ),
             TextureFlavor::Normal => (
-                format!("{path}@mip{texture_mip}@n"),
+                crate::pipeline::png_cache_key(path, texture_mip, "@n"),
                 crate::pipeline::load_normal_texture(p4k, path, texture_mip),
             ),
             TextureFlavor::Roughness => (
-                format!("{path}@mip{texture_mip}@r"),
+                crate::pipeline::png_cache_key(path, texture_mip, "@r"),
                 crate::pipeline::load_roughness_texture(p4k, path, texture_mip),
             ),
         })

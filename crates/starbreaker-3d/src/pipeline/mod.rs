@@ -21,7 +21,7 @@ mod textures;
 use self::textures::*;
 pub(crate) use self::textures::{
     PngCache, cached_load_keyed, load_diffuse_texture, load_normal_texture, load_roughness_texture,
-    load_roughness_texture_result,
+    load_roughness_texture_result, png_cache_key,
 };
 mod interiors;
 pub(crate) use self::interiors::*;
