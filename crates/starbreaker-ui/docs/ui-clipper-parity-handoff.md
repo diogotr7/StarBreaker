@@ -202,7 +202,7 @@ header edges via authored `axisJustification: "SpaceBetween"` on
 the space-distributing modes — `SpaceBetween`/`SpaceAround`/`SpaceEvenly` fell
 through the `main_offset` match to `_ => 0.0` (Start), left-packing the row, so
 Sep4 sat at x≈1425 with ~104px of dead space on the right. Implemented the three
-space modes in `bb_layout/engine_parts/engine_01.part` (slack = avail−total_main,
+space modes in `bb_layout/engine_01.rs` (slack = avail−total_main,
 shared as equal gaps; test `flex_row_space_between_spreads_children_to_container_edges`).
 The IR/EM/CS groups now spread and Sep4 reaches the content-right edge (x≈1510,
 inside the container's ~17px padding) — matches the reference. Clean across all

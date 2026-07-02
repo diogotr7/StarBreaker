@@ -139,7 +139,7 @@ a `LockedIcon` + "º" heading suffix + empty magnification (catalog #3, below).
      material) + master-mode `card_BarFill` (`materials/default_rtt.mtl`); the
      self-status hologram (`WidgetRuntimeImage`) is excluded. No frozen MFD/HUD
      screen uses AR_HoloVolume cards (grep-verified). TDD guards
-     (`node_background_enabled_tests` in `ui_ir/engine_parts/engine_01.part`).
+     (`node_background_enabled_tests` in `ui_ir/engine_01.rs`).
      RESIDUAL (live, deferred): the readout VALUES — heading
      `FlightController/Compass/Value`, range `…/radarrangemeters` — are LIVE; the
      ref's 130°/0.7km is an in-flight capture (render shows at-rest 0°). Like the

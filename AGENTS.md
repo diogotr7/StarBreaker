@@ -406,10 +406,9 @@ files and rebuilds `graph.json` — AST-only, no API cost. So the code graph
 tracks source as you commit, with nothing to remember. To refresh mid-arc before
 committing, run `graphify update .` by hand. Doc/image (semantic) changes are
 NOT covered by the hook — run `/graphify . --update` in an assistant for those
-(it dispatches extraction subagents). Note: graphify's extractor does not index
-the `crates/starbreaker-ui/src/*/engine_parts/*.part` UI-engine files, so those
-symbols are absent from the graph — fall back to grep for them (see
-`crates/starbreaker-ui/docs/ui-reference.md` §4b).
+(it dispatches extraction subagents). The UI-engine core is fully indexed since
+the 2026-07-02 review-F1 conversion of the former `engine_parts/*.part`
+include-splices to real `engine_NN.rs` submodules (ledger 104).
 
 ### MCP server (`graphify-mcp`)
 

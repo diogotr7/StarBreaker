@@ -2256,3 +2256,19 @@ MCP tool is NOT recommended (the deployed server goes stale against working-tree
 changes — the script builds the current tree).
 **Action:** cleanups DONE (commits above); F1 awaits owner decision; F9 queued for the next
 MCP deploy window.
+
+### 105 — Review F1 LANDED: the four stage engines are real submodules; the .part blind spot is closed
+**Observed:** the owner approved ledger 104's gated F1 proposal; all four stages converted
+(`96a8e4fbf` bb_resolve pilot, `f583b695f` ui_ir, `8347c40c9` ir_compose, `7daf1583f`+`11e53f6b8`
+bb_layout + line-cap split + guard-loader fix). Pure code motion + compiler-driven `pub(crate)`
+promotions; 587/587 ui + 469/469 3d lib tests, console render md5-identical, `ui_check` ALL GREEN
+(read from the marker). Two latent guard defects surfaced and were FIXED along the way: the three
+in-module hardcoding guards scanned `engine.inc` (2–8 `include!` lines) and were silently VACUOUS —
+they now scan the real module sources (ui_ir/bb_layout wholesale; ir_compose line-wise, exempting
+comments + sanctioned `test_palettes::` fixture lines); and `bb_layout/engine_01.rs` tripped the
+3000-line cap → the debug-overlay draw helpers split into `bb_layout/debug_draw.rs` by
+responsibility. graphify now indexes the engine (`expand_widget_standards` →
+`bb_resolve/engine_04.rs` with its call graph); the AGENTS.md / reference §4b / parity-skill
+blind-spot warnings are updated. Historical ledger/handoff mentions of `engine_parts/*.part`
+refer to the pre-F1 layout (path mapping is 1:1: `engine_parts/engine_NN.part` → `engine_NN.rs`).
+**Action:** DONE. Ledger 104's "F1 awaits owner decision" is superseded by this entry.

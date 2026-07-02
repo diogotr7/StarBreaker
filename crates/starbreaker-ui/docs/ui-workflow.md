@@ -38,7 +38,7 @@ per-screen prompt template is
    to `ui_ir` preprocessing/schema first, then consume it. Compose-time
    effects must be represented in IR/snapshot semantics so guards can see
    drift.
-5. **3000-line cap** on every `.rs`/`.part` under `src/` (enforced by
+5. **3000-line cap** on every `.rs` under `src/` (enforced by
    `line_count_guard`). Split by responsibility well before the cap —
    target chunks of ~2500 lines or less; the cap is the hard stop, not
    the goal.

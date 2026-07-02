@@ -291,17 +291,14 @@ the relationship-aware alternative to blind `grep` for **source-code** discovery
   details, neighbours, shortest-path); the `/graphify <question>` skill is the
   conversational front-end.
 
-**BLIND SPOT — graphify does NOT index the `engine_*.part` files.** The UI engine
-core (≈31k lines across `crates/starbreaker-ui/src/*/engine_parts/*.part` —
-`collect_standard_text_styles`, the `ui_ir`/`ir_compose` internals) uses a
-non-`.rs` extension graphify's extractor skips, so those symbols are ABSENT from
-the graph and any edge crossing into them is missing. Therefore:
-- A graphify empty / `No path` / `No affected nodes` result near the engine core
-  is the blind spot, **NOT proof of absence** — same rule as the workflow's
-  "absence is under-research, not proof." Confirm in the `.part` files.
-- To search the `.part` core, `grep -rn '<sym>' crates/starbreaker-ui/src` with
-  **NO `--include="*.rs"`** (that flag hides `.part`), and remember a method
-  reference (`.map(foo)`) will not match a `foo(` pattern.
+**The former `.part` blind spot is CLOSED** (review F1, ledger 104,
+2026-07-02): the UI engine core (~31k lines) now lives in real
+`crates/starbreaker-ui/src/<stage>/engine_NN.rs` submodules and IS indexed —
+`graphify query "expand_widget_standards"` resolves to
+`bb_resolve/engine_04.rs` with its cross-module call graph. Residual caveats:
+- An empty graphify result is still **not proof of absence** (the workflow's
+  "absence is under-research" rule) — confirm with grep before concluding.
+- A method reference (`.map(foo)`) will not match a `foo(` grep pattern.
 
 **Scope:** code STRUCTURE only. graphify does not model game-data VALUES — it is
 NOT a substitute for the §4 MCP data probes or the parse-JSON / runtime-probe
@@ -324,7 +321,7 @@ colour/size claim; ledger 68 still applies). If the graph looks stale mid-arc,
 | Font baseline | `crates/starbreaker-ui/tests/fixtures/font_size_baseline.tsv` (`crates/starbreaker-ui/docs/ui-font-size-harness.md`) |
 | Default-value registry + provenance | `crates/starbreaker-ui/data/default_value_registry_v1.json` + `.notes.md` |
 | Ship-value derivation | `crates/starbreaker-3d/src/ui_pipeline/ship_values.rs` (+ `ship_values/tests.rs`) |
-| Pipeline stages | see `crates/starbreaker-ui/docs/ui-workflow.md` §2 table; engine code in `crates/starbreaker-ui/src/<stage>/engine_parts/*.part` |
+| Pipeline stages | see `crates/starbreaker-ui/docs/ui-workflow.md` §2 table; engine code in `crates/starbreaker-ui/src/<stage>/engine_NN.rs` (real submodules since review F1) |
 | Fallback register | `crates/starbreaker-ui/docs/ui-fallback-register.md` |
 
 **Screen-mesh → render aspect** (the physical/radar screen-aspect mechanism,
@@ -362,12 +359,12 @@ frame-canvas 4:3 path). Hard-won facts a fresh agent needs:
 ledger 103). A canvas's style link `S_<kit>` maps to
 `styles/modularkitstyles/sk_<kit>/sk_<kit>_<component>styles.json`
 (buttonprimary, buttonsecondary, linearprogressmeter, scrollbar — see
-`modular_*_style_path` in `bb_resolve/engine_parts/engine_01.part`; the sheets
+`modular_kit_style_path` in `bb_resolve/engine_01.rs`; the sheets
 apply at `Tier::StandardModule` AFTER the canvas cascade, with the brand Style
 record as their palette). The button sheets' state entries
 (`RootFilled…ElementInstance`) select on the widget standards'
 `icon-/text-element-instance` tags, which the widget-standard expansion
-attaches to SHOWN instance widgets only (engine_04.part — a hidden element
+attaches to SHOWN instance widgets only (`bb_resolve/engine_04.rs` — a hidden element
 would be revealed by the kit's base `IsActive=true` entry). Colour modifiers
 are either `ColorStyle` palette roles or literal `ColorSolid` RGBA — a literal
 application removes any stale `<Field>Token`, else the token shadows the
