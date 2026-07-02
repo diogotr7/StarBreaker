@@ -217,7 +217,7 @@ A static render substitutes for live engine data with these rules
 
 `WidgetIcon` and `ComponentGeneralButtonSecondary` hosts expand the
 engine's standard template canvases in `bb_resolve`
-(`engine_parts/widget_standard_expansion.part`): synthetic component
+(`bb_resolve/engine_04.rs`, `expand_widget_standards`): synthetic component
 params from the host's authored properties, implicit framework tags
 ("icon", "general-button-secondary") resolved from the tag database by
 name, host icon identity forwarded onto the template's icon instance,

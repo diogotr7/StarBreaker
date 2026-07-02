@@ -336,11 +336,10 @@ relates to it, query the repo's graphify knowledge graph — `graphify query
 "<question>"` / `graphify explain "<symbol>"`, the `/graphify <question>` skill,
 or the `graphify-mcp` server — instead of grepping the tree blind. It is
 relationship-aware over the `.rs`/`.py` source and answers with `file:line`, at
-no API cost (auto-rebuilt each commit). **It does NOT index the `engine_*.part`
-UI-engine core (~31k lines):** a graphify miss / `No path` / `No affected` THERE
-is the blind spot, not proof of absence (the same "absence is under-research"
-rule) — grep `crates/starbreaker-ui/src/*/engine_parts/` WITHOUT
-`--include="*.rs"` (that flag hides `.part`; and `.map(foo)` won't match `foo(`).
+no API cost (auto-rebuilt each commit). The former `engine_*.part` blind spot
+is CLOSED (review F1, ledger 104/105 — the UI-engine core is real
+`engine_NN.rs` submodules and fully indexed); an empty graphify result is
+still not proof of absence (grep to confirm; `.map(foo)` won't match `foo(`).
 graphify maps code STRUCTURE only — it NEVER substitutes for the data probes
 above (MCP trio / parse-JSON) when verifying a game-data VALUE (ledger 68).
 Detail: ui-reference §4b.
@@ -544,7 +543,7 @@ needed is a doc bug — fix it before closing.
 | "Root cause's obvious — land the fix before the catalog gate" | Pre-gate you investigate and write the characterizing failing test, but DON'T land a source fix until the catalog is confirmed. After the gate the loop fixes directly. |
 | "I'll grep the line range to check that data claim" | A `sed`/`grep` line-window of a big nested record lands on the wrong entry (serialization order, multiple same-named/conditional entries). Parse the JSON + iterate the arrays, or run the runtime probe (`BB_A3_STYLE_PROBE`/`FONTPROBE`). |
 | "I'll grep the source to find which stage/function owns this" | Query graphify first (`graphify query`/`explain`, `/graphify`, `graphify-mcp`) — relationship-aware over `.rs`/`.py`, answers with `file:line`, no API cost (ui-reference §4b). It's CODE structure only — not a data-value source (MCP trio / parse-JSON still rule). |
-| "graphify shows nothing / `No path` there — so that code doesn't exist" | graphify does NOT index the `engine_*.part` UI-engine core (~31k lines) — a miss there is the blind spot, not proof. Grep `crates/starbreaker-ui/src/*/engine_parts/` WITHOUT `--include="*.rs"` (it hides `.part`); and `.map(foo)` won't match `foo(`. |
+| "graphify shows nothing / `No path` there — so that code doesn't exist" | An empty graphify result is never proof of absence — grep to confirm before concluding (and `.map(foo)` won't match `foo(`). The old `engine_*.part` blind spot is CLOSED (review F1, ledger 105): the UI-engine core is real `engine_NN.rs` submodules and fully indexed. |
 | "My quick check refutes the subagent — move on" | Refuting a careful subagent finding needs the SAME rigour as the claim. If your refutation is the weaker read, IT'S the unreliable one — verify with parse/probe before acting (ledger 68). |
 | "That fix landed — a natural checkpoint, I'll ask whether to continue" | A landed sub-fix is NOT an arc boundary. Re-read the confirmed catalog and take the next open item (fully-auto never asks which/whether). If context is genuinely short, SAY so and hand the state to memory/handoff — do not convert budget anxiety into a permission question. |
 | "This render looks identical to the last — my change did nothing" | The wrapper writes a FIXED path; the user's viewer caches by name and shows the OLD image. Copy each iteration the user sees to a unique filename; confirm via the printed `png md5:` before concluding no-op (ledger 69). |
