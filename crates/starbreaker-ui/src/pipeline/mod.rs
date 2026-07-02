@@ -406,6 +406,26 @@ pub fn compile_ir_for_binding_with(
         effective_manufacturer_id,
         inputs.loc_fetcher,
     );
+    // The projection above runs the WEAKEST tiers (root `defaultStyles` +
+    // brand) sequentially last; re-apply the modular-kit component sheets so
+    // the StandardModule tier stays the authority for widget-standard chrome
+    // (tier precedence over application order — the transit button's
+    // Filled-state corner geometry, ledger 106).
+    if let Some(style_id) =
+        crate::bb_resolve::modular_style_identifier(&raw_root_json, effective_manufacturer_id)
+    {
+        crate::bb_resolve::apply_modular_kit_sheets(
+            &mut scene,
+            &style_id,
+            &|p| {
+                inputs
+                    .canvas_fetcher
+                    .fetch_canvas_by_path(p)
+                    .map_err(|e| e.to_string())
+            },
+            inputs.loc_fetcher,
+        );
+    }
 
     let swf_manifest = build_swf_selection_manifest(
         &raw_root_json,

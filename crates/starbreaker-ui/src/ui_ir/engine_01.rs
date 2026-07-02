@@ -86,6 +86,15 @@ pub struct UiIrNode {
     pub background_fill_colour: Option<[f32; 4]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub corner_radius: Option<f32>,
+    /// Per-corner background-fill geometry when the styled radii are
+    /// NON-uniform or any corner is chamfered: radii in `[TL, TR, BR, BL]`
+    /// order. A chamfered corner draws a straight cut of its radius instead of
+    /// an arc (the button standards' Filled state — ledger 106). Uniform
+    /// un-chamfered rounding stays on `corner_radius`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner_radii: Option<[f32; 4]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner_chamfers: Option<[bool; 4]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background_fill_alpha: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1511,6 +1520,8 @@ fn build_ui_ir_nodes(
             },
             background_fill_colour,
             corner_radius: node_corner_radius(node),
+            corner_radii: node_corner_geometry(node).0,
+            corner_chamfers: node_corner_geometry(node).1,
             background_fill_alpha,
             background_fill_colour_token,
             circle_fill_colour_token: circle_fill_token,
@@ -2044,6 +2055,48 @@ fn maybe_reanchor_active_label_caption_pair_rect(
 
 fn node_corner_radius(node: &BbNode) -> Option<f32> {
     explicit_uniform_corner_radius(node)
+}
+
+/// Per-corner styled radii `[TL, TR, BR, BL]` + chamfer flags, populated only
+/// when the geometry is NON-uniform or any corner is chamfered (the uniform
+/// un-chamfered case stays on [`node_corner_radius`]). A missing raw corner
+/// reads 0 (square).
+fn node_corner_geometry(node: &BbNode) -> (Option<[f32; 4]>, Option<[bool; 4]>) {
+    let border = node.raw.get("border");
+    let radius = |corner: &str| {
+        border
+            .and_then(|b| b.get(corner))
+            .and_then(|value| value.get("radius"))
+            .and_then(|value| value.get("value"))
+            .and_then(|value| value.as_f64())
+            .map(|value| value as f32)
+            .unwrap_or(0.0)
+    };
+    let chamfer = |field: &str| {
+        node.raw
+            .get(field)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    };
+    let radii = [
+        radius("topLeftRadius"),
+        radius("topRightRadius"),
+        radius("bottomRightRadius"),
+        radius("bottomLeftRadius"),
+    ];
+    let chamfers = [
+        chamfer("EnableTopLeftBorderChamfer"),
+        chamfer("EnableTopRightBorderChamfer"),
+        chamfer("EnableBottomRightBorderChamfer"),
+        chamfer("EnableBottomLeftBorderChamfer"),
+    ];
+    let any_radius = radii.iter().any(|r| *r > 0.0);
+    let any_chamfer = chamfers.iter().any(|c| *c);
+    let uniform = radii.iter().all(|r| (*r - radii[0]).abs() <= f32::EPSILON);
+    if !any_radius || (uniform && !any_chamfer) {
+        return (None, None);
+    }
+    (Some(radii), Some(chamfers))
 }
 
 fn explicit_uniform_corner_radius(node: &BbNode) -> Option<f32> {

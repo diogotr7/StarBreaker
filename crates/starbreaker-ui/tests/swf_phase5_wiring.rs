@@ -74,6 +74,8 @@ fn minimal_node(
         computed_rect: UiIrRect { x: rect.0, y: rect.1, w: rect.2, h: rect.3 },
         background_fill_colour: fill,
         corner_radius: None,
+        corner_radii: None,
+        corner_chamfers: None,
         background_fill_alpha: None,
         background_fill_colour_token: None,
         circle_fill_colour_token: None,

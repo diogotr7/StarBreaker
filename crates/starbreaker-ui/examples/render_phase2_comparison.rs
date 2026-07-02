@@ -104,6 +104,8 @@ fn synthetic_hybrid_document() -> UiIrDocument {
             computed_rect: UiIrRect { x: 12.0, y: 10.0, w: 96.0, h: 44.0 },
             background_fill_colour: Some([0.0, 0.0, 1.0, 0.65]),
             corner_radius: None,
+            corner_radii: None,
+            corner_chamfers: None,
             background_fill_alpha: None,
             background_fill_colour_token: Some("Accent2".to_string()),
             circle_fill_colour_token: None,

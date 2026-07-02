@@ -179,3 +179,50 @@ use serde_json::json;
         assert_eq!(lp["crossAxisJustification"], "Center");
         assert_eq!(lp["axisJustification"], "Start", "untouched field survives");
     }
+
+/// The button standards' Filled state authors PER-CORNER radii + chamfer
+/// flags (`RootFilled`: BR radius 20, TL/BR chamfer true). The radii must
+/// land in the raw border structure `node_corner_radius` reads, and the
+/// chamfer booleans must be recorded for the draw (console button, ledger
+/// 106 — the corners stayed at the template's uniform 10).
+#[test]
+fn per_corner_radius_and_chamfer_modifiers_apply() {
+    let mut scene = super::tests_support::make_test_scene();
+    let node = scene.nodes.get_mut(&1).expect("test node");
+    let palette = serde_json::json!({"colorStyles": []});
+    let mods = [
+        serde_json::json!({"_Type_": "BuildingBlocks_FieldModifierNumber", "field": "BorderTopLeftRadius", "value": 0.0}),
+        serde_json::json!({"_Type_": "BuildingBlocks_FieldModifierNumber", "field": "BorderBottomRightRadius", "value": 20.0}),
+        serde_json::json!({"_Type_": "BuildingBlocks_FieldModifierBoolean", "field": "EnableTopLeftBorderChamfer", "value": true}),
+        serde_json::json!({"_Type_": "BuildingBlocks_FieldModifierBoolean", "field": "EnableBottomRightBorderChamfer", "value": true}),
+    ];
+    for modifier in &mods {
+        super::modifiers::apply_modifier(
+            modifier,
+            node,
+            &super::colors::PaletteSources::uniform(&palette),
+            None,
+        );
+    }
+    let radius = |corner: &str| {
+        node.raw
+            .get("border")
+            .and_then(|b| b.get(corner))
+            .and_then(|c| c.get("radius"))
+            .and_then(|r| r.get("value"))
+            .and_then(|v| v.as_f64())
+    };
+    // Zero radius = keep authored (the reference keeps the canvas's base
+    // rounding on the standards' zeroed corners — ledger 106).
+    assert_eq!(radius("topLeftRadius"), None);
+    assert_eq!(radius("bottomRightRadius"), Some(20.0));
+    assert_eq!(
+        node.raw.get("EnableTopLeftBorderChamfer").and_then(|v| v.as_bool()),
+        Some(true),
+        "chamfer flags must be recorded for the draw"
+    );
+    assert_eq!(
+        node.raw.get("EnableBottomRightBorderChamfer").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+}

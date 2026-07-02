@@ -32,6 +32,8 @@ pub(super) fn base_node(id: u32, layer: i32) -> UiIrNode {
         },
         background_fill_colour: Some([0.1, 0.1, 0.1, 0.5]),
         corner_radius: None,
+        corner_radii: None,
+        corner_chamfers: None,
         background_fill_alpha: None,
         background_fill_colour_token: None,
         circle_fill_colour_token: None,

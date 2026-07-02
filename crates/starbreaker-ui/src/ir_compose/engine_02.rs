@@ -453,6 +453,8 @@ mod tests {
             computed_rect: UiIrRect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 },
             background_fill_colour: None,
             corner_radius: None,
+            corner_radii: None,
+            corner_chamfers: None,
             background_fill_alpha: None,
             background_fill_colour_token: None,
             circle_fill_colour_token: None,
@@ -1119,6 +1121,8 @@ mod tests_c {
             computed_rect: UiIrRect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 },
             background_fill_colour: None,
             corner_radius: None,
+            corner_radii: None,
+            corner_chamfers: None,
             background_fill_alpha: None,
             background_fill_colour_token: None,
             circle_fill_colour_token: None,
@@ -1712,6 +1716,8 @@ mod tests_c {
                 computed_rect: UiIrRect { x: 4.0, y: 4.0, w: 24.0, h: 24.0 },
                 background_fill_colour: Some([0.0, 0.0, 1.0, 1.0]),
                 corner_radius: None,
+                corner_radii: None,
+                corner_chamfers: None,
                 background_fill_alpha: None,
                 background_fill_colour_token: None,
                 circle_fill_colour_token: None,
@@ -1924,6 +1930,8 @@ mod tests_c {
             computed_rect: UiIrRect { x: 10.0, y: 10.0, w: 100.0, h: 20.0 },
             background_fill_colour: Some([0.0, 1.0, 0.0, 1.0]),
             corner_radius: None,
+            corner_radii: None,
+            corner_chamfers: None,
             background_fill_alpha: None,
             background_fill_colour_token: None,
             circle_fill_colour_token: None,
@@ -2130,6 +2138,8 @@ mod tests_d {
             computed_rect: UiIrRect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 },
             background_fill_colour: None,
             corner_radius: None,
+            corner_radii: None,
+            corner_chamfers: None,
             background_fill_alpha: None,
             background_fill_colour_token: None,
             circle_fill_colour_token: None,
@@ -2204,6 +2214,8 @@ mod tests_d {
                 computed_rect: UiIrRect { x: 5.0, y: 6.0, w: 18.0, h: 10.0 },
                 background_fill_colour: Some([0.0, 0.0, 1.0, 1.0]),
                 corner_radius: None,
+                corner_radii: None,
+                corner_chamfers: None,
                 background_fill_alpha: None,
                 background_fill_colour_token: None,
                 circle_fill_colour_token: None,
@@ -2589,6 +2601,8 @@ mod tests_e {
             computed_rect: UiIrRect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 },
             background_fill_colour: None,
             corner_radius: None,
+            corner_radii: None,
+            corner_chamfers: None,
             background_fill_alpha: None,
             background_fill_colour_token: None,
             circle_fill_colour_token: None,
@@ -2655,6 +2669,8 @@ mod tests_e {
             computed_rect: UiIrRect { x: 1736.0, y: -5.5, w: 128.0, h: 152.3 },
             background_fill_colour: None,
             corner_radius: None,
+            corner_radii: None,
+            corner_chamfers: None,
             background_fill_alpha: None,
             background_fill_colour_token: None,
             circle_fill_colour_token: None,
@@ -2740,6 +2756,8 @@ mod tests_e {
             computed_rect: UiIrRect { x: 1736.0, y: 146.8, w: 115.0, h: 15.0 },
             background_fill_colour: None,
             corner_radius: None,
+            corner_radii: None,
+            corner_chamfers: None,
             background_fill_alpha: None,
             background_fill_colour_token: None,
             circle_fill_colour_token: None,
@@ -2852,54 +2870,6 @@ mod tests_e {
     }
 }
 
-// Rounded border chrome: the generic border renderer strokes a rounded-rect
-// path when a node carries a uniform border and an authored corner radius
-// (e.g. the modular-kit ghost button's `RootGhost` 3px Accent1 border with
-// 6px corners). Non-uniform or square borders keep per-side fills.
-
-pub(crate) fn rounded_rect_path(rect: TskRect, radius: f32) -> Option<tiny_skia::Path> {
-    let r = radius.max(0.0).min(rect.width() * 0.5).min(rect.height() * 0.5);
-    let x = rect.x();
-    let y = rect.y();
-    let w = rect.width();
-    let h = rect.height();
-
-    let mut pb = PathBuilder::new();
-    // A FULL ellipse/circle — the corner radius consumes both half-extents — must
-    // use CUBIC corner arcs (standard 90°-arc constant k = 4/3·tan(π/8) ≈ 0.5523,
-    // accurate to <0.03% of r). A quadratic Bezier bulges toward the corner, so a
-    // full-radius rounded rect rendered as a squircle, not a circle — the g-force
-    // / velocity centre dot (114.86² node, corner_radius 100 clamped to half-size)
-    // showed as a rounded square. PARTIAL rounded corners keep the quadratic arc:
-    // the deviation there is sub-pixel (the cards/borders on the frozen MFD
-    // baselines) and quadratics are what those baselines were frozen with.
-    let is_full_ellipse = r >= w * 0.5 - 0.5 && r >= h * 0.5 - 0.5;
-    if is_full_ellipse {
-        const ARC_K: f32 = 0.552_284_75;
-        let c = r * ARC_K;
-        pb.move_to(x + r, y);
-        pb.line_to(x + w - r, y);
-        pb.cubic_to(x + w - r + c, y, x + w, y + r - c, x + w, y + r); // top-right
-        pb.line_to(x + w, y + h - r);
-        pb.cubic_to(x + w, y + h - r + c, x + w - r + c, y + h, x + w - r, y + h); // bottom-right
-        pb.line_to(x + r, y + h);
-        pb.cubic_to(x + r - c, y + h, x, y + h - r + c, x, y + h - r); // bottom-left
-        pb.line_to(x, y + r);
-        pb.cubic_to(x, y + r - c, x + r - c, y, x + r, y); // top-left
-    } else {
-        pb.move_to(x + r, y);
-        pb.line_to(x + w - r, y);
-        pb.quad_to(x + w, y, x + w, y + r);
-        pb.line_to(x + w, y + h - r);
-        pb.quad_to(x + w, y + h, x + w - r, y + h);
-        pb.line_to(x + r, y + h);
-        pb.quad_to(x, y + h, x, y + h - r);
-        pb.line_to(x, y + r);
-        pb.quad_to(x, y, x + r, y);
-    }
-    pb.close();
-    pb.finish()
-}
 
 /// A border drawable as one rounded stroke: all four sides share one
 /// width (> 0) and one resolved colour.

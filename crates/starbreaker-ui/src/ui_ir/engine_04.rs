@@ -981,6 +981,8 @@ mod tests_e {
                 },
                 background_fill_colour: None,
                 corner_radius: None,
+                corner_radii: None,
+                corner_chamfers: None,
                 background_fill_alpha: None,
                 background_fill_colour_token: None,
                 circle_fill_colour_token: None,

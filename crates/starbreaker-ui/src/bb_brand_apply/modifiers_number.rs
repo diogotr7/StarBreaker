@@ -8,8 +8,16 @@ use super::colors::ensure_border;
 use super::modifiers::bb_value_with_raw_behavior;
 
 /// Write one corner's radius into the authored raw `border` structure that
-/// the IR's `node_corner_radius` reads (`border.<corner>.radius.value`).
+/// the IR's corner-geometry readers consume (`border.<corner>.radius.value`).
+/// A ZERO radius modifier keeps the previously-styled/authored value — the
+/// same `value<=0 → keep authored` semantics as the geometry field bindings:
+/// the button standards' state entries author `BorderTopRightRadius 0.0`
+/// alongside a real `BorderBottomRightRadius 20` and the reference keeps the
+/// canvas's base rounding on the zero corners (ledger 106).
 pub(super) fn set_raw_corner_radius(node: &mut BbNode, corner: &str, value: f64) {
+    if value <= 0.0 {
+        return;
+    }
     if node.raw.is_null() {
         node.raw = serde_json::Value::Object(serde_json::Map::new());
     }

@@ -371,6 +371,17 @@ fn draw_non_text_node(
                 && rect.h <= document.target_height as f32 * 0.16
             {
                 // Header root containers are layout scaffolding, not visible chrome.
+            } else if let (Some(radii), Some(chamfers)) = (node.corner_radii, node.corner_chamfers)
+            {
+                fill_corner_geometry_ts_with_mode(
+                    pixmap,
+                    fill_rect,
+                    radii,
+                    chamfers,
+                    fill,
+                    node.alpha,
+                    node_colour_blend_mode(node),
+                );
             } else if let Some(radius) = node.corner_radius.filter(|r| *r > 0.0) {
                 fill_rounded_rect_ts_with_mode(
                     pixmap,
@@ -2822,46 +2833,6 @@ fn fill_rect_ts(pixmap: &mut Pixmap, rect: TskRect, rgba: [f32; 4], alpha: f32) 
 /// Fill a `corner_radius`-rounded rect (the radius is clamped to half the box,
 /// so a large radius on a small square yields a circle — the velocity / g-force
 /// ball centre dot). Falls back to a plain rect fill when the path degenerates.
-fn fill_rounded_rect_ts_with_mode(
-    pixmap: &mut Pixmap,
-    rect: TskRect,
-    radius: f32,
-    rgba: [f32; 4],
-    alpha: f32,
-    blend_mode: BlendMode,
-) {
-    let Some(path) = rounded_rect_path(rect, radius) else {
-        fill_rect_ts_with_mode(pixmap, rect, rgba, alpha, blend_mode);
-        return;
-    };
-    let mut paint = Paint::default();
-    paint.set_color(to_skia_color(rgba, alpha));
-    paint.blend_mode = blend_mode;
-    paint.anti_alias = true;
-    pixmap.as_mut().fill_path(
-        &path,
-        &paint,
-        tiny_skia::FillRule::Winding,
-        Transform::identity(),
-        None,
-    );
-}
-
-fn fill_rect_ts_with_mode(
-    pixmap: &mut Pixmap,
-    rect: TskRect,
-    rgba: [f32; 4],
-    alpha: f32,
-    blend_mode: BlendMode,
-) {
-    let mut paint = Paint::default();
-    paint.set_color(to_skia_color(rgba, alpha));
-    paint.blend_mode = blend_mode;
-    paint.anti_alias = false;
-    pixmap
-        .as_mut()
-        .fill_rect(rect, &paint, Transform::identity(), None);
-}
 
 fn blit_atlas_image_tinted(
     pixmap: &mut Pixmap,

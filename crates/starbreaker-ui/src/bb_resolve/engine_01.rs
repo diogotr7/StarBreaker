@@ -62,6 +62,102 @@ fn is_linear_progress_meter(node: &crate::bb_scene::BbNode) -> bool {
     )
 }
 
+/// Apply the modular-kit component sheets (`sk_<kit>_*styles`) for
+/// `style_identifier` at [`Tier::StandardModule`]. Runs inside the resolve and
+/// AGAIN from the pipeline after the root style projection: the projection
+/// applies the weakest tiers (root `defaultStyles` + brand) sequentially last,
+/// and the engine is last-writer-wins, so without the re-application a canvas
+/// `defaultStyles` entry clobbers the kit chrome it should rank below (the
+/// transit button's Filled-state corner geometry — ledger 106).
+pub fn apply_modular_kit_sheets(
+    scene: &mut BbScene,
+    style_id: &str,
+    fetch_by_path: &dyn Fn(&str) -> Result<serde_json::Value, String>,
+    loc_fetcher: Option<&dyn LocFetcher>,
+) {
+    // Named colour roles in modular-kit entries resolve against the brand
+    // Style record's palette (the module records carry no `colorStyles`).
+    let module_chrome_palette = fetch_by_path(style_id).ok();
+    let module_paths = [
+        modular_linearprogress_style_path(style_id),
+        modular_buttonprimary_style_path(style_id),
+        modular_buttonsecondary_style_path(style_id),
+    ];
+
+    for module_path in module_paths.into_iter().flatten() {
+        match fetch_by_path(&module_path) {
+            Ok(module_style_json) => {
+                let module_style_value = module_style_json
+                    .get("_RecordValue_")
+                    .unwrap_or(&module_style_json);
+                if let Some(entries) = module_style_value.get("entries").and_then(|v| v.as_array()) {
+                    if module_path.contains("_linearprogressmeterstyles") {
+                        seed_implicit_linearprogress_style_tags(
+                            scene,
+                            entries,
+                            fetch_by_path,
+                        );
+                    }
+                    if module_path.contains("_buttonsecondarystyles") {
+                        apply_buttonsecondary_modular_styles(scene, entries);
+                    }
+
+                    let palette = module_chrome_palette
+                        .as_ref()
+                        .unwrap_or(module_style_value);
+                    crate::bb_style_engine::apply(
+                        scene,
+                        &[crate::bb_style_engine::StyleSheet {
+                            tier: crate::bb_style_engine::Tier::StandardModule,
+                            identifier: extract_record_name(&module_path),
+                            fills: module_style_value,
+                            chrome: palette,
+                            entries: entries.as_slice(),
+                            scope: crate::bb_style_engine::SheetScope::Scene,
+                        }],
+                        loc_fetcher,
+                    );
+                }
+            }
+            Err(e) => {
+                log::debug!(
+                    "bb_resolve: no modular style '{}' for '{}': {}",
+                    module_path,
+                    style_id,
+                    e
+                );
+            }
+        }
+    }
+
+    // The scrollbar sheet applies scoped to expanded scrollbar standards
+    // only — see `apply_scrollbar_modular_styles`.
+    apply_scrollbar_modular_styles(
+        scene,
+        style_id,
+        module_chrome_palette.as_ref(),
+        fetch_by_path,
+    );
+}
+
+/// The modular-kit style identifier for a canvas: its own `style` link, else
+/// the resolved brand identifier (the same derivation the resolve uses).
+pub fn modular_style_identifier(
+    root_json: &serde_json::Value,
+    manufacturer_id: Option<&str>,
+) -> Option<String> {
+    let record_value = root_json.get("_RecordValue_").unwrap_or(root_json);
+    record_value
+        .get("style")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(crate::record_name::extract_record_name)
+        .or_else(|| {
+            crate::bb_brand_style::resolve_brand_style(root_json, manufacturer_id, None)
+                .map(|brand| brand.identifier)
+        })
+}
+
 /// Framework record path of a modular-kit component style sheet: the style
 /// link `S_<kit>` (or a direct `sk_<kit>`) maps to
 /// `modularkitstyles/sk_<kit>/sk_<kit>_<component>styles.json`.
@@ -1555,69 +1651,7 @@ fn resolve_canvas_graph_inner(
         &pending_state_tags,
     );
     if let Some(style_id) = modular_style_id.as_deref() {
-        // Named colour roles in modular-kit entries resolve against the brand
-        // Style record's palette (the module records carry no `colorStyles`).
-        let module_chrome_palette = fetch_by_path(style_id).ok();
-        let module_paths = [
-            modular_linearprogress_style_path(style_id),
-            modular_buttonprimary_style_path(style_id),
-            modular_buttonsecondary_style_path(style_id),
-        ];
-
-        for module_path in module_paths.into_iter().flatten() {
-            match fetch_by_path(&module_path) {
-                Ok(module_style_json) => {
-                    let module_style_value = module_style_json
-                        .get("_RecordValue_")
-                        .unwrap_or(&module_style_json);
-                    if let Some(entries) = module_style_value.get("entries").and_then(|v| v.as_array()) {
-                        if module_path.contains("_linearprogressmeterstyles") {
-                            seed_implicit_linearprogress_style_tags(
-                                &mut scene,
-                                entries,
-                                fetch_by_path,
-                            );
-                        }
-                        if module_path.contains("_buttonsecondarystyles") {
-                            apply_buttonsecondary_modular_styles(&mut scene, entries);
-                        }
-
-                        let palette = module_chrome_palette
-                            .as_ref()
-                            .unwrap_or(module_style_value);
-                        crate::bb_style_engine::apply(
-                            &mut scene,
-                            &[crate::bb_style_engine::StyleSheet {
-                                tier: crate::bb_style_engine::Tier::StandardModule,
-                                identifier: extract_record_name(&module_path),
-                                fills: module_style_value,
-                                chrome: palette,
-                                entries: entries.as_slice(),
-                                scope: crate::bb_style_engine::SheetScope::Scene,
-                            }],
-                            loc_fetcher,
-                        );
-                    }
-                }
-                Err(e) => {
-                    log::debug!(
-                        "bb_resolve: no modular style '{}' for '{}': {}",
-                        module_path,
-                        style_id,
-                        e
-                    );
-                }
-            }
-        }
-
-        // The scrollbar sheet applies scoped to expanded scrollbar standards
-        // only — see `apply_scrollbar_modular_styles`.
-        apply_scrollbar_modular_styles(
-            &mut scene,
-            style_id,
-            module_chrome_palette.as_ref(),
-            fetch_by_path,
-        );
+        apply_modular_kit_sheets(&mut scene, style_id, fetch_by_path, loc_fetcher);
     }
     finalize_widget_standard_fields(&mut scene, &Default::default());
 

@@ -6,9 +6,11 @@
 //! 104); the public surface is glob re-exported so call sites are unchanged.
 
 mod engine_01;
+mod fill_primitives;
 mod engine_02;
 
 pub use engine_01::*;
+pub(crate) use fill_primitives::*;
 // engine_02 currently exports no `pub` items — its cross-module surface is
 // `pub(crate)`; widen to `pub use` if it ever gains public API.
 pub(crate) use engine_02::*;
