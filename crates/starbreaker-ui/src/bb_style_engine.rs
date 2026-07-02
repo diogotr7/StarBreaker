@@ -7,9 +7,12 @@
 //! entry point uses (`bb_brand_apply::apply_style_entries_filtered`), so
 //! conditions, modifiers, probes, and the `__InlineFontSize` /
 //! `__EntryFontSize` / `__AppliedStyleEntries` marker semantics are reused
-//! verbatim. The TEXT-FORMAT route (Parent-wrapped entries styling a
-//! textfield's text format) is gated on [`Tier::Brand`] — the tier carries
-//! the semantics the legacy path inferred from the `s_*` identifier prefix.
+//! verbatim. The TEXT-FORMAT route (entries styling a textfield's text
+//! format) runs at [`Tier::Brand`] (Parent-wrapped or bare `Type(Text)`
+//! entries — the tier carries the semantics the legacy path inferred from
+//! the `s_*` identifier prefix) AND, since the LR-indicator arc (ledger
+//! 96/97), at [`Tier::Embedded`] for an UNCONDITIONAL bare `Type(Text)`
+//! selector (`TextFormatRoute::BareTextOnly`).
 
 use crate::bb_loc::LocFetcher;
 use crate::bb_scene::{BbNodeId, BbScene};
