@@ -1,3 +1,5 @@
+#[allow(unused_imports)]
+use super::*;
 // Consolidated engine chunk 01 (formerly: part_01.part, part_02.part, part_03.part, part_04.part, part_05.part, part_06.part, part_07.part, part_08.part).
 //   part_01.part: BuildingBlocks layout engine — pixel-space rect resolver.
 
@@ -1960,7 +1962,7 @@ fn centered_intrinsic_text_column_adjustment(
     (adjusted_spacing, main_offset_shift)
 }
 
-fn row_flex_start_anchor_offset(
+pub(crate) fn row_flex_start_anchor_offset(
     node: &crate::bb_scene::BbNode,
     available_main: f32,
     item_w: f32,

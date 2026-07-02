@@ -1,3 +1,14 @@
+#[allow(unused_imports)]
+use super::*;
+#[allow(unused_imports)]
+use std::collections::BTreeMap;
+#[allow(unused_imports)]
+use image::{Rgba, RgbaImage};
+#[allow(unused_imports)]
+use log::warn;
+#[allow(unused_imports)]
+use crate::bb_scene::{BbCoordinateMethod, BbNode, BbNodeId, BbNodeType, BbScene, BbValue};
+
 // Consolidated engine chunk 02 (formerly: part_09.part, part_10.part, part_11.part, part_12.part, part_13.part, part_14.part, part_15.part).
 //   part_12.part: Tests: a parent's explicit padding defines its content box and fixed-size
 //   part_13.part: Scroll-bar thumb geometry: the at-rest scroll model.
@@ -1456,7 +1467,13 @@ mod tests_d {
 
     #[test]
     fn layout_source_does_not_reintroduce_forbidden_hardcoded_or_heuristic_markers() {
-        let source = include_str!("../engine.inc");
+        // Scan the REAL engine sources. (The pre-F1 version read `engine.inc`
+        // — 3 include! lines — so the guard was silently vacuous.)
+        let sources = [
+            include_str!("engine_01.rs"),
+            include_str!("engine_02.rs"),
+            include_str!("engine_03.rs"),
+        ];
         // Hard rule: keep layout generic across assets and screens. If this
         // trips, remove marker-based workarounds and fix structural causes.
         let forbidden = [
@@ -1470,7 +1487,7 @@ mod tests_d {
 
         for marker in forbidden {
             assert!(
-                !source.contains(marker.as_str()),
+                !sources.iter().any(|source| source.contains(marker.as_str())),
                 "bb_layout hardcoding/heuristic marker reintroduced: {marker}"
             );
         }
@@ -1760,7 +1777,7 @@ mod tests_padding_fit {
 // 0.402 vs 0.440) is an engine-input difference, not a formula error —
 // parked with P7 in crates/starbreaker-ui/docs/ui-clipper-parity-handoff.md.
 
-fn apply_scroll_thumb_rects(scene: &BbScene, rects: &mut BTreeMap<BbNodeId, Rect>) {
+pub(crate) fn apply_scroll_thumb_rects(scene: &BbScene, rects: &mut BTreeMap<BbNodeId, Rect>) {
     let thumbs: Vec<(BbNodeId, String, bool)> = scene
         .nodes
         .iter()
@@ -1958,7 +1975,7 @@ mod scroll_thumb_tests {
 /// Best-effort intrinsic main-axis size of an Auto-sized flex child whose
 /// subtree carries resolved text. `None` when no measurable text exists
 /// (the caller keeps the zero-size rule).
-fn auto_text_intrinsic_main(
+pub(crate) fn auto_text_intrinsic_main(
     node_id: BbNodeId,
     scene: &BbScene,
     canvas_scale: f32,
@@ -1986,7 +2003,7 @@ fn auto_text_intrinsic_main(
 /// renderer will draw it with: the EFFECTIVE (styled) size annotated by ui_ir
 /// before layout, else the authored font size — both at the draw calibration.
 /// `None` when the node carries no measurable text.
-fn node_resolved_text_size(
+pub(crate) fn node_resolved_text_size(
     node: &crate::bb_scene::BbNode,
     canvas_scale: f32,
     renderer: &crate::text::TextRenderer,
@@ -2042,7 +2059,7 @@ fn node_resolved_text_size(
 ///   TextLayout row keeps both full-width label-caption pairs).
 ///
 /// Returns the (possibly reduced) total main extent including spacing.
-fn apply_flex_no_grow_shrink(
+pub(crate) fn apply_flex_no_grow_shrink(
     sizes: &mut [(BbNodeId, f32, f32, bool)],
     scene: &BbScene,
     container: Rect,

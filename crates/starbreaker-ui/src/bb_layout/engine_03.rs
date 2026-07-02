@@ -1,3 +1,14 @@
+#[allow(unused_imports)]
+use super::*;
+#[allow(unused_imports)]
+use std::collections::BTreeMap;
+#[allow(unused_imports)]
+use image::{Rgba, RgbaImage};
+#[allow(unused_imports)]
+use log::warn;
+#[allow(unused_imports)]
+use crate::bb_scene::{BbCoordinateMethod, BbNode, BbNodeId, BbNodeType, BbScene, BbValue};
+
 // Consolidated engine chunk 03: additional bb_layout tests that would push
 // engine_02.part past the 3000-line cap (crates/starbreaker-ui/docs/ui-workflow.md rule 5).
 
