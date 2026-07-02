@@ -174,6 +174,13 @@ pub(super) fn write_color_to_raw(field_name: &str, color: [f32; 4], node: &mut B
 
 pub(super) fn write_color_token_to_raw(field_name: &str, token: Option<&str>, node: &mut BbNode) {
     let Some(token) = token.map(str::trim).filter(|value| !value.is_empty()) else {
+        // A token-less (literal / `ColorSolid`) application must DROP any stale
+        // lower-tier token — a leftover token shadows the literal at draw time
+        // (the Filled-button icon kept the overlay `Base` tint; review F5 /
+        // ledger 103). Applies to every colour field, not just FillColor.
+        node.raw
+            .as_object_mut()
+            .and_then(|obj| obj.remove(&format!("{field_name}Token")));
         return;
     };
     node.raw.as_object_mut().and_then(|obj| {

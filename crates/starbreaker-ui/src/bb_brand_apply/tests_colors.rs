@@ -37,6 +37,58 @@ use serde_json::json;
     }
 
     #[test]
+    fn literal_color_application_drops_stale_token_for_border_fields() {
+        // A literal (`ColorSolid`) modifier carries no palette token; a stale
+        // lower-tier token left in raw shadows the literal at draw time (the
+        // Filled-button icon bug, review F5 / ledger 103). The drop-on-None
+        // semantics live in `write_color_token_to_raw` so EVERY colour field
+        // arm gets them, not just FillColor.
+        let palette = json!({
+            "colorStyles": [
+                {"color": {"r": 1.0, "g": 0.5, "b": 0.25, "a": 1.0}},
+                {"color": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0}},
+                {"color": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0}},
+                {"color": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0}},
+                {"color": {"r": 0.0, "g": 0.25, "b": 0.75, "a": 1.0}}
+            ]
+        });
+        let tokened = json!({
+            "_Type_": "BuildingBlocks_FieldModifierColor",
+            "field": "BorderColorTop",
+            "color": {"_Type_": "BuildingBlocks_ColorStyle", "color": "Accent1", "alpha": 1.0}
+        });
+        let literal = json!({
+            "_Type_": "BuildingBlocks_FieldModifierColor",
+            "field": "BorderColorTop",
+            "color": {
+                "_Type_": "BuildingBlocks_ColorSolid",
+                "color": {"_Type_": "SRGBA8", "r": 0, "g": 0, "b": 0, "a": 255}
+            }
+        });
+
+        let mut scene = make_test_scene();
+        let node = scene.nodes.get_mut(&1).expect("test node");
+        apply_modifier(&tokened, node, &PaletteSources::uniform(&palette), None);
+        assert_eq!(
+            node.raw.get("BorderColorTopToken").and_then(|v| v.as_str()),
+            Some("Accent1"),
+            "precondition: the tokened application writes the token"
+        );
+
+        apply_modifier(&literal, node, &PaletteSources::uniform(&palette), None);
+        assert!(
+            node.raw.get("BorderColorTopToken").is_none(),
+            "a literal application must drop the stale palette token"
+        );
+        let border = node.border.as_ref().expect("border should be ensured");
+        assert_eq!(
+            border.top.colour,
+            Some([0.0, 0.0, 0.0, 1.0]),
+            "the literal black must be applied"
+        );
+    }
+
+    #[test]
     fn custom_shape_inline_overlay_accent1_resolves_to_surface_slot() {
         // s_bioc-like palette: slot 0 = light blue (foreground), slot 4 = dark blue
         // (surface). A custom-shape fill overlay (the medical "fingerprint") must

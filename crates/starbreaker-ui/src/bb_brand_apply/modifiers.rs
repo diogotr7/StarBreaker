@@ -276,19 +276,11 @@ fn apply_color_field(field_name: &str, color: [f32; 4], token: Option<&str>, nod
             if let Some(bg) = &mut node.background {
                 bg.fill_colour = Some(color);
             }
-            // Also write to raw for non-typed cases.
+            // Also write to raw for non-typed cases. A token-less (literal)
+            // application drops any stale token inside
+            // `write_color_token_to_raw` (review F5).
             write_color_to_raw(field_name, color, node);
-            if token.is_some() {
-                write_color_token_to_raw(field_name, token, node);
-            } else {
-                // A literal (`ColorSolid`) modifier carries no palette token;
-                // drop a stale lower-tier token or it shadows the literal at
-                // draw time (e.g. the button standard's solid-black icon
-                // FillColor losing to the inline-overlay `Base` default).
-                node.raw
-                    .as_object_mut()
-                    .and_then(|obj| obj.remove(&format!("{field_name}Token")));
-            }
+            write_color_token_to_raw(field_name, token, node);
         }
         "BorderColor" => {
             ensure_border(node);
