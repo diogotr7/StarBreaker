@@ -70,4 +70,42 @@ impl DrawTextMeasure for SwfDrawTextMeasure<'_> {
         let height = swf_line_box_px(selection.font, font_px) * lines as f32;
         Some((width, height))
     }
+
+    fn measure_word_advances_px(
+        &self,
+        font_symbol: Option<&str>,
+        label_style: Option<&str>,
+        text: &str,
+        font_px: f32,
+        letter_spacing_px: f32,
+    ) -> Option<(Vec<Option<f32>>, f32, f32)> {
+        if text.trim().is_empty() || font_px <= 0.0 {
+            return None;
+        }
+        let selection =
+            select_imported_ui_font_from_assets(self.assets, font_symbol, label_style)?;
+        let advance = |s: &str| {
+            self.renderer
+                .measure_swf_advance_width(s, selection.font, font_px, letter_spacing_px)
+        };
+        // Inter-word pen cost derived from the SAME advance primitive the wrap
+        // uses (advances are additive): adv("x x") − 2·adv("x") = space glyph
+        // advance + letter spacing.
+        let single = advance("x")?;
+        let space_cost = (advance("x x")? - 2.0 * single).max(0.0);
+        let mut words: Vec<Option<f32>> = Vec::new();
+        for (i, paragraph) in text.split('\n').enumerate() {
+            if i > 0 {
+                words.push(None);
+            }
+            for word in paragraph.split_whitespace() {
+                words.push(Some(advance(word)?));
+            }
+        }
+        if words.iter().all(|w| w.is_none()) {
+            return None;
+        }
+        let line_box = swf_line_box_px(selection.font, font_px);
+        Some((words, space_cost, line_box))
+    }
 }

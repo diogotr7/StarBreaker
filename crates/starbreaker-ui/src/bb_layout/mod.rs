@@ -7,11 +7,13 @@
 //! 104); the public surface is glob re-exported so call sites are unchanged.
 
 mod debug_draw;
+mod text_intrinsic;
 mod engine_01;
 mod engine_02;
 mod engine_03;
 
 pub(crate) use debug_draw::*;
+pub(crate) use text_intrinsic::*;
 pub use engine_01::*;
 // engines 02-03 currently export no `pub` items — their cross-module surface
 // is `pub(crate)`; widen a glob to `pub use` if one ever gains public API.

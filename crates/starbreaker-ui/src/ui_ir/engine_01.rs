@@ -476,6 +476,25 @@ pub trait DrawTextMeasure {
         font_px: f32,
         letter_spacing_px: f32,
     ) -> Option<(f32, f32)>;
+
+    /// Per-word draw advances for the SAME glyph machinery `measure_px` uses:
+    /// `(word_advances, space_cost, line_box)`. `word_advances` follows the
+    /// text's word order with `None` entries marking paragraph (`\n`) breaks;
+    /// `space_cost` is the inter-word pen advance (space glyph + letter
+    /// spacing); `line_box` is the single-line box height. Advances are
+    /// additive (a line's advance = Σ words + spaces), so `bb_layout` can
+    /// reproduce the draw's greedy wrap exactly for Auto-height content fits.
+    /// Default: unavailable (TTF fallback path keeps its estimate).
+    fn measure_word_advances_px(
+        &self,
+        _font_symbol: Option<&str>,
+        _label_style: Option<&str>,
+        _text: &str,
+        _font_px: f32,
+        _letter_spacing_px: f32,
+    ) -> Option<(Vec<Option<f32>>, f32, f32)> {
+        None
+    }
 }
 
 pub fn compile_ui_ir_from_scene(
@@ -929,24 +948,50 @@ fn annotate_effective_font_px(
             )
             .map(|spacing| spacing * design_text_scale)
             .unwrap_or(0.0);
-            measure.measure_px(
+            let size = measure.measure_px(
                 font_symbol.as_deref(),
                 label_style.as_deref(),
                 resolved_text,
                 draw_font_px,
                 letter_spacing_px,
-            )
+            )?;
+            // Per-word advances let bb_layout reproduce the draw's greedy wrap
+            // for Auto-height content fits (a single-line intrinsic clipped
+            // wrapped labels — the transit button's CALL/ELEVATOR, ledger 106).
+            let words = measure.measure_word_advances_px(
+                font_symbol.as_deref(),
+                label_style.as_deref(),
+                resolved_text,
+                draw_font_px,
+                letter_spacing_px,
+            );
+            Some((size, words))
         });
         if let Some(node) = layout_scene.nodes.get_mut(&id)
             && let Some(map) = node.raw.as_object_mut()
         {
             map.insert("_EffectiveFontPx_".to_string(), serde_json::json!(font_px));
-            if let Some((draw_w, draw_h)) = draw_metrics
-                && draw_w > 0.0
-                && draw_h > 0.0
-            {
-                map.insert("_DrawTextWidthPx_".to_string(), serde_json::json!(draw_w));
-                map.insert("_DrawTextHeightPx_".to_string(), serde_json::json!(draw_h));
+            if let Some(((draw_w, draw_h), word_metrics)) = draw_metrics {
+                if draw_w > 0.0 && draw_h > 0.0 {
+                    map.insert("_DrawTextWidthPx_".to_string(), serde_json::json!(draw_w));
+                    map.insert("_DrawTextHeightPx_".to_string(), serde_json::json!(draw_h));
+                }
+                if let Some((words, space_cost, line_box)) = word_metrics
+                    && line_box > 0.0
+                {
+                    map.insert(
+                        "_DrawTextWordAdvancesPx_".to_string(),
+                        serde_json::json!(words),
+                    );
+                    map.insert(
+                        "_DrawTextSpaceCostPx_".to_string(),
+                        serde_json::json!(space_cost),
+                    );
+                    map.insert(
+                        "_DrawTextLineBoxPx_".to_string(),
+                        serde_json::json!(line_box),
+                    );
+                }
             }
         }
     }

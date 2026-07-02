@@ -491,6 +491,44 @@ mod tests_c {
     use super::*;
     use crate::bb_scene::parse_bb_canvas;
 
+    /// The wrapped intrinsic reproduces the draw's greedy word wrap over the
+    /// annotated advances: two words that exceed the width on one line stack
+    /// to TWO line boxes (the single-line measure clipped the second line —
+    /// the transit button's CALL/ELEVATOR, ledger 106).
+    #[test]
+    fn wrapped_text_intrinsic_height_counts_wrapped_lines() {
+        let mut scene = parse_bb_canvas(&serde_json::json!({
+            "_RecordName_": "wrap_fixture",
+            "_RecordId_": "00000000-0000-0000-0000-00000000wrap",
+            "_RecordValue_": {
+                "_Type_": "BuildingBlocks_Canvas",
+                "size": {"_Type_": "Vec3", "x": 512.0, "y": 740.0, "z": 0.0},
+                "scene": [
+                    {"_Pointer_": "ptr:1", "_Type_": "BuildingBlocks_WidgetTextField", "name": "label"}
+                ],
+                "operations": []
+            }
+        }))
+        .expect("fixture parses");
+        let node = scene.nodes.get_mut(&1).expect("node");
+        if let Some(map) = node.raw.as_object_mut() {
+            // Two 150px words, 10px space cost, 40px line box.
+            map.insert(
+                "_DrawTextWordAdvancesPx_".to_string(),
+                serde_json::json!([150.0, 150.0]),
+            );
+            map.insert("_DrawTextSpaceCostPx_".to_string(), serde_json::json!(10.0));
+            map.insert("_DrawTextLineBoxPx_".to_string(), serde_json::json!(40.0));
+        }
+        let node = scene.nodes.get(&1).expect("node");
+        // Fits on one line at 320px…
+        assert_eq!(wrapped_text_intrinsic_height(node, 320.0), Some(40.0));
+        // …wraps to two lines at 300px (150+10+150 = 310 > 300).
+        assert_eq!(wrapped_text_intrinsic_height(node, 300.0), Some(80.0));
+        // No annotations elsewhere → None (single-line measure applies).
+        assert_eq!(wrapped_text_intrinsic_height(node, 0.0), None);
+    }
+
     fn load_fixture(name: &str) -> serde_json::Value {
         let path = format!(
             "{}/tests/fixtures/canvas/{name}",
@@ -1960,92 +1998,6 @@ mod scroll_thumb_tests {
         assert_eq!((track.w, track.h), (0.0, 0.0), "track must collapse when nothing overflows");
         assert_eq!((thumb.w, thumb.h), (0.0, 0.0), "thumb must collapse when nothing overflows");
     }
-}
-
-// Intrinsic text measurement for Auto-sized flex children.
-//
-// The no-grow flex flow treats Auto main-axis children as zero-sized (no
-// content measurement), which collapses text-backed value groups like the
-// OUTPUT card's "2" + "/ 16" pair (Auto containers in a Center-justified
-// row) onto one spot. `auto_text_intrinsic_main` measures the subtree's
-// RESOLVED text (bb_resolve writes `raw["_ResolvedText_"]` for active text
-// fields) with the shared TTF metrics, so such children flow at their
-// natural width/height like the engine lays them out.
-
-/// Best-effort intrinsic main-axis size of an Auto-sized flex child whose
-/// subtree carries resolved text. `None` when no measurable text exists
-/// (the caller keeps the zero-size rule).
-pub(crate) fn auto_text_intrinsic_main(
-    node_id: BbNodeId,
-    scene: &BbScene,
-    canvas_scale: f32,
-    is_row: bool,
-) -> Option<f32> {
-    let renderer = crate::text::TextRenderer::new();
-    let mut best: Option<f32> = None;
-    let mut stack = vec![node_id];
-    while let Some(id) = stack.pop() {
-        let Some(node) = scene.nodes.get(&id) else { continue };
-        if !node.is_active {
-            continue;
-        }
-        stack.extend(node.children.iter().copied());
-        let Some((w, h)) = node_resolved_text_size(node, canvas_scale, &renderer) else {
-            continue;
-        };
-        let main = if is_row { w } else { h };
-        best = Some(best.map_or(main, |b: f32| b.max(main)));
-    }
-    best
-}
-
-/// Measure ONE node's resolved text (`raw["_ResolvedText_"]`) at the size the
-/// renderer will draw it with: the EFFECTIVE (styled) size annotated by ui_ir
-/// before layout, else the authored font size — both at the draw calibration.
-/// `None` when the node carries no measurable text.
-pub(crate) fn node_resolved_text_size(
-    node: &crate::bb_scene::BbNode,
-    canvas_scale: f32,
-    renderer: &crate::text::TextRenderer,
-) -> Option<(f32, f32)> {
-    let text_value = node.raw.get("_ResolvedText_").and_then(|v| v.as_str())?;
-    let text = (!text_value.trim().is_empty()).then_some(text_value)?;
-    // Draw-metric annotations win: ui_ir's pre-layout pass measures the text
-    // through the SAME glyph machinery the renderer will draw with (SWF font
-    // advances at the IR font size — no TTF estimate, no calibration), so the
-    // intrinsic box hugs the painted glyphs like the engine's does.
-    let draw_w = node
-        .raw
-        .get("_DrawTextWidthPx_")
-        .and_then(|v| v.as_f64())
-        .filter(|v| *v > 0.0);
-    let draw_h = node
-        .raw
-        .get("_DrawTextHeightPx_")
-        .and_then(|v| v.as_f64())
-        .filter(|v| *v > 0.0);
-    if let (Some(w), Some(h)) = (draw_w, draw_h) {
-        return Some((w as f32, h as f32));
-    }
-    let size_px = if let Some(effective) = node
-        .raw
-        .get("_EffectiveFontPx_")
-        .and_then(|v| v.as_f64())
-        .filter(|v| *v > 0.0)
-    {
-        // Measure == draw: the TTF estimate follows the same data-backed em
-        // model as the renderer (IR font size = design-em px; plan P3.2
-        // retired the tuned 1.5 calibration pair on both sides together).
-        effective as f32
-    } else {
-        match node.text.as_ref().map(|t| &t.font_size) {
-            Some(BbValue::Fixed(size)) if *size > 0.0 => {
-                *size * canvas_scale
-            }
-            _ => return None,
-        }
-    };
-    Some(renderer.measure(text, crate::text::FontKind::Mono, size_px))
 }
 
 /// Standard flex SHRINK: overflowing no-grow children scale down

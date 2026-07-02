@@ -1230,7 +1230,7 @@ fn layout_flex_no_grow_children(
             if let Some(auto_ratio) = normalized_auto {
                 if is_row {
                     w = container.w * auto_ratio;
-                } else if let Some(intrinsic) = auto_text_intrinsic_main(child_id, scene, csy, false) {
+                } else if let Some(intrinsic) = auto_text_intrinsic_main_wrapped(child_id, scene, csy, false, Some(w)) {
                     // A COLUMN child authored non-zero `Auto` sizes to its TEXT
                     // content, exactly like the 0.0 (pure-hint) case below: "Auto"
                     // means fit-to-content, and the value is only the NO-CONTENT
@@ -1373,7 +1373,7 @@ fn layout_flex_no_grow_children(
                     BbValue::Other { value, ref behavior } if behavior == "Auto" && value == 0.0
                 )
                 && let Some(intrinsic) =
-                    auto_text_intrinsic_main(child_id, scene, csy, false)
+                    auto_text_intrinsic_main_wrapped(child_id, scene, csy, false, Some(w))
             {
                 // Text-backed Auto ZERO-hint (value 0.0 = pure content hint)
                 // children in a COLUMN stack at measured text heights — the
@@ -1394,7 +1394,7 @@ fn layout_flex_no_grow_children(
                                 || (value >= 1.0 && matches!(node.ty, BbNodeType::WidgetCard)))
                 )
                 && let Some(intrinsic) =
-                    auto_text_intrinsic_main(child_id, scene, csy, false)
+                    auto_text_intrinsic_main_wrapped(child_id, scene, csy, false, Some(w))
             {
                 // Text-backed Auto-hint children in a CENTER-justified column fit
                 // their measured TEXT content, like the 0.0 pure-hint case above
@@ -1427,7 +1427,7 @@ fn layout_flex_no_grow_children(
                     node.sizing.height,
                     BbValue::Other { ref behavior, .. } if behavior == "Auto"
                 )
-                && let Some(intrinsic) = auto_text_intrinsic_main(child_id, scene, csy, false)
+                && let Some(intrinsic) = auto_text_intrinsic_main_wrapped(child_id, scene, csy, false, Some(w))
             {
                 // A materialised LIST ENTRY (cloned per array element, flagged
                 // `_MaterialisedEntry_` by `apply_array_variable_lists`) with Auto
