@@ -1619,6 +1619,51 @@ fn tag_expanded_instances(
     }
 }
 
+/// Copy the host button's authored `labelProperties.caseModifier` onto merged
+/// text-field instances. The instance binds its CONTENT from the injected
+/// `Label` parameter, but the case transform is read from the field's own raw
+/// (`case_modifier_from_raw`) — the template authors `None`, so without this
+/// the host's `Upper` (e.g. CALL ELEVATOR) renders mixed-case.
+fn forward_host_label_case(scene: &mut BbScene, host_id: BbNodeId) {
+    let Some(host) = scene.nodes.get(&host_id) else {
+        return;
+    };
+    let Some(case) = host
+        .raw
+        .get("labelProperties")
+        .and_then(|lp| lp.get("caseModifier"))
+        .cloned()
+    else {
+        return;
+    };
+    let mut stack: Vec<BbNodeId> = host
+        .children
+        .iter()
+        .copied()
+        .filter(|id| *id >= EXPANSION_ID_BASE)
+        .collect();
+    while let Some(id) = stack.pop() {
+        let Some(node) = scene.nodes.get_mut(&id) else {
+            continue;
+        };
+        stack.extend(node.children.iter().copied().filter(|c| *c >= EXPANSION_ID_BASE));
+        if !matches!(node.ty, BbNodeType::WidgetTextField) {
+            continue;
+        }
+        if let Some(lp) = node
+            .raw
+            .as_object_mut()
+            .map(|map| {
+                map.entry("labelProperties")
+                    .or_insert_with(|| serde_json::json!({}))
+            })
+            .and_then(|v| v.as_object_mut())
+        {
+            lp.insert("caseModifier".to_string(), case.clone());
+        }
+    }
+}
+
 fn forward_host_icon_identity(scene: &mut BbScene, host_id: BbNodeId) {
     let Some(host) = scene.nodes.get(&host_id) else {
         return;
@@ -1824,6 +1869,7 @@ fn expand_widget_standards(
             BbNodeType::ComponentGeneralButton | BbNodeType::ComponentGeneralButtonSecondary
         ) {
             forward_host_icon_identity(scene, host_id);
+            forward_host_label_case(scene, host_id);
             // The engine nests each instance widget's OWN standard (icon /
             // text-field widget standards), whose inner element carries the
             // `*-element-instance` styling tag the modular-kit button sheets
