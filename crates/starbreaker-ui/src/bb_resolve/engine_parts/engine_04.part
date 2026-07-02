@@ -2367,6 +2367,18 @@ mod tests_expansion {
             crate::icon_preset::svg_path_for_preset("GeneralX"),
             "forwarded preset must resolve to the host glyph's vector asset"
         );
+        // Assert the layer the RENDERER reads: forwarding only `raw` while the
+        // parse-time `BbIcon` kept the template default passed the raw-level
+        // assertion but drew the wrong glyph (ledger 103).
+        let baked = icon_instance
+            .icon
+            .as_ref()
+            .expect("merged icon instance must carry a parse-time BbIcon");
+        assert_eq!(
+            baked.image_record,
+            crate::icon_preset::svg_path_for_preset("GeneralX"),
+            "the baked BbIcon must resolve the forwarded preset, not the template default"
+        );
     }
 
     /// The expanded instance renders the glyph; the host's parse-time icon
@@ -2453,6 +2465,18 @@ mod tests_expansion {
                 .and_then(|v| v.as_str()),
             Some("ArrowCaratDoubleUp"),
             "icon instance must inherit the primary host's authored iconPreset"
+        );
+        // Assert the layer the RENDERER reads (ledger 103): the parse-time
+        // `BbIcon` bakes the preset→SVG resolution, so a raw-only forward
+        // passes the assertion above while still drawing the template glyph.
+        let baked = icon_instance
+            .icon
+            .as_ref()
+            .expect("merged icon instance must carry a parse-time BbIcon");
+        assert_eq!(
+            baked.image_record,
+            crate::icon_preset::svg_path_for_preset("ArrowCaratDoubleUp"),
+            "the baked BbIcon must resolve the forwarded preset, not the template default"
         );
     }
 
