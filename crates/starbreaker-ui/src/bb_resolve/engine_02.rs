@@ -1,3 +1,16 @@
+#[allow(unused_imports)]
+use super::*;
+#[allow(unused_imports)]
+use std::collections::{HashMap, HashSet};
+#[allow(unused_imports)]
+use crate::bb_loc::LocFetcher;
+#[allow(unused_imports)]
+use crate::bb_scene::{BbNodeId, BbNodeType, BbScene, BbValue, parse_bb_canvas};
+#[allow(unused_imports)]
+use crate::bb_brand_style;
+#[allow(unused_imports)]
+use crate::record_name::extract_record_name;
+
 // Consolidated engine chunk 02 (formerly: part_06.part, param_targets.part, part_07.part, part_08.part, part_09.part, part_10.part).
 //   part_06.part: Synthesize `_SynthLocalizedParam_` operations from a parent `WidgetCanvas`
 //   param_targets.part: Parent→child component-parameter injection target selection (split from
@@ -16,7 +29,7 @@
 /// Synthetic ops have the same `_Pointer_` value as the matching
 /// `BuildingBlocks_BindingsLocalizedComponentParameter` op; they are remapped
 /// by `merge_child_scene` together with the rest of the child's operations.
-fn inject_param_overrides(
+pub(crate) fn inject_param_overrides(
     param_inputs: &[serde_json::Value],
     child_scene: &mut crate::bb_scene::BbScene,
 ) {
@@ -185,7 +198,7 @@ fn inject_param_overrides(
     }
 }
 
-fn inject_dynamic_param_field_bindings(
+pub(crate) fn inject_dynamic_param_field_bindings(
     host_widget_id: BbNodeId,
     parent_operations: &[serde_json::Value],
     child_scene: &mut crate::bb_scene::BbScene,

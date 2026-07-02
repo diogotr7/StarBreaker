@@ -1,3 +1,16 @@
+#[allow(unused_imports)]
+use super::*;
+#[allow(unused_imports)]
+use std::collections::{HashMap, HashSet};
+#[allow(unused_imports)]
+use crate::bb_loc::LocFetcher;
+#[allow(unused_imports)]
+use crate::bb_scene::{BbNodeId, BbNodeType, BbScene, BbValue, parse_bb_canvas};
+#[allow(unused_imports)]
+use crate::bb_brand_style;
+#[allow(unused_imports)]
+use crate::record_name::extract_record_name;
+
 // Consolidated engine chunk 03 (formerly: part_11.part, part_12.part, part_13.part, list_binding.part, list_binding_tests.part, array_list.part, registry_gates.part).
 //   list_binding.part: List-binding slot materialisation.
 //   list_binding_tests.part: Tests for list-binding slot materialisation (see list_binding.part): the
@@ -1404,7 +1417,7 @@ struct ListSlotBinding {
 /// Detect and materialise list-bound slots. Returns the per-instance binding
 /// namespaces for the Pass-2 merge loop to apply to each instance's resolved
 /// child scene.
-fn apply_list_slot_bindings(
+pub(crate) fn apply_list_slot_bindings(
     scene: &mut BbScene,
     canvas_urls: &mut Vec<(BbNodeId, String, Vec<serde_json::Value>)>,
     instantiated_false: &mut std::collections::HashSet<BbNodeId>,
@@ -1479,7 +1492,7 @@ fn apply_list_slot_bindings(
 /// Rewrite an instance's inheriting variable bindings (and synthetic static
 /// variable names) under the slot's list namespace, mirroring the engine's
 /// per-instance namespace assignment.
-fn namespace_child_scene_bindings(child_scene: &mut BbScene, namespace: &str) {
+pub(crate) fn namespace_child_scene_bindings(child_scene: &mut BbScene, namespace: &str) {
     for op in &mut child_scene.operations {
         let Some(ty) = op.get("_Type_").and_then(|v| v.as_str()).map(str::to_owned) else {
             continue;
@@ -1949,7 +1962,7 @@ const LIST_SELECTED_TAG_UUID: &str = "797684dc-56d9-452f-9496-e0b7a2ae8dac";
 /// Materialise arrayVariable-bound WidgetLists in `scene` from the defaults
 /// registry. `namespace` is the instance namespace assigned to this scene by
 /// the outer list materialisation ("" when none).
-fn apply_array_variable_lists(
+pub(crate) fn apply_array_variable_lists(
     scene: &mut BbScene,
     namespace: &str,
     defaults: &crate::defaults::DefaultValueRegistry,
@@ -2338,7 +2351,7 @@ fn clone_subtree_as_sibling_with_map(
 /// heuristics in `bb_state_filter` — the medical capture baselines depend on
 /// those staying untouched (deactivation-only, direct-binding-only on
 /// purpose).
-fn apply_registry_direct_gates(
+pub(crate) fn apply_registry_direct_gates(
     scene: &mut BbScene,
     defaults: &crate::defaults::DefaultValueRegistry,
 ) {

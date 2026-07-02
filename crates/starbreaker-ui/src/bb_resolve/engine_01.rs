@@ -1,3 +1,5 @@
+#[allow(unused_imports)]
+use super::*;
 // Consolidated engine chunk 01 (formerly: part_01.part, part_02.part, part_03.part, pass1.part, part_04.part, part_05.part).
 //   part_01.part: BuildingBlocks canvas graph resolver.
 //   part_03.part: Inner recursive resolver.  `visited` accumulates normalised record names
@@ -95,11 +97,11 @@ fn modular_buttonprimary_style_path(style_identifier: &str) -> Option<String> {
     modular_kit_style_path(style_identifier, "buttonprimary")
 }
 
-fn modular_scrollbar_style_path(style_identifier: &str) -> Option<String> {
+pub(crate) fn modular_scrollbar_style_path(style_identifier: &str) -> Option<String> {
     modular_kit_style_path(style_identifier, "scrollbar")
 }
 
-fn standard_body_background_widget_path() -> String {
+pub(crate) fn standard_body_background_widget_path() -> String {
     "file://./../../../../../../../libs/foundry/records/ui/buildingblocks/modularkit/standard/widgets/bodybackgroundwidgetstandard.json".to_string()
 }
 
@@ -519,7 +521,7 @@ fn seed_implicit_linearprogress_style_tags(
 /// The real MFD hierarchy has at least four levels:
 /// `M_MFD_Screen → MC_S_Power_Master → GEN_MC_S_Power → gen_mc_s_powerlists`.
 /// A cap of 8 provides ample headroom while still preventing runaway recursion.
-const MAX_CANVAS_DEPTH: u8 = 8;
+pub(crate) const MAX_CANVAS_DEPTH: u8 = 8;
 
 /// Parse `root_json`, recursively resolve all child canvases, and return a
 /// fully-merged [`BbScene`].
@@ -1901,7 +1903,7 @@ fn inline_animation_timeline_references(
     }
 }
 
-fn deactivate_subtrees(scene: &mut BbScene, roots: &std::collections::HashSet<BbNodeId>) {
+pub(crate) fn deactivate_subtrees(scene: &mut BbScene, roots: &std::collections::HashSet<BbNodeId>) {
     let mut stack: Vec<BbNodeId> = roots.iter().copied().collect();
     let mut seen: std::collections::HashSet<BbNodeId> = std::collections::HashSet::new();
     while let Some(node_id) = stack.pop() {
@@ -2186,9 +2188,9 @@ fn all_canvas_guard_entries(record_value: &serde_json::Value) -> Vec<&serde_json
 /// band. Template nodes injected by `expand_widget_standards` are allocated
 /// here so they never shift the sequential IDs of ordinary merged canvas
 /// nodes (platinum snapshots key elements by node ID).
-const EXPANSION_ID_BASE: BbNodeId = 0xF000_0000;
+pub(crate) const EXPANSION_ID_BASE: BbNodeId = 0xF000_0000;
 
-fn merge_child_scene(
+pub(crate) fn merge_child_scene(
     parent_scene: &mut BbScene,
     child_scene: BbScene,
     match_to: &str,

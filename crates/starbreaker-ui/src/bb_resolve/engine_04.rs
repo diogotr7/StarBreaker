@@ -1,3 +1,16 @@
+#[allow(unused_imports)]
+use super::*;
+#[allow(unused_imports)]
+use std::collections::{HashMap, HashSet};
+#[allow(unused_imports)]
+use crate::bb_loc::LocFetcher;
+#[allow(unused_imports)]
+use crate::bb_scene::{BbNodeId, BbNodeType, BbScene, BbValue, parse_bb_canvas};
+#[allow(unused_imports)]
+use crate::bb_brand_style;
+#[allow(unused_imports)]
+use crate::record_name::extract_record_name;
+
 // Consolidated engine chunk 04 (formerly: array_list_tests.part, param_relay_tests.part, param_leak_tests.part, widget_standard_expansion.part, scrollbar_expansion.part, widget_standard_expansion_tests.part).
 //   array_list_tests.part: Tests for arrayVariable-driven WidgetList materialisation (array_list.part):
 //   param_relay_tests.part: Tests for multi-hop component-parameter relays (part_06's dynamic param
@@ -1726,7 +1739,7 @@ fn has_expanded_instance(
 /// expanded templates' own `embeddedStyles` entries that participate in the
 /// scene's style application (currently the scrollbar's `RootShow` gate; the
 /// icon/button standards keep their pre-existing entry-less behaviour).
-fn expand_widget_standards(
+pub(crate) fn expand_widget_standards(
     scene: &mut BbScene,
     fetch_by_path: &dyn Fn(&str) -> Result<serde_json::Value, String>,
 ) -> Vec<serde_json::Value> {
@@ -1943,7 +1956,7 @@ fn expand_widget_standards(
 /// Runs once at the depth that performed the expansion; the `_HostNodeId_`
 /// annotations are stripped afterwards because node ids are remapped when this
 /// scene is merged into a parent (a stale annotation would walk bogus nodes).
-fn finalize_widget_standard_fields(
+pub(crate) fn finalize_widget_standard_fields(
     scene: &mut BbScene,
     defaults: &crate::defaults::DefaultValueRegistry,
 ) {
@@ -2198,7 +2211,7 @@ fn mark_scrollbar_standard_nodes(child_scene: &mut crate::bb_scene::BbScene) {
 /// Runs in the modular-sheets phase because the brand identifier resolves at
 /// ancestor canvas depths (the power-lists canvas carries no `s_drak_hud`
 /// brand entry of its own), after the standards have merged in.
-fn apply_scrollbar_modular_styles(
+pub(crate) fn apply_scrollbar_modular_styles(
     scene: &mut BbScene,
     style_id: &str,
     chrome_palette: Option<&serde_json::Value>,
