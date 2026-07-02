@@ -60,7 +60,10 @@ fn is_linear_progress_meter(node: &crate::bb_scene::BbNode) -> bool {
     )
 }
 
-fn modular_linearprogress_style_path(style_identifier: &str) -> Option<String> {
+/// Framework record path of a modular-kit component style sheet: the style
+/// link `S_<kit>` (or a direct `sk_<kit>`) maps to
+/// `modularkitstyles/sk_<kit>/sk_<kit>_<component>styles.json`.
+fn modular_kit_style_path(style_identifier: &str, component: &str) -> Option<String> {
     let normalized = style_identifier.trim().to_ascii_lowercase();
     if normalized.is_empty() {
         return None;
@@ -75,69 +78,25 @@ fn modular_linearprogress_style_path(style_identifier: &str) -> Option<String> {
     };
 
     Some(format!(
-        "file://./../../../../../../../libs/foundry/records/ui/buildingblocks/styles/modularkitstyles/{0}/{0}_linearprogressmeterstyles.json",
+        "file://./../../../../../../../libs/foundry/records/ui/buildingblocks/styles/modularkitstyles/{0}/{0}_{component}styles.json",
         module_id
     ))
+}
+
+fn modular_linearprogress_style_path(style_identifier: &str) -> Option<String> {
+    modular_kit_style_path(style_identifier, "linearprogressmeter")
 }
 
 fn modular_buttonsecondary_style_path(style_identifier: &str) -> Option<String> {
-    let normalized = style_identifier.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return None;
-    }
-
-    let module_id = if let Some(rest) = normalized.strip_prefix("s_") {
-        format!("sk_{}", rest)
-    } else if normalized.starts_with("sk_") {
-        normalized
-    } else {
-        return None;
-    };
-
-    Some(format!(
-        "file://./../../../../../../../libs/foundry/records/ui/buildingblocks/styles/modularkitstyles/{0}/{0}_buttonsecondarystyles.json",
-        module_id
-    ))
+    modular_kit_style_path(style_identifier, "buttonsecondary")
 }
 
 fn modular_buttonprimary_style_path(style_identifier: &str) -> Option<String> {
-    let normalized = style_identifier.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return None;
-    }
-
-    let module_id = if let Some(rest) = normalized.strip_prefix("s_") {
-        format!("sk_{}", rest)
-    } else if normalized.starts_with("sk_") {
-        normalized
-    } else {
-        return None;
-    };
-
-    Some(format!(
-        "file://./../../../../../../../libs/foundry/records/ui/buildingblocks/styles/modularkitstyles/{0}/{0}_buttonprimarystyles.json",
-        module_id
-    ))
+    modular_kit_style_path(style_identifier, "buttonprimary")
 }
 
 fn modular_scrollbar_style_path(style_identifier: &str) -> Option<String> {
-    let normalized = style_identifier.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return None;
-    }
-
-    let module_id = if let Some(rest) = normalized.strip_prefix("s_") {
-        format!("sk_{}", rest)
-    } else if normalized.starts_with("sk_") {
-        normalized
-    } else {
-        return None;
-    };
-
-    Some(format!(
-        "file://./../../../../../../../libs/foundry/records/ui/buildingblocks/styles/modularkitstyles/{0}/{0}_scrollbarstyles.json",
-        module_id
-    ))
+    modular_kit_style_path(style_identifier, "scrollbar")
 }
 
 fn standard_body_background_widget_path() -> String {
