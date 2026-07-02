@@ -83,6 +83,28 @@ P4K location is auto-detected; do NOT set `SC_DATA_P4K` unless pointing at
 non-default data, and never set `RAYON_NUM_THREADS=1` except when
 benchmarking.
 
+**Standalone canvas render** (no ship scene/export needed — ledger 101; born
+on the Carrack lift-call arc for a screen with no Clipper-scene helper):
+```bash
+bash scripts/ui_render_canvas.sh --canvas <guid> --entity <EntityClassName> \
+    [--kind physical|mfd|radar] [--helper <name>] [--out <dir>] [--ir]
+```
+Generates a minimal single-binding scene.json and replays it; prints the PNG
+md5 (ledger 69). `--entity` picks the manufacturer/style + ship values (e.g.
+`ANVL_Carrack`).
+
+**Structural record / kit-sheet / tag queries** (parse-by-structure, never
+line-grep a nested record — ledger 68/101/103):
+```bash
+python3 scripts/ui_canvas_query.py node <record.json> <node-name> [--raw]
+python3 scripts/ui_canvas_query.py entries <record.json> [--filter SUBSTR]
+python3 scripts/ui_canvas_query.py tag <uuid-or-name-substring>
+```
+Record paths resolve relative to `ships/dcb_canvas/libs/foundry/records`;
+`entries` resolves condition tag UUIDs to names via the tag database (so a
+kit sheet's `RootFilled…` conditions read as `Tag(text-element-instance)`,
+not bare UUIDs).
+
 **Full export (canonical PNGs under `ships/Data/UI/Generated/...`, ~50s
 as of 2026-06-12 — cheap enough to re-export before ANY artifact
 comparison; the `Generated` PNGs are only as fresh as the last export and
@@ -335,6 +357,22 @@ frame-canvas 4:3 path). Hard-won facts a fresh agent needs:
   so it reaches the cockpit screens regardless of a dossier row's "scene"
   column (that column is the *replay* scene). Re-freezing one cockpit screen can
   surface others changed at LOD0 — inspect the artifact dims before freezing.
+
+**Modular-kit component sheets** (the button/scrollbar/progress chrome —
+ledger 103). A canvas's style link `S_<kit>` maps to
+`styles/modularkitstyles/sk_<kit>/sk_<kit>_<component>styles.json`
+(buttonprimary, buttonsecondary, linearprogressmeter, scrollbar — see
+`modular_*_style_path` in `bb_resolve/engine_parts/engine_01.part`; the sheets
+apply at `Tier::StandardModule` AFTER the canvas cascade, with the brand Style
+record as their palette). The button sheets' state entries
+(`RootFilled…ElementInstance`) select on the widget standards'
+`icon-/text-element-instance` tags, which the widget-standard expansion
+attaches to SHOWN instance widgets only (engine_04.part — a hidden element
+would be revealed by the kit's base `IsActive=true` entry). Colour modifiers
+are either `ColorStyle` palette roles or literal `ColorSolid` RGBA — a literal
+application removes any stale `<Field>Token`, else the token shadows the
+literal at draw time. Inspect a sheet with
+`python3 scripts/ui_canvas_query.py entries <sheet.json>` (§2).
 
 ## 6. Probe registry
 
