@@ -1,3 +1,24 @@
+#[allow(unused_imports)]
+use super::*;
+#[allow(unused_imports)]
+use serde::{Deserialize, Serialize};
+#[allow(unused_imports)]
+use sha2::{Digest, Sha256};
+#[allow(unused_imports)]
+use std::collections::{HashMap, HashSet};
+#[allow(unused_imports)]
+use crate::bb_bindings::BindingResolver;
+#[allow(unused_imports)]
+use crate::bb_layout;
+#[allow(unused_imports)]
+use crate::bb_layout::{LayoutResult, Rect};
+#[allow(unused_imports)]
+use crate::bb_scene::{BbNode, BbNodeId, BbNodeType, BbScene, BbValue};
+#[allow(unused_imports)]
+use crate::defaults::DefaultValueRegistry;
+#[allow(unused_imports)]
+use crate::pipeline::CanvasFetcher;
+
 // Consolidated engine chunk 03 (formerly: part_11.part, part_12.part, part_13.part).
 
 #[cfg(test)]

@@ -1,8 +1,29 @@
+#[allow(unused_imports)]
+use super::*;
+#[allow(unused_imports)]
+use serde::{Deserialize, Serialize};
+#[allow(unused_imports)]
+use sha2::{Digest, Sha256};
+#[allow(unused_imports)]
+use std::collections::{HashMap, HashSet};
+#[allow(unused_imports)]
+use crate::bb_bindings::BindingResolver;
+#[allow(unused_imports)]
+use crate::bb_layout;
+#[allow(unused_imports)]
+use crate::bb_layout::{LayoutResult, Rect};
+#[allow(unused_imports)]
+use crate::bb_scene::{BbNode, BbNodeId, BbNodeType, BbScene, BbValue};
+#[allow(unused_imports)]
+use crate::defaults::DefaultValueRegistry;
+#[allow(unused_imports)]
+use crate::pipeline::CanvasFetcher;
+
 // Consolidated engine chunk 02 (formerly: part_07.part, part_08.part, part_09.part, part_09b.part, part_09c.part, part_10.part).
 //   part_09b.part: Read a node's raw `fontSize`/`FontSize` (authored field, applied style
 //   part_09c.part: Typography brand-palette helpers: the authoritative `BB_ColorStyle` enum
 
-fn border_from_node(node: &BbNode, design_text_scale: f32) -> Option<UiIrBorder> {
+pub(crate) fn border_from_node(node: &BbNode, design_text_scale: f32) -> Option<UiIrBorder> {
     let border = node.border.as_ref()?;
     // Border widths are stage-unit properties like font sizes: on the MFD
     // frame path they pick up the host-stage view scale (the footer's 2px
@@ -54,7 +75,7 @@ fn border_colour_token_from_raw(raw: &serde_json::Value, side: &str) -> Option<S
         })
 }
 
-fn stroke_colour_from_raw(raw: &serde_json::Value) -> Option<[f32; 4]> {
+pub(crate) fn stroke_colour_from_raw(raw: &serde_json::Value) -> Option<[f32; 4]> {
     let obj = raw.get("StrokeColor")?.as_object()?;
     let r = obj.get("r").and_then(|v| v.as_f64())? as f32;
     let g = obj.get("g").and_then(|v| v.as_f64())? as f32;
@@ -64,7 +85,7 @@ fn stroke_colour_from_raw(raw: &serde_json::Value) -> Option<[f32; 4]> {
 }
 
 /// Extract a `WidgetPolygon`'s regular-polygon shape.
-fn polygon_from_raw(node: &crate::bb_scene::BbNode) -> Option<UiIrPolygon> {
+pub(crate) fn polygon_from_raw(node: &crate::bb_scene::BbNode) -> Option<UiIrPolygon> {
     if !matches!(&node.ty, crate::bb_scene::BbNodeType::Other(kind)
         if kind.eq_ignore_ascii_case("BuildingBlocks_WidgetPolygon"))
     {
@@ -107,7 +128,7 @@ fn polygon_from_raw(node: &crate::bb_scene::BbNode) -> Option<UiIrPolygon> {
 /// dots — `fillColor: { color: "Base" }`, `doFill: true`). `doFill` defaults to
 /// false here so outline-only circles (the rings, drawn via stroke) are left
 /// untouched; the renderer fills the circle with this surface token when present.
-fn circle_fill_token_from_raw(node: &crate::bb_scene::BbNode) -> Option<String> {
+pub(crate) fn circle_fill_token_from_raw(node: &crate::bb_scene::BbNode) -> Option<String> {
     if !matches!(&node.ty, crate::bb_scene::BbNodeType::Other(kind)
         if kind.eq_ignore_ascii_case("BuildingBlocks_WidgetCircle"))
     {
@@ -124,7 +145,7 @@ fn circle_fill_token_from_raw(node: &crate::bb_scene::BbNode) -> Option<String> 
         .map(str::to_owned)
 }
 
-fn segmented_fill_from_raw(node: &crate::bb_scene::BbNode) -> Option<UiIrSegmentedFill> {
+pub(crate) fn segmented_fill_from_raw(node: &crate::bb_scene::BbNode) -> Option<UiIrSegmentedFill> {
     let raw = &node.raw;
     let segmented_raw = raw.get("segmentedFill");
 
@@ -238,7 +259,7 @@ fn segmented_fill_from_raw(node: &crate::bb_scene::BbNode) -> Option<UiIrSegment
     })
 }
 
-fn parse_raw_colour(value: &serde_json::Value) -> Option<[f32; 4]> {
+pub(crate) fn parse_raw_colour(value: &serde_json::Value) -> Option<[f32; 4]> {
     let r = value.get("r").and_then(|v| v.as_f64())? as f32;
     let g = value.get("g").and_then(|v| v.as_f64())? as f32;
     let b = value.get("b").and_then(|v| v.as_f64())? as f32;
@@ -250,7 +271,7 @@ fn parse_raw_colour(value: &serde_json::Value) -> Option<[f32; 4]> {
     }
 }
 
-fn parse_nine_slice_rect(value: &serde_json::Value) -> Option<[f32; 4]> {
+pub(crate) fn parse_nine_slice_rect(value: &serde_json::Value) -> Option<[f32; 4]> {
     let left = value.get("left")?.as_f64()? as f32;
     let top = value.get("top")?.as_f64()? as f32;
     let right = value.get("right")?.as_f64()? as f32;
@@ -258,7 +279,7 @@ fn parse_nine_slice_rect(value: &serde_json::Value) -> Option<[f32; 4]> {
     Some([left, top, right, bottom])
 }
 
-fn separator_stroke_extent_from_raw(node: &crate::bb_scene::BbNode) -> Option<f32> {
+pub(crate) fn separator_stroke_extent_from_raw(node: &crate::bb_scene::BbNode) -> Option<f32> {
     let stroke_extent = node
         .raw
         .get("strokeExtent")
@@ -323,7 +344,7 @@ fn is_authored_procedural_separator_strip(node: &crate::bb_scene::BbNode) -> boo
     is_fixed_sixteen_px
 }
 
-fn separator_colour_blend_mode_from_raw(
+pub(crate) fn separator_colour_blend_mode_from_raw(
     node: &crate::bb_scene::BbNode,
 ) -> Option<UiIrColourBlendMode> {
     if !matches!(node.ty, BbNodeType::Other(ref ty) if ty.eq_ignore_ascii_case("BuildingBlocks_WidgetSeparator")) {
@@ -347,7 +368,7 @@ fn separator_colour_blend_mode_from_raw(
     (svg_path_empty && render_shape && enable_color_overlay).then_some(UiIrColourBlendMode::Additive)
 }
 
-fn background_colour_blend_mode_from_raw(
+pub(crate) fn background_colour_blend_mode_from_raw(
     node: &crate::bb_scene::BbNode,
     colour_token: Option<&str>,
     allow_background_fill: bool,
@@ -372,21 +393,21 @@ fn background_colour_blend_mode_from_raw(
 }
 
 #[derive(Debug, Clone, Default)]
-struct SeparatorStyleSource {
-    colour: Option<[f32; 4]>,
-    colour_token: Option<String>,
-    colour_alpha: Option<f32>,
-    alpha_override: Option<f32>,
+pub(crate) struct SeparatorStyleSource {
+    pub(crate) colour: Option<[f32; 4]>,
+    pub(crate) colour_token: Option<String>,
+    pub(crate) colour_alpha: Option<f32>,
+    pub(crate) alpha_override: Option<f32>,
     /// The brand's separator SVG (e.g. DRAK_S42_seperator_vertical_2.svg) and
     /// its nine-slice / flip so the dotted glyph rasterises via the asset_ref
     /// path. Only resolved for MFD-frame hosts (see the caller's gate) so the
     /// physical medical screens keep their byte-identical no-separator render.
-    svg_path: Option<String>,
-    nine_slice_rect: Option<[f32; 4]>,
-    enable_color_overlay: Option<bool>,
+    pub(crate) svg_path: Option<String>,
+    pub(crate) nine_slice_rect: Option<[f32; 4]>,
+    pub(crate) enable_color_overlay: Option<bool>,
 }
 
-fn separator_standard_style_from_source(
+pub(crate) fn separator_standard_style_from_source(
     node: &crate::bb_scene::BbNode,
     selected_style_source: Option<&str>,
     canvas_fetcher: Option<&dyn CanvasFetcher>,
@@ -630,7 +651,7 @@ fn modifier_field_name(modifier: &serde_json::Value) -> Option<&str> {
         .and_then(|field| field.as_str().or_else(|| field.get("value").and_then(|value| value.as_str())))
 }
 
-fn stroke_colour_token_from_raw(raw: &serde_json::Value) -> Option<String> {
+pub(crate) fn stroke_colour_token_from_raw(raw: &serde_json::Value) -> Option<String> {
     raw.get("StrokeColorToken")
         .and_then(|value| value.as_str())
         .map(str::trim)
@@ -639,7 +660,7 @@ fn stroke_colour_token_from_raw(raw: &serde_json::Value) -> Option<String> {
         .or_else(|| raw.get("StrokeColor").and_then(colour_style_token))
 }
 
-fn icon_tint_colour_token_from_raw(raw: &serde_json::Value, allow_fill_colour: bool) -> Option<String> {
+pub(crate) fn icon_tint_colour_token_from_raw(raw: &serde_json::Value, allow_fill_colour: bool) -> Option<String> {
     raw.get("iconProperties")
         .and_then(|properties| properties.get("color"))
         .and_then(colour_style_token)
@@ -658,7 +679,7 @@ fn icon_tint_colour_token_from_raw(raw: &serde_json::Value, allow_fill_colour: b
         })
 }
 
-fn svg_fill_overlay_colour_from_raw(raw: &serde_json::Value) -> Option<[f32; 4]> {
+pub(crate) fn svg_fill_overlay_colour_from_raw(raw: &serde_json::Value) -> Option<[f32; 4]> {
     let svg_fill = raw.get("svgFill")?;
     let render_shape = svg_fill
         .get("renderShape")
@@ -692,7 +713,7 @@ fn svg_fill_overlay_colour_token_from_raw(raw: &serde_json::Value) -> Option<Str
     svg_fill.get("color").and_then(colour_style_token)
 }
 
-fn svg_fill_overlay_alpha_from_raw(raw: &serde_json::Value) -> Option<f32> {
+pub(crate) fn svg_fill_overlay_alpha_from_raw(raw: &serde_json::Value) -> Option<f32> {
     let svg_fill = raw.get("svgFill")?;
     let render_shape = svg_fill
         .get("renderShape")
@@ -713,7 +734,7 @@ fn svg_fill_overlay_alpha_from_raw(raw: &serde_json::Value) -> Option<f32> {
         .map(|value| (value as f32).clamp(0.0, 1.0))
 }
 
-fn text_colour_token_from_raw(raw: &serde_json::Value) -> Option<String> {
+pub(crate) fn text_colour_token_from_raw(raw: &serde_json::Value) -> Option<String> {
     raw.get("FillColorToken")
         .and_then(|value| value.as_str())
         .map(str::trim)
@@ -725,7 +746,7 @@ fn text_colour_token_from_raw(raw: &serde_json::Value) -> Option<String> {
         .or_else(|| raw.get("FillColor").and_then(colour_style_token))
 }
 
-fn auto_font_size_enabled(raw: &serde_json::Value) -> bool {
+pub(crate) fn auto_font_size_enabled(raw: &serde_json::Value) -> bool {
     raw.get("autoFontSize")
         .or_else(|| raw.get("AutoFontSize"))
         .and_then(|value| value.as_bool())
@@ -757,7 +778,7 @@ fn text_field_sizes_font_to_relative_height(node: &crate::bb_scene::BbNode) -> b
 /// text colour is authored-entry-driven — disabling them drifts nothing
 /// (remediation plan Phase 3 audit). Only the explicit colour-role tag
 /// directive below survives.
-fn semantic_text_colour_token_from_style_tags(
+pub(crate) fn semantic_text_colour_token_from_style_tags(
     tags: &[UiIrStyleTag],
     label_style: Option<&str>,
 ) -> Option<String> {
@@ -766,7 +787,7 @@ fn semantic_text_colour_token_from_style_tags(
 
 /// A node-level colour DIRECTIVE from the node's tags — an authoring-time
 /// colour instruction.
-fn node_colour_directive_token(
+pub(crate) fn node_colour_directive_token(
     tags: &[UiIrStyleTag],
     label_style: Option<&str>,
 ) -> Option<String> {
@@ -798,7 +819,7 @@ fn node_colour_directive_token(
 /// Use this where a tag should reflect the node's own intent rather than an
 /// inherited container tag — notably icon/shape tinting: a raster image must not
 /// be tinted just because an ancestor carries an accent tag like `Primary`.
-fn own_style_tags_for_node(
+pub(crate) fn own_style_tags_for_node(
     canvas_fetcher: Option<&dyn CanvasFetcher>,
     node: &crate::bb_scene::BbNode,
     node_id: BbNodeId,
@@ -839,7 +860,7 @@ fn own_style_tags_for_node(
     resolved
 }
 
-fn resolved_style_tags_for_node(
+pub(crate) fn resolved_style_tags_for_node(
     canvas_fetcher: Option<&dyn CanvasFetcher>,
     scene: &crate::bb_scene::BbScene,
     node: &crate::bb_scene::BbNode,
@@ -961,7 +982,7 @@ fn parse_tag_uuid_from_reference(reference: &str) -> Option<String> {
     is_uuid.then(|| candidate.to_ascii_lowercase())
 }
 
-fn default_style_text_colour_token_from_raw(
+pub(crate) fn default_style_text_colour_token_from_raw(
     raw: &serde_json::Value,
     node_type: &BbNodeType,
     is_secondary: bool,
@@ -983,7 +1004,7 @@ fn default_style_text_colour_token_from_raw(
         .map(|_| "Base".to_string())
 }
 
-fn colour_style_token(value: &serde_json::Value) -> Option<String> {
+pub(crate) fn colour_style_token(value: &serde_json::Value) -> Option<String> {
     value
         .get("_Type_")
         .and_then(|v| v.as_str())
@@ -997,7 +1018,7 @@ fn colour_style_token(value: &serde_json::Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn fill_colour_from_raw_for_text(raw: &serde_json::Value) -> Option<[f32; 4]> {
+pub(crate) fn fill_colour_from_raw_for_text(raw: &serde_json::Value) -> Option<[f32; 4]> {
     let obj = raw.get("FillColor")?.as_object()?;
     let r = obj.get("r").and_then(|v| v.as_f64())? as f32;
     let g = obj.get("g").and_then(|v| v.as_f64())? as f32;
@@ -1027,7 +1048,7 @@ fn fill_colour_from_raw_for_text(raw: &serde_json::Value) -> Option<[f32; 4]> {
 /// (`examples/swf_avm1_dump.rs`). The compensation therefore lives BELOW the
 /// SWF layer, in the engine's fontlib rasterisation — consistent with this
 /// host-path division and with it never applying to non-host canvases.
-fn apply_font_image_size_percent(
+pub(crate) fn apply_font_image_size_percent(
     value: UiIrValue,
     resolved_font_record: Option<&serde_json::Value>,
     is_styled: bool,
@@ -1039,7 +1060,7 @@ fn apply_font_image_size_percent(
     adjust_ui_ir_font_value_for_font_record_image_percent(value, resolved_font_record)
 }
 
-fn adjust_ui_ir_font_value_for_font_record_image_percent(
+pub(crate) fn adjust_ui_ir_font_value_for_font_record_image_percent(
     value: UiIrValue,
     resolved_font_record: Option<&serde_json::Value>,
 ) -> UiIrValue {
@@ -1070,7 +1091,7 @@ fn adjust_ui_ir_font_value_for_font_record_image_percent(
 /// Multiply a design-unit font size by the host-stage view scale. Percent /
 /// behavioural values resolve against already-scaled rects, so only `Fixed`
 /// design sizes scale.
-fn scale_design_font_value(value: UiIrValue, design_text_scale: f32) -> UiIrValue {
+pub(crate) fn scale_design_font_value(value: UiIrValue, design_text_scale: f32) -> UiIrValue {
     if (design_text_scale - 1.0).abs() <= f32::EPSILON {
         return value;
     }
@@ -1082,7 +1103,7 @@ fn scale_design_font_value(value: UiIrValue, design_text_scale: f32) -> UiIrValu
     }
 }
 
-fn resolve_effective_font_size(
+pub(crate) fn resolve_effective_font_size(
     node_id: BbNodeId,
     node: &crate::bb_scene::BbNode,
     text: &crate::bb_scene::BbText,
@@ -1207,31 +1228,31 @@ fn resolve_effective_font_size(
 }
 
 #[derive(Debug, Clone, Default)]
-struct StandardTextStyle {
-    line_spacing: Option<f32>,
+pub(crate) struct StandardTextStyle {
+    pub(crate) line_spacing: Option<f32>,
     /// Brand per-glyph tracking (design units; the GFx renderer adds it to every
     /// character advance, scaled like the font size).
-    letter_spacing: Option<f32>,
-    font_size: Option<f32>,
-    font_record: Option<String>,
+    pub(crate) letter_spacing: Option<f32>,
+    pub(crate) font_size: Option<f32>,
+    pub(crate) font_record: Option<String>,
     /// Authoritative text colour role for this named style, from the brand text-style
     /// entry's `FillColor` modifier (e.g. `Heading6`/`H6` → `Bright`) — the game's own
     /// per-style colour, preferred over derived/heuristic colour-token guesses.
-    fill_colour_token: Option<String>,
+    pub(crate) fill_colour_token: Option<String>,
     /// The `FillColor` modifier's authored alpha (defaults to 1.0).
-    fill_colour_alpha: Option<f32>,
+    pub(crate) fill_colour_alpha: Option<f32>,
     /// The fill role resolved against the typography brand record's `colorStyles`
     /// palette at the authoritative `BB_ColorStyle` enum index. Populated only for
     /// roles whose compose-token namespace diverges from the enum (see
     /// `bb_colour_style_enum_index`).
-    fill_colour_rgba: Option<[f32; 4]>,
+    pub(crate) fill_colour_rgba: Option<[f32; 4]>,
 }
 
-fn standard_text_field_widget_path() -> &'static str {
+pub(crate) fn standard_text_field_widget_path() -> &'static str {
     "file://./../../../../../../../libs/foundry/records/ui/buildingblocks/modularkit/standard/widgets/textfieldwidgetstandard.json"
 }
 
-fn collect_standard_text_styles(
+pub(crate) fn collect_standard_text_styles(
     canvas_fetcher: Option<&dyn CanvasFetcher>,
     selected_style_source: Option<&str>,
     canvas_name: Option<&str>,
@@ -1352,7 +1373,7 @@ fn collect_standard_text_styles(
     styles
 }
 
-fn standard_text_style_from_entry(entry: &serde_json::Value) -> StandardTextStyle {
+pub(crate) fn standard_text_style_from_entry(entry: &serde_json::Value) -> StandardTextStyle {
     let mut style = StandardTextStyle::default();
     for modifier in entry
         .get("modifiers")
@@ -1403,7 +1424,7 @@ fn standard_text_style_from_entry(entry: &serde_json::Value) -> StandardTextStyl
     style
 }
 
-fn resolve_effective_line_spacing(
+pub(crate) fn resolve_effective_line_spacing(
     node: &crate::bb_scene::BbNode,
     effective_font_size: &UiIrValue,
     standard_text_styles: &HashMap<String, StandardTextStyle>,
@@ -1441,7 +1462,7 @@ fn scale_standard_line_spacing(
     line_spacing * (*effective_font_size / standard_font_size)
 }
 
-fn standard_text_style_keys(style: &str) -> Vec<String> {
+pub(crate) fn standard_text_style_keys(style: &str) -> Vec<String> {
     let trimmed = style.trim();
     let mut keys = Vec::new();
     if let Some(index) = trimmed.strip_prefix("Title") {
@@ -1468,7 +1489,7 @@ fn line_spacing_from_raw(node: &crate::bb_scene::BbNode) -> Option<f32> {
         .filter(|value| value.is_finite())
 }
 
-fn label_style_name_from_raw(node: &crate::bb_scene::BbNode) -> Option<String> {
+pub(crate) fn label_style_name_from_raw(node: &crate::bb_scene::BbNode) -> Option<String> {
     node.raw
         .get("labelProperties")
         .and_then(|v| v.get("style"))
@@ -1478,7 +1499,7 @@ fn label_style_name_from_raw(node: &crate::bb_scene::BbNode) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn resolved_text_from_payload(payload: &UiIrTextPayload) -> Option<&str> {
+pub(crate) fn resolved_text_from_payload(payload: &UiIrTextPayload) -> Option<&str> {
     match payload {
         UiIrTextPayload::Resolved { text } => Some(text.as_str()),
         _ => None,
@@ -1527,7 +1548,7 @@ fn font_size_fixed_value_from_raw(node: &crate::bb_scene::BbNode) -> Option<f32>
     }
 }
 
-fn classify_text_payload(
+pub(crate) fn classify_text_payload(
     resolved_text: Option<&str>,
     raw: &serde_json::Value,
     defaults: &DefaultValueRegistry,
@@ -1653,7 +1674,7 @@ fn resolve_enum_divergent_fill_rgba(
 /// The brand text style's pre-resolved fill RGBA for a named style, when the
 /// authored role required enum-index resolution (see
 /// `resolve_enum_divergent_fill_rgba`).
-fn brand_text_style_fill_rgba(
+pub(crate) fn brand_text_style_fill_rgba(
     style: Option<&str>,
     standard_text_styles: &HashMap<String, StandardTextStyle>,
 ) -> Option<[f32; 4]> {
@@ -1667,7 +1688,7 @@ fn brand_text_style_fill_rgba(
 
 /// The brand text style's authored per-glyph tracking (design units) for a
 /// named style.
-fn brand_style_letter_spacing(
+pub(crate) fn brand_style_letter_spacing(
     style: Option<&str>,
     standard_text_styles: &HashMap<String, StandardTextStyle>,
 ) -> Option<f32> {
@@ -1682,7 +1703,7 @@ fn brand_style_letter_spacing(
 /// The authoritative colour role for a named text style (e.g. `Heading6` →
 /// `Bright`), taken from the active brand's text-style `FillColor` modifier.
 /// Returns `None` when the style is unknown or carries no `FillColor`.
-fn brand_text_style_colour_token(
+pub(crate) fn brand_text_style_colour_token(
     style: Option<&str>,
     standard_text_styles: &HashMap<String, StandardTextStyle>,
 ) -> Option<String> {
@@ -1710,7 +1731,7 @@ fn standard_textfield_font_size_from_styles(
 /// via units_per_em = ascent + descent, so styled text is typographic, no nominal-scale
 /// constant). Node-agnostic so caption-pair label/value styles resolve the same way a
 /// plain `WidgetTextField` does.
-fn brand_style_font_size(
+pub(crate) fn brand_style_font_size(
     label_style: Option<&str>,
     standard_text_styles: &HashMap<String, StandardTextStyle>,
 ) -> Option<f32> {
@@ -1745,7 +1766,7 @@ fn label_style_name_from_node_or_ancestors(
     None
 }
 
-fn collect_style_font_sizes(scene: &BbScene) -> HashMap<String, f32> {
+pub(crate) fn collect_style_font_sizes(scene: &BbScene) -> HashMap<String, f32> {
     let mut values_by_style: HashMap<String, Vec<f32>> = HashMap::new();
 
     for node in scene.nodes.values() {
@@ -1770,7 +1791,7 @@ fn collect_style_font_sizes(scene: &BbScene) -> HashMap<String, f32> {
         .collect()
 }
 
-fn resolve_record(
+pub(crate) fn resolve_record(
     canvas_fetcher: Option<&dyn CanvasFetcher>,
     candidates: &[&str],
 ) -> Option<serde_json::Value> {
@@ -1802,7 +1823,7 @@ fn resolve_record(
 ///
 /// This keeps tag resolution in the core IR pipeline instead of requiring
 /// dump-specific flattening/indexing steps.
-fn resolve_style_tag_record(
+pub(crate) fn resolve_style_tag_record(
     canvas_fetcher: Option<&dyn CanvasFetcher>,
     tag_reference: &serde_json::Value,
     record_path: &str,
@@ -1886,7 +1907,7 @@ fn trim_tag_tree_to_matched_tag(tag_value: &serde_json::Value) -> serde_json::Va
     serde_json::Value::Object(trimmed)
 }
 
-fn convert_bb_value(value: &BbValue) -> UiIrValue {
+pub(crate) fn convert_bb_value(value: &BbValue) -> UiIrValue {
     match value {
         BbValue::Fixed(v) => UiIrValue::Fixed { value: *v },
         BbValue::Percent(v) => UiIrValue::Percent { value: *v },
@@ -1970,7 +1991,7 @@ fn local_alpha_for_node(
     .clamp(0.0, 1.0)
 }
 
-fn effective_alpha_for_node(
+pub(crate) fn effective_alpha_for_node(
     node_id: BbNodeId,
     node: &crate::bb_scene::BbNode,
     scene: &BbScene,
@@ -2062,7 +2083,7 @@ fn is_transient_static_pulse_node(node: &BbNode) -> bool {
     starts_hidden && ends_hidden && scales_over_time
 }
 
-fn node_type_name(node_type: &BbNodeType) -> &str {
+pub(crate) fn node_type_name(node_type: &BbNodeType) -> &str {
     match node_type {
         BbNodeType::DisplayWidget => "display_widget",
         BbNodeType::WidgetCanvas => "widget_canvas",

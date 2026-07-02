@@ -1,3 +1,24 @@
+#[allow(unused_imports)]
+use super::*;
+#[allow(unused_imports)]
+use serde::{Deserialize, Serialize};
+#[allow(unused_imports)]
+use sha2::{Digest, Sha256};
+#[allow(unused_imports)]
+use std::collections::{HashMap, HashSet};
+#[allow(unused_imports)]
+use crate::bb_bindings::BindingResolver;
+#[allow(unused_imports)]
+use crate::bb_layout;
+#[allow(unused_imports)]
+use crate::bb_layout::{LayoutResult, Rect};
+#[allow(unused_imports)]
+use crate::bb_scene::{BbNode, BbNodeId, BbNodeType, BbScene, BbValue};
+#[allow(unused_imports)]
+use crate::defaults::DefaultValueRegistry;
+#[allow(unused_imports)]
+use crate::pipeline::CanvasFetcher;
+
 // Consolidated engine chunk 04 (formerly: part_14.part, part_15.part, pagein_alpha_tests.part, part_16.part, part_17.part, part_18.part).
 
 #[cfg(test)]
@@ -2585,7 +2606,15 @@ mod tests_h {
 
     #[test]
     fn ui_ir_source_does_not_reintroduce_forbidden_hardcoded_markers() {
-        let source = include_str!("../engine.inc");
+        // Scan the REAL engine sources. (The pre-F1 version read `engine.inc`,
+        // which only held `include!` directives — the guard was silently
+        // vacuous; review F1 made it scan the module files themselves.)
+        let sources = [
+            include_str!("engine_01.rs"),
+            include_str!("engine_02.rs"),
+            include_str!("engine_03.rs"),
+            include_str!("engine_04.rs"),
+        ];
         let forbidden = [
             ["nominal_font_size_", "from_label_style"].concat(),
             ["BG", "Dots"].concat(),
@@ -2596,7 +2625,7 @@ mod tests_h {
 
         for marker in forbidden {
             assert!(
-                !source.contains(marker.as_str()),
+                !sources.iter().any(|source| source.contains(marker.as_str())),
                 "ui_ir hardcoding marker reintroduced: {marker}"
             );
         }

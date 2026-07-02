@@ -1,3 +1,5 @@
+#[allow(unused_imports)]
+use super::*;
 // Consolidated engine chunk 01 (formerly: part_01.part, part_02.part, part_03.part, part_04.part, part_05.part, part_06.part).
 //   part_01.part: Canonical UI intermediate representation (IR) schema and compiler.
 //   part_05.part: Build the value-side (secondary) text style of a `ComponentLabelCaptionPair`. The
@@ -15,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use crate::bb_bindings::BindingResolver;
 use crate::bb_layout;
 use crate::bb_layout::{LayoutResult, Rect};
-use crate::bb_scene::{BbNode, BbNodeId, BbNodeType, BbScene, BbValue};
+use crate::bb_scene::{BbNode, BbNodeId, BbNodeType, BbScene};
 use crate::defaults::DefaultValueRegistry;
 use crate::pipeline::CanvasFetcher;
 
@@ -1887,7 +1889,7 @@ fn push_asset_ref(asset_refs: &mut Vec<String>, candidate: Option<&str>) {
     }
 }
 
-fn unresolved_text_key_from_raw(raw: &serde_json::Value) -> Option<String> {
+pub(crate) fn unresolved_text_key_from_raw(raw: &serde_json::Value) -> Option<String> {
     let direct = raw.get("text").and_then(|v| v.as_str()).map(str::trim);
     if let Some(key) = direct.filter(|s| s.starts_with('@') && !s.is_empty()) {
         return Some(key.to_string());
