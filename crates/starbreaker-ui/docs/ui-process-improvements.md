@@ -2272,3 +2272,52 @@ responsibility. graphify now indexes the engine (`expand_widget_standards` →
 blind-spot warnings are updated. Historical ledger/handoff mentions of `engine_parts/*.part`
 refer to the pre-F1 layout (path mapping is 1:1: `engine_parts/engine_NN.part` → `engine_NN.rs`).
 **Action:** DONE. Ledger 104's "F1 awaits owner decision" is superseded by this entry.
+
+### 106 — A "just centre it" visual fix was a 5-stage layout bug; the FIRST fix regressed a GOLD sibling — the whole-image guard, not the arc's own test, measured blast radius
+**Context:** Carrack lift-call console arc tail. Owner rejected the medbed platinum
+re-freeze: the `I_Med_MedicalBed_A` close ✕ (a ghost-`ComponentGeneralButton`, shared with
+the console's CALL-ELEVATOR caret) sat a half-width LEFT of its blue square. "Centre it" read
+trivial; it was five stages deep.
+
+**Observed — the trace only converged on RESOLVED-GEOMETRY instrumentation, not op-graph reading.**
+Hand-reading the button-standard op graph (`AnchorX = (param*2-1) + IntegerSwitch`) went in
+circles for many probes — the switch can't emit 0.5 for X, so I could not derive the centred
+anchor analytically. What worked: a throwaway `#[test]` that compiled the REAL canvas IR
+(`compile_ir_for_binding`, same path as `manifest_live_ir_guard`) and dumped the ExitBed
+subtree's resolved `anchor/pivot/computed_rect`, then a `BB_FLEX_PROBE` `eprintln` in each
+`bb_layout` flex branch. That pinned it exactly: `ComponentRoot` is a **Column** flex
+(`itemAlignment: Center`); the cross-axis (X) Center branch centres the box with
+`(container.w - w)*0.5` and THEN re-adds `anchor.x*W - pivot.x*w`. For the icon (anchor 0,
+pivot 0.5) that extra term = −17px → left of centre. **Lesson: for a mis-positioned element,
+instrument the resolved rect + which layout branch runs; do NOT try to solve the authored op
+graph by hand.**
+
+**Observed — the FIRST fix passed its own TDD test and REGRESSED a frozen GOLD screen.**
+Dropping `- pivot.x*w` from the Center branch centred the ✕ and passed a new unit test — but
+`ui_check.sh --full` (re-export first) showed `clipper_countermeasures_master` at **3.87 %**
+(Gold budget 1 %): its decoy-count elements (anchor==pivot) rely on that term to cancel. The
+arc's own screen test never sees sibling screens. **Lesson: a layout-formula change is a SHARED
+mechanism; the whole-image guard across ALL frozen targets is the blast-radius measurement — run
+`--full` (post-export) and read the per-target %s BEFORE the freeze gate, never the arc test
+alone** (reinforces ledger 77).
+
+**Observed — the correct scope came from DATA, not a guess.** Dumping every CM node showed all
+`pivot.x != 0` nodes have `anchor.x == pivot.x` (self-consistent overlay), while the medbed icon
+uniquely has `anchor.x == 0` with `pivot.x == 0.5`. So the carve-out is precise: apply the
+overlay `anchor.x*W - pivot.x*w` only when a cross-anchor is authored (`anchor.x != 0`);
+otherwise the flex box-centre stands. Re-measured: ✕ offset (0.0, 0.0)px, CM and all 9 other
+frozen targets unchanged, `--full` ALL GREEN. Two TDD tests pin both arms (anchor 0 → centred;
+anchor 0.5 → overlay kept), both housed in `bb_layout/engine_03.rs` (the designated overflow file
+for tests that would breach `engine_02.rs`'s 3000-line cap).
+
+**Observed — freeze gate: re-verify the artifact, re-present, THEN re-ask.** Owner's first
+answer was "freeze B only, fix the ✕". After the fix I re-measured the offset, sent the corrected
+PNG + zoom, and only then re-asked — the second answer approved both. Landed `e4e5e5906`;
+IR-snapshot + image-artifact re-freeze, `--approver owner`.
+
+**Action:** DONE. Reusable pattern: (1) throwaway IR-compile diagnostic + stage `eprintln` to
+locate a layout bug at the resolved-rect level; (2) `--full` post-export as the blast-radius
+measurement for any shared-formula change; (3) a data-dump of sibling nodes to find the
+structural discriminator that scopes the fix. The `- pivot.x*w` double-count survived in the
+Column Center branch precisely because no prior test had a centre-column item with
+`anchor.x != pivot.x`.
