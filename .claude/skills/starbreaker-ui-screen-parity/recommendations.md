@@ -483,3 +483,24 @@ under **Open recommendations** above.
   and worked): the decisive early move is pinning BOTH baselines' binary
   provenance (`target/release/deps/starbreaker-<hash>` mtimes = free time-travel
   bisect) before attributing anything to the arc's own changes.
+
+- **2026-07-03 (Carrack console arc / medbed ✕ collateral) — a shared LAYOUT-FORMULA
+  fix needs `--full` (post-export) BEFORE the freeze gate; the arc's own test can't
+  see siblings.** Centring the medbed close ✕ meant editing a `bb_layout` flex
+  cross-axis formula. The first edit (drop `- pivot.x*w` for all Center items) passed
+  a fresh unit test AND the arc screen, but regressed the `clipper_countermeasures_master`
+  GOLD screen by 3.87 % — its decoy counts (anchor==pivot) relied on that term to cancel.
+  Only `ui_check.sh --full` (re-export first) surfaced it, via the whole-image guard's
+  per-target %s. The skill already says "render+eyeball every screen sharing a SHARED
+  ASSET/ICON/BINDING mechanism" (ledger 77) — extend the mental model: **a shared
+  LAYOUT/RENDER FORMULA is the same class of shared mechanism**, and the measurement is
+  the `--full` per-target percentages across ALL frozen targets, not the arc test. The
+  fix that stuck came from DATA: dumping the sibling screen's nodes showed every
+  `pivot.x != 0` node had `anchor.x == pivot.x` while the ✕ uniquely had `anchor.x == 0`
+  — that discriminator scoped the carve-out to zero collateral. Also reusable: to locate
+  a layout bug, a throwaway `#[test]` that `compile_ir_for_binding` on the real canvas +
+  a stage-local `eprintln` beats hand-solving the authored op graph (which here could not
+  emit the centred anchor at all). Candidate SKILL folds: (a) *Default to fixing* /
+  workflow §5 — name "layout/render formula" alongside asset/icon/binding as a shared
+  mechanism that requires `--full`; (b) a probe note: instrument RESOLVED geometry, don't
+  solve the op graph by hand.
