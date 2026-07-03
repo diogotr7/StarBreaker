@@ -1482,6 +1482,10 @@ fn tag_id_by_name(tag_database: &serde_json::Value, tag_name: &str) -> Option<St
 enum ParamValue {
     Int(i64),
     Bool(bool),
+    /// A plain number for a `BindingsNumberComponentParameter` op (e.g. the
+    /// button standards' "Icon AnchorToParentX" — the host's authored
+    /// `iconProperties.anchorToParentX`).
+    Num(f64),
     Str(String),
     /// A localization KEY (e.g. `@ui_interactor_call_elevator`) for a
     /// `BindingsLocalizedComponentParameter` op — resolved through the
@@ -1525,6 +1529,12 @@ fn inject_standard_params(
                 "_Pointer_": ptr,
                 "_HostNodeId_": host_id,
                 "resolvedBool": value,
+            }),
+            ParamValue::Num(value) => serde_json::json!({
+                "_Type_": "_SynthNumberParam_",
+                "_Pointer_": ptr,
+                "_HostNodeId_": host_id,
+                "resolvedNumber": value,
             }),
             ParamValue::Str(value) => serde_json::json!({
                 "_Type_": "_SynthStringParam_",
@@ -1840,6 +1850,28 @@ pub(crate) fn expand_widget_standards(
                     .filter(|s| !s.is_empty())
                 {
                     params.push(("Label", ParamValue::Loc(label.to_string())));
+                }
+                // The templates derive the icon/label instance ANCHORS from the
+                // host's authored anchorToParent through an op graph
+                // (anchor = f(param) − 1 + position-switch); an unwired
+                // parameter defaults 0.0 and the graph yields −1, throwing the
+                // element OUT of the button (the medbed close ✕ rendered left
+                // of its square). Feed the authored values, like the engine's
+                // component-property → named-parameter routing.
+                for (param, props, field) in [
+                    ("Icon AnchorToParentX", "iconProperties", "anchorToParentX"),
+                    ("Icon AnchorToParentY", "iconProperties", "anchorToParentY"),
+                    ("Label AnchorToParentX", "labelProperties", "anchorToParentX"),
+                    ("Label AnchorToParentY", "labelProperties", "anchorToParentY"),
+                ] {
+                    if let Some(value) = host
+                        .raw
+                        .get(props)
+                        .and_then(|p| p.get(field))
+                        .and_then(|v| v.as_f64())
+                    {
+                        params.push((param, ParamValue::Num(value)));
+                    }
                 }
                 params
             }
@@ -2298,7 +2330,20 @@ mod tests_expansion {
                         }
                     }
                 ],
-                "operations": []
+                "operations": [
+                    {
+                        "_Pointer_": "ptr:30",
+                        "_Type_": "BuildingBlocks_BindingsNumberComponentParameter",
+                        "name": "Icon AnchorToParentX", "parameter": "ParamInput0",
+                        "defaultValue": 0.0
+                    },
+                    {
+                        "_Pointer_": "ptr:31",
+                        "_Type_": "BuildingBlocks_BindingsNumberComponentParameter",
+                        "name": "Icon AnchorToParentY", "parameter": "ParamInput1",
+                        "defaultValue": 0.0
+                    }
+                ]
             }
         })
     }
@@ -2321,7 +2366,8 @@ mod tests_expansion {
                         "fillStyle": "Ghost",
                         "iconProperties": {
                             "_Type_": "BuildingBlocks_ComponentIconProperties",
-                            "show": true, "iconPreset": "GeneralX", "customIcon": ""
+                            "show": true, "iconPreset": "GeneralX", "customIcon": "",
+                            "anchorToParentX": 0.5, "anchorToParentY": 0.5
                         },
                         "labelProperties": {
                             "_Type_": "BuildingBlocks_ComponentLabelProperties",
@@ -2403,6 +2449,32 @@ mod tests_expansion {
             host.icon.as_ref().is_none_or(|icon| icon.image_record.is_none()),
             "button host parse-time icon fallback must be cleared after expansion"
         );
+    }
+
+    /// The templates derive the icon instance's ANCHOR from the host's
+    /// authored `iconProperties.anchorToParentX/Y` through the "Icon
+    /// AnchorToParent*" component parameters; an unwired parameter defaults
+    /// 0.0 and the template op graph (f(param) − 1 + switch) yields −1,
+    /// throwing the icon out of the button (the medbed close ✕ rendered left
+    /// of its square). The expansion must inject the authored numbers.
+    #[test]
+    fn button_expansion_injects_host_anchor_to_parent_params() {
+        let mut scene = button_host_scene();
+        expand_widget_standards(&mut scene, &expansion_fetcher);
+
+        let synth: Vec<_> = scene
+            .operations
+            .iter()
+            .filter(|op| op.get("_Type_").and_then(|v| v.as_str()) == Some("_SynthNumberParam_"))
+            .collect();
+        assert_eq!(synth.len(), 2, "both icon anchor params injected: {synth:?}");
+        for op in synth {
+            assert_eq!(
+                op.get("resolvedNumber").and_then(|v| v.as_f64()),
+                Some(0.5),
+                "the host's authored anchorToParent 0.5 must reach the parameter"
+            );
+        }
     }
 
     /// Host canvas: a PRIMARY `ComponentGeneralButton` authored with the

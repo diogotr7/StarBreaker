@@ -2753,6 +2753,10 @@ pub(crate) fn widget_separator_draw_rect(
     strip: Option<&crate::ui_ir::UiIrSeparatorStrip>,
 ) -> TskRect {
     if let Some(strip) = strip {
+        // The strip never exceeds its authored slot box: a min-clamp larger
+        // than the slot draws the full slot (medbed Primary 16px slot under
+        // the bioc min-32 entry renders 16px in-game), while a smaller clamp
+        // bounds the visible strip (the console's 6/4/2px uilo strips).
         let clamp_axis = |size: f32, min: Option<f32>, max: Option<f32>| -> f32 {
             let mut clamped = size;
             if let Some(max) = max {
@@ -2761,7 +2765,7 @@ pub(crate) fn widget_separator_draw_rect(
             if let Some(min) = min {
                 clamped = clamped.max(min);
             }
-            clamped
+            clamped.min(size)
         };
         let w = clamp_axis(rect.width(), strip.min_w, strip.max_w);
         let h = clamp_axis(rect.height(), strip.min_h, strip.max_h);

@@ -1644,7 +1644,20 @@ fn layout_flex_no_grow_children(
             if let Some(node) = scene.nodes.get(&id) {
                 let pos_x = (node.position.x + node.position_offset.x) * csx;
                 if cross_just.eq_ignore_ascii_case("center") {
-                    x += (node.anchor.x * container.w) + pos_x - (node.pivot.x * w);
+                    // The `(container.w - w) * 0.5` base already CENTRES the box.
+                    // The authored anchor/pivot pair `anchor.x*W - pivot.x*w` is an
+                    // OVERLAY offset that only makes sense when the item authors a
+                    // cross-axis anchor (then it self-positions, e.g. anchor 0.5 /
+                    // pivot 0.5 cancels to stay centred; anchor 0.043 nudges). With
+                    // NO authored cross anchor (anchor.x == 0) the item relies on
+                    // flex box-centring, so re-subtracting `pivot.x * w` would push
+                    // a centred-pivot (0.5) item a half-width off-centre — the
+                    // medical close ✕ (anchor 0, pivot 0.5) rendered left of centre.
+                    if node.anchor.x.abs() > f32::EPSILON {
+                        x += (node.anchor.x * container.w) + pos_x - (node.pivot.x * w);
+                    } else {
+                        x += pos_x;
+                    }
                 } else if cross_just.eq_ignore_ascii_case("start") && !cross_start_from_end {
                     x += (node.anchor.x * container.w) + pos_x - (node.pivot.x * w);
                 }

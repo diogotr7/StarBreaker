@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "frozen_at": "2026-07-02T00:14:28Z",
+  "frozen_at": "2026-07-03T08:18:09Z",
   "approver": "owner",
-  "reason": "Primary GeneralButton expansion: metadata-only IR drift (non-painting template nodes, token-field literal change); power+annunciator renders md5-identical before/after",
+  "reason": "Medical close X centred both axes in its button box (flex column cross-axis Center pivot double-count fix); separator strip renders 4px lines. ui_target_a whole-image 0.97%, ui_target_b 0.52% (both intended platinum re-freeze); no collateral on other frozen targets.",
   "signature": null,
   "manifest_path": "crates/starbreaker-ui/tests/fixtures/ui_ir/ui_snapshot_manifest.json",
   "artifacts": [
@@ -11,7 +11,7 @@
       "tier": "platinum",
       "source_generated_png": "ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_i_med_medicalbed_a.png",
       "artifact_path": "test-artifacts/ui/ui_target_a.png",
-      "sha256": "5af22ac2446028e727aca74eb35e24c38b655a9546e7ec93358af6bd6a9df7f9",
+      "sha256": "4aef148eb31372c0fb00f1a288150357280eb5e760e530f5c567f8949d00940f",
       "width": 1920,
       "height": 1080,
       "channels": "srgba"
@@ -21,7 +21,7 @@
       "tier": "platinum",
       "source_generated_png": "ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_i_med_medicalendofbed_a.png",
       "artifact_path": "test-artifacts/ui/ui_target_b.png",
-      "sha256": "a2d108280d95ce5d0ae26a2346ad1f98f74d09ecac0b34d0d6bac08cb0dceb5e",
+      "sha256": "53cf66c003abf717807554f2615587d3abc1bbf9e5e34bcf098d1b097a1d1b96",
       "width": 1920,
       "height": 1080,
       "channels": "srgba"

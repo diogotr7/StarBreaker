@@ -633,6 +633,19 @@ mod tests {
         assert_eq!(draw_rect.width(), 80.0);
         assert_eq!(draw_rect.height(), 5.0);
 
+        // A min-clamp beyond the slot is capped at the slot box: the medbed's
+        // 16px Primary bar under the bioc min-32 entry renders 16px in-game.
+        let oversized = crate::ui_ir::UiIrSeparatorStrip {
+            min_h: Some(32.0),
+            max_h: Some(64.0),
+            anchor_y: Some(0.5),
+            pivot_y: Some(0.5),
+            ..Default::default()
+        };
+        let draw_rect = widget_separator_draw_rect(rect, Some(1.0), Some(&oversized));
+        assert_eq!(draw_rect.height(), 16.0, "strip capped at the slot height");
+        assert_eq!(draw_rect.y(), 20.0);
+
         // Width-axis clamp (vertical separators author Min/MaxSizeX).
         let strip_x = crate::ui_ir::UiIrSeparatorStrip {
             min_w: Some(4.0),

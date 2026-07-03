@@ -71,4 +71,62 @@ mod materialised_entry_tests {
             "fill: full-bleed panel must span the whole square target (no overflow / no letterbox), got {panel:?}"
         );
     }
+
+    /// A CENTER cross-justified column item with a centred PIVOT (0.5) sits at
+    /// the container cross-centre: the `(container.w - w) * 0.5` base already
+    /// centres the item box, so the child pivot must NOT additionally shift it.
+    /// The medical ghost-button close ✕ (pivot 0.5 in its Center-justified icon
+    /// column) rendered a half-width LEFT of centre until the spurious
+    /// `- pivot.x * w` was dropped from the cross-centre branch.
+    #[test]
+    fn flex_column_center_cross_axis_centers_pivoted_item() {
+        let fixed = |v: f32| serde_json::json!({"value": v, "behavior": "Fixed"});
+        let scene = vec![
+            serde_json::json!({"_Pointer_": "ptr:1", "_Type_": "BuildingBlocks_DisplayWidget",
+                "name": "root", "isActive": true, "sizing": {"width": fixed(100.0), "height": fixed(100.0)},
+                "layoutPolicy": {"_Type_": "BuildingBlocks_FlexContainer", "direction": "Column",
+                    "axisJustification": "Center", "crossAxisJustification": "Center", "itemAlignment": "Center"}}),
+            serde_json::json!({"_Pointer_": "ptr:2", "_Type_": "BuildingBlocks_WidgetIcon",
+                "name": "IconWidgetInstance", "parent": "_PointsTo_:ptr:1", "isActive": true,
+                "pivot": {"x": 0.5, "y": 0.5, "z": 0.0},
+                "sizing": {"width": fixed(40.0), "height": fixed(40.0)}}),
+        ];
+        let canvas = serde_json::json!({"_RecordValue_": {"_Type_": "BuildingBlocks_Canvas",
+            "size": {"x": 100.0, "y": 100.0}, "coordinateMethod": "useRaw", "operations": [], "scene": scene}});
+        let result = layout(&parse_bb_canvas(&canvas).expect("fixture parses"), 100, 100);
+        let rect = result.rects[&2];
+        // Cross-axis (X) and main-axis (Y) both centre a 40px item in 100px: (100-40)/2 = 30.
+        assert!((rect.x - 30.0).abs() < 0.5, "expected pivot-0.5 item centred at x=30, got {}", rect.x);
+        assert!((rect.y - 30.0).abs() < 0.5, "expected item centred at y=30, got {}", rect.y);
+    }
+
+    /// The companion to the ✕ fix: a Center cross-justified column item that
+    /// DOES author a cross-axis anchor keeps its overlay `anchor.x*W - pivot.x*w`
+    /// offset. A self-consistent anchor==pivot==0.5 (the countermeasure firing
+    /// box / list entries) cancels to stay centred and must NOT be box-centred
+    /// away — guards the scope of the anchor.x==0 carve-out.
+    #[test]
+    fn flex_column_center_cross_axis_keeps_authored_anchor_offset() {
+        let fixed = |v: f32| serde_json::json!({"value": v, "behavior": "Fixed"});
+        let scene = vec![
+            serde_json::json!({"_Pointer_": "ptr:1", "_Type_": "BuildingBlocks_DisplayWidget",
+                "name": "root", "isActive": true, "sizing": {"width": fixed(100.0), "height": fixed(100.0)},
+                "layoutPolicy": {"_Type_": "BuildingBlocks_FlexContainer", "direction": "Column",
+                    "axisJustification": "Center", "crossAxisJustification": "Center", "itemAlignment": "Center"}}),
+            serde_json::json!({"_Pointer_": "ptr:2", "_Type_": "BuildingBlocks_DisplayWidget",
+                "name": "entry", "parent": "_PointsTo_:ptr:1", "isActive": true,
+                "anchor": {"x": 0.5, "y": 0.5, "z": 0.0}, "pivot": {"x": 0.5, "y": 0.5, "z": 0.0},
+                "sizing": {"width": fixed(40.0), "height": fixed(40.0)}}),
+        ];
+        let canvas = serde_json::json!({"_RecordValue_": {"_Type_": "BuildingBlocks_Canvas",
+            "size": {"x": 100.0, "y": 100.0}, "coordinateMethod": "useRaw", "operations": [], "scene": scene}});
+        let result = layout(&parse_bb_canvas(&canvas).expect("fixture parses"), 100, 100);
+        let rect = result.rects[&2];
+        // anchor.x != 0, so the overlay offset is KEPT (the carve-out only applies
+        // to anchor.x == 0). Legacy value: box-centre (100-40)/2 = 30, plus the
+        // overlay term anchor.x*W - pivot.x*w = 0.5*100 - 0.5*40 = 30, so x = 60.
+        // The assertion pins that an authored-anchor item is unchanged by the fix
+        // (a box-centre carve-out would have given 30).
+        assert!((rect.x - 60.0).abs() < 0.5, "expected authored-anchor item to keep overlay offset x=60, got {}", rect.x);
+    }
 }
