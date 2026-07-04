@@ -2374,21 +2374,40 @@ saturated core pixel. The measure that actually discriminated: COUNT of near-pur
 (`max(r,g,b) < 25`) in the button region — **395 pre-fix → 0 post-fix**, standalone == export
 exactly. Confirmed by the IR too (caret token `None` → `Background`).
 
-**Observed — a "font too small?" check resolved by the ASPECT-INVARIANT axis.** Owner also asked to
-check the SUB DECK font size. The heading is width-fit; its horizontal extent matched the reference
-(~80% of screen width in BOTH), which proves the size is correct in canvas space independently of
-aspect. The ~1.5× cap-HEIGHT difference was the aspect stretch (ref 0.576 vs canvas-native 0.692 —
-owner said ignore aspect) plus capture bloom. No magic scalar. **Lesson: judge a width-fit heading's
-size on the axis the fit constrains (horizontal), which is aspect-invariant, before reading the
-height (which the mesh aspect stretches).**
+**Observed — a "font too small?" check I got WRONG twice, then confirmed real (owner-flagged).**
+Owner asked to check the SUB DECK font. I first argued "within tolerance": the heading's horizontal
+extent matched the reference (~80% of width in BOTH) so I claimed the size was correct and the height
+gap was aspect + bloom. That reasoning was INVALID — the caption is a FIXED-size Heading3 (28px,
+`autoScalingMethod:None`, no `autoFontSize`), NOT width-fit, so the 80%-width coincidence proves
+nothing about size. Owner pushed back ("still too small"). Re-measuring PROPERLY (connected-component
+button isolation → cap-heights normalized against a shared feature): the reference draws SUB DECK ≈
+CALL ELEVATOR cap-h (ratio ~1.10) while the render draws 0.636 (nominal Heading3 28 / Heading1 44);
+button geometry matches in canvas space (~332×183) so it is NOT aspect. SUB DECK is genuinely ~1.35×
+too small (in-game effective ~38px, ≈ its 64px field height). Owner then DEFERRED the fix ("leave the
+work here, finish the skill process"). Traced but not fixed: candidate is the compass "height-driven
+labels" pattern (`ca5ec0b25`, size to field height, data-backed) — AND a HARD-CODING flag:
+`compose/text_draw.rs:100-102` hard-codes `Heading1=>48, Heading3=>28` (AGENTS.md game-data-in-source
+violation; verify whether the real brand Heading3 is failing to apply and falling back to 28, the
+velocity/master-mode pattern). **Lessons: (a) before using a width-match to argue a heading's size is
+correct, CHECK whether it is width-fit or FIXED — a fixed heading's width match is meaningless. (b)
+compare a text element's cap-h to a SIBLING text element (ratio), which is aspect- and
+resolution-invariant, rather than to the aspect-stretched image height. (c) thin-glyph/bloomed pixel
+measurement needs connected-component region isolation (the uniform-green screen defeats colour
+thresholds); a "measure" I trust must survive a second, cleaner method. (d) when the owner repeats a
+visual complaint, treat it as ground truth and re-derive from scratch — do not re-defend the prior
+call (my standing weakness: visual/spatial judgment).**
 
-**Action:** DONE. Fix `560c9ffe2` on `feature/ui` (TDD test
+**Action:** chevron fix DONE (`560c9ffe2` on `feature/ui`, TDD test
 `compile_ir_button_icon_placeholder_black_inherits_sibling_text_colour`); `/ships/` re-exported
-UI-only at LOD0 (`--ui-only-files`, all 10 floor console PNGs fresh with the fix). No freeze (the
-console is not a manifest gold target; the covered gold snapshots were unchanged). Candidate SKILL
+UI-only at LOD0 (`--ui-only-files`, all 10 floor console PNGs fresh). No freeze (console is not a
+manifest gold target; covered gold snapshots unchanged). **SUB DECK font size = OPEN, owner-DEFERRED**
+(root-caused above, not fixed); **TODO/FLAG: hard-coded heading table `compose/text_draw.rs:100-102`
+(`Heading1=>48, Heading3=>28`)** to derive from data (AGENTS.md self-correcting ban). Candidate SKILL
 folds: (a) *reproduction gap* — when an owner symptom does not reproduce in a FRESH export, present
 the fresh-export evidence and confirm before fixing (a stale view is common right after an
 owner-requested re-export); (b) *blast radius by change class* — a COLOUR/token change's guard is
 the element-level tint-semantics snapshot (a positional regression is impossible), whereas a
 LAYOUT-formula change needs `--full` per-target %s (ledger 106); (c) *measure thin-glyph colour by
-near-black pixel COUNT, not a mean*.
+near-black pixel COUNT, not a mean*; (d) *never argue a heading's size from a width-match without
+first confirming it is width-fit vs FIXED; compare cap-h to a sibling text ratio, and when the owner
+repeats a visual complaint, re-derive from scratch rather than re-defend the prior call*.

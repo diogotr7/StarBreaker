@@ -535,3 +535,19 @@ under **Open recommendations** above.
   SIZE is judged on the horizontal axis the fit constrains (aspect-invariant), not the
   cap-height (which the mesh aspect stretches) — this cleanly answered "is SUB DECK too
   small?" as "no, the width matches; the height gap is the deferred aspect + bloom."
+- **2026-07-04 (SAME arc, correction) — that width-match answer was WRONG; the owner was
+  right.** The heading is a FIXED Heading3 (28px, `autoScalingMethod:None`, no `autoFontSize`),
+  NOT width-fit, so an 80%-width match proves nothing about its size. The owner repeated "still
+  too small"; re-measuring properly (connected-component button isolation, cap-h compared to the
+  CALL ELEVATOR sibling as a ratio) showed the reference draws SUB DECK ≈ CALL cap-h (~1.10) vs
+  the render's 0.636 — genuinely ~1.35× too small, not aspect. **Skill folds:** (a) before using a
+  width-match to argue a heading's size is correct, CHECK width-fit vs FIXED — a fixed heading's
+  width match is irrelevant to its size; (b) size-compare a text element to a SIBLING text element
+  (cap-h ratio), which is aspect- and resolution-invariant, not to the aspect-stretched image
+  height; (c) uniform-colour screens (all-green transit panels) defeat colour thresholds — use
+  connected-component region isolation and require a measurement to survive a second, cleaner
+  method before trusting it; (d) **when the owner repeats a visual complaint, treat it as ground
+  truth and re-derive from scratch — do NOT re-defend the prior call.** This is my standing
+  weakness (visual/spatial judgment from renders); the memory note says trust the owner + use DATA,
+  and here I initially did neither. The fix itself (caption size → its 64px field, the compass
+  height-driven pattern; plus the hard-coded `text_draw.rs` heading table) was owner-DEFERRED.
