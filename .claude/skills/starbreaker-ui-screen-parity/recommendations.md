@@ -504,3 +504,34 @@ under **Open recommendations** above.
   workflow §5 — name "layout/render formula" alongside asset/icon/binding as a shared
   mechanism that requires `--full`; (b) a probe note: instrument RESOLVED geometry, don't
   solve the op graph by hand.
+
+- **2026-07-04 (Carrack console re-open) — an owner symptom that doesn't reproduce in a
+  FRESH export is a stale VIEW, not a bug to fix.** The owner re-opened the console with
+  three items but had prefaced the arc with "you'll need to re-export to get an up-to-date
+  version." After that export, 2 of the 3 (button-too-low, SUB DECK missing) did not
+  reproduce — all 17 console bindings had a floor, every floor panel localized its heading,
+  and the low-button/missing-heading pair existed only in the unused no-floor panel. They
+  were a stale export the owner had been viewing. I presented the fresh-export evidence
+  (the exact garage="SUB DECK" panel + binding floor coverage) and asked; the owner
+  confirmed the re-export fixed them. **Skill fold candidate:** add to the operating
+  posture / reproduction guidance — *right after an owner-requested re-export, an
+  owner-reported symptom that does not reproduce in the fresh export is most likely a stale
+  view; surface the fresh-export evidence and confirm before building any fix.* Chasing the
+  ghost would have meant fixing a panel no console uses.
+- **2026-07-04 — blast-radius measurement is a function of the CHANGE CLASS.** The one real
+  bug (chevrons pure black) was a COLOUR/token fix in `ui_ir` (a token-less `ColorSolid`
+  placeholder-black icon `FillColor` inheriting its sibling text field's colour token). A
+  colour/token change cannot move anything, so its blast-radius guard is the element-level
+  `..._tint_semantics` gold snapshot (MORE sensitive than `--full` whole-image), which ran
+  GREEN across all frozen targets — no separate sibling render needed. Contrast ledger 106:
+  a LAYOUT-formula change needs `--full` per-target %s. **Skill fold candidate:** where the
+  workflow says "render+eyeball siblings after a shared-mechanism change," note that a
+  colour/token-only change is already covered by the element-level tint snapshot, while a
+  layout/render-formula change needs the `--full` per-target percentages.
+- **2026-07-04 — two small measurement notes.** (a) A thin-glyph colour claim (the caret's
+  double-caret strokes) is unmeasurable by a MEAN — anti-aliasing against the bright button
+  gave `(35,57,40)` for both black and dark-green; the discriminator was the COUNT of
+  near-pure-black pixels (`max(r,g,b)<25`) in the region: 395 → 0. (b) A width-fit heading's
+  SIZE is judged on the horizontal axis the fit constrains (aspect-invariant), not the
+  cap-height (which the mesh aspect stretches) — this cleanly answered "is SUB DECK too
+  small?" as "no, the width matches; the height gap is the deferred aspect + bloom."

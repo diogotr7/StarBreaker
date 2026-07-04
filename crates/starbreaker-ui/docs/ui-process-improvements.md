@@ -2321,3 +2321,74 @@ measurement for any shared-formula change; (3) a data-dump of sibling nodes to f
 structural discriminator that scopes the fix. The `- pivot.x*w` double-count survived in the
 Column Center branch precisely because no prior test had a centre-column item with
 `anchor.x != pivot.x`.
+
+### 107 — Owner-reported symptoms didn't reproduce in a FRESH export (they were a stale view); the one real bug was a token-less placeholder-black icon fill
+
+**Context:** re-opened the Carrack lift-call console (`console_liftcall_009`) with three owner
+items — (1) chevrons render pure black, (2) the CALL ELEVATOR button sits too low, (3) SUB DECK
+heading missing — plus a de-scope: "don't take the aspect literally, ignore CRT + corner
+triangles/bezel."
+
+**Observed — 2 of the 3 items were UNREPRODUCIBLE in the export the owner ASKED me to refresh.**
+The owner had prefaced the arc with "you'll need to re-export the Carrack into `/ships/` to get an
+up-to-date version." After that export, items #2 (button low) and #3 (SUB DECK missing) did not
+reproduce: all 17 `a2c5fae4` console bindings carried a floor loc-key, every floor panel localized
+and rendered its heading (garage → "SUB DECK"), and the garage panel showed the button centred.
+The "button-low + heading-missing" pair existed ONLY in the base/no-floor panel — used by NO
+console. So both symptoms were a **stale export** the owner had been viewing (the exact reason they
+asked for the refresh). **Lesson: when an owner-reported symptom does not reproduce in a fresh
+export, do NOT build a fix for it — present the fresh-export evidence (the exact panels, the binding
+floor coverage) and ask the owner to confirm against their view.** I gated on this (a genuine
+reproduction gap only the owner can resolve, per the skill's major-item rule); the owner confirmed
+"the re-export looks better, spacing and SUB DECK are good." Building #2/#3 fixes against the stale
+symptom would have been changes chasing a ghost.
+
+**Observed — the one real bug: a `ColorSolid` pure-black icon `FillColor` is an editor placeholder
+that resolves to a TOKEN-LESS RGBA, so the icon falls through to the SVG's native black.** The
+button sheet `sk_uilo_a` (the console's `ComponentGeneralButton`) is the lone `uilo` kit whose caret
+icon authors `FillColor` as `ColorSolid(0,0,0)` while every sibling kit authors
+`ColorStyle(Background)` — the same button-content role the text field uses. The cascade resolves a
+`ColorSolid` to `{r,g,b,a}` RGBA and drops `FillColorToken` (`write_color_to_raw` +
+`write_color_token_to_raw(None)`), so `icon_tint_colour_token` is `None` and the caret SVG (no
+`fill` attr → defaults black) renders pure black. **Fix (generic, upstream in `ui_ir`):** a non-HUD
+`widget_icon` carrying ONLY a token-less pure-black `FillColor` and no resolved tint inherits its
+SIBLING text field's colour token (`apply_placeholder_black_icon_inheritance` in
+`build_ui_ir_nodes`) — the icon adopts the button-content colour the way the reference's caret
+matches its text. The token-less-ness is the discriminator: a role that merely resolved to a dark
+colour KEEPS its `FillColorToken`, so it is never mistaken for the placeholder. Gated to non-HUD
+(the cockpit HUD button kits author `ColorSolid`-black icon fills the HUD path handles itself).
+
+**Observed — for a COLOUR-only change the element-level gold tint-semantics snapshot IS the sibling
+check; it is MORE sensitive than `--full` whole-image.** Unlike ledger 106's layout-formula change
+(which needed `--full` per-target %s to catch a positional sibling regression), a tint change cannot
+move anything, so the blast-radius measurement is the tint-semantics guard, not whole-image.
+`ui_check.sh` ran GREEN including `live_manifest_targets_match_gold_standard_tint_semantics` across
+all frozen targets (incl. medical `ui_target_a`, whose close-✕ has a RESOLVED tint → my
+both-fields-`None` gate skips it), so no frozen screen's icon tints changed. No separate sibling
+render was needed — the element-level snapshot already covered it.
+
+**Observed — a thin-glyph colour claim needs a PIXEL-COUNT discriminator, not a mean.** Measuring
+the caret colour by "mean of darkest 25%" gave `(35,57,40)` for both black and dark-green because
+the thin double-caret strokes are dominated by anti-aliasing against the bright button — no fully
+saturated core pixel. The measure that actually discriminated: COUNT of near-pure-black pixels
+(`max(r,g,b) < 25`) in the button region — **395 pre-fix → 0 post-fix**, standalone == export
+exactly. Confirmed by the IR too (caret token `None` → `Background`).
+
+**Observed — a "font too small?" check resolved by the ASPECT-INVARIANT axis.** Owner also asked to
+check the SUB DECK font size. The heading is width-fit; its horizontal extent matched the reference
+(~80% of screen width in BOTH), which proves the size is correct in canvas space independently of
+aspect. The ~1.5× cap-HEIGHT difference was the aspect stretch (ref 0.576 vs canvas-native 0.692 —
+owner said ignore aspect) plus capture bloom. No magic scalar. **Lesson: judge a width-fit heading's
+size on the axis the fit constrains (horizontal), which is aspect-invariant, before reading the
+height (which the mesh aspect stretches).**
+
+**Action:** DONE. Fix `560c9ffe2` on `feature/ui` (TDD test
+`compile_ir_button_icon_placeholder_black_inherits_sibling_text_colour`); `/ships/` re-exported
+UI-only at LOD0 (`--ui-only-files`, all 10 floor console PNGs fresh with the fix). No freeze (the
+console is not a manifest gold target; the covered gold snapshots were unchanged). Candidate SKILL
+folds: (a) *reproduction gap* — when an owner symptom does not reproduce in a FRESH export, present
+the fresh-export evidence and confirm before fixing (a stale view is common right after an
+owner-requested re-export); (b) *blast radius by change class* — a COLOUR/token change's guard is
+the element-level tint-semantics snapshot (a positional regression is impossible), whereas a
+LAYOUT-formula change needs `--full` per-target %s (ledger 106); (c) *measure thin-glyph colour by
+near-black pixel COUNT, not a mean*.
