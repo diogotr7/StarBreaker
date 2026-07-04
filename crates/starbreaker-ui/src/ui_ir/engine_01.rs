@@ -1667,7 +1667,88 @@ fn build_ui_ir_nodes(
 
     }
 
+    apply_placeholder_black_icon_inheritance(&mut nodes, scene, is_hud_canvas);
+
     nodes
+}
+
+/// A cascade-applied literal `FillColor` of opaque pure black (`{r:0,g:0,b:0}`)
+/// with NO surviving `FillColorToken` is the editor's uninitialised placeholder
+/// default. The modular-kit button sheet `sk_uilo_a` authors its caret icon this
+/// way (every sibling `uilo` kit uses `ColorStyle(Background)`); a `ColorSolid`
+/// literal resolves to a token-less RGBA, which distinguishes it from a role that
+/// merely resolved to a dark colour (that keeps its `FillColorToken`).
+fn fill_colour_is_placeholder_black(raw: &serde_json::Value) -> bool {
+    if raw
+        .get("FillColorToken")
+        .and_then(|token| token.as_str())
+        .is_some_and(|token| !token.trim().is_empty())
+    {
+        return false;
+    }
+    let Some(fill) = raw.get("FillColor").and_then(|fill| fill.as_object()) else {
+        return false;
+    };
+    let channel = |key: &str| fill.get(key).and_then(|value| value.as_f64());
+    matches!(
+        (channel("r"), channel("g"), channel("b")),
+        (Some(r), Some(g), Some(b)) if r == 0.0 && g == 0.0 && b == 0.0
+    )
+}
+
+/// Button-content icon colour: the modular-kit button sheet styles the text
+/// field and the icon element separately, and `sk_uilo_a` is the lone `uilo`
+/// button kit that authors the icon `FillColor` as a `ColorSolid` pure black —
+/// an editor placeholder — while every sibling authors `ColorStyle(Background)`,
+/// the button's content foreground (the same role its text field uses). The
+/// placeholder resolves to a token-less black, so without this the caret falls
+/// through to the SVG's native (unfilled → black) colour instead of the button
+/// content colour. The engine treats the placeholder as unset: a `widget_icon`
+/// carrying only placeholder black and no resolved tint inherits its sibling text
+/// field's colour token. Scoped to non-HUD canvases — the cockpit HUD button kits
+/// (`sk_aegs_hud`/`sk_anvl_hud`/…) author `ColorSolid`-black icon fills the HUD
+/// draw path handles on its own terms.
+fn apply_placeholder_black_icon_inheritance(
+    nodes: &mut [UiIrNode],
+    scene: &BbScene,
+    is_hud_canvas: bool,
+) {
+    if is_hud_canvas {
+        return;
+    }
+    let mut text_token_by_parent: HashMap<u32, String> = HashMap::new();
+    for node in nodes.iter() {
+        if node.node_type != "widget_text_field" {
+            continue;
+        }
+        if let (Some(parent), Some(token)) = (node.parent_id, node.icon_tint_colour_token.as_ref())
+        {
+            text_token_by_parent
+                .entry(parent)
+                .or_insert_with(|| token.clone());
+        }
+    }
+    for node in nodes.iter_mut() {
+        if node.node_type != "widget_icon"
+            || node.icon_tint_colour.is_some()
+            || node.icon_tint_colour_token.is_some()
+        {
+            continue;
+        }
+        let Some(parent) = node.parent_id else {
+            continue;
+        };
+        let Some(token) = text_token_by_parent.get(&parent) else {
+            continue;
+        };
+        if scene
+            .nodes
+            .get(&node.id)
+            .is_some_and(|scene_node| fill_colour_is_placeholder_black(&scene_node.raw))
+        {
+            node.icon_tint_colour_token = Some(token.clone());
+        }
+    }
 }
 
 /// The pair component's authored `alignment` enum ("Left"/"Center"/"Right") —

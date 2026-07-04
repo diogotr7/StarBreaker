@@ -899,6 +899,116 @@ mod tests {
     }
 
     #[test]
+    fn compile_ir_button_icon_placeholder_black_inherits_sibling_text_colour() {
+        // The modular-kit button sheet styles the text field and the caret icon
+        // as separate elements. sk_uilo_a is the lone `uilo` button kit that
+        // authors the icon `FillColor` as a ColorSolid pure black (an editor
+        // placeholder) while every sibling kit authors ColorStyle(Background) —
+        // the same button-content role the text field uses. A ColorSolid literal
+        // resolves to a token-less RGBA (the cascade writes `{r,g,b,a}` black and
+        // drops `FillColorToken`), so the icon would otherwise fall through to the
+        // SVG's native (unfilled → black) colour. The engine treats the
+        // placeholder as unset: a button icon carrying ONLY placeholder black
+        // inherits its sibling text field's colour token.
+        let canvas = serde_json::json!({
+            "_RecordName_": "BuildingBlocks_Canvas.TestButtonIconColour",
+            "_RecordValue_": {
+                "size": {"x": 100, "y": 100},
+                "scene": [
+                    {
+                        "_Pointer_": "ptr:1",
+                        "_Type_": "BuildingBlocks_DisplayWidget",
+                        "name": "button_root",
+                        "isActive": true,
+                        "sizing": {
+                            "width": {"behavior": "Fixed", "value": 80.0},
+                            "height": {"behavior": "Fixed", "value": 30.0}
+                        },
+                        "children": ["ptr:2", "ptr:3"]
+                    },
+                    {
+                        "_Pointer_": "ptr:2",
+                        "_Type_": "BuildingBlocks_WidgetIcon",
+                        "name": "caret",
+                        "isActive": true,
+                        "parent": "_PointsTo_:ptr:1",
+                        "iconProperties": {
+                            "customIcon": "UI/Textures/Vector/arrow_carat_double_up.svg"
+                        },
+                        // Post-cascade shape of a ColorSolid-black FillColor:
+                        // token-less float RGBA (see write_color_to_raw), no
+                        // FillColorToken.
+                        "FillColor": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0},
+                        "size": {
+                            "width": {"behavior": "Fixed", "value": 20.0},
+                            "height": {"behavior": "Fixed", "value": 20.0}
+                        }
+                    },
+                    {
+                        "_Pointer_": "ptr:3",
+                        "_Type_": "BuildingBlocks_WidgetTextField",
+                        "name": "label",
+                        "isActive": true,
+                        "parent": "_PointsTo_:ptr:1",
+                        "text": "CALL ELEVATOR",
+                        // Post-cascade shape of a resolved ColorStyle(Background):
+                        // RGBA plus the surviving role token.
+                        "FillColor": {"r": 0.1, "g": 0.15, "b": 0.1, "a": 1.0},
+                        "FillColorToken": "Background",
+                        "size": {
+                            "width": {"behavior": "Fixed", "value": 60.0},
+                            "height": {"behavior": "Fixed", "value": 20.0}
+                        }
+                    }
+                ],
+                "operations": []
+            }
+        });
+
+        let scene = crate::bb_scene::parse_bb_canvas(&canvas).expect("scene parse");
+        let ir = compile_ui_ir_from_scene(
+            &scene,
+            None,
+            "guid-button-icon-colour",
+            Some("BuildingBlocks_Canvas.TestButtonIconColour"),
+            (100, 100),
+            &defaults(),
+            None,
+            None,
+            &[],
+            Vec::new(),
+            Vec::new(),
+            100,
+        );
+
+        let label = ir
+            .nodes
+            .iter()
+            .find(|node| node.name == "label")
+            .expect("label node");
+        assert_eq!(
+            label.icon_tint_colour_token.as_deref(),
+            Some("Background"),
+            "the sibling text field carries the button-content colour token"
+        );
+
+        let caret = ir
+            .nodes
+            .iter()
+            .find(|node| node.name == "caret")
+            .expect("caret node");
+        assert_eq!(
+            caret.icon_tint_colour, None,
+            "placeholder black is not a real authored tint"
+        );
+        assert_eq!(
+            caret.icon_tint_colour_token.as_deref(),
+            Some("Background"),
+            "placeholder-black button icon inherits the sibling text field's colour token"
+        );
+    }
+
+    #[test]
     fn compile_ir_primary_state_tag_is_not_a_colour_directive() {
         let tag_db_path = "file://tagdatabase.tagdatabase.json";
         let primary_tag_id = "primary-tag-id";
