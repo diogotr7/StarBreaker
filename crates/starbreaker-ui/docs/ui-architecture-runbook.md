@@ -156,6 +156,13 @@ This renders all bindings (43 on the Clipper) as
 needed when the binding set itself changed or to refresh the canonical
 `ships/Data/UI/Generated/...` PNGs for the regression artifact freeze.
 
+Prefer the wrapper `bash scripts/ui_render.sh --helper <name>` (or `--screen
+<screen_id>`) for single-screen iteration: it rebuilds first and prints the
+binary mtime (stale-binary guard), resolves the scene from the screen dossier
+(`crates/starbreaker-ui/data/ui_screen_dossier_v1.json` — so non-Clipper ships
+resolve their own scene), and writes each run to a unique
+`/tmp/ui_render/<helper>/<UTC-stamp>/` with a `latest` symlink.
+
 **Trap:** the full export writes its Generated PNGs near the END of the
 run. Diffing a PNG right after its mtime first changes can read the
 PREVIOUS export's bytes. Wait for export completion before diffing.

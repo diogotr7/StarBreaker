@@ -58,16 +58,21 @@ it always rebuilds first and prints the binary mtime (a background shell's
 cwd reset twice caused renders from a STALE binary that looked like a fix
 had no effect):
 ```bash
-bash scripts/ui_render.sh --helper Screen_Annunciator_L [--ir] \
-  [--lod 0|1] [--scene <scene.json>] [--out <dir>]
+bash scripts/ui_render.sh --helper Screen_Annunciator_L [--screen <screen_id>] \
+  [--ir] [--lod 0|1] [--scene <scene.json>] [--out <dir>]
 ```
-The scene is picked automatically: `--scene` wins; else `--lod`; else derived
-from the helper — the cockpit dashboard screens use LOD0 (`*_RTT`, the HUD
-gauges `Screen_Small_Radar*` / `Screen_Central_Compass` / `Countermeasures_Screen`
-/ `screen_flight_hud*`, and `Screen_Annunciator_*` — all on the LOD0 CGA; the
-small HUD screens are CULLED in LOD1, ledger 47), the interior usables
-(medical, door) LOD1. So the power screen no longer needs the long `--scene`
-path: `ui_render.sh --helper Screen_Left_Lower_RTT --ir`.
+The scene comes from the screen dossier
+(`crates/starbreaker-ui/data/ui_screen_dossier_v1.json`, §3's machine mirror):
+`--scene` wins; else the helper — or `--screen <screen_id>`, the unique key for
+the medical/door rows whose helper is the generic "usable screen" — resolves to
+its `scene_package` + `lod`. So a non-Clipper ship (e.g. the Carrack lift-call
+console) resolves its OWN scene instead of silently falling back to a Clipper
+one, the old case-list bug. An unknown helper with no dossier row and no
+`--scene` is a hard error naming the dossier. The power screen needs no
+`--scene`: `ui_render.sh --helper Screen_Left_Lower_RTT --ir`. Each run writes a
+fresh `/tmp/ui_render/<helper>/<UTC-stamp>/`; `/tmp/ui_render/<helper>/latest`
+symlinks the most recent (consecutive renders never cache-collide on a fixed
+path, so `--out` is rarely needed).
 Raw form (when the wrapper's defaults don't fit):
 ```bash
 ./target/debug/starbreaker ui render \
