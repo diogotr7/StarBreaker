@@ -50,6 +50,11 @@ step() { echo; echo "==> $*"; }
 step "starbreaker-ui examples compile"
 cargo check -p starbreaker-ui --examples
 
+# Repo-only (no game data): the screen dossier must not drift from ui-reference
+# §3 (registry pattern). Fast; runs in both tiers.
+step "validate_ui_dossier (screen dossier <-> ui-reference §3)"
+python3 scripts/validate_ui_dossier.py
+
 if [[ "$FULL" == 1 ]]; then
   # Early staleness visibility (ledger item 30): the visual guard hard-fails
   # when the test binary is >30min newer than the export stamp — surface the
