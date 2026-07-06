@@ -35,9 +35,10 @@ RATIO_THRESH = 0.01
 _STATE = {"marker": "ui_region_summary: FAILED (did not complete)"}
 
 
-@atexit.register
 def _emit_marker():
     print(_STATE["marker"])
+# Registered in __main__ only, so importing this module (e.g. from a test that
+# reuses flag_regions) does not print a spurious marker at interpreter exit.
 
 
 def region_changed(cur_r, prev_r):
@@ -52,7 +53,10 @@ def region_changed(cur_r, prev_r):
             continue
         if any(abs(a - b) > MEAN_THRESH for a, b in zip(c["mean"], p["mean"])):
             return True
-        if any(abs(a - b) > RATIO_THRESH for a, b in zip(c["ratio"], p["ratio"])):
+        # ratios are stored rounded to 2dp, so the smallest real move is 0.01;
+        # round the diff before the strict `> 0.01` so an exact one-quantum move
+        # is `same`, not a float-noise CHANGED (0.40-0.39 == 0.01000…09).
+        if any(round(abs(a - b), 2) > RATIO_THRESH for a, b in zip(c["ratio"], p["ratio"])):
             return True
     return False
 
@@ -72,20 +76,28 @@ def flag_regions(cur, prev):
     return out
 
 
-def bank_by_region(bank, reference):
-    """Bank entries for this screen (capture basename == reference), grouped by
-    the region token (2nd dotted component of `element`)."""
+def bank_entries_for_screen(bank, reference):
+    """Bank entries whose capture basename == the screen's reference."""
     if not bank or not reference:
-        return {}
+        return []
     ref_base = os.path.basename(reference)
-    groups = {}
-    for e in bank.get("entries", []):
-        if os.path.basename(e.get("capture", "")) != ref_base:
-            continue
-        parts = e.get("element", "").split(".")
-        region = parts[1] if len(parts) >= 2 else e.get("element", "")
-        groups.setdefault(region, []).append(e)
-    return groups
+    return [e for e in bank.get("entries", [])
+            if os.path.basename(e.get("capture", "")) == ref_base]
+
+
+def _element_region(entry):
+    """The region token of a bank entry: the 2nd dotted `element` component
+    (e.g. `power.battery.pip-count` -> `battery`)."""
+    parts = entry.get("element", "").split(".")
+    return parts[1] if len(parts) >= 2 else entry.get("element", "")
+
+
+def region_matches_bank(region, token):
+    """The bank's region token and the ui_compare preset region name need not
+    be identical (`battery` vs `battery_card`, `output` vs `output_card`), so
+    annotate when either is a prefix of the other. A genuinely non-corresponding
+    token (target `body`, power `pips`) matches nothing — correctly."""
+    return region == token or region.startswith(token) or token.startswith(region)
 
 
 def _fmt_side(side):
@@ -99,7 +111,7 @@ def _fmt_side(side):
 
 def summarise(cur, prev, bank, reference):
     flags = flag_regions(cur, prev)
-    banks = bank_by_region(bank, reference)
+    entries = bank_entries_for_screen(bank, reference)
     changed = 0
     for r, flag in flags:
         if flag in ("CHANGED", "NEW"):
@@ -107,8 +119,9 @@ def summarise(cur, prev, bank, reference):
         print(f"[{r['region']:<14}] {flag:<8} render {_fmt_side(r['render'])}")
         if flag != "same":
             print(f"    crop: {r.get('crop', '?')}")   # flagged regions only
-        for e in banks.get(r["region"], []):
-            print(f"    bank: {e['metric']}={e['value']}  ({e['element']})")
+        for e in entries:
+            if region_matches_bank(r["region"], _element_region(e)):
+                print(f"    bank: {e['metric']}={e['value']}  ({e['element']})")
     return len(flags), changed
 
 
@@ -131,7 +144,19 @@ def run_self_test():
     b_ratio = {"render": {"bright": {"mean": [180, 70, 0], "ratio": [1.0, 0.41, 0.0], "n": 100},
                           "dark": base["render"]["dark"]}}
     cur3 = {"regions": [dict(b_ratio, region="a")]}
-    assert {r["region"]: f for r, f in flag_regions(cur3, prev)}["a"] == "CHANGED"  # ratio 0.39->0.41 (>0.01)
+    assert {r["region"]: f for r, f in flag_regions(cur3, prev)}["a"] == "CHANGED"  # 0.39->0.41 (>0.01)
+
+    # a ratio move of EXACTLY one quantum (0.01) is `same`, not a float-noise
+    # CHANGED — the strict `> 0.01` boundary (regression for the FP off-by-one).
+    b_edge = {"render": {"bright": {"mean": [180, 70, 0], "ratio": [1.0, 0.40, 0.0], "n": 100},
+                         "dark": base["render"]["dark"]}}
+    cur4 = {"regions": [dict(b_edge, region="a")]}
+    assert {r["region"]: f for r, f in flag_regions(cur4, prev)}["a"] == "same"  # 0.39->0.40 == 0.01
+
+    # bank token need not equal the preset region name (battery vs battery_card)
+    assert region_matches_bank("battery_card", "battery")
+    assert region_matches_bank("footer", "footer")
+    assert not region_matches_bank("status_band", "body")
 
     _STATE["marker"] = "ui_region_summary: OK (self-test)"
     return 0
@@ -168,6 +193,7 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    atexit.register(_emit_marker)   # script-only: no import side effect
     try:
         rc = main(sys.argv[1:])
     except Exception as e:
