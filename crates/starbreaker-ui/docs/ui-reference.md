@@ -271,6 +271,15 @@ record GUID or name, NOT the dcb_canvas mirror file path** (a path returns
 
 **Style/IR investigation order** (run BEFORE editing style logic; if a
 change has no effect in these, revert it):
+0. `ui_variant_styles` — **font/size/colour looks wrong? run this FIRST.** For
+   a canvas + node query it lists each matched node's AUTHORED entries per tier
+   (defaultStyles / manufacturer brand / embeddedStyles, incl. bare `Type(Text)`)
+   that MATCH the node, each `{tier, name, selector, fields, applied}`.
+   `applied:false` on a matched entry IS the authored-but-UNAPPLIED case (a
+   FontSize/colour a higher tier supersedes — the repeated parity blocker),
+   collapsing the inventory→probe cross-reference into one call. `applied` is
+   `__AppliedStyleEntries` membership (not a numeric IR compare — the MFD
+   host-stage scale would false-negative FontSize).
 1. `ui_canvas_style_inventory` — authored containers (embeddedStyles,
    defaultStyles, brandStyles[], inlineStyles) with condition/modifier
    summaries.
@@ -290,9 +299,11 @@ GUID/name), `datacore_query` (property path, e.g.
 Gotcha: canvas JSON says `.tif` → the P4K entry is `.dds`.
 
 MCP server redeploy after changing it:
-`pkill -f starbreaker-mcp || true && cargo build --release -p starbreaker-mcp
+`pkill -x starbreaker-mcp || true && cargo build --release -p starbreaker-mcp
 && cp target/release/starbreaker-mcp mcp/starbreaker-mcp`, then restart the
-client.
+client. (Use `pkill -x` — the exact process name — NOT `pkill -f
+starbreaker-mcp`: `-f` matches the whole command line, so it kills the parent
+shell running this very one-liner, `cp` never runs.)
 
 ## 4b. Code navigation (graphify)
 

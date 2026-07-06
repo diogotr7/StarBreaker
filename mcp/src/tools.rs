@@ -917,7 +917,7 @@ impl starbreaker_ui::CanvasFetcher for P4kCanvasFetcher {
 }
 
 
-fn mcp_error_json(code: &str, message: String) -> String {
+pub(crate) fn mcp_error_json(code: &str, message: String) -> String {
     serde_json::to_string_pretty(&serde_json::json!({
         "schema_version": 1,
         "error_code": code,
@@ -939,7 +939,7 @@ fn ui_rect_json(rect: starbreaker_ui::UiIrRect) -> serde_json::Value {
     json_rect((rect.x, rect.y, rect.w, rect.h))
 }
 
-fn compact_colour_fields(raw: &serde_json::Value) -> serde_json::Value {
+pub(crate) fn compact_colour_fields(raw: &serde_json::Value) -> serde_json::Value {
     let mut fields = serde_json::Map::new();
     for key in [
         "FillColor",
@@ -1005,7 +1005,7 @@ fn summarize_style_entry(
     serde_json::Value::Object(obj)
 }
 
-fn summarize_conditions(entry: &serde_json::Value) -> serde_json::Value {
+pub(crate) fn summarize_conditions(entry: &serde_json::Value) -> serde_json::Value {
     let mut out = Vec::new();
     if let Some(blocks) = entry.get("conditionsList").and_then(|v| v.as_array()) {
         for block in blocks {
@@ -1055,7 +1055,7 @@ fn summarize_tag_ref(tag: &serde_json::Value) -> serde_json::Value {
     })
 }
 
-fn summarize_modifiers(entry: &serde_json::Value) -> serde_json::Value {
+pub(crate) fn summarize_modifiers(entry: &serde_json::Value) -> serde_json::Value {
     let Some(modifiers) = entry.get("modifiers").and_then(|v| v.as_array()) else {
         return serde_json::Value::Array(Vec::new());
     };
@@ -1605,30 +1605,50 @@ impl StarBreakerMcp {
         .unwrap_or_else(|e| format!("JSON error: {e}"))
     }
 
-    #[tool(description = "Resolve a local decompiled BuildingBlocks canvas and list matching scene nodes with style tags, raw color/tint fields, and applied style-entry names. Use this before changing UI style code to prove which authored styles actually matched.")]
-    fn ui_scene_style_probe(&self, Parameters(req): Parameters<UiSceneStyleProbeRequest>) -> String {
-        let canvas_fetcher = match P4kCanvasFetcher::new(&self.data()) {
-            Ok(f) => f,
-            Err(e) => return mcp_error_json("canvas_fetcher_init_failed", e),
-        };
-        let canvas = match canvas_fetcher.fetch_canvas_json(&req.canvas) {
-            Ok(c) => c,
-            Err(e) => return mcp_error_json("canvas_not_found", format!("{e}")),
-        };
-        let manufacturer = req.manufacturer.as_deref();
+    /// Shared loader: fetch a canvas by GUID/name and resolve its
+    /// BuildingBlocks scene graph (manufacturer-selected brand styles applied).
+    /// Returns the fetched canvas JSON and the owned resolved scene; on failure
+    /// returns the ready-to-emit mcp_error_json string. Shared by
+    /// ui_scene_style_probe and ui_variant_styles.
+    pub(crate) fn resolve_scene_for_canvas(
+        &self,
+        canvas_id: &str,
+        manufacturer: Option<&str>,
+    ) -> Result<(serde_json::Value, starbreaker_ui::bb_scene::BbScene), String> {
+        let canvas_fetcher = P4kCanvasFetcher::new(&self.data())
+            .map_err(|e| mcp_error_json("canvas_fetcher_init_failed", e))?;
+        let canvas = canvas_fetcher
+            .fetch_canvas_json(canvas_id)
+            .map_err(|e| mcp_error_json("canvas_not_found", format!("{e}")))?;
         let fetch = |path: &str| {
             canvas_fetcher
                 .fetch_canvas_by_name(path)
                 .map_err(|e| e.to_string())
         };
-        let scene = match starbreaker_ui::bb_resolve::resolve_canvas_graph_with_loc(
+        let scene = starbreaker_ui::bb_resolve::resolve_canvas_graph_with_loc(
             &canvas,
             manufacturer,
             &fetch,
             None,
-        ) {
-            Ok(scene) => scene,
-            Err(e) => return mcp_error_json("scene_resolve_failed", e),
+        )
+        .map_err(|e| mcp_error_json("scene_resolve_failed", e))?;
+        Ok((canvas, scene))
+    }
+
+    #[tool(description = "Authored-vs-applied style drill: for a canvas + node-name/text query, list each matched node's AUTHORED style entries per tier (defaultStyles, manufacturer brand, canvas embeddedStyles — including bare Type(Text) selectors) that MATCH the node, each with {tier, name, selector, fields, applied}. `applied` = the entry's modifiers actually ran on the node (membership in the resolved __AppliedStyleEntries), so an authored-but-UNAPPLIED font/colour (e.g. a defaultStyles FontSize a brand supersedes) shows applied:false. Run this FIRST when a font/size/colour looks wrong.")]
+    fn ui_variant_styles(
+        &self,
+        Parameters(req): Parameters<crate::ui_variant_styles::UiVariantStylesRequest>,
+    ) -> String {
+        crate::ui_variant_styles::ui_variant_styles_impl(self, req)
+    }
+
+    #[tool(description = "Resolve a local decompiled BuildingBlocks canvas and list matching scene nodes with style tags, raw color/tint fields, and applied style-entry names. Use this before changing UI style code to prove which authored styles actually matched.")]
+    fn ui_scene_style_probe(&self, Parameters(req): Parameters<UiSceneStyleProbeRequest>) -> String {
+        let manufacturer = req.manufacturer.as_deref();
+        let (canvas, scene) = match self.resolve_scene_for_canvas(&req.canvas, manufacturer) {
+            Ok(v) => v,
+            Err(json) => return json,
         };
 
         let query = req.query.to_ascii_lowercase();
@@ -4000,6 +4020,47 @@ mod ui_regression_registry_tests {
             let json: serde_json::Value = serde_json::from_str(&response).expect("valid JSON");
             let nodes = json.get("nodes").and_then(|v| v.as_array()).expect("nodes array");
             assert!(nodes.len() >= 1);
+        });
+    }
+
+    #[test]
+    fn ui_variant_styles_reports_authored_entries_with_applied() {
+        with_p4k_test(|server| {
+            let response = server.ui_variant_styles(Parameters(
+                crate::ui_variant_styles::UiVariantStylesRequest {
+                    canvas: "dd9ed6dc-7fe4-4884-9d11-c143290c9498".to_string(),
+                    query: "text_".to_string(),
+                    manufacturer: Some("drak".to_string()),
+                    limit: None,
+                },
+            ));
+            let json: serde_json::Value = serde_json::from_str(&response).expect("valid JSON");
+            assert_eq!(json.get("error_code"), None, "{json:#}");
+            let nodes = json.get("nodes").and_then(|v| v.as_array()).expect("nodes array");
+            assert!(!nodes.is_empty(), "expected matched nodes: {json:#}");
+
+            // At least one node carries an authored entry with a tier + applied bool.
+            let has_authored = nodes.iter().any(|n| {
+                n.get("authored_entries").and_then(|v| v.as_array()).is_some_and(|es| {
+                    es.iter().any(|e| {
+                        e.get("tier").is_some()
+                            && e.get("applied").and_then(|v| v.as_bool()).is_some()
+                    })
+                })
+            });
+            assert!(has_authored, "expected an authored entry with tier+applied: {json:#}");
+
+            // A known-applied embedded entry (Base/Bright Elements) reports applied:true.
+            let has_applied_true = nodes.iter().any(|n| {
+                n.get("authored_entries").and_then(|v| v.as_array()).is_some_and(|es| {
+                    es.iter().any(|e| {
+                        let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        (name == "Base Elements" || name == "Bright Elements")
+                            && e.get("applied").and_then(|v| v.as_bool()) == Some(true)
+                    })
+                })
+            });
+            assert!(has_applied_true, "expected Base/Bright Elements applied:true: {json:#}");
         });
     }
 

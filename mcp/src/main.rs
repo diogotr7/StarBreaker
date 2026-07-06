@@ -3,6 +3,7 @@ use rmcp::ServiceExt;
 
 mod blend_debug;
 mod tools;
+mod ui_variant_styles;
 
 #[derive(Parser)]
 #[command(name = "starbreaker-mcp", about = "MCP server for Star Citizen game data")]

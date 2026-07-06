@@ -45,6 +45,11 @@ mod tests_support;
 
 use self::colors::{parse_color_value, ColorStyleRole};
 pub(crate) use self::conditions::*;
+// Public selector matchers so out-of-crate style-drill tools (the MCP
+// ui_variant_styles authored-vs-applied drill) can decide which authored
+// style entries apply to a node without re-implementing the cascade's
+// Parent/Ancestor/text-format selector semantics.
+pub use self::conditions::{entry_matches_scene, entry_matches_text_format};
 use self::colors::PaletteSources;
 use self::modifiers::{apply_inline_color_overlay, apply_modifier};
 

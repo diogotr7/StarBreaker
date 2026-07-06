@@ -15,7 +15,7 @@ use super::*;
 ///   `conditions[j]` items pass. Conditions may be nested (`AllOf`, `AnyOf`,
 ///   `Parent`), and parent conditions are evaluated against the node's direct
 ///   parent in the parsed BB scene hierarchy.
-pub(crate) fn entry_matches_scene(
+pub fn entry_matches_scene(
     entry: &serde_json::Value,
     node_id: BbNodeId,
     node: &BbNode,
@@ -236,7 +236,7 @@ pub(crate) fn condition_matches_node(
 /// FontSize 500/420) and a BARE `Type(Text)` (DRAK master-mode's `defaultStyles`
 /// "New Style", FontSize 350 + white SCM/GUN) route to the field's text format.
 /// Callers apply only TEXT-FORMAT modifiers for a match made via this route.
-pub(crate) fn entry_matches_text_format(
+pub fn entry_matches_text_format(
     entry: &serde_json::Value,
     node_id: BbNodeId,
     node: &BbNode,
