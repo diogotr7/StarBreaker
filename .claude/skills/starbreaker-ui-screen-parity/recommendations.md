@@ -503,7 +503,8 @@ under **Open recommendations** above.
   emit the centred anchor at all). Candidate SKILL folds: (a) *Default to fixing* /
   workflow §5 — name "layout/render formula" alongside asset/icon/binding as a shared
   mechanism that requires `--full`; (b) a probe note: instrument RESOLVED geometry, don't
-  solve the op graph by hand.
+  solve the op graph by hand. **→ FOLDED 2026-07-07 (A6 restructure) into
+  `references/blockers.md` — both (a) and (b).**
 
 - **2026-07-04 (Carrack console re-open) — an owner symptom that doesn't reproduce in a
   FRESH export is a stale VIEW, not a bug to fix.** The owner re-opened the console with
@@ -551,3 +552,23 @@ under **Open recommendations** above.
   weakness (visual/spatial judgment from renders); the memory note says trust the owner + use DATA,
   and here I initially did neither. The fix itself (caption size → its 64px field, the compass
   height-driven pattern; plus the hard-coded `text_draw.rs` heading table) was owner-DEFERRED.
+
+- **2026-07-07 (plan A6 — skill restructure; applied via `writing-skills` review).** `SKILL.md`
+  552 → 168-line navigation core + `references/{launch,catalog,blockers,freeze,retro}.md`, each
+  read on-demand at its phase (an agent in the LOOP never loads launch/retro). Relocation AUDIT:
+  all 27 original red-flag rows mapped to a destination (the two measurement rows — png-md5
+  ledger 69, `--full`-green ledger 77 — re-verified present); load-bearing prose rules (≥2-option
+  padding, sequential dependent questions, don't-land-fix-pre-gate, stage table, never-delegate,
+  blocker evidence trail, dry-freeze no-op, retro categories) all preserved. New content folded in:
+  (1) the two 2026-07-03 candidates above — layout/render formula = shared mechanism needing
+  `--full`, and instrument-RESOLVED-geometry-via-throwaway-`#[test]`+`eprintln` — into
+  `references/blockers.md`; (2) the 2026-07-04 refinements — blast-radius-by-CHANGE-CLASS
+  (colour/token → element tint snapshot; layout → `--full` per-target %s), width-fit-vs-FIXED
+  heading + sibling cap-h ratio + connected-component isolation + owner-repeats-complaint, and
+  stale-view-after-re-export — into `blockers.md`/`catalog.md`; (3) the spec's INTERIM colour rule
+  (blend-shaped edge residuals judged leniently + registered as §6 outliers pointing at plan B4)
+  into `blockers.md` + the core strict rules. The loop is now wired to the A1–A5 tools:
+  `ui_arc_status.sh` (render+compare+flag), the `ui_variant_styles` MCP tool as the FIRST step of
+  the font/size/colour drill, and `ui_blocker_evidence.py` (+ `blocker-evidence-schema.md`) as the
+  required attachment for a gated blocker claim. Behavioral RED/GREEN test is plan A8 (the fresh
+  Opus compliance dry-run narrating a parity arc from the restructured skill).
