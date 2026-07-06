@@ -28,6 +28,7 @@ worked. List available presets with --regions list.
 """
 
 import argparse
+import json
 import os
 import sys
 
@@ -188,6 +189,21 @@ def region_stats(name, render_crop, ref_crop):
                     f" ratio=(1,{ratio[1]:.2f},{ratio[2]:.2f}) n={n}"
                 )
 
+    # JSON view of the SAME rounded arrays used above, so --json never perturbs
+    # the console output (the assert in plan A3 Step 1).
+    def pack(side):
+        out = {}
+        for label in ("bright", "dark"):
+            s = side[label]
+            out[label] = None if s is None else {
+                "mean": [float(x) for x in s[0]],
+                "ratio": [float(x) for x in s[1]],
+                "n": int(s[2]),
+            }
+        return out
+
+    return {"render": pack(r), "ref": pack(f)}
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -217,7 +233,17 @@ def main():
         "arbitrary rectangle, no preset needed. Honours --rectify and --stats. "
         "Writes cmp_box_<i>.png.",
     )
+    ap.add_argument(
+        "--json",
+        default=None,
+        metavar="PATH",
+        help="also dump the per-region stats (region, box, crop path, "
+        "render/ref bright+dark means & ratios) as JSON to PATH. Implies the "
+        "stats computation; does NOT change console output.",
+    )
     args = ap.parse_args()
+    want_stats = args.stats or args.json is not None
+    json_regions = []
 
     if args.regions == "list":
         for name, regions in REGION_PRESETS.items():
@@ -266,10 +292,13 @@ def main():
             path = os.path.join(args.out_dir, f"cmp_{name}.png")
             stack(a, bcrop).save(path)
             written.append(path)
-            if args.stats:
-                region_stats(name, a, bcrop)
-    elif args.stats and not args.box:
-        region_stats("full", render, ref)
+            if want_stats:
+                data = region_stats(name, a, bcrop)
+                json_regions.append({"region": name, "box": [l, t, r, min(b, render.height)], "crop": path, **data})
+    elif want_stats and not args.box:
+        data = region_stats("full", render, ref)
+        json_regions.append({"region": "full", "box": [0, 0, render.width, render.height],
+                             "crop": os.path.join(args.out_dir, "cmp_full.png"), **data})
 
     for index, spec in enumerate(args.box or []):
         try:
@@ -281,11 +310,19 @@ def main():
         path = os.path.join(args.out_dir, f"cmp_box_{index}.png")
         stack(a, bcrop).save(path)
         written.append(path)
-        if args.stats:
-            region_stats(f"box_{index}", a, bcrop)
+        if want_stats:
+            data = region_stats(f"box_{index}", a, bcrop)
+            json_regions.append({"region": f"box_{index}",
+                                 "box": [l, t, min(r, render.width), min(b, render.height)],
+                                 "crop": path, **data})
 
     for p in written:
         print(p)
+
+    if args.json is not None:
+        with open(args.json, "w", encoding="utf-8") as fh:
+            json.dump({"render": args.render, "reference": args.reference, "regions": json_regions}, fh, indent=2)
+        print(f"wrote {args.json}", file=sys.stderr)  # stderr: stdout must stay identical
 
 
 if __name__ == "__main__":

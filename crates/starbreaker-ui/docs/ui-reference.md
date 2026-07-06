@@ -160,9 +160,25 @@ The generated source PNG is `buildingblocks_canvas_<canvasname>.png` (e.g.
 
 ## 3. Comparison & screen dossier
 
+**The loop cycle is ONE command** (plan A3):
+```bash
+bash scripts/ui_arc_status.sh --screen <screen_id> [--no-render]
+```
+It renders the screen (or reuses the latest render with `--no-render`), compares
+it to the dossier's reference over the dossier's preset, and prints one line per
+region flagged `CHANGED` / `NEW` / `same` vs the previous cycle (state in
+`/tmp/ui_arc_status/<screen_id>/{cur,prev}.json`). **Vision-read ONLY the crops
+it lists for flagged regions** — not the whole screen every cycle. Under the
+hood it runs `ui_compare.py … --json` (region stats) + `ui_region_summary.py`
+(flags a region when any render mean channel moves > 1.0 or any ratio > 0.01);
+bank measurements annotate their region where present. A screen with no preset
+fails loudly (add one first). Marker: `ui_arc_status: OK (N regions, M changed)`.
+
+The `ui_compare.py` form below is the underlying tool (and the way to crop
+ad-hoc `--box` regions or a screen with no dossier preset):
 ```bash
 python3 scripts/ui_compare.py <render.png> <reference.png> \
-  --regions <preset> --out-dir /tmp/ui_compare [--stats]
+  --regions <preset> --out-dir /tmp/ui_compare [--stats] [--json <path>]
 python3 scripts/ui_compare.py --regions list   # available presets
 python3 scripts/ui_compare.py <render> <ref> --box x0,y0,x1,y1 [--box …]  # ad-hoc region(s), no preset
 ```
