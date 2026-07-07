@@ -2028,11 +2028,19 @@ fn pick_active_entries<'a>(
         .get("style")
         .and_then(|v| v.as_str())
         .map(extract_record_name);
-    // Use new brand-style resolver (R1 phase) which handles IC_* per-canvas override + generic fallback
-    if let Some(brand_style) = bb_brand_style::resolve_brand_style(
+    // Resolve the brand by IDENTITY (style link first, then canvas family
+    // hud/env) — handles IC_* per-canvas override + gen_/s_default_ fallback (B1).
+    let canvas_name = record_root
+        .get("_RecordName_")
+        .and_then(|v| v.as_str())
+        .or_else(|| record_value.get("_RecordName_").and_then(|v| v.as_str()));
+    let class = bb_brand_style::brand_class_for_canvas(canvas_name);
+    if let Some(brand_style) = bb_brand_style::resolve_brand_identity(
         record_root,
-        manufacturer_id,
         preferred_brand.as_deref(),
+        manufacturer_id,
+        class,
+        bb_brand_style::BrandPolicy::Default,
     ) {
         return brand_style.entries.iter().collect();
     }
