@@ -111,7 +111,13 @@ provenance entry in `default_value_registry_v1.notes.md`.
    via the ~1-minute replay (`bash scripts/ui_render.sh --helper <name>` —
    it rebuilds first and prints the binary mtime, so a stale binary can't
    masquerade as "the fix had no effect") and compare with
-   `scripts/ui_compare.py`.
+   `scripts/ui_compare.py`. Run `ui_check.sh` UNPIPED and read its
+   `ui_check: ALL GREEN` line — never a piped exit code (ledger 89). Each run
+   writes a marker file (`.git/ui-check-marker`); a pre-commit gate then refuses
+   any commit touching `crates/starbreaker-ui/`, `scripts/`, or `mcp/` unless the
+   last marker is `ALL GREEN` and fresh (`SB_UI_MARKER_MAX_AGE`, default 1800s;
+   `SB_SKIP_UI_GATE=1` bypasses for rebase/emergency). Install it once with
+   `bash scripts/install_ui_precommit.sh`.
 4. **Update the catalog** (fixed / still open / new finding) and the arc's
    memory/handoff notes for any non-trivial diagnosis — at discovery time,
    not at session end.

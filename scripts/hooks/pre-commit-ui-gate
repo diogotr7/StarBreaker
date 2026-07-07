@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Pre-commit UI gate (alignment plan T4). Tracked hook BODY; scripts/
+# install_ui_precommit.sh copies it to .git/hooks/pre-commit.
+#
+# Responsibility: if a commit stages any path under the UI renderer, the shared
+# scripts, or the MCP server, refuse it unless the LAST scripts/ui_check.sh run
+# was genuinely green AND recent. The gate reads the marker FILE that ui_check
+# writes on every exit ($git-dir/ui-check-marker) — never a remembered exit
+# code — which mechanically kills ledger-89 (a piped ui_check read as green).
+# Docs-only (and any non-gated) commits pass untouched. SB_SKIP_UI_GATE=1
+# bypasses with a loud warning (rebase / emergency only).
+set -euo pipefail
+
+# Paths whose change requires a fresh green marker. scripts/ and mcp/ ride along
+# because they can alter what ui_check itself exercises.
+GATED_RE='^(crates/starbreaker-ui/|scripts/|mcp/)'
+MAX_AGE="${SB_UI_MARKER_MAX_AGE:-1800}"
+
+staged="$(git diff --cached --name-only)"
+if ! grep -qE "$GATED_RE" <<<"$staged"; then
+  exit 0  # nothing gated (e.g. docs-only) — pass untouched
+fi
+
+if [[ "${SB_SKIP_UI_GATE:-}" == 1 ]]; then
+  echo "WARNING: SB_SKIP_UI_GATE=1 — bypassing the ui_check pre-commit gate." >&2
+  echo "WARNING: committing UI/script/mcp changes WITHOUT a verified-green ui_check." >&2
+  exit 0
+fi
+
+marker="$(git rev-parse --git-dir)/ui-check-marker"
+fail() {
+  echo "pre-commit UI gate: BLOCKED — $1" >&2
+  echo "  run: bash scripts/ui_check.sh (unpiped)" >&2
+  echo "  (bypass for rebase/emergency: SB_SKIP_UI_GATE=1 git commit ...)" >&2
+  exit 1
+}
+
+[[ -f "$marker" ]] || fail "no ui_check marker at $marker"
+
+# Read exactly the 3 marker lines; tolerate a short/truncated file.
+first_line=""; epoch_line=""
+{ IFS= read -r first_line; IFS= read -r _head_line; IFS= read -r epoch_line; } < "$marker" || true
+
+[[ "$first_line" == "ui_check: ALL GREEN" ]] \
+  || fail "last ui_check was not green (marker: '${first_line:-<empty>}')"
+
+epoch="${epoch_line#epoch=}"
+[[ "$epoch" =~ ^[0-9]+$ ]] || fail "marker has no valid epoch line ('${epoch_line:-<empty>}')"
+
+age=$(( $(date +%s) - epoch ))
+(( age <= MAX_AGE )) \
+  || fail "ui_check marker is stale (${age}s old > ${MAX_AGE}s max); re-run ui_check"
+
+exit 0

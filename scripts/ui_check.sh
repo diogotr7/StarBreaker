@@ -21,14 +21,38 @@
 #                    medical/door/annunciator bindings the font baseline
 #                    covers; the LOD0 cockpit scene does NOT).
 set -euo pipefail
-# Emit a DISTINCT final failure marker on any non-zero exit, mirroring the
-# "ui_check: ALL GREEN" success line. Without it, a failure ends on a bare
-# `cargo test` error, so piping the run through `| tail`/`| grep` (which is
-# common) reports the FILTER's exit code (0) and a real failure looks green —
-# a background-task notification then says "exit code 0" on a failing run
-# (ledger item: ui-process-improvements). The marker survives the pipe, so the
-# pass/fail signal is unambiguous in either the exit code or the last line.
-trap 'rc=$?; if [[ $rc -ne 0 ]]; then echo; echo "ui_check: FAILED (exit $rc) — see output above"; fi' EXIT
+# Emit a DISTINCT final marker on every exit AND persist it to a marker file the
+# pre-commit UI gate reads. Two problems it solves:
+#   1. Piping the run through `| tail`/`| grep` (common) reports the FILTER's
+#      exit code (0), so a real failure looks green and a background-task
+#      notification says "exit code 0" on a failing run (ledger 89). The console
+#      marker survives the pipe, so the pass/fail signal is unambiguous.
+#   2. The marker FILE ($git-dir/ui-check-marker) lets the pre-commit gate
+#      (scripts/hooks/pre-commit-ui-gate) refuse to commit renderer/script/mcp
+#      changes unless the LAST ui_check was genuinely green and recent — a
+#      remembered exit code can never be trusted again.
+# The console output is unchanged: this trap still prints the FAILED line on
+# failure, and "ui_check: ALL GREEN" stays a plain echo at the end on success.
+# A marker-file write error must NEVER flip the script's own exit status.
+_ui_check_marker() {
+  local rc=$?
+  local status
+  if [[ $rc -eq 0 ]]; then
+    status="ui_check: ALL GREEN"
+  else
+    status="ui_check: FAILED (exit $rc)"
+    echo
+    echo "$status — see output above"
+  fi
+  local git_dir head
+  if git_dir="$(git rev-parse --git-dir 2>/dev/null)"; then
+    head="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+    printf '%s\nhead=%s\nepoch=%s\n' "$status" "$head" "$(date +%s)" \
+      > "$git_dir/ui-check-marker" 2>/dev/null || true
+  fi
+  exit "$rc"
+}
+trap _ui_check_marker EXIT
 cd "$(dirname "$0")/.."
 
 FULL=0
