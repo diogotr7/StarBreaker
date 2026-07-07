@@ -18,11 +18,11 @@ use image::RgbaImage;
 use image::imageops;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
-use tiny_skia::{BlendMode, Color, Paint, PathBuilder, Pixmap, PixmapPaint, Rect as TskRect, Stroke, Transform};
+use tiny_skia::{BlendMode, Color, Paint, PathBuilder, Pixmap, Rect as TskRect, Stroke};
 
 use crate::bb_atlas::AtlasLibrary;
 use crate::bb_assets::UiAssetResolver;
-use crate::colour::{linear_channel_to_srgb, srgb_channel_to_linear};
+use crate::colour::{linear_channel_to_srgb, srgb_channel_to_linear, u8_to_linear};
 use crate::bb_layout::Rect;
 use crate::compose::ComposeContext;
 use crate::error::UiError;
@@ -2838,34 +2838,52 @@ fn blit_atlas_image_tinted_with_mode(
     alpha: f32,
     blend_mode: BlendMode,
 ) {
-    let w = img.width();
-    let h = img.height();
-
-    let mut premul: Vec<u8> = Vec::with_capacity((w * h * 4) as usize);
-    for chunk in img.as_raw().chunks_exact(4) {
-        let r = chunk[0] as f32 / 255.0 * tint[0];
-        let g = chunk[1] as f32 / 255.0 * tint[1];
-        let b = chunk[2] as f32 / 255.0 * tint[2];
-        let a = chunk[3] as f32 / 255.0 * tint[3];
-        premul.push((r * a * 255.0).clamp(0.0, 255.0) as u8);
-        premul.push((g * a * 255.0).clamp(0.0, 255.0) as u8);
-        premul.push((b * a * 255.0).clamp(0.0, 255.0) as u8);
-        premul.push((a * 255.0).clamp(0.0, 255.0) as u8);
+    let tint_lin = [
+        srgb_channel_to_linear(tint[0].clamp(0.0, 1.0)),
+        srgb_channel_to_linear(tint[1].clamp(0.0, 1.0)),
+        srgb_channel_to_linear(tint[2].clamp(0.0, 1.0)),
+    ];
+    let opacity = alpha.clamp(0.0, 1.0);
+    let pw = pixmap.width() as i32;
+    let ph = pixmap.height() as i32;
+    let dw = pixmap.width();
+    let dd = pixmap.data_mut();
+    for (sy, row) in img.rows().enumerate() {
+        let py = dy + sy as i32;
+        if py < 0 || py >= ph {
+            continue;
+        }
+        for (sx, texel) in row.enumerate() {
+            let px = dx + sx as i32;
+            if px < 0 || px >= pw {
+                continue;
+            }
+            // Texture RGB linearised via LUT, modulated by tint in linear; alpha
+            // = texel alpha × tint alpha × node opacity. Build a premultiplied
+            // LINEAR-modulated sRGB source byte, then reuse the shared blend
+            // primitive (its unpremultiply→linear round-trips it back exactly).
+            let a = (texel.0[3] as f32 / 255.0) * tint[3] * opacity;
+            if a <= 0.0 && blend_mode != BlendMode::Plus {
+                continue;
+            }
+            let src = [
+                (linear_channel_to_srgb((u8_to_linear(texel.0[0]) * tint_lin[0]).clamp(0.0, 1.0)) * a * 255.0)
+                    .round().clamp(0.0, 255.0) as u8,
+                (linear_channel_to_srgb((u8_to_linear(texel.0[1]) * tint_lin[1]).clamp(0.0, 1.0)) * a * 255.0)
+                    .round().clamp(0.0, 255.0) as u8,
+                (linear_channel_to_srgb((u8_to_linear(texel.0[2]) * tint_lin[2]).clamp(0.0, 1.0)) * a * 255.0)
+                    .round().clamp(0.0, 255.0) as u8,
+                (a * 255.0).round().clamp(0.0, 255.0) as u8,
+            ];
+            let di = ((py * dw as i32 + px) * 4) as usize;
+            let mut d = [dd[di], dd[di + 1], dd[di + 2], dd[di + 3]];
+            match blend_mode {
+                BlendMode::Plus => crate::colour::blend_premul_add_linear(&mut d, src),
+                _ => crate::colour::blend_premul_linear(&mut d, src),
+            }
+            dd[di..di + 4].copy_from_slice(&d);
+        }
     }
-
-    let Some(size) = tiny_skia::IntSize::from_wh(w, h) else {
-        return;
-    };
-    let Some(src_pixmap) = Pixmap::from_vec(premul, size) else {
-        return;
-    };
-
-    let mut paint = PixmapPaint::default();
-    paint.opacity = alpha.clamp(0.0, 1.0);
-    paint.blend_mode = blend_mode;
-    pixmap
-        .as_mut()
-        .draw_pixmap(dx, dy, src_pixmap.as_ref(), &paint, Transform::identity(), None);
 }
 
 fn pixmap_to_rgba_image(pixmap: Pixmap) -> Result<RgbaImage, UiError> {
@@ -2929,5 +2947,27 @@ pub(crate) fn ir_rect_to_layout_rect(rect: UiIrRect) -> Rect {
 pub(crate) fn ir_value_to_px(value: &UiIrValue) -> f32 {
     match value {
         UiIrValue::Fixed { value } | UiIrValue::Percent { value } | UiIrValue::Other { value, .. } => *value,
+    }
+}
+
+#[cfg(test)]
+mod blit_tests {
+    #![allow(unused_imports)]
+    use super::*;
+
+    // 50% node alpha of an opaque white texel over opaque black lands ~188 in
+    // linear light, NOT the sRGB midpoint 128. This is the whole point of B4.
+    #[test]
+    fn blit_atlas_tinted_composites_in_linear_light() {
+        let mut pm = Pixmap::new(2, 2).unwrap();
+        pm.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
+        let mut img = RgbaImage::new(2, 2);
+        for p in img.pixels_mut() {
+            *p = image::Rgba([255, 255, 255, 255]); // opaque white texel
+        }
+        blit_atlas_image_tinted_with_mode(&mut pm, &img, 0, 0, [1.0, 1.0, 1.0, 1.0], 0.5, BlendMode::SourceOver);
+        let px = pm.pixel(0, 0).unwrap();
+        assert!((px.red() as i32 - 188).abs() <= 3, "linear blit expected ~188, got {}", px.red());
+        assert!((px.red() as i32 - 128).abs() > 20, "must not be sRGB 128");
     }
 }
