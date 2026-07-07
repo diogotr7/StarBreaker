@@ -22,6 +22,7 @@ use tiny_skia::{BlendMode, Color, Paint, PathBuilder, Pixmap, PixmapPaint, Rect 
 
 use crate::bb_atlas::AtlasLibrary;
 use crate::bb_assets::UiAssetResolver;
+use crate::colour::{linear_channel_to_srgb, srgb_channel_to_linear};
 use crate::bb_layout::Rect;
 use crate::compose::ComposeContext;
 use crate::error::UiError;
@@ -894,22 +895,6 @@ fn white_mask_overlay_tint(
         resolve_colour_token(ctx, "Base")
     } else {
         None
-    }
-}
-
-fn srgb_channel_to_linear(c: f32) -> f32 {
-    if c <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-fn linear_channel_to_srgb(l: f32) -> f32 {
-    if l <= 0.003_130_8 {
-        12.92 * l
-    } else {
-        1.055 * l.powf(1.0 / 2.4) - 0.055
     }
 }
 

@@ -33,6 +33,7 @@ pub mod bb_scene;
 pub mod bb_state_filter;
 pub mod bb_svg;
 pub mod canvas;
+pub(crate) mod colour;
 pub mod compose;
 pub mod defaults;
 pub mod freeze_audit;
