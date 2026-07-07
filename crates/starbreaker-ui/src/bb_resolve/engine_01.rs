@@ -1582,7 +1582,7 @@ fn resolve_canvas_graph_inner(
                     origin_tier,
                 ));
             }
-            merge_child_scene(&mut scene, child_scene, "", Some(node_id), false);
+            merge_child_scene(&mut scene, child_scene, "", Some(node_id), None);
         }
     }
 
@@ -1958,7 +1958,7 @@ fn run_pass1_canvas_references(
                     );
                 }
                 let host_override: Option<BbNodeId> = if std::env::var("SB_NO_HOSTOVR").as_deref() == Ok("1") { None } else if match_to.is_empty() { host_node_id } else { None };
-                merge_child_scene(scene, child_scene, match_to, host_override, false);
+                merge_child_scene(scene, child_scene, match_to, host_override, None);
             }
         }
     }
@@ -2299,12 +2299,20 @@ fn all_canvas_guard_entries(record_value: &serde_json::Value) -> Vec<&serde_json
 /// nodes (platinum snapshots key elements by node ID).
 pub(crate) const EXPANSION_ID_BASE: BbNodeId = 0xF000_0000;
 
+/// Node IDs at or above this value belong to the SECOND expansion band,
+/// reserved for host types added AFTER today's set (WidgetIcon / general
+/// button / scrollbar). Routing new types here keeps their instance IDs from
+/// renumbering the frozen primary-band allocations of the existing types
+/// (latent-stability; runbook "Open architecture debt"). No production host
+/// type maps here today — it is byte-identical for every frozen screen.
+pub(crate) const EXPANSION_ID_BASE_SECOND: BbNodeId = 0xF800_0000;
+
 pub(crate) fn merge_child_scene(
     parent_scene: &mut BbScene,
     child_scene: BbScene,
     match_to: &str,
     host_parent_override: Option<BbNodeId>,
-    reserve_id_band: bool,
+    band_base: Option<BbNodeId>,
 ) {
     let BbScene {
         coordinate_method: child_coordinate_method,
@@ -2320,11 +2328,17 @@ pub(crate) fn merge_child_scene(
     // in the parent, so the merge is always safe regardless of the depth to
     // which children have been recursively merged.
     //
-    // Two ID bands keep ordinary canvas-node IDs independent of template
-    // expansion: the low band continues after the largest non-expansion key,
-    // while expansion-band child nodes (and whole expansion merges, flagged
-    // by `reserve_id_band`) re-allocate within the band so injecting template
-    // nodes at any depth never renumbers sibling canvases merged later.
+    // Ordinary canvas-node IDs (the low band) stay independent of template
+    // expansion (the high bands): the low band continues after the largest
+    // non-expansion key. Expansion merges reserve within a requested high
+    // band and re-allocate there, so injecting template nodes at any depth
+    // never renumbers sibling canvases merged later. Two high bands exist:
+    // today's four host types share the PRIMARY band `[EXPANSION_ID_BASE,
+    // EXPANSION_ID_BASE_SECOND)`, and a host type added later gets the SECOND
+    // band `[EXPANSION_ID_BASE_SECOND, MAX)`, so the two never renumber each
+    // other. Canvas merges pass `band_base = None`; expansion passes
+    // `Some(base)` for its band. `range(band_lo..band_hi)` continues each band
+    // independently.
     let mut next_low: BbNodeId = parent_scene
         .nodes
         .keys()
@@ -2333,17 +2347,22 @@ pub(crate) fn merge_child_scene(
         .copied()
         .unwrap_or(0)
         .wrapping_add(1);
+    let reserve = band_base.is_some();
+    let band_lo = band_base.unwrap_or(EXPANSION_ID_BASE);
+    let band_hi = if band_lo < EXPANSION_ID_BASE_SECOND {
+        EXPANSION_ID_BASE_SECOND
+    } else {
+        BbNodeId::MAX
+    };
     let mut next_high: BbNodeId = parent_scene
         .nodes
-        .keys()
+        .range(band_lo..band_hi)
         .next_back()
-        .copied()
-        .filter(|&k| k >= EXPANSION_ID_BASE)
-        .map(|k| k.wrapping_add(1))
-        .unwrap_or(EXPANSION_ID_BASE);
+        .map(|(&k, _)| k.wrapping_add(1))
+        .unwrap_or(band_lo);
     let mut id_map: HashMap<BbNodeId, BbNodeId> = HashMap::with_capacity(child_nodes.len());
     for &orig_id in child_nodes.keys() {
-        let counter = if reserve_id_band || orig_id >= EXPANSION_ID_BASE {
+        let counter = if reserve || orig_id >= EXPANSION_ID_BASE {
             &mut next_high
         } else {
             &mut next_low
@@ -2425,7 +2444,7 @@ pub(crate) fn merge_child_scene(
         // parent's parameter wiring, so injection may still target them.
         if let Some(map) = op.as_object_mut() {
             map.insert("_MergedOp_".to_string(), serde_json::Value::Bool(true));
-            if reserve_id_band {
+            if reserve {
                 map.insert("_ExpansionOp_".to_string(), serde_json::Value::Bool(true));
             }
         }

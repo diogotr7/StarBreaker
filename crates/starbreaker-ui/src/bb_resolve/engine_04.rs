@@ -1745,6 +1745,20 @@ fn has_expanded_instance(
     })
 }
 
+/// Today's expanding host types share the primary expansion band; any host
+/// type added LATER maps to the second band so it cannot renumber the frozen
+/// instance IDs of the types above (latent-stability — see runbook "Open
+/// architecture debt").
+fn expansion_band_for_host_type(ty: &BbNodeType) -> BbNodeId {
+    match ty {
+        BbNodeType::WidgetIcon
+        | BbNodeType::ComponentGeneralButton
+        | BbNodeType::ComponentGeneralButtonSecondary => EXPANSION_ID_BASE,
+        ty if is_scrollbar_component(ty) => EXPANSION_ID_BASE,
+        _ => EXPANSION_ID_BASE_SECOND,
+    }
+}
+
 /// Phase 1: expand standard templates under their host widgets. Returns the
 /// expanded templates' own `embeddedStyles` entries that participate in the
 /// scene's style application (currently the scrollbar's `RootShow` gate; the
@@ -1897,7 +1911,8 @@ pub(crate) fn expand_widget_standards(
         ) {
             collected_embedded_entries.extend(template_embedded_style_entries(&template_json));
         }
-        merge_child_scene(scene, child_scene, "", Some(host_id), true);
+        let band_base = expansion_band_for_host_type(&host_ty);
+        merge_child_scene(scene, child_scene, "", Some(host_id), Some(band_base));
 
         // The engine routes a button's authored icon identity through the
         // template's IconPreset/CustomIcon parameters into its nested icon
@@ -2711,6 +2726,69 @@ mod tests_expansion {
         assert!(
             root.is_active,
             "_Show=true must activate the scrollbar root through RootShow"
+        );
+    }
+
+    /// A host TYPE added AFTER today's set (WidgetIcon / general button /
+    /// scrollbar) must NOT steal the primary expansion band from an existing
+    /// host's already-frozen instance IDs. Characterizes the medical close-X
+    /// theft (handoff 130-132 / runbook 395-402): before this fix a new host
+    /// type sorting at a lower node id expanded first and consumed
+    /// 0xF000_0000, shifting every downstream expansion ID. Latent-stability
+    /// only — no production host type reaches the second band today.
+    #[test]
+    fn new_host_type_expansion_does_not_shift_existing_low_band_ids() {
+        // One-node child scene standing in for a merged template instance.
+        let child = |name: &str| {
+            parse_bb_canvas(&serde_json::json!({
+                "_RecordValue_": {
+                    "_Type_": "BuildingBlocks_Canvas",
+                    "size": {"x": 1.0, "y": 1.0},
+                    "scene": [
+                        {"_Pointer_": "ptr:1", "_Type_": "BuildingBlocks_DisplayWidget", "name": name}
+                    ]
+                }
+            }))
+            .expect("child canvas should parse")
+        };
+        let parent = || {
+            parse_bb_canvas(&serde_json::json!({
+                "_RecordValue_": {
+                    "_Type_": "BuildingBlocks_Canvas",
+                    "size": {"x": 100.0, "y": 100.0},
+                    "scene": [
+                        {"_Pointer_": "ptr:1", "_Type_": "BuildingBlocks_DisplayWidget", "name": "root"}
+                    ]
+                }
+            }))
+            .expect("parent canvas should parse")
+        };
+        let merged_id = |scene: &BbScene, name: &str| -> BbNodeId {
+            scene.nodes.values().find(|n| n.name == name).expect("merged node present").id
+        };
+
+        // Baseline: an existing host type expands into the primary band.
+        let mut base = parent();
+        merge_child_scene(&mut base, child("existing"), "", None, Some(EXPANSION_ID_BASE));
+        let existing_solo = merged_id(&base, "existing");
+        assert_eq!(
+            existing_solo, EXPANSION_ID_BASE,
+            "an existing host type's instance takes the primary band base"
+        );
+
+        // Theft scenario: a NEW host type merges FIRST (sorts earlier), then the
+        // existing type. The new type must land in the reserved SECOND band and
+        // leave the existing type's primary-band id untouched.
+        let mut with_new = parent();
+        merge_child_scene(&mut with_new, child("new_type"), "", None, Some(EXPANSION_ID_BASE_SECOND));
+        merge_child_scene(&mut with_new, child("existing"), "", None, Some(EXPANSION_ID_BASE));
+        assert!(
+            merged_id(&with_new, "new_type") >= EXPANSION_ID_BASE_SECOND,
+            "the new host type lands in the reserved second band (0xF800_0000)"
+        );
+        assert_eq!(
+            merged_id(&with_new, "existing"), existing_solo,
+            "existing host type's instance id is invariant to the new type (no theft)"
         );
     }
 }
