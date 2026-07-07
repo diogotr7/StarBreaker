@@ -282,6 +282,7 @@ fn apply_body_background_standard_styles(
     standard_record: &serde_json::Value,
     manufacturer_id: Option<&str>,
     preferred_brand: Option<&str>,
+    brand_class: bb_brand_style::BrandClass,
     loc_fetcher: Option<&dyn LocFetcher>,
 ) {
     let Some(texture_tag_id) = extract_body_background_texture_tag_id(standard_record) else {
@@ -299,10 +300,13 @@ fn apply_body_background_standard_styles(
     let record_value = standard_record
         .get("_RecordValue_")
         .unwrap_or(standard_record);
-    if let Some(brand_style) =
-        bb_brand_style::resolve_brand_style(standard_record, None, preferred_brand)
-            .or_else(|| bb_brand_style::resolve_brand_style(standard_record, manufacturer_id, None))
-    {
+    if let Some(brand_style) = bb_brand_style::resolve_brand_identity(
+        standard_record,
+        preferred_brand,
+        manufacturer_id,
+        brand_class,
+        bb_brand_style::BrandPolicy::Default,
+    ) {
         crate::bb_style_engine::apply(
             scene,
             &[crate::bb_style_engine::StyleSheet::uniform(
@@ -1562,18 +1566,29 @@ fn resolve_canvas_graph_inner(
         match fetch_by_path(&module_path) {
             Ok(standard_record) => {
                 // The standard's brand container is matched by brand-record
-                // identity: prefer the identifier of the brand THIS canvas
-                // selected (the MFD content view's `s_drak_hud`) over the
-                // manufacturer-prefix scan, which cannot distinguish the
-                // hud/env container pair the shared standard carries.
-                let canvas_brand =
-                    bb_brand_style::resolve_brand_style(root_json, manufacturer_id, preferred_brand)
-                        .map(|brand| brand.identifier);
+                // identity: resolve the brand THIS canvas selected (the MFD content
+                // view's `s_drak_hud`) by IDENTITY + canvas family — NOT the
+                // manufacturer-prefix scan, which cannot distinguish the hud/env
+                // container pair the shared standard carries (B1).
+                let canvas_name = root_json
+                    .get("_RecordName_")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| record_value.get("_RecordName_").and_then(|v| v.as_str()));
+                let brand_class = bb_brand_style::brand_class_for_canvas(canvas_name);
+                let canvas_brand = bb_brand_style::resolve_brand_identity(
+                    root_json,
+                    preferred_brand,
+                    manufacturer_id,
+                    brand_class,
+                    bb_brand_style::BrandPolicy::Default,
+                )
+                .map(|brand| brand.identifier);
                 apply_body_background_standard_styles(
                     &mut scene,
                     &standard_record,
                     manufacturer_id,
                     canvas_brand.as_deref().or(preferred_brand),
+                    brand_class,
                     loc_fetcher,
                 );
             }
