@@ -471,15 +471,19 @@ fn separator_brand_candidate_slugs(selected_style_source: Option<&str>) -> Vec<S
     if mfr.is_empty() {
         return Vec::new();
     }
-    // The ship brand first, then `orig` — the modularkit default the engine
-    // falls back to when a ship has no separator vector of its own (DRAK ships
-    // none in this build).
-    vec![
-        format!("s_{mfr}_env"),
-        format!("s_{mfr}_hud"),
-        format!("s_{mfr}"),
-        "orig".to_string(),
-    ]
+    // Env-first sibling policy (the modularkit authors the dotted glyph under
+    // `s_<mfr>_env`) via the shared B1 primitive → [s_<mfr>_env, s_<mfr>_hud,
+    // s_<mfr>], then `orig` — the modularkit default the engine falls back to
+    // when a ship has no separator vector of its own (DRAK ships none here).
+    // BrandClass is ignored under SeparatorEnv.
+    let mut candidates = crate::bb_brand_style::brand_candidate_identifiers(
+        None,
+        Some(&mfr),
+        crate::bb_brand_style::BrandClass::Env,
+        crate::bb_brand_style::BrandPolicy::SeparatorEnv,
+    );
+    candidates.push("orig".to_string());
+    candidates
 }
 
 fn separator_style_from_standard_record(
