@@ -153,8 +153,21 @@ pub fn modular_style_identifier(
         .filter(|s| !s.is_empty())
         .map(crate::record_name::extract_record_name)
         .or_else(|| {
-            crate::bb_brand_style::resolve_brand_style(root_json, manufacturer_id, None)
-                .map(|brand| brand.identifier)
+            // No style link: resolve the manufacturer brand by IDENTITY + canvas
+            // family (hud/env) rather than the legacy prefix scan (B1).
+            let canvas_name = root_json
+                .get("_RecordName_")
+                .and_then(|v| v.as_str())
+                .or_else(|| record_value.get("_RecordName_").and_then(|v| v.as_str()));
+            let class = bb_brand_style::brand_class_for_canvas(canvas_name);
+            bb_brand_style::resolve_brand_identity(
+                root_json,
+                None,
+                manufacturer_id,
+                class,
+                bb_brand_style::BrandPolicy::Default,
+            )
+            .map(|brand| brand.identifier)
         })
 }
 
