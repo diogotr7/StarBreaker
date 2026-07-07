@@ -2411,3 +2411,46 @@ LAYOUT-formula change needs `--full` per-target %s (ledger 106); (c) *measure th
 near-black pixel COUNT, not a mean*; (d) *never argue a heading's size from a width-match without
 first confirming it is width-fit vs FIXED; compare cap-h to a sibling text ratio, and when the owner
 repeats a visual complaint, re-derive from scratch rather than re-defend the prior call*.
+
+### 108 — UI parity process + tooling overhaul (plan A1–A8): dossier-driven arc scripts, an authored-but-unapplied style probe, a blocker-evidence gate, and a lean phase-gated skill
+
+**Context:** the parity SKILL had grown to 552 monolithic lines; the arc loop was a hand-typed
+render→compare→summarize sequence with Clipper scene paths hard-coded into `ui_render.sh`; the §3
+per-screen dossier had no machine mirror or drift guard; the recurring "font/size/colour looks
+wrong" false-blocker (velocity-num, compass, master-mode, LR-indicator — all authored-but-UNAPPLIED)
+had no first-class probe; and a blocker claim at the major-item gate was a prose assertion no tool
+could check. Executed via `superpowers:subagent-driven-development` (hybrid: main session edits, Opus
+read-only per-task review), scope A1–A9 → B1–B3, STOP at owner-gated B4.
+
+**Observed / Improvement (A1–A8):**
+- **A1** — machine-readable dossier `crates/starbreaker-ui/data/ui_screen_dossier_v1.json` (+
+  `.notes.md` provenance) mirroring §3, with `scripts/validate_ui_dossier.py` drift-guarding it
+  against the markdown, wired into `ui_check.sh`.
+- **A2** — `ui_render.sh` is now dossier-driven (resolves ANY ship's scene/LOD/helper, not just
+  Clipper; space-safe field read; unique per-run output dir + `latest` symlink).
+- **A3** — `ui_compare.py --json` + `scripts/ui_region_summary.py` (flags CHANGED/NEW/same) + the
+  one-command `scripts/ui_arc_status.sh --screen <id>` (render → compare → summarize, RESULT MARKER).
+- **A4** — the `ui_variant_styles` MCP tool: the authored-but-unapplied drill as a first-class probe
+  (lists each matched node's per-tier authored entries — defaultStyles / brand / canvas-root
+  `embeddedStyles` — with an `applied` verdict from `__AppliedStyleEntries` membership).
+- **A5** — `scripts/ui_blocker_evidence.py` + `docs/blocker-evidence-schema.md`: a blocker claim at
+  the major-item gate MUST attach an evidence file proving all four in-data surfaces
+  (datacore_families / p4k_assets / localization / derivable_mechanisms) were searched.
+- **A6** — SKILL 552 → 168-line navigation core + `references/{launch,catalog,blockers,freeze,retro}.md`,
+  read on-demand per phase; folded in the layout/render-formula = shared-mechanism rule, the
+  instrument-RESOLVED-geometry probe note, blast-radius-by-change-class, and the interim
+  blend-shaped-colour rule pointing at B4. Reviewed via `superpowers:writing-skills`; a 27/27
+  red-flag-row relocation audit confirmed no guardrail dropped.
+- **A7** — "Read WHEN" indexes prepended to `ui-workflow.md` (§1–§10) and `ui-reference.md` (§1–§8),
+  + a crate AGENTS.md required-reads contract (indexes up front, full sections on demand, §1 always full).
+- **A8** — a fresh-Opus compliance dry-run validated the restructured skill's cold-start navigation
+  (7/7 acceptance items: reference-gate, doc indexes + dossier row, right reference files per phase,
+  `ui_arc_status.sh` loop, `ui_variant_styles`-first, freeze/major-blocker gates, mandatory retro)
+  and caught a stale "only one ship folder (Clipper)" claim (Carrack now exists) → generalized.
+
+**Action:** landed on `feature/ui`, one commit per task, each `ui_check.sh` green, each Opus-reviewed:
+`836c86641` (A1), `34153697d` (A2), `0b3d0532f`+`2cdc43b09` (A3), `8fe2aa320` (A4), `c5add0823` (A5),
+`dcc2709db`+`b233bf7e0` (A6), `c2e3438b0` (A7), `369feeaba` (A8). Plan
+`docs/superpowers/plans/2026-07-04-ui-parity-process-and-crate-plan.md`, spec
+`docs/superpowers/specs/2026-07-04-ui-parity-process-and-crate-design.md`. Phase B (ui-crate
+convergence, B1–B3) follows; B4 (renderer linear-light re-freeze) is owner-gated and out of scope.
