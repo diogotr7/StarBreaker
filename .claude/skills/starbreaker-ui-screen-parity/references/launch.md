@@ -58,7 +58,7 @@ today: `reference/in-game/` holds only one ship folder (`Clipper`), so a naive
 ## Required reads (before any fix)
 
 In order: `StarBreaker/AGENTS.md` → `crates/starbreaker-ui/AGENTS.md` →
-`ui-workflow.md` (the process — read its "Read WHEN" index, then §1 rules in full)
+`ui-workflow.md` (the process — skim its section headings, then read §1 rules in full)
 → `ui-reference.md` (its index, then find SCREEN in the §3 dossier: scene/LOD,
 canvas, compare preset, frozen tier, open issues). SCREEN not in the dossier → add
 its row (JSON `ui_screen_dossier_v1.json` + §3 table, `validate_ui_dossier.py`

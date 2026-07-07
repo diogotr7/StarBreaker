@@ -7,8 +7,8 @@ description: Use when getting a StarBreaker ship UI screen's render to match its
 Get ONE screen's render as close to its in-game reference as the reference
 allows — engine-faithfully, generically. This skill ORCHESTRATES the
 authoritative process; it does not replace it: `ui-workflow.md` is how-to-work,
-`ui-reference.md` is what-to-type + the per-screen dossier. Read their header
-"Read WHEN" indexes first, then sections on demand. Fix the owning UPSTREAM
+`ui-reference.md` is what-to-type + the per-screen dossier. Skim each doc's
+section headings first, then read the relevant sections on demand. Fix the owning UPSTREAM
 stage so the IR is correct; never name-gate, never hard-code a value, never
 invent geometry. Reference captures are imperfect (bloom, skew, CRT, hover
 artifacts, resolution) — match STRUCTURALLY, not pixel-naively. The target is
