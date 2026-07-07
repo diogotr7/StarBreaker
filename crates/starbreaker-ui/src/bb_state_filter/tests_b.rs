@@ -862,6 +862,51 @@
         );
     }
 
+    /// The at-rest numeric resolver is COMPONENT-LOCAL: it resolves BARE
+    /// component-relative bindings only. Absolute engine-state paths (slash-
+    /// prefixed) are excluded and stay on the heuristic — resolving them
+    /// regressed the clipper_self_master gold baseline (ledger 88). This pins
+    /// the `binding.contains('/')` discriminator at mod.rs:937: it must FAIL
+    /// if that clause is deleted.
+    #[test]
+    fn slash_path_numeric_gate_excluded_from_static_resolution() {
+        let rv = make_record_value(
+            vec![],
+            vec![
+                // Bare component-local var → resolves at rest.
+                json!({"_Pointer_":"ptr:13","_Type_":"BuildingBlocks_BindingsIntegerVariable","binding":"CurrentBurstSize"}),
+                json!({"_Pointer_":"ptr:19","_Type_":"BuildingBlocks_BindingsBooleanFromInteger","type":"Greater","inputL":"_PointsTo_:ptr:13","value":1}),
+                json!({"_Type_":"BuildingBlocks_BindingsBooleanField","widget":"_PointsTo_:ptr:5","field":"IsActive","input":"_PointsTo_:ptr:19"}),
+                // Absolute engine-state path → MUST stay on the heuristic.
+                json!({"_Pointer_":"ptr:14","_Type_":"BuildingBlocks_BindingsIntegerVariable","binding":"/seatdashboard/powerstate"}),
+                json!({"_Pointer_":"ptr:21","_Type_":"BuildingBlocks_BindingsBooleanFromInteger","type":"Greater","inputL":"_PointsTo_:ptr:14","value":1}),
+                json!({"_Type_":"BuildingBlocks_BindingsBooleanField","widget":"_PointsTo_:ptr:6","field":"IsActive","input":"_PointsTo_:ptr:21"}),
+            ],
+        );
+        let mut defaults = crate::defaults::DefaultValueRegistry::new();
+        defaults.insert_path("CurrentBurstSize", crate::canvas::Value::Int(0));
+        defaults.insert_path("/seatdashboard/powerstate", crate::canvas::Value::Int(0));
+        let false_set = instantiated_false_widgets_with_param_inputs_inherited_bindings_and_defaults(
+            &rv,
+            &[],
+            &std::collections::HashMap::new(),
+            Some(&defaults),
+        );
+        // Bare gate resolves 0 > 1 = false → overlay 5 hides (resolver active).
+        assert!(
+            false_set.contains(&5),
+            "bare component-local gate resolves at rest (CurrentBurstSize=0 → 0>1 false → hidden)"
+        );
+        // Slash-path gate stays on the heuristic → overlay 6 shown (NOT hidden).
+        // FAILS if mod.rs:937's `binding.contains('/')` clause is deleted: the
+        // slash var would then resolve from the registry (0 > 1 = false) and
+        // wrongly hide overlay 6, regressing the frozen at-rest visibility.
+        assert!(
+            !false_set.contains(&6),
+            "slash-path gate must stay on the heuristic (component-local scoping is load-bearing)"
+        );
+    }
+
     /// Two sub-full TILING WidgetCanvas slots (the LR-indicator master's
     /// left/right half-width columns, `width = 0.5 Percent`) form a co-rendered
     /// panel group: the screen is ONE display split by cockpit geometry. When one
