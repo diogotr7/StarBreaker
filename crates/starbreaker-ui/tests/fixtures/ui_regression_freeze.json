@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "frozen_at": "2026-07-03T08:18:09Z",
+  "frozen_at": "2026-07-07T18:39:33Z",
   "approver": "owner",
-  "reason": "Medical close X centred both axes in its button box (flex column cross-axis Center pivot double-count fix); separator strip renders 4px lines. ui_target_a whole-image 0.97%, ui_target_b 0.52% (both intended platinum re-freeze); no collateral on other frozen targets.",
+  "reason": "linear-light compositing migration (B4): renderer-wide linear blends across the BB + swf_render compositors; all 15 gold/platinum baselines re-frozen; geometry-IR snapshot byte-identical (colour-only)",
   "signature": null,
   "manifest_path": "crates/starbreaker-ui/tests/fixtures/ui_ir/ui_snapshot_manifest.json",
   "artifacts": [
@@ -11,7 +11,7 @@
       "tier": "platinum",
       "source_generated_png": "ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_i_med_medicalbed_a.png",
       "artifact_path": "test-artifacts/ui/ui_target_a.png",
-      "sha256": "4aef148eb31372c0fb00f1a288150357280eb5e760e530f5c567f8949d00940f",
+      "sha256": "758a6127bbec2136c51e3de49d5dd5e453451861a9d9f065c8b94f4e4843e001",
       "width": 1920,
       "height": 1080,
       "channels": "srgba"
@@ -21,7 +21,7 @@
       "tier": "platinum",
       "source_generated_png": "ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_i_med_medicalendofbed_a.png",
       "artifact_path": "test-artifacts/ui/ui_target_b.png",
-      "sha256": "53cf66c003abf717807554f2615587d3abc1bbf9e5e34bcf098d1b097a1d1b96",
+      "sha256": "a3d2fc143712e50d898e2f6f399ff25dfe0d4f6c24c55de6c908d46305500da9",
       "width": 1920,
       "height": 1080,
       "channels": "srgba"
@@ -31,7 +31,7 @@
       "tier": "gold",
       "source_generated_png": "ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_i_door_small_drak.png",
       "artifact_path": "test-artifacts/ui/clipper_small_door.png",
-      "sha256": "a24b7d62eb5927d662b29754a940a1a157c6ff0a0834543c8ffe04778aa54539",
+      "sha256": "2e1e20263630dde98729b69849196a149d858f927bdf5418bbfe5a65a0b868c4",
       "width": 1920,
       "height": 1132,
       "channels": "srgba"
@@ -41,7 +41,7 @@
       "tier": "platinum",
       "source_generated_png": "ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_h_eng_annunciator_master_left.png",
       "artifact_path": "test-artifacts/ui/eng_annunciator_master_left.png",
-      "sha256": "35f873eea4d1ac51f1dc007504bd83effc0569a0df106fdde9b4a5dd9f73e9b6",
+      "sha256": "dac5215d59ce6d4333ae17c98d9556b718ae6d3014c8db4e5dce9d455c2cd1f5",
       "width": 1920,
       "height": 344,
       "channels": "srgba"
@@ -51,7 +51,7 @@
       "tier": "platinum",
       "source_generated_png": "ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_mc_s_target_master.png",
       "artifact_path": "test-artifacts/ui/clipper_target_master.png",
-      "sha256": "0b841c997df7a8601efc81cfe5f16c67774f9ffb47074f7cf450087775abbed6",
+      "sha256": "500edb69bac5c4ac76c9273bfb7bc4a0cca619f424a71e85c091dd1b3614b924",
       "width": 1600,
       "height": 1200,
       "channels": "srgba"
@@ -61,7 +61,7 @@
       "tier": "gold",
       "source_generated_png": "ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_mc_s_power_master.png",
       "artifact_path": "test-artifacts/ui/clipper_power_master.png",
-      "sha256": "925071862bc74cb34f7d04ecdc1976417493590f0aecb9a41648893c5f287341",
+      "sha256": "46800ded9d12ae23d0cfd6adb13080b436781578088d40b7f36140227447ec13",
       "width": 1600,
       "height": 1200,
       "channels": "srgba"
@@ -71,7 +71,7 @@
       "tier": "platinum",
       "source_generated_png": "ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_h_eng_annunciator_master_right.png",
       "artifact_path": "test-artifacts/ui/eng_annunciator_master_right.png",
-      "sha256": "c0854e8b29ce58a4c6fb479ac39c350a99ecbf4e149359e9a829950f31b9f468",
+      "sha256": "106d69b5f194d7b89545f4fcd8886069a313745b1e96c18a867c3cfa91d18460",
       "width": 1920,
       "height": 344,
       "channels": "srgba"
@@ -81,7 +81,7 @@
       "tier": "platinum",
       "source_generated_png": "ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_hc_hud_ship_g_force_ball_master.png",
       "artifact_path": "test-artifacts/ui/clipper_g_force_ball_master.png",
-      "sha256": "4de54e492d7a16237109b81004a7c93a2bbf962f018b889b9e6ea05cb1daa20d",
+      "sha256": "b28154cb6b4ef4da15e37b9b7728b13f53f1ec4cc52625ec789cdac926519199",
       "width": 1920,
       "height": 1920,
       "channels": "srgba"
@@ -91,7 +91,7 @@
       "tier": "platinum",
       "source_generated_png": "ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_hc_hud_ship_velocity_ball_master.png",
       "artifact_path": "test-artifacts/ui/clipper_velocity_ball_master.png",
-      "sha256": "0ba0960a1ec796f98b383e52dad465fa0ff80f17b442e6011f635502c92dae22",
+      "sha256": "4ce6de799bca318204053c43ee55771e94d6225edf0853a1bea188d6f746fc5c",
       "width": 1920,
       "height": 1920,
       "channels": "srgba"
@@ -101,7 +101,7 @@
       "tier": "gold",
       "source_generated_png": "ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_hc_hud_ship_velocity_num_master.png",
       "artifact_path": "test-artifacts/ui/clipper_velocity_num_master.png",
-      "sha256": "ca10a145c8a06cc81bb3c78f6e19724e693cee1fd4da574ed845890416e4a9e6",
+      "sha256": "675cdc6c4952dcfda83660b108df390c4a0feaddf2648e9d697ab6d2e4b8c3de",
       "width": 1920,
       "height": 1554,
       "channels": "srgba"
@@ -111,7 +111,7 @@
       "tier": "gold",
       "source_generated_png": "ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_hc_hud_ship_compass_master.png",
       "artifact_path": "test-artifacts/ui/clipper_compass_master.png",
-      "sha256": "a1734c56d917df90e50bb999ed701bbd5aaf98851ddf7d49d67fe306a4cd1b56",
+      "sha256": "7f1ac20717d592505446ed46a13509c858674190badd99e4356b55cbdad18b6c",
       "width": 1920,
       "height": 587,
       "channels": "srgba"
@@ -121,7 +121,7 @@
       "tier": "gold",
       "source_generated_png": "ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_mc_s_self_master.png",
       "artifact_path": "test-artifacts/ui/clipper_self_master.png",
-      "sha256": "b41ff9ab40cc0cb1f54ddafca0ad9c08ac3f7eb04b27ad980269873b8adf5686",
+      "sha256": "03840248c27d0aaa70106fe8826167bdde6af4a4871aa75b215dbb9183f48eb6",
       "width": 1600,
       "height": 1200,
       "channels": "srgba"
@@ -131,7 +131,7 @@
       "tier": "gold",
       "source_generated_png": "ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_hc_hud_ship_master_mode_display_master.png",
       "artifact_path": "test-artifacts/ui/clipper_master_mode_display_master.png",
-      "sha256": "18e8e3d1899234ae10295c0f059cf5e22426cde56ebdd0bab3f9462da4c6475f",
+      "sha256": "3b477e8b0f9208620ee7d6c14b64015f13b81a3ce6693cccf88ef904949b0b5f",
       "width": 1920,
       "height": 1554,
       "channels": "srgba"
@@ -141,7 +141,7 @@
       "tier": "gold",
       "source_generated_png": "ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_hc_hud_ship_countermeasures_master.png",
       "artifact_path": "test-artifacts/ui/clipper_countermeasures_master.png",
-      "sha256": "3e5fc606933f639b5f69c89a89a0a09de9c4796e3936b347c8f01849bddab8cd",
+      "sha256": "932dc474940dfa7252e703f4f7faed50554e733f7ea0b497729ba413e24949a3",
       "width": 1920,
       "height": 1920,
       "channels": "srgba"
@@ -151,7 +151,7 @@
       "tier": "gold",
       "source_generated_png": "ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_hc_hud_ship_lrind_master.png",
       "artifact_path": "test-artifacts/ui/clipper_lrind_master.png",
-      "sha256": "51983c413e66e3616043fdac4d8e199967ae6abe19d2870c3d082ff40597df5a",
+      "sha256": "51b475be0bd3eca1d9cfab5a4f0fed485ef1e0153968004e4b481a2de31f45ed",
       "width": 1920,
       "height": 3002,
       "channels": "srgba"
