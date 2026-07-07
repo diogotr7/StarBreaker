@@ -1058,7 +1058,20 @@ fn apply_canvas_style_cascade(
             .cloned()
             .collect()
     };
-    let brand_style = bb_brand_style::resolve_brand_style(root_json, manufacturer_id, preferred_brand);
+    // Resolve the selected brand by IDENTITY (the canvas style link first, then
+    // the canvas family hud/env class) rather than the legacy prefix scan (B1).
+    let canvas_name = root_json
+        .get("_RecordName_")
+        .and_then(|v| v.as_str())
+        .or_else(|| record_value.get("_RecordName_").and_then(|v| v.as_str()));
+    let class = bb_brand_style::brand_class_for_canvas(canvas_name);
+    let brand_style = bb_brand_style::resolve_brand_identity(
+        root_json,
+        preferred_brand,
+        manufacturer_id,
+        class,
+        bb_brand_style::BrandPolicy::Default,
+    );
     let brand_palette_record = brand_palette_record(brand_style.as_ref(), fetch_by_path);
     if brand_style.is_none()
         && let Some(style_value) = local_style_value
