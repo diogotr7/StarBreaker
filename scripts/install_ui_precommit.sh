@@ -90,14 +90,38 @@ _st_case() {  # $1 = label, $2 = marker mode, $3 = stage (ui|docs), $4 = expect 
   return 1
 }
 
+# ui_check.sh --help runs zero checks — it must NOT write/refresh the marker
+# (else `--help` mints a false-green the gate honours for MAX_AGE seconds).
+# Direct check against the real repo's marker: snapshot, run --help, compare;
+# restore the snapshot if a regression clobbered it.
+_st_help_no_marker() {
+  local marker before after
+  marker="$(git -C "$REPO_ROOT" rev-parse --absolute-git-dir)/ui-check-marker"
+  before="$(cat "$marker" 2>/dev/null || echo ABSENT)"
+  bash "$SCRIPT_DIR/ui_check.sh" --help >/dev/null
+  after="$(cat "$marker" 2>/dev/null || echo ABSENT)"
+  if [[ "$before" == "$after" ]]; then
+    echo "  ok: ui_check --help leaves marker untouched"
+    return 0
+  fi
+  # restore: a clobbered marker here IS the false-green — don't leave it behind
+  if [[ "$before" == ABSENT ]]; then rm -f "$marker"; else printf '%s\n' "$before" > "$marker"; fi
+  echo "  FAIL: ui_check --help rewrote the marker (false-green vector)" >&2
+  return 1
+}
+
 self_test() {
   [[ -f "$HOOK_SRC" ]] || { echo "error: hook body missing: $HOOK_SRC" >&2; exit 1; }
+  # ambient developer env must not skew the cases (a bypass/age override set in
+  # the calling shell would make block-cases pass or fail vacuously)
+  unset SB_SKIP_UI_GATE SB_UI_MARKER_MAX_AGE
   echo "install_ui_precommit self-test (throwaway repos, real git commit):"
   _st_case "stale marker + UI staged"       stale       ui   block
   _st_case "green fresh marker + UI staged"  green_fresh ui   pass
   _st_case "docs-only staged (no marker)"    none        docs pass
   _st_case "FAILED marker + UI staged"       failed      ui   block
-  echo "install_ui_precommit: OK (4 cases)"
+  _st_help_no_marker
+  echo "install_ui_precommit: OK (5 cases)"
 }
 
 case "${1:-}" in

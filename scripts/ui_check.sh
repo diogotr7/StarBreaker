@@ -61,6 +61,9 @@ for arg in "$@"; do
     --full) FULL=1 ;;
     -h|--help)
       sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+      # --help runs ZERO checks: exiting 0 through the trap would mint a fresh
+      # "ALL GREEN" marker the pre-commit gate honours — a false-green vector.
+      trap - EXIT
       exit 0
       ;;
     *) echo "unknown argument: $arg (try --help)" >&2; exit 64 ;;
