@@ -6,7 +6,7 @@
 #[allow(unused_imports)]
 use super::*;
 use crate::colour::{blend_premul_add_linear, blend_premul_linear};
-use tiny_skia::{BlendMode, Paint, PathBuilder, Pixmap, Rect as TskRect, Transform};
+use tiny_skia::{BlendMode, Paint, Path, PathBuilder, Pixmap, Rect as TskRect, Stroke, Transform};
 
 /// Render `draw` (a tiny-skia shape fill/stroke) into a transparent scratch
 /// pixmap sized to `bounds` (padded for AA / stroke bleed), then composite the
@@ -54,6 +54,25 @@ pub(crate) fn fill_linear(
             dd[di..di + 4].copy_from_slice(&d);
         }
     }
+}
+
+/// Stroke `path` into the linear scratch composite (bounds auto-inflated by the
+/// stroke width). Companion to [`fill_linear`] for outline strokes so every
+/// stroke AA edge blends in linear light.
+pub(crate) fn stroke_linear(
+    dst: &mut Pixmap,
+    path: &Path,
+    paint: &Paint,
+    stroke: &Stroke,
+    blend_mode: BlendMode,
+) {
+    let b = path.bounds();
+    let w = stroke.width;
+    let bounds = TskRect::from_xywh(b.x() - w, b.y() - w, b.width() + w * 2.0, b.height() + w * 2.0)
+        .unwrap_or(b);
+    fill_linear(dst, bounds, blend_mode, |scratch, tf| {
+        scratch.as_mut().stroke_path(path, paint, stroke, tf, None);
+    });
 }
 
 pub(crate) fn fill_rounded_rect_ts_with_mode(

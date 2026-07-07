@@ -2683,17 +2683,7 @@ fn draw_widget_circle(ctx: &ComposeContext<'_>, node: &UiIrNode, pixmap: &mut Pi
             paint.anti_alias = true;
             let mut stroke = Stroke::default();
             stroke.width = node.stroke_extent.unwrap_or(1.5).max(0.5);
-            let b = path.bounds();
-            let bounds = tiny_skia::Rect::from_xywh(
-                b.x() - stroke.width,
-                b.y() - stroke.width,
-                b.width() + stroke.width * 2.0,
-                b.height() + stroke.width * 2.0,
-            )
-            .unwrap_or(b);
-            fill_linear(pixmap, bounds, BlendMode::SourceOver, |scratch, tf| {
-                scratch.as_mut().stroke_path(&path, &paint, &stroke, tf, None);
-            });
+            stroke_linear(pixmap, &path, &paint, &stroke, BlendMode::SourceOver);
         }
     }
 }

@@ -2989,8 +2989,6 @@ pub(crate) fn draw_rounded_uniform_border(
     paint.anti_alias = true;
     let mut stroke = Stroke::default();
     stroke.width = width;
-    pixmap
-        .as_mut()
-        .stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+    stroke_linear(pixmap, &path, &paint, &stroke, BlendMode::SourceOver);
     true
 }
