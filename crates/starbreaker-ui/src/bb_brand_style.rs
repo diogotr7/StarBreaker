@@ -119,6 +119,114 @@ pub fn brand_class_for_canvas(canvas_name: Option<&str>) -> BrandClass {
     }
 }
 
+/// Per-element brand policy: which sibling of the hud/env pair to prefer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrandPolicy {
+    /// Prefer the canvas's own family class (hud for MFD/HUD canvases, env
+    /// otherwise), falling back to the sibling then the bare `s_<mfr>`.
+    Default,
+    /// Separator elements: the modularkit authors the dotted divider glyph only
+    /// under `s_<mfr>_env`, so prefer the env sibling regardless of canvas family.
+    SeparatorEnv,
+}
+
+/// Ordered, de-duplicated, lowercased brand IDENTITY candidates for a canvas.
+///
+/// Priority: the canvas's own `style`-link identity first (if any); then the
+/// family/policy sibling pair (`s_<mfr>_<class>` then its sibling, or env-first
+/// for [`BrandPolicy::SeparatorEnv`]); then the bare `s_<mfr>`. **Identity only —
+/// no manufacturer-prefix scan.** `gen_`/`s_default_` are family fallbacks matched
+/// separately by [`resolve_brand_identity`], not listed here. This is the single
+/// B1 primitive shared by the text, separator, body-background, and cascade paths.
+pub fn brand_candidate_identifiers(
+    style_link: Option<&str>,
+    manufacturer: Option<&str>,
+    class: BrandClass,
+    policy: BrandPolicy,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(link) = style_link {
+        out.push(link.to_ascii_lowercase());
+    }
+    if let Some(mfr) = manufacturer {
+        let mfr = mfr.to_ascii_lowercase();
+        let (first, second) = match policy {
+            BrandPolicy::Default => match class {
+                BrandClass::Hud => ("hud", "env"),
+                BrandClass::Env => ("env", "hud"),
+            },
+            BrandPolicy::SeparatorEnv => ("env", "hud"),
+        };
+        out.push(format!("s_{mfr}_{first}"));
+        out.push(format!("s_{mfr}_{second}"));
+        out.push(format!("s_{mfr}"));
+    }
+    out.dedup();
+    out
+}
+
+/// Resolve the active brand-style entry by ORDERED IDENTITY (the B1 unified
+/// resolver — replaces the manufacturer-prefix scan of [`resolve_brand_style`],
+/// which could not distinguish the `s_<mfr>_hud`/`s_<mfr>_env` sibling pair).
+///
+/// 1. IC_* single-entry override (per-canvas brand, e.g. BioCorp medical).
+/// 2. First `brandStyles[]` entry whose `brandIdentifier` basename matches a
+///    [`brand_candidate_identifiers`] candidate, in priority order.
+/// 3. `gen_`/`s_default_` family fallback (only when a manufacturer was supplied).
+pub fn resolve_brand_identity<'a>(
+    record_or_value: &'a serde_json::Value,
+    style_link: Option<&str>,
+    manufacturer: Option<&str>,
+    class: BrandClass,
+    policy: BrandPolicy,
+) -> Option<BrandStyle<'a>> {
+    let record_value = record_or_value
+        .get("_RecordValue_")
+        .unwrap_or(record_or_value);
+    let brand_styles = record_value.get("brandStyles").and_then(|v| v.as_array())?;
+    if brand_styles.is_empty() {
+        return None;
+    }
+
+    // 1. IC_* single-entry override (BioCorp medical is one entry on every ship).
+    let record_name = record_or_value
+        .get("_RecordName_")
+        .and_then(|v| v.as_str())
+        .or_else(|| record_value.get("_RecordName_").and_then(|v| v.as_str()))
+        .unwrap_or("");
+    if classify_canvas_family(record_name) == CanvasFamily::InteractiveCanvas
+        && brand_styles.len() == 1
+    {
+        return build_brand_style(&brand_styles[0]);
+    }
+
+    // 2. Ordered identity candidates (priority by candidate order, not array order).
+    let candidates = brand_candidate_identifiers(style_link, manufacturer, class, policy);
+    for candidate in &candidates {
+        for entry in brand_styles {
+            if let Some(basename) = brand_identifier_basename(entry) {
+                if basename.eq_ignore_ascii_case(candidate) {
+                    return build_brand_style(entry);
+                }
+            }
+        }
+    }
+
+    // 3. gen_/s_default_ manufacturer-agnostic family fallback.
+    if manufacturer.is_some() {
+        for entry in brand_styles {
+            if let Some(basename) = brand_identifier_basename(entry) {
+                let lower = basename.to_ascii_lowercase();
+                if lower.starts_with("gen_") || lower.starts_with("s_default_") {
+                    return build_brand_style(entry);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Borrowed view into a selected brand-style entry.
 ///
 /// Provides access to the entries array without copying.
@@ -287,6 +395,70 @@ mod tests {
         // Slug segments.
         assert_eq!(BrandClass::Hud.as_str(), "hud");
         assert_eq!(BrandClass::Env.as_str(), "env");
+    }
+
+    /// Synthetic brandStyles record — identifiers only, no real palette values.
+    fn syn_record(record_name: &str, ids: &[&str]) -> serde_json::Value {
+        json!({
+            "_RecordName_": record_name,
+            "brandStyles": ids.iter().map(|id| json!({
+                "brandIdentifier": format!("file://foo/{}.json", id),
+                "entries": []
+            })).collect::<Vec<_>>(),
+        })
+    }
+
+    #[test]
+    fn test_brand_candidate_identifiers_order() {
+        // Default+Hud: class first, then sibling, then bare.
+        assert_eq!(
+            brand_candidate_identifiers(None, Some("syn"), BrandClass::Hud, BrandPolicy::Default),
+            vec!["s_syn_hud", "s_syn_env", "s_syn"]
+        );
+        // Default+Env: env first.
+        assert_eq!(
+            brand_candidate_identifiers(None, Some("syn"), BrandClass::Env, BrandPolicy::Default),
+            vec!["s_syn_env", "s_syn_hud", "s_syn"]
+        );
+        // SeparatorEnv forces env-first regardless of class.
+        assert_eq!(
+            brand_candidate_identifiers(None, Some("syn"), BrandClass::Hud, BrandPolicy::SeparatorEnv),
+            vec!["s_syn_env", "s_syn_hud", "s_syn"]
+        );
+        // Style-link identity leads.
+        assert_eq!(
+            brand_candidate_identifiers(Some("s_bioc"), Some("syn"), BrandClass::Hud, BrandPolicy::Default),
+            vec!["s_bioc", "s_syn_hud", "s_syn_env", "s_syn"]
+        );
+    }
+
+    #[test]
+    fn test_resolve_brand_identity() {
+        // (a) style-link identity wins over the family class.
+        let rec = syn_record("MC_Foo", &["s_syn_hud", "s_syn_env"]);
+        let r = resolve_brand_identity(&rec, Some("s_syn_env"), Some("syn"), BrandClass::Hud, BrandPolicy::Default).unwrap();
+        assert_eq!(r.identifier, "s_syn_env");
+        // (b) Default+Hud picks the hud sibling.
+        let r = resolve_brand_identity(&rec, None, Some("syn"), BrandClass::Hud, BrandPolicy::Default).unwrap();
+        assert_eq!(r.identifier, "s_syn_hud");
+        // (c) SeparatorEnv picks the env sibling.
+        let r = resolve_brand_identity(&rec, None, Some("syn"), BrandClass::Hud, BrandPolicy::SeparatorEnv).unwrap();
+        assert_eq!(r.identifier, "s_syn_env");
+        // (d) bare s_<mfr> matches when no suffixed sibling exists.
+        let bare = syn_record("MC_Foo", &["s_syn"]);
+        let r = resolve_brand_identity(&bare, None, Some("syn"), BrandClass::Hud, BrandPolicy::Default).unwrap();
+        assert_eq!(r.identifier, "s_syn");
+        // (e) IC_* single-entry override ignores the manufacturer.
+        let ic = syn_record("IC_Med_Common", &["s_bioc"]);
+        let r = resolve_brand_identity(&ic, None, Some("drak"), BrandClass::Env, BrandPolicy::Default).unwrap();
+        assert_eq!(r.identifier, "s_bioc");
+        // (f) gen_/s_default_ fallback when no s_<mfr> entry.
+        let gen_rec = syn_record("MC_Foo", &["gen_mc"]);
+        let r = resolve_brand_identity(&gen_rec, None, Some("syn"), BrandClass::Hud, BrandPolicy::Default).unwrap();
+        assert_eq!(r.identifier, "gen_mc");
+        // no match → None.
+        let empty = syn_record("MC_Foo", &["s_other"]);
+        assert!(resolve_brand_identity(&empty, Some("s_none"), None, BrandClass::Hud, BrandPolicy::Default).is_none());
     }
 
     #[test]

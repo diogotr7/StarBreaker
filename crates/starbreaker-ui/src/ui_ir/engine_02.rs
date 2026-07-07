@@ -1292,36 +1292,29 @@ pub(crate) fn collect_standard_text_styles(
     // `audimatmono-regular`, FillColor `Accent2`, LetterSpacing 2 — verified
     // against the Clipper target/power footer captures), other screens the
     // environment brand `s_<mfr>_env`.
-    let selected_style_name = selected_style_source.and_then(|source| {
-        source
-            .strip_prefix("canvas:")
-            .map(str::to_ascii_lowercase)
-            .or_else(|| {
-                source.strip_prefix("manufacturer:").map(|mfr| {
-                    // The hud/env split (MFD masters + cockpit HUD components author
-                    // s_<mfr>_hud, everything else s_<mfr>_env) is the shared
-                    // `brand_class_for_canvas` classifier (B1); the env H1 is
-                    // audimatmono-Bold/Bright vs the HUD brand's regular/Accent2.
-                    let class = crate::bb_brand_style::brand_class_for_canvas(canvas_name);
-                    format!("s_{}_{}", mfr.to_ascii_lowercase(), class.as_str())
-                })
-            })
-    });
-    let selected_brand = record_value
-        .get("brandStyles")
-        .and_then(|styles| styles.as_array())
-        .into_iter()
-        .flatten()
-        .find(|brand| {
-            let Some(selected_style_name) = selected_style_name.as_deref() else {
-                return false;
-            };
-            brand
-                .get("brandIdentifier")
-                .and_then(|identifier| identifier.as_str())
-                .map(crate::record_name::extract_record_name)
-                .is_some_and(|identifier| identifier.eq_ignore_ascii_case(selected_style_name))
-        });
+    // A `canvas:`-sourced style is the screen's own style-link identity; a
+    // `manufacturer:<mfr>` source resolves the manufacturer's UI style family
+    // (`s_<mfr>_{hud|env}`) via the shared B1 resolver. The hud/env split — MFD
+    // masters + cockpit HUD components author `s_<mfr>_hud` (Drake's H1 →
+    // audimatmono-regular / Accent2 / LetterSpacing 2, verified against the Clipper
+    // target/power footer captures), other screens `s_<mfr>_env` — is
+    // `brand_class_for_canvas`. Identity matching, no manufacturer-prefix scan.
+    let (style_link, manufacturer) = match selected_style_source {
+        Some(source) => (
+            source.strip_prefix("canvas:"),
+            source.strip_prefix("manufacturer:"),
+        ),
+        None => (None, None),
+    };
+    let brand_class = crate::bb_brand_style::brand_class_for_canvas(canvas_name);
+    let selected_brand = crate::bb_brand_style::resolve_brand_identity(
+        record_value,
+        style_link,
+        manufacturer,
+        brand_class,
+        crate::bb_brand_style::BrandPolicy::Default,
+    )
+    .map(|brand| brand.raw);
     // The typography brand's colour palette (its Style record `colorStyles`),
     // for resolving authored FillColor roles at the enum index.
     let brand_palette = selected_brand
