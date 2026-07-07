@@ -496,6 +496,14 @@ fn live_manifest_targets_match_gold_standard_snapshot_geometry() {
     )
     .expect("manifest runner should compare live snapshots against baselines");
 
+    // Non-empty-target precondition (alignment plan T5 review): the retain
+    // above layers on the asserted `cases`; retained-to-zero would pass
+    // vacuously.
+    assert!(
+        !results.is_empty(),
+        "live geometry guard retained zero manifest targets — vacuous"
+    );
+
     // Surface positive reinforcement: a known-outlier field moved closer to its
     // in-game reference than the frozen baseline. Never fails — signals a genuine
     // improvement worth re-freezing (do not revert it as a regression).
@@ -552,6 +560,13 @@ fn live_manifest_targets_match_gold_standard_tint_semantics() {
             .ok_or_else(|| format!("missing snapshot fixture for {path}"))
     })
     .expect("manifest runner should compare live tint semantics against baselines");
+
+    // Non-empty-target precondition (alignment plan T5 review): same as the
+    // geometry guard — the retain must leave at least one target.
+    assert!(
+        !results.is_empty(),
+        "live tint-semantics guard retained zero manifest targets — vacuous"
+    );
 
     let failures: Vec<String> = results
         .into_iter()

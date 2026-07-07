@@ -118,6 +118,13 @@ fn manifest_snapshot_runner_preflight() {
             .ok_or_else(|| format!("missing snapshot fixture for {path}"))
     })
     .expect("manifest runner should load all manifest fixture snapshots");
+    // Non-empty-target precondition (alignment plan T5 review): the retain
+    // above must leave at least one fixture-backed target or the loop below
+    // verifies nothing.
+    assert!(
+        !results.is_empty(),
+        "snapshot-runner preflight retained zero fixture-backed targets — vacuous"
+    );
     for result in results {
         assert!(
             result.comparison.passed,

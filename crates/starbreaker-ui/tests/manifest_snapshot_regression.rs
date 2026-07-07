@@ -101,6 +101,12 @@ fn manifest_targets_pass_for_phase1_fixtures() {
     .expect("manifest runner should load all manifest fixtures");
 
     assert_eq!(results.len(), manifest.targets.len(), "expected all fixture-backed manifest targets");
+    // Non-empty-target precondition (alignment plan T5 review): retain-to-zero
+    // would make both the len() check and the loop below pass vacuously.
+    assert!(
+        !results.is_empty(),
+        "phase1 fixture guard retained zero fixture-backed targets — vacuous"
+    );
     for result in results {
         assert!(
             result.comparison.passed,
