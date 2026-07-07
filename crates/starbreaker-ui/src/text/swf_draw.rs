@@ -329,6 +329,41 @@ fn swf_wrap_lines(
     result
 }
 
+#[cfg(test)]
+mod blend_tests {
+    use super::blend_pixmap_onto_image;
+    use crate::bb_layout::Rect;
+    use image::RgbaImage;
+    use tiny_skia::Pixmap;
+
+    // A premultiplied 50% white source over opaque black must composite in
+    // LINEAR light to ~188, NOT the sRGB midpoint 128. `from_rgba8` takes a
+    // STRAIGHT alpha, so 50% white is `from_rgba8(255,255,255,128)` which
+    // tiny-skia stores as premul (128,128,128,128) — the real premul-50%-white
+    // input the blend contract expects (asserted below before blending).
+    #[test]
+    fn blend_pixmap_onto_image_composites_in_linear() {
+        let mut img = RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 255]));
+        let mut src = Pixmap::new(2, 2).unwrap();
+        src.fill(tiny_skia::Color::from_rgba8(255, 255, 255, 128));
+        let stored = src.pixel(0, 0).unwrap();
+        assert_eq!(
+            (stored.red(), stored.green(), stored.blue(), stored.alpha()),
+            (128, 128, 128, 128),
+            "from_rgba8(255,255,255,128) must store as premul 50% white"
+        );
+        let clip = Rect { x: 0.0, y: 0.0, w: 2.0, h: 2.0 };
+        blend_pixmap_onto_image(&src, &mut img, clip);
+        let px = img.get_pixel(0, 0);
+        assert!(
+            (px[0] as i32 - 188).abs() <= 3,
+            "linear swf glyph blend expected ~188, got {}",
+            px[0]
+        );
+        assert!((px[0] as i32 - 128).abs() > 20, "must not be sRGB 128");
+    }
+}
+
 fn swf_glyph_to_path(records: &[swf::ShapeRecord], pb: &mut PathBuilder) -> bool {
     let mut x = 0.0f32;
     let mut y = 0.0f32;
@@ -392,14 +427,14 @@ fn blend_pixmap_onto_image(pixmap: &Pixmap, img: &mut RgbaImage, clip: Rect) {
             if src.alpha() == 0 {
                 continue;
             }
-            let src_a = src.alpha() as f32 / 255.0;
+            // `src` is premultiplied (tiny-skia stores premul); its .red()/.green()/
+            // .blue() are the premultiplied channels — exactly blend_premul_linear's
+            // input contract. Compositing in LINEAR light matches the engine.
             let dst = img.get_pixel_mut(px as u32, py as u32);
-            let inv = 1.0 - src_a;
-            dst[0] = (src.red() as f32 + dst[0] as f32 * inv).min(255.0) as u8;
-            dst[1] = (src.green() as f32 + dst[1] as f32 * inv).min(255.0) as u8;
-            dst[2] = (src.blue() as f32 + dst[2] as f32 * inv).min(255.0) as u8;
-            dst[3] =
-                (dst[3] as f32 + (1.0 - dst[3] as f32 / 255.0) * src_a * 255.0).min(255.0) as u8;
+            crate::colour::blend_premul_linear(
+                &mut dst.0,
+                [src.red(), src.green(), src.blue(), src.alpha()],
+            );
         }
     }
 }

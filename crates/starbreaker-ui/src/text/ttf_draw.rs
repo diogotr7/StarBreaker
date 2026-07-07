@@ -103,14 +103,15 @@ impl TextRenderer {
                             return;
                         }
                         let pixel = img.get_pixel_mut(px as u32, py as u32);
+                        // Straight-alpha source-over in LINEAR light. `src_a` folds
+                        // glyph coverage × the colour's own alpha; `colour` is straight
+                        // sRGB. Text antialiasing blends in linear, matching the engine.
                         let src_a = coverage * colour[3] as f32 / 255.0;
-                        let inv = 1.0 - src_a;
-                        pixel[0] = (pixel[0] as f32).mul_add(inv, colour[0] as f32 * src_a) as u8;
-                        pixel[1] = (pixel[1] as f32).mul_add(inv, colour[1] as f32 * src_a) as u8;
-                        pixel[2] = (pixel[2] as f32).mul_add(inv, colour[2] as f32 * src_a) as u8;
-                        pixel[3] = (pixel[3] as f32
-                            + (1.0 - pixel[3] as f32 / 255.0) * src_a * 255.0)
-                            .min(255.0) as u8;
+                        crate::colour::blend_straight_linear(
+                            &mut pixel.0,
+                            [colour[0], colour[1], colour[2]],
+                            src_a,
+                        );
                     });
                 }
             }
