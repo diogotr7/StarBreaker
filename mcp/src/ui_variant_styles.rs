@@ -22,7 +22,7 @@
 
 use serde_json::{json, Value};
 use starbreaker_ui::bb_brand_apply::{entry_matches_scene, entry_matches_text_format};
-use starbreaker_ui::bb_brand_style::resolve_brand_style;
+use starbreaker_ui::bb_brand_style::{brand_class_for_canvas, resolve_brand_identity, BrandPolicy};
 
 use crate::tools::{
     compact_colour_fields, summarize_conditions, summarize_modifiers, StarBreakerMcp,
@@ -66,7 +66,14 @@ pub(crate) fn ui_variant_styles_impl(server: &StarBreakerMcp, req: UiVariantStyl
     {
         tiers.push(("defaultStyles".to_string(), entries.clone()));
     }
-    if let Some(brand) = resolve_brand_style(&canvas, manufacturer, None) {
+    // Resolve the brand by IDENTITY + canvas family (hud/env), not the legacy
+    // manufacturer-prefix scan (B1). No style link at this drill site.
+    let canvas_name = canvas
+        .get("_RecordName_")
+        .and_then(|v| v.as_str())
+        .or_else(|| record_value.get("_RecordName_").and_then(|v| v.as_str()));
+    let class = brand_class_for_canvas(canvas_name);
+    if let Some(brand) = resolve_brand_identity(&canvas, None, manufacturer, class, BrandPolicy::Default) {
         tiers.push((format!("brand:{}", brand.identifier), brand.entries.to_vec()));
     }
     if let Some(entries) = record_value.get("embeddedStyles").and_then(|v| v.as_array()) {
