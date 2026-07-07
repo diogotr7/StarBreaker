@@ -5,7 +5,56 @@
 
 #[allow(unused_imports)]
 use super::*;
+use crate::colour::{blend_premul_add_linear, blend_premul_linear};
 use tiny_skia::{BlendMode, Paint, PathBuilder, Pixmap, Rect as TskRect, Transform};
+
+/// Render `draw` (a tiny-skia shape fill/stroke) into a transparent scratch
+/// pixmap sized to `bounds` (padded for AA / stroke bleed), then composite the
+/// scratch onto `dst` in LINEAR light, honouring `SourceOver` / `Plus`. The
+/// closure receives a translation `Transform` mapping `bounds`'s origin to the
+/// scratch's (0,0) so callers draw in absolute coordinates. Generalises the
+/// white-mask carve-out to arbitrary tiny-skia draws so every AA edge blends in
+/// linear, matching the engine.
+pub(crate) fn fill_linear(
+    dst: &mut Pixmap,
+    bounds: TskRect,
+    blend_mode: BlendMode,
+    draw: impl FnOnce(&mut Pixmap, Transform),
+) {
+    const PAD: f32 = 2.0; // AA / stroke half-width bleed
+    let x0 = (bounds.x() - PAD).floor().max(0.0) as u32;
+    let y0 = (bounds.y() - PAD).floor().max(0.0) as u32;
+    let x1 = ((bounds.x() + bounds.width() + PAD).ceil().max(0.0) as u32).min(dst.width());
+    let y1 = ((bounds.y() + bounds.height() + PAD).ceil().max(0.0) as u32).min(dst.height());
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let (sw, sh) = (x1 - x0, y1 - y0);
+    let Some(mut scratch) = Pixmap::new(sw, sh) else {
+        return;
+    };
+    draw(&mut scratch, Transform::from_translate(-(x0 as f32), -(y0 as f32)));
+
+    let sd = scratch.data();
+    let dw = dst.width();
+    let dd = dst.data_mut();
+    for ly in 0..sh {
+        for lx in 0..sw {
+            let si = ((ly * sw + lx) * 4) as usize;
+            let s = [sd[si], sd[si + 1], sd[si + 2], sd[si + 3]];
+            if s[3] == 0 && blend_mode != BlendMode::Plus {
+                continue;
+            }
+            let di = (((y0 + ly) * dw + (x0 + lx)) * 4) as usize;
+            let mut d = [dd[di], dd[di + 1], dd[di + 2], dd[di + 3]];
+            match blend_mode {
+                BlendMode::Plus => blend_premul_add_linear(&mut d, s),
+                _ => blend_premul_linear(&mut d, s),
+            }
+            dd[di..di + 4].copy_from_slice(&d);
+        }
+    }
+}
 
 pub(crate) fn fill_rounded_rect_ts_with_mode(
     pixmap: &mut Pixmap,
@@ -19,17 +68,15 @@ pub(crate) fn fill_rounded_rect_ts_with_mode(
         fill_rect_ts_with_mode(pixmap, rect, rgba, alpha, blend_mode);
         return;
     };
-    let mut paint = Paint::default();
-    paint.set_color(to_skia_color(rgba, alpha));
-    paint.blend_mode = blend_mode;
-    paint.anti_alias = true;
-    pixmap.as_mut().fill_path(
-        &path,
-        &paint,
-        tiny_skia::FillRule::Winding,
-        Transform::identity(),
-        None,
-    );
+    fill_linear(pixmap, rect, blend_mode, |scratch, tf| {
+        let mut paint = Paint::default();
+        paint.set_color(to_skia_color(rgba, alpha));
+        paint.blend_mode = BlendMode::SourceOver; // into transparent scratch
+        paint.anti_alias = true;
+        scratch
+            .as_mut()
+            .fill_path(&path, &paint, tiny_skia::FillRule::Winding, tf, None);
+    });
 }
 
 pub(crate) fn fill_rect_ts_with_mode(
@@ -39,13 +86,13 @@ pub(crate) fn fill_rect_ts_with_mode(
     alpha: f32,
     blend_mode: BlendMode,
 ) {
-    let mut paint = Paint::default();
-    paint.set_color(to_skia_color(rgba, alpha));
-    paint.blend_mode = blend_mode;
-    paint.anti_alias = false;
-    pixmap
-        .as_mut()
-        .fill_rect(rect, &paint, Transform::identity(), None);
+    fill_linear(pixmap, rect, blend_mode, |scratch, tf| {
+        let mut paint = Paint::default();
+        paint.set_color(to_skia_color(rgba, alpha));
+        paint.blend_mode = BlendMode::SourceOver; // into transparent scratch
+        paint.anti_alias = false;
+        scratch.as_mut().fill_rect(rect, &paint, tf, None);
+    });
 }
 
 /// Fill a rect with PER-CORNER radii/chamfers (`corner_geometry_path`,
@@ -63,17 +110,15 @@ pub(crate) fn fill_corner_geometry_ts_with_mode(
         fill_rect_ts_with_mode(pixmap, rect, rgba, alpha, blend_mode);
         return;
     };
-    let mut paint = Paint::default();
-    paint.set_color(to_skia_color(rgba, alpha));
-    paint.blend_mode = blend_mode;
-    paint.anti_alias = true;
-    pixmap.as_mut().fill_path(
-        &path,
-        &paint,
-        tiny_skia::FillRule::Winding,
-        Transform::identity(),
-        None,
-    );
+    fill_linear(pixmap, rect, blend_mode, |scratch, tf| {
+        let mut paint = Paint::default();
+        paint.set_color(to_skia_color(rgba, alpha));
+        paint.blend_mode = BlendMode::SourceOver; // into transparent scratch
+        paint.anti_alias = true;
+        scratch
+            .as_mut()
+            .fill_path(&path, &paint, tiny_skia::FillRule::Winding, tf, None);
+    });
 }
 
 // Rounded border chrome: the generic border renderer strokes a rounded-rect
@@ -177,4 +222,36 @@ pub(crate) fn corner_geometry_path(
     }
     pb.close();
     pb.finish()
+}
+
+#[cfg(test)]
+mod linear_fill_tests {
+    use super::*;
+    use tiny_skia::{BlendMode, Color, Pixmap, Rect as TskRect};
+
+    // A 50%-alpha white rect over opaque black must land ~188 (linear), not 128 (sRGB).
+    #[test]
+    fn fill_rect_composites_in_linear_light() {
+        let mut pm = Pixmap::new(4, 4).unwrap();
+        pm.fill(Color::from_rgba8(0, 0, 0, 255));
+        let rect = TskRect::from_xywh(0.0, 0.0, 4.0, 4.0).unwrap();
+        fill_rect_ts_with_mode(&mut pm, rect, [1.0, 1.0, 1.0, 1.0], 0.5, BlendMode::SourceOver);
+        let px = pm.pixel(1, 1).unwrap();
+        assert!(
+            (px.red() as i32 - 188).abs() <= 3,
+            "linear 50% white fill over black expected ~188, got {}",
+            px.red()
+        );
+        assert!((px.red() as i32 - 128).abs() > 20, "must not be sRGB 128");
+    }
+
+    #[test]
+    fn additive_fill_sums_in_linear() {
+        let mut pm = Pixmap::new(4, 4).unwrap();
+        pm.fill(Color::from_rgba8(128, 128, 128, 255));
+        let rect = TskRect::from_xywh(0.0, 0.0, 4.0, 4.0).unwrap();
+        fill_rect_ts_with_mode(&mut pm, rect, [0.502, 0.502, 0.502, 1.0], 1.0, BlendMode::Plus);
+        let px = pm.pixel(1, 1).unwrap();
+        assert!(px.red() < 255 && px.red() > 150, "additive-in-linear expected ~178, got {}", px.red());
+    }
 }

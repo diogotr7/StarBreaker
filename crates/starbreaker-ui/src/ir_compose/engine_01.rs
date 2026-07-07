@@ -2666,13 +2666,11 @@ fn draw_widget_circle(ctx: &ComposeContext<'_>, node: &UiIrNode, pixmap: &mut Pi
             let mut paint = Paint::default();
             paint.set_color(to_skia_color(fill, node.alpha));
             paint.anti_alias = true;
-            pixmap.as_mut().fill_path(
-                &path,
-                &paint,
-                tiny_skia::FillRule::Winding,
-                Transform::identity(),
-                None,
-            );
+            fill_linear(pixmap, path.bounds(), BlendMode::SourceOver, |scratch, tf| {
+                scratch
+                    .as_mut()
+                    .fill_path(&path, &paint, tiny_skia::FillRule::Winding, tf, None);
+            });
         }
     }
 
@@ -2792,9 +2790,18 @@ fn draw_rect_stroke_ts(
 
     let mut stroke = Stroke::default();
     stroke.width = width.max(0.5);
-    pixmap
-        .as_mut()
-        .stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+    let b = path.bounds();
+    let inflate = stroke.width;
+    let bounds = TskRect::from_xywh(
+        b.x() - inflate,
+        b.y() - inflate,
+        b.width() + inflate * 2.0,
+        b.height() + inflate * 2.0,
+    )
+    .unwrap_or(b);
+    fill_linear(pixmap, bounds, BlendMode::SourceOver, |scratch, tf| {
+        scratch.as_mut().stroke_path(&path, &paint, &stroke, tf, None);
+    });
 }
 
 fn fill_rect_ts(pixmap: &mut Pixmap, rect: TskRect, rgba: [f32; 4], alpha: f32) {

@@ -306,9 +306,11 @@ pub(crate) fn draw_ir_polygon(
     let mut paint = Paint::default();
     paint.set_color(to_skia_color(fill, node.alpha));
     paint.anti_alias = true;
-    pixmap
-        .as_mut()
-        .fill_path(&path, &paint, tiny_skia::FillRule::Winding, Transform::identity(), None);
+    fill_linear(pixmap, path.bounds(), BlendMode::SourceOver, |scratch, tf| {
+        scratch
+            .as_mut()
+            .fill_path(&path, &paint, tiny_skia::FillRule::Winding, tf, None);
+    });
 }
 
 #[cfg(test)]

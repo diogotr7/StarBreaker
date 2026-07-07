@@ -71,7 +71,6 @@ pub(crate) fn blend_straight_linear(dst: &mut [u8; 4], src_rgb: [u8; 3], src_a: 
 /// Premultiplied source-over in LINEAR light. Both `dst` and `src` are
 /// premultiplied u8 sRGB (a `tiny_skia::Pixmap` pixel). Generalises the landed
 /// white-mask carve-out (`ir_compose/engine_01.rs` history) to any source.
-#[allow(dead_code)] // wired in B4 Task 2+ (fill/blit/clip/swf composites)
 pub(crate) fn blend_premul_linear(dst: &mut [u8; 4], src: [u8; 4]) {
     let sa = src[3] as f32 / 255.0;
     if sa <= 0.0 {
@@ -100,7 +99,6 @@ pub(crate) fn blend_premul_linear(dst: &mut [u8; 4], src: [u8; 4]) {
 /// Premultiplied additive (`tiny_skia::BlendMode::Plus`) in LINEAR light — used
 /// by glow layers (hologram, radar disc, `*_glow.tif`). Sums premultiplied
 /// linear channels, clamped to the output alpha.
-#[allow(dead_code)] // wired in B4 Tasks 2-3 (additive fill + blit)
 pub(crate) fn blend_premul_add_linear(dst: &mut [u8; 4], src: [u8; 4]) {
     let sa = src[3] as f32 / 255.0;
     let da = dst[3] as f32 / 255.0;
