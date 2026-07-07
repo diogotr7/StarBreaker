@@ -32,7 +32,7 @@ running this same sequence) before the parent's passes. At one level:
 | 3 | Widget-standard embedded | `widget-standard-embedded` | the expanded standards' own `embeddedStyles` | empty raw | whole scene (entries self-condition) |
 | 4 | Style-link | linked record name | the canvas `style` record link — applied ONLY when no brand container resolves | the linked style record | whole scene |
 | 5 | Shared styles | the shared record's name (`mfd_g_content`, `mfd_g_header`, `h_hud_g_controlhints_b`, …) | `defaultStyles.sharedStyles` URL | fills: brand container (or palette source / canvas); chrome: fetched brand `Style` record (`PaletteSources`) | whole scene |
-| 6 | Brand container | `s_drak_hud`, `s_bioc`, `s_drak_env`, `orig`, … | selected `brandStyles[]` (manufacturer match) | fills: brand container; chrome: brand `Style` record | whole scene; the TEXT-FORMAT route is FULL here (conditional + bare); an unconditional bare `Type(Text)` also routes at passes 3/4/5 (see below) |
+| 6 | Brand container | `s_drak_hud`, `s_bioc`, `s_drak_env`, `orig`, … | selected `brandStyles[]` (manufacturer match) | fills: brand container; chrome: brand `Style` record | whole scene; the TEXT-FORMAT route is FULL here (conditional + bare); an unconditional bare `Type(Text)` also routes at passes 4/5/7 (see below) |
 | 7 | Embedded styles | `embeddedStyles` | the canvas's `embeddedStyles` | the canvas / inherited palette source | whole scene |
 | 8 | Inline-only finishing pass | `inline` (was `?` pre-P4.3) | empty entry list | shared fills | guarantees node `inlineStyles` apply on canvases with no other containers |
 | 9 | Scrollbar module sheet | `sk_<brand>_scrollbarstyles` | `apply_scrollbar_modular_styles` | module chrome palette | expanded scrollbar standards only |
@@ -73,7 +73,7 @@ as pass 5.)
 
 Full at `Tier::Brand`; bare-only (`TextFormatRoute::BareTextOnly`) at
 `Tier::StyleLink` (pass 4), `Tier::Shared` (pass 5), and `Tier::Embedded`
-(pass 3); Off at StandardModule/Inline (widened in B2 — was Brand-only since
+(pass 7); Off at StandardModule/Inline (widened in B2 — was Brand-only since
 P4.3, itself a replacement for an `s_*` identifier-prefix sniff). A
 Parent-wrapped entry whose conditions select a TEXTFIELD styles the field's
 TEXT FORMAT (FontSize/FillColor), not the widget. A CONDITIONAL

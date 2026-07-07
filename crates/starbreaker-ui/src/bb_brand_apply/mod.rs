@@ -60,13 +60,13 @@ use self::modifiers::{apply_inline_color_overlay, apply_modifier};
 ///
 /// - [`Full`](TextFormatRoute::Full) — the BRAND tier: every `Parent`-wrapped
 ///   or bare `Type(Text)` entry routes (velocity-num/master-mode readouts).
-/// - [`BareTextOnly`](TextFormatRoute::BareTextOnly) — the EMBEDDED tier: ONLY
-///   an unconditional bare `Type(Text)` declaration routes (the DRAK
-///   LR-indicator's `embeddedStyles` "Font Size" -> FontSize 100). A
-///   CONDITIONAL embedded entry (the target screen's `Bright Elements`
+/// - [`BareTextOnly`](TextFormatRoute::BareTextOnly) — the EMBEDDED, STYLELINK,
+///   and SHARED tiers: ONLY an unconditional bare `Type(Text)` declaration
+///   routes (e.g. the DRAK LR-indicator's `embeddedStyles` "Font Size" ->
+///   FontSize 100). A CONDITIONAL entry (the target screen's `Bright Elements`
 ///   `Parent[Tag]` override, the medical bed's `Textfield_BrightColor_Override`)
 ///   is a state/selection override absent at rest, so it stays brand-tier-only.
-/// - [`Off`](TextFormatRoute::Off) — every other tier (shared / inline / …).
+/// - [`Off`](TextFormatRoute::Off) — the StandardModule and Inline tiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TextFormatRoute {
     Off,

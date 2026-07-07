@@ -8,11 +8,12 @@
 //! conditions, modifiers, probes, and the `__InlineFontSize` /
 //! `__EntryFontSize` / `__AppliedStyleEntries` marker semantics are reused
 //! verbatim. The TEXT-FORMAT route (entries styling a textfield's text
-//! format) runs at [`Tier::Brand`] (Parent-wrapped or bare `Type(Text)`
+//! format) runs FULL at [`Tier::Brand`] (Parent-wrapped or bare `Type(Text)`
 //! entries — the tier carries the semantics the legacy path inferred from
-//! the `s_*` identifier prefix) AND, since the LR-indicator arc (ledger
-//! 96/97), at [`Tier::Embedded`] for an UNCONDITIONAL bare `Type(Text)`
-//! selector (`TextFormatRoute::BareTextOnly`).
+//! the `s_*` identifier prefix) AND, for an UNCONDITIONAL bare `Type(Text)`
+//! selector only (`TextFormatRoute::BareTextOnly`), at [`Tier::Embedded`]
+//! (LR-indicator arc, ledger 96/97) and — since B2 — [`Tier::StyleLink`] and
+//! [`Tier::Shared`].
 
 use crate::bb_loc::LocFetcher;
 use crate::bb_scene::{BbNodeId, BbScene};
@@ -27,8 +28,8 @@ pub enum Tier {
     StyleLink,
     /// `defaultStyles.sharedStyles` record.
     Shared,
-    /// Selected `brandStyles[]` container — the only tier with the
-    /// text-format route.
+    /// Selected `brandStyles[]` container — the only tier with the FULL
+    /// text-format route (StyleLink/Shared/Embedded route bare `Type(Text)` only).
     Brand,
     /// The canvas's `embeddedStyles`.
     Embedded,
@@ -431,6 +432,12 @@ mod tests {
         apply(&mut sl, &[StyleSheet::uniform(Tier::StyleLink, "linked_style", &palette, &cond)], None);
         assert_eq!(label_fontsize(&sl), None,
             "a CONDITIONAL style-link text entry must NOT take the route (stays brand-only)");
+        // The SAME conditional entry DOES route at Brand — proves it is routable,
+        // so the None above is a real exclusion, not a vacuously-unroutable fixture.
+        let mut brand = parse_bb_canvas(&textfield_canvas()).expect("parses");
+        apply(&mut brand, &[StyleSheet::uniform(Tier::Brand, "s_drak_hud", &palette, &cond)], None);
+        assert_eq!(label_fontsize(&brand), Some(99.0),
+            "the same conditional entry routes at Brand (the style-link exclusion above is real)");
     }
 
     #[test]
@@ -451,5 +458,11 @@ mod tests {
         apply(&mut sh, &[StyleSheet::uniform(Tier::Shared, "mfd_g_content", &palette, &cond)], None);
         assert_eq!(label_fontsize(&sh), None,
             "a CONDITIONAL shared text entry must NOT take the route (stays brand-only)");
+        // The SAME conditional entry DOES route at Brand — proves it is routable,
+        // so the None above is a real exclusion, not a vacuously-unroutable fixture.
+        let mut brand = parse_bb_canvas(&textfield_canvas()).expect("parses");
+        apply(&mut brand, &[StyleSheet::uniform(Tier::Brand, "s_drak_hud", &palette, &cond)], None);
+        assert_eq!(label_fontsize(&brand), Some(99.0),
+            "the same conditional entry routes at Brand (the shared exclusion above is real)");
     }
 }
