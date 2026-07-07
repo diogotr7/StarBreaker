@@ -1,7 +1,12 @@
 //! Brand style resolution for BuildingBlocks canvases.
 //!
-//! Handles per-canvas brand override (IC_* family) and ship-manufacturer-based
-//! brand selection (MC_* family) with generic fallback support.
+//! The unified identity+family resolver ([`resolve_brand_identity`]): a per-canvas
+//! brand override (IC_* family), then ordered IDENTITY candidates
+//! ([`brand_candidate_identifiers`]) keyed on the canvas style-link and the
+//! manufacturer's hud/env [`BrandClass`] sibling pair (per-element [`BrandPolicy`]),
+//! then a `gen_`/`s_default_` family fallback. Replaced the legacy
+//! manufacturer-prefix scan (B1), which could not distinguish the
+//! `s_<mfr>_hud`/`s_<mfr>_env` sibling pair.
 
 use crate::record_name::extract_record_name;
 
