@@ -898,7 +898,20 @@ fn collect_late_state_style_entries(
         String,
         crate::bb_style_engine::Tier,
     )> = Vec::new();
-    if let Some(brand) = bb_brand_style::resolve_brand_style(canvas_json, manufacturer_id, None) {
+    // Resolve the selected brand container by IDENTITY + canvas family (hud/env),
+    // not the legacy manufacturer-prefix scan (B1). No style link at this site.
+    let canvas_name = canvas_json
+        .get("_RecordName_")
+        .and_then(|v| v.as_str())
+        .or_else(|| record_value.get("_RecordName_").and_then(|v| v.as_str()));
+    let class = bb_brand_style::brand_class_for_canvas(canvas_name);
+    if let Some(brand) = bb_brand_style::resolve_brand_identity(
+        canvas_json,
+        None,
+        manufacturer_id,
+        class,
+        bb_brand_style::BrandPolicy::Default,
+    ) {
         let brand_entries = filter(brand.entries);
         if !brand_entries.is_empty() {
             let chrome = brand_palette_record(Some(&brand), fetch_by_path)
