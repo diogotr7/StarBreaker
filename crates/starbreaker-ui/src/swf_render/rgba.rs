@@ -1,3 +1,11 @@
+//! SWF overlay compositors: blend a rasterised SWF scratch layer against the
+//! IR framebuffer. `composite_rgba_over_pixmap` lays a straight-alpha
+//! `RgbaImage` (text glyphs) onto a premultiplied `tiny_skia::Pixmap`;
+//! `composite_pixmap_over_rgba` lays a premultiplied `Pixmap` (SWF stage/shape)
+//! onto a straight-alpha `RgbaImage`. Both blend in LINEAR light via the shared
+//! `crate::colour` primitives so the SWF/Hybrid overlay path matches the rest of
+//! the renderer (B4 — no sRGB carve-outs).
+
 use image::RgbaImage;
 use tiny_skia::Pixmap;
 
@@ -21,17 +29,16 @@ pub(super) fn composite_rgba_over_pixmap(src: &RgbaImage, dst: &mut Pixmap) {
                 continue;
             }
             let idx = ((y * dst_w + x) as usize) * 4;
-            // Convert src from straight to premultiplied
-            let r_pm = px[0] as u32 * sa / 255;
-            let g_pm = px[1] as u32 * sa / 255;
-            let b_pm = px[2] as u32 * sa / 255;
-
-            // Compose src_pm over dst_pm: out = src_pm + dst_pm * (1 - sa/255)
-            let inv = 255 - sa;
-            dst_data[idx] = (r_pm + dst_data[idx] as u32 * inv / 255).min(255) as u8;
-            dst_data[idx + 1] = (g_pm + dst_data[idx + 1] as u32 * inv / 255).min(255) as u8;
-            dst_data[idx + 2] = (b_pm + dst_data[idx + 2] as u32 * inv / 255).min(255) as u8;
-            dst_data[idx + 3] = (sa + dst_data[idx + 3] as u32 * inv / 255).min(255) as u8;
+            // Convert src from straight to premultiplied sRGB, then blend it over
+            // the premultiplied dst in LINEAR light.
+            let src_pm = [
+                (px[0] as u32 * sa / 255) as u8,
+                (px[1] as u32 * sa / 255) as u8,
+                (px[2] as u32 * sa / 255) as u8,
+                sa as u8,
+            ];
+            let dst_slice: &mut [u8; 4] = (&mut dst_data[idx..idx + 4]).try_into().unwrap();
+            crate::colour::blend_premul_linear(dst_slice, src_pm);
         }
     }
 }
@@ -48,32 +55,65 @@ pub(super) fn composite_pixmap_over_rgba(pixmap: &Pixmap, img: &mut RgbaImage) {
             if a_top == 0 {
                 continue;
             }
-            let r_top = ((pix[idx] as u32 * 255) / a_top.max(1)).min(255);
-            let g_top = ((pix[idx + 1] as u32 * 255) / a_top.max(1)).min(255);
-            let b_top = ((pix[idx + 2] as u32 * 255) / a_top.max(1)).min(255);
-
-            let base = img.get_pixel(x, y);
-            let ba = base[3] as u32;
-
-            let out_a = (a_top + ba * (255 - a_top) / 255).min(255);
-            if out_a == 0 {
-                img.put_pixel(x, y, image::Rgba([0, 0, 0, 0]));
-            } else {
-                let blend = |top: u32, bot: u32| -> u8 {
-                    ((top * a_top / 255 + bot * ba * (255 - a_top) / 255 / 255) * 255 / out_a)
-                        .min(255) as u8
-                };
-                img.put_pixel(
-                    x,
-                    y,
-                    image::Rgba([
-                        blend(r_top, base[0] as u32),
-                        blend(g_top, base[1] as u32),
-                        blend(b_top, base[2] as u32),
-                        out_a as u8,
-                    ]),
-                );
-            }
+            // Unpremultiply the top to straight sRGB, then blend it over the
+            // straight-alpha base in LINEAR light. `blend_straight_linear`
+            // computes out_a = src_a + dst_a*(1 - src_a) (alpha stays linear).
+            let src_rgb = [
+                ((pix[idx] as u32 * 255) / a_top.max(1)).min(255) as u8,
+                ((pix[idx + 1] as u32 * 255) / a_top.max(1)).min(255) as u8,
+                ((pix[idx + 2] as u32 * 255) / a_top.max(1)).min(255) as u8,
+            ];
+            let p = img.get_pixel_mut(x, y);
+            crate::colour::blend_straight_linear(&mut p.0, src_rgb, a_top as f32 / 255.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::Rgba;
+    use tiny_skia::Color;
+
+    // 50% straight white over OPAQUE black must composite in LINEAR light:
+    // linear-half -> ~188 sRGB, NOT the sRGB midpoint 128.
+    #[test]
+    fn composite_rgba_over_pixmap_blends_in_linear() {
+        let mut dst = Pixmap::new(1, 1).expect("pixmap");
+        dst.fill(Color::from_rgba8(0, 0, 0, 255)); // premul (0,0,0,255)
+        let src = RgbaImage::from_pixel(1, 1, Rgba([255, 255, 255, 128])); // STRAIGHT alpha
+
+        composite_rgba_over_pixmap(&src, &mut dst);
+
+        let out = dst.data();
+        assert!(
+            (out[0] as i32 - 188).abs() <= 3,
+            "expected ~188 (linear), got {:?}",
+            &out[0..4]
+        );
+        assert!(out[0] > 160, "must NOT be the sRGB midpoint 128, got {}", out[0]);
+        assert_eq!(out[3], 255, "opaque over opaque stays opaque");
+    }
+
+    // Premultiplied 50% white pixmap over opaque-black straight image must
+    // composite in LINEAR light: ~188, not 128.
+    #[test]
+    fn composite_pixmap_over_rgba_blends_in_linear() {
+        let mut src = Pixmap::new(1, 1).expect("pixmap");
+        src.fill(Color::from_rgba8(255, 255, 255, 128)); // tiny_skia stores premul (128,128,128,128)
+        // Confirm the stored premul bytes so the fixture can't drift silently.
+        assert_eq!(src.data(), &[128, 128, 128, 128], "expected premul 50% white");
+
+        let mut img = RgbaImage::from_pixel(1, 1, Rgba([0, 0, 0, 255])); // opaque black, STRAIGHT
+
+        composite_pixmap_over_rgba(&src, &mut img);
+
+        let p = img.get_pixel(0, 0).0;
+        assert!(
+            (p[0] as i32 - 188).abs() <= 3,
+            "expected ~188 (linear), got {p:?}"
+        );
+        assert!(p[0] > 160, "must NOT be the sRGB midpoint 128, got {}", p[0]);
+        assert_eq!(p[3], 255, "opaque over opaque stays opaque");
     }
 }
