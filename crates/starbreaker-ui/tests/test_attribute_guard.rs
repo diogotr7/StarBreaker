@@ -67,6 +67,14 @@ fn no_orphaned_test_attributes_in_ui_sources() {
     collect_source_files(&manifest.join("src"), &mut files);
     collect_source_files(&manifest.join("tests"), &mut files);
 
+    // Non-empty-target precondition (alignment plan T5, ledger 3/61/105): a
+    // renamed `src/`/`tests/` or a broken walker would leave `files` empty and
+    // the guard would approve nothing — a vacuous pass.
+    assert!(
+        !files.is_empty(),
+        "orphaned-#[test] guard scanned zero source files under src/ and tests/ — vacuous"
+    );
+
     let mut violations = Vec::new();
     for path in files {
         let source = fs::read_to_string(&path).expect("read source");

@@ -23,6 +23,12 @@ checks=(
   "crates/starbreaker-ui/src/ui_ir.rs::base_animatedelements"
 )
 
+# Non-empty-target precondition (alignment plan T5, ledger 61): if this list is
+# ever emptied the loop below checks nothing and passes vacuously — the exact
+# rot this guard exists to stop. Fail loudly on an empty check set.
+source "$(dirname "${BASH_SOURCE[0]}")/lib/guard_assert.sh"
+assert_nonzero_matches "${#checks[@]}" "hardcoding-guard checks (scripts/check_ui_hardcoding.sh)"
+
 failed=0
 for check in "${checks[@]}"; do
   file="${check%%::*}"

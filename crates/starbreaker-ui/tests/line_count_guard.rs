@@ -36,6 +36,15 @@ fn rust_source_files_stay_under_line_cap() {
     collect_rs_files(&src_dir, &mut files);
     files.sort();
 
+    // Non-empty-target precondition (alignment plan T5, ledger 3/61/105): a
+    // guard that scans zero targets passes vacuously. If `src/` were renamed or
+    // the walker broke, this loop would silently approve nothing.
+    assert!(
+        !files.is_empty(),
+        "line-count guard scanned zero source files under {} — vacuous",
+        src_dir.display()
+    );
+
     let mut violations = Vec::new();
     for file in files {
         let contents = fs::read_to_string(&file)

@@ -398,7 +398,7 @@ fn load_live_target_cases() -> Option<Vec<LiveTargetCase>> {
         .ok()
         .map(|bytes| starbreaker_ui::bb_loc_p4k::parse_ini_bytes(&bytes));
 
-    let cases = snapshot_freeze()
+    let cases: Vec<LiveTargetCase> = snapshot_freeze()
         .targets
         .into_iter()
         .map(|target| {
@@ -422,6 +422,15 @@ fn load_live_target_cases() -> Option<Vec<LiveTargetCase>> {
             }
         })
         .collect();
+
+    // Non-empty-target precondition (alignment plan T5, ledger 3/61/105): past
+    // the skip-if-missing gate above, an emptied snapshot-freeze fixture would
+    // leave every live-manifest guard iterating zero cases and passing
+    // vacuously. One assert here covers all four callers.
+    assert!(
+        !cases.is_empty(),
+        "live manifest guard built zero target cases — vacuous (snapshot freeze fixture emptied?)"
+    );
 
     Some(cases)
 }

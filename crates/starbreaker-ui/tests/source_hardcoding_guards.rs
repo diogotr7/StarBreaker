@@ -86,6 +86,7 @@ fn hardcoding_guard_tests_exist_in_core_renderer_files() {
 fn rgba_colour_literals_are_not_hardcoded() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut violations: Vec<String> = Vec::new();
+    let mut files_scanned = 0usize;
     let mut stack = vec![manifest_dir.join("src"), manifest_dir.join("examples")];
     while let Some(dir) = stack.pop() {
         for entry in fs::read_dir(&dir).expect("read src dir").flatten() {
@@ -99,9 +100,17 @@ fn rgba_colour_literals_are_not_hardcoded() {
                 continue;
             }
             let source = fs::read_to_string(&path).expect("read source file");
+            files_scanned += 1;
             scan_rgba_literals(&path, &source, &mut violations);
         }
     }
+    // Non-empty-target precondition (alignment plan T5, ledger 3/61/105): if the
+    // walk finds zero sources (src/ renamed, extension filter drift) the guard
+    // approves nothing — a vacuous pass worse than no guard.
+    assert!(
+        files_scanned > 0,
+        "rgba-literal guard scanned zero .rs/.part/.inc files under src/ and examples/ — vacuous"
+    );
     assert!(
         violations.is_empty(),
         "hard-coded RgbaColor literals found (parse from game data or load the \
@@ -170,6 +179,7 @@ fn scan_rgba_literals(path: &Path, source: &str, violations: &mut Vec<String>) {
 fn colour_array_literals_are_not_hardcoded_in_production() {
     let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut violations: Vec<String> = Vec::new();
+    let mut files_scanned = 0usize;
     let mut stack = vec![src_root];
     while let Some(dir) = stack.pop() {
         for entry in fs::read_dir(&dir).expect("read src dir").flatten() {
@@ -189,9 +199,17 @@ fn colour_array_literals_are_not_hardcoded_in_production() {
                 continue;
             }
             let source = fs::read_to_string(&path).expect("read source file");
+            files_scanned += 1;
             scan_colour_array_literals(&path, &strip_cfg_test_regions(&source), &mut violations);
         }
     }
+    // Non-empty-target precondition (alignment plan T5, ledger 3/61/105): a
+    // renamed src/ or a broken extension filter would scan zero production files
+    // and approve nothing vacuously.
+    assert!(
+        files_scanned > 0,
+        "colour-array guard scanned zero production .rs/.part/.inc files under src/ — vacuous"
+    );
     assert!(
         violations.is_empty(),
         "hard-coded colour-array literals found in production code (derive from \
@@ -287,6 +305,12 @@ fn brand_palette_fixture_matches_live_records() {
         serde_json::from_str(include_str!("fixtures/ui_ir/brand_palettes_v1.json"))
             .expect("fixture parses");
     let brands = fixture["brands"].as_object().expect("brands object");
+    // Non-empty-target precondition (alignment plan T5, ledger 3/61/105): an
+    // emptied fixture would compare zero brands and pass vacuously.
+    assert!(
+        !brands.is_empty(),
+        "brand-palette fixture guard found zero brands — vacuous (fixture emptied?)"
+    );
     for (brand, entry) in brands {
         let record_path = styles_root.join(format!("{brand}.json"));
         let record: serde_json::Value = serde_json::from_str(

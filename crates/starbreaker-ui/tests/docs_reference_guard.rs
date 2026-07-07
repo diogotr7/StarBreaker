@@ -46,6 +46,7 @@ fn ui_docs_reference_existing_files() {
         "crates/starbreaker-ui/docs/ui-process-retro-prompt.md",
     ];
     let mut missing = Vec::new();
+    let mut checked = 0usize;
     for doc in docs {
         let path = root.join(doc);
         let text = std::fs::read_to_string(&path)
@@ -67,12 +68,22 @@ fn ui_docs_reference_existing_files() {
                 if !has_ext {
                     continue;
                 }
+                checked += 1;
                 if !root.join(&token).exists() {
                     missing.push(format!("{doc} -> {token}"));
                 }
             }
         }
     }
+    // Non-empty-target precondition (alignment plan T5): a zero-match run is a
+    // harness FAILURE, not a clean pass (ledger item 3). If the extractor or the
+    // docs' path-reference format drifts so that no file tokens are found, this
+    // guard silently verifies nothing.
+    assert!(
+        checked > 0,
+        "docs-reference guard extracted zero file tokens from the consolidated UI \
+         docs — vacuous (extractor or doc path-reference format drifted?)"
+    );
     assert!(
         missing.is_empty(),
         "consolidated UI docs reference files that do not exist (fix the doc \
