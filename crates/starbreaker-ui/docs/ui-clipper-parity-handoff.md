@@ -132,12 +132,13 @@ nine-slice). A working implementation was built and REVERTED for two blockers
    medical close-button X 4026531855 became a separator).
 3. **Brand application** (`apply_separator_standard_styles`, engine_01.part,
    subtree-scoped via `apply_scene_style_entries_in_subtree`): **BLOCKER B →
-   runbook "one brand-context resolver":** exact canvas-selected id + hud↔env
-   sibling works for power (`s_drak_hud`→`s_drak_env`) and the medical bed,
-   but the medical FOOTER selects `s_aegs_env` and matches the standard's
-   `s_aegs_env` ⇒ AEGS divider leaks into platinum. Needs the typography-table
-   model (`selected_style_name`: canvas:`<style-link>` else `s_<mfr>_{hud|env}`
-   by canvas family) instead of `resolve_brand_style` on the component record.
+   runbook "one brand-context resolver" (RESOLVED — B1):** exact canvas-selected
+   id + hud↔env sibling works for power (`s_drak_hud`→`s_drak_env`) and the
+   medical bed, but the medical FOOTER selects `s_aegs_env` and matches the
+   standard's `s_aegs_env` ⇒ AEGS divider leaks into platinum. Now resolved by
+   the unified identity resolver (`resolve_brand_identity` +
+   `brand_class_for_canvas` by canvas family; identity matching only, no prefix
+   scan) — the legacy `resolve_brand_style` scan is deleted.
 4. The overlay-icon default must respect a styled `EnableColorOverlay=false`
    (PascalCase raw override) so the separator SVGs are not
    MissionObjectives-tinted.

@@ -400,16 +400,17 @@ that depend on these are in `crates/starbreaker-ui/docs/ui-clipper-parity-handof
   identity to expansion ORDER. Fix: a band lane per host type (or a second
   band, e.g. `0xF800_0000`, for new types) in `merge_child_scene`. Blocks the
   parked separator-dots work (handoff "Open items").
-- **One brand-context resolver.** At least four independent
-  brand-container selection paths exist — `resolve_brand_style`'s
-  manufacturer-prefix scan, `collect_standard_text_styles`'
-  `selected_style_name` family mapping, the body-background preferred chain,
-  and the separator `hud`↔`env` sibling swap — and the separator AEGS-divider
-  leak came from one of them improvising over a shared standard. Every new
-  modularkit standard re-derives this. Fix: extract ONE resolver (canvas
-  style-link → `s_<mfr>_{hud|env}` by canvas family → sibling swap; identity
-  matching only, no prefix scans over shared standards) and migrate call
-  sites one at a time under the guards.
+- **One brand-context resolver (RESOLVED — B1, 2026-07-07).** Formerly four
+  independent brand-container selection paths existed — `resolve_brand_style`'s
+  manufacturer-prefix scan, `collect_standard_text_styles`' `selected_style_name`
+  family mapping, the body-background preferred chain, and the separator
+  `hud`↔`env` sibling swap — and the separator AEGS-divider leak came from one of
+  them improvising over a shared standard. Now unified on ONE identity resolver
+  in `bb_brand_style` (`resolve_brand_identity` + `brand_class_for_canvas` +
+  `BrandPolicy`): canvas style-link → `s_<mfr>_{hud|env}` by canvas family →
+  sibling swap; identity matching only, no prefix scans over shared standards.
+  Every call site was migrated one per commit under the guards and the legacy
+  `resolve_brand_style` prefix scan is deleted.
 - **Renderer-wide linear-light compositing (GATED — owner approval).** The
   engine composites in LINEAR light; our renderer blends in sRGB. The
   white-mask glow path was converted (scoped, landed —

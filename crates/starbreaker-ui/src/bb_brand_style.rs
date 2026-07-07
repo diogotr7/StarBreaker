@@ -166,8 +166,8 @@ pub fn brand_candidate_identifiers(
 }
 
 /// Resolve the active brand-style entry by ORDERED IDENTITY (the B1 unified
-/// resolver — replaces the manufacturer-prefix scan of [`resolve_brand_style`],
-/// which could not distinguish the `s_<mfr>_hud`/`s_<mfr>_env` sibling pair).
+/// resolver — replaced the legacy manufacturer-prefix scan, which could not
+/// distinguish the `s_<mfr>_hud`/`s_<mfr>_env` sibling pair).
 ///
 /// 1. IC_* single-entry override (per-canvas brand, e.g. BioCorp medical).
 /// 2. First `brandStyles[]` entry whose `brandIdentifier` basename matches a
@@ -238,94 +238,6 @@ pub struct BrandStyle<'a> {
     pub entries: &'a [serde_json::Value],
     /// Reference to the raw brand-styles entry JSON.
     pub raw: &'a serde_json::Value,
-}
-
-/// Resolve the active brand-style entry for a canvas record.
-///
-/// Algorithm (R1 spec):
-/// 1. Read `record_value.brandStyles` (array). If absent or empty → None.
-/// 2. **Per-canvas brand override (IC_* rule):** if the canvas has exactly ONE
-///    brandStyles entry AND `record_value._RecordName_` starts case-insensitively
-///    with `IC_`, return that entry regardless of ship manufacturer.
-///    (This is finding #6 — `IC_Med_MedicalCommon_A_*` is BioCorp on every ship.)
-/// 3. Otherwise, look for the brandStyles entry whose `brandIdentifier` file-path
-///    basename starts with `s_<manufacturer>` (case-insensitively). Manufacturer
-///    is the lowercase `ship_manufacturer_id` parameter. This matches both exact
-///    manufacturer brand files (e.g. `s_drak.json`) and suffixed variants
-///    (e.g. `s_drak_hud.json`).
-/// 4. If no match and ship_manufacturer_id is Some, fall back to the brandStyles
-///    entry whose basename starts with `gen_` or `s_default_`
-///    (manufacturer-agnostic fallback).
-/// 5. If still nothing, return None.
-pub fn resolve_brand_style<'a>(
-    record_or_value: &'a serde_json::Value,
-    ship_manufacturer_id: Option<&str>,
-    preferred_identifier: Option<&str>,
-) -> Option<BrandStyle<'a>> {
-    let record_value = record_or_value
-        .get("_RecordValue_")
-        .unwrap_or(record_or_value);
-
-    let brand_styles = record_value
-        .get("brandStyles")
-        .and_then(|v| v.as_array())?;
-    
-    if brand_styles.is_empty() {
-        return None;
-    }
-    
-    // Step 2: Per-canvas brand override for IC_* canvases with exactly one brand entry
-    let record_name = record_or_value
-        .get("_RecordName_")
-        .and_then(|v| v.as_str())
-        .or_else(|| {
-            record_value
-                .get("_RecordName_")
-                .and_then(|v| v.as_str())
-        })
-        .unwrap_or("");
-    
-    let family = classify_canvas_family(record_name);
-    if family == CanvasFamily::InteractiveCanvas && brand_styles.len() == 1 {
-        return build_brand_style(&brand_styles[0]);
-    }
-    
-    // Step 3: Ship-manufacturer-based brand selection
-    if let Some(mfr) = ship_manufacturer_id {
-        let prefix = format!("s_{}", mfr.to_ascii_lowercase());
-        for entry in brand_styles {
-            if let Some(basename) = brand_identifier_basename(entry) {
-                let lower_base = basename.to_ascii_lowercase();
-                // Match if basename starts with "s_<manufacturer>" (e.g. s_drak, s_drak_hud, etc.)
-                if lower_base.starts_with(&prefix) {
-                    return build_brand_style(entry);
-                }
-            }
-        }
-        
-        // Step 4: Generic fallback for known manufacturers
-        for entry in brand_styles {
-            if let Some(basename) = brand_identifier_basename(entry) {
-                let lower_base = basename.to_ascii_lowercase();
-                if lower_base.starts_with("gen_") || lower_base.starts_with("s_default_") {
-                    return build_brand_style(entry);
-                }
-            }
-        }
-    }
-
-    if let Some(preferred) = preferred_identifier {
-        let preferred = preferred.to_ascii_lowercase();
-        for entry in brand_styles {
-            if let Some(basename) = brand_identifier_basename(entry) {
-                if basename.to_ascii_lowercase() == preferred {
-                    return build_brand_style(entry);
-                }
-            }
-        }
-    }
-    
-    None
 }
 
 /// Helper to construct a `BrandStyle` from a brand-styles entry.
@@ -462,136 +374,11 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_brand_style_ship_manufacturer() {
-        // MC_S_Self_Master with two brand entries (s_drak + s_rsi)
-        let record = json!({
-            "_RecordName_": "MC_S_Self_Master",
-            "brandStyles": [
-                {
-                    "brandIdentifier": "file://libs/foundry/records/ui/buildingblocks/brands/s_drak.json",
-                    "entries": [
-                        {"modifiers": [{"field": "FillColor", "value": "#FF6600"}]}
-                    ]
-                },
-                {
-                    "brandIdentifier": "file://libs/foundry/records/ui/buildingblocks/brands/s_rsi.json",
-                    "entries": [
-                        {"modifiers": [{"field": "FillColor", "value": "#0066FF"}]}
-                    ]
-                }
-            ]
-        });
-
-        let record_value = record.get("_RecordValue_").unwrap_or(&record);
-
-        // Drake manufacturer picks drak
-        let result = resolve_brand_style(record_value, Some("drak"), None);
-        assert!(result.is_some());
-        let brand = result.unwrap();
-        assert_eq!(brand.identifier, "s_drak");
-        assert_eq!(brand.entries.len(), 1);
-
-        // RSI manufacturer picks rsi
-        let result = resolve_brand_style(record_value, Some("rsi"), None);
-        assert!(result.is_some());
-        let brand = result.unwrap();
-        assert_eq!(brand.identifier, "s_rsi");
-
-        // Unknown manufacturer with no generic fallback → None
-        let result = resolve_brand_style(record_value, Some("unknown"), None);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_resolve_brand_style_ic_override() {
-        // IC_Med_MedicalCommon_A_MainMenu with one brandStyles entry (s_bioc)
-        let record = json!({
-            "_RecordName_": "IC_Med_MedicalCommon_A_MainMenu",
-            "brandStyles": [
-                {
-                    "brandIdentifier": "file://libs/foundry/records/ui/buildingblocks/brands/s_bioc.json",
-                    "entries": [
-                        {"modifiers": [{"field": "ImagePath", "value": "i_med_bioc_MenuOption_A.dds"}]}
-                    ]
-                }
-            ]
-        });
-
-        let record_value = record.get("_RecordValue_").unwrap_or(&record);
-
-        // Drake ship still gets BioCorp brand (per-canvas override)
-        let result = resolve_brand_style(record_value, Some("drak"), None);
-        assert!(result.is_some());
-        let brand = result.unwrap();
-        assert_eq!(brand.identifier, "s_bioc");
-
-        // Aegis ship also gets BioCorp brand
-        let result = resolve_brand_style(record_value, Some("aegs"), None);
-        assert!(result.is_some());
-        let brand = result.unwrap();
-        assert_eq!(brand.identifier, "s_bioc");
-    }
-
-    #[test]
-    fn test_resolve_brand_style_ic_override_wrapped_record() {
-        let record = json!({
-            "_RecordName_": "IC_Med_MedicalCommon_A_Footer",
-            "_RecordValue_": {
-                "brandStyles": [
-                    {
-                        "brandIdentifier": "file://libs/foundry/records/ui/buildingblocks/brands/s_bioc.json",
-                        "entries": [
-                            {"modifiers": [{"field": "ImagePath", "value": "i_med_bioc_bottom-bar.dds"}]}
-                        ]
-                    },
-                    {
-                        "brandIdentifier": "file://libs/foundry/records/ui/buildingblocks/brands/s_rsi.json",
-                        "entries": []
-                    }
-                ]
-            }
-        });
-
-        let result = resolve_brand_style(&record, Some("drak"), Some("s_bioc"));
-        assert!(result.is_some());
-        let brand = result.unwrap();
-        assert_eq!(brand.identifier, "s_bioc");
-    }
-
-    #[test]
-    fn test_resolve_brand_style_generic_fallback() {
-        // gen_mc_s_target with s_drak + gen_s entries
-        let record = json!({
-            "_RecordName_": "gen_mc_s_target",
-            "brandStyles": [
-                {
-                    "brandIdentifier": "file://libs/foundry/records/ui/buildingblocks/brands/s_drak.json",
-                    "entries": []
-                },
-                {
-                    "brandIdentifier": "file://libs/foundry/records/ui/buildingblocks/brands/gen_s.json",
-                    "entries": [
-                        {"modifiers": [{"field": "FillColor", "value": "#FFFFFF"}]}
-                    ]
-                }
-            ]
-        });
-
-        let record_value = record.get("_RecordValue_").unwrap_or(&record);
-
-        // Unknown manufacturer falls back to gen_s
-        let result = resolve_brand_style(record_value, Some("unknown"), None);
-        assert!(result.is_some());
-        let brand = result.unwrap();
-        assert_eq!(brand.identifier, "gen_s");
-        assert_eq!(brand.entries.len(), 1);
-    }
-
-    #[test]
-    fn test_resolve_brand_style_sole_nonmatching_entry_is_none() {
+    fn test_resolve_brand_identity_sole_nonmatching_entry_is_none() {
         // A HUD canvas that declares only `s_grey_hud` (the grey-HUD ship look)
         // does NOT resolve a brand for a `drak` ship: drak has no matching
-        // brandStyles entry. The variant's no-brand-match look comes from its
+        // brandStyles entry, and `s_grey_hud` is neither a `gen_`/`s_default_`
+        // family fallback. The variant's no-brand-match look comes from its
         // `defaultStyles` instead (applied as a fallback in the resolve cascade,
         // see `apply_canvas_style_cascade`), NOT by mis-applying the grey-HUD
         // brand. Keeps the drak velocity-num readouts white, not grey-HUD green.
@@ -600,14 +387,16 @@ mod tests {
             "brandStyles": [
                 {
                     "brandIdentifier": "file://libs/foundry/records/ui/buildingblocks/styles/s_grey_hud.json",
-                    "entries": [
-                        {"modifiers": [{"field": "FontSize", "value": 500.0}]}
-                    ]
+                    "entries": []
                 }
             ]
         });
         let record_value = record.get("_RecordValue_").unwrap_or(&record);
-        assert!(resolve_brand_style(record_value, Some("drak"), None).is_none());
+        let class = brand_class_for_canvas(Some("HC_HUD_Ship_Velocity_Num_Master"));
+        assert!(
+            resolve_brand_identity(record_value, None, Some("drak"), class, BrandPolicy::Default)
+                .is_none()
+        );
     }
 
     #[test]
