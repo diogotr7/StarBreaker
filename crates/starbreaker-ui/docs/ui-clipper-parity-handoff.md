@@ -276,14 +276,16 @@ band, alpha 0.1); the remaining A7 backdrop stack (faint track + band visible
 pixels) is the open residual. Target dossier tracks it as "A7 backdrop stack
 remainder".
 
-### Linear-light compositing — GATED on owner approval
+### Linear-light compositing — LANDED (B4, 2026-07-07)
 
-The glow renders darker than the reference because the engine composites in
-LINEAR light and we blend in sRGB. The white-mask glow path is already
-converted (landed, scoped: `blit_white_mask_overlay_linear`); the
-**renderer-wide** migration is the gated item — full detail, predicted
-numbers, and the "do not partially apply" rule are in the runbook's **Open
-architecture debt** section.
+The glow (and every antialiased edge / translucent overlay) previously
+rendered darker than the reference because the engine composites in LINEAR
+light and the renderer blended in sRGB. The **renderer-wide** migration to
+linear compositing has landed with NO carve-outs; the earlier scoped
+white-mask path (`blit_white_mask_overlay_linear`) was folded into the
+now-linear general blit and deleted. All 15 targets were re-frozen with the
+geometry-IR snapshot byte-identical (colour-only). Full detail is in the
+runbook's **architecture** section (the linear-light bullet).
 
 ### Minor — OFFLINE cap height
 

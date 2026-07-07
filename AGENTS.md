@@ -307,7 +307,7 @@ inspection tools for Claude Code. To deploy after making changes:
 taskkill //F //IM starbreaker-mcp.exe 2>/dev/null; cargo build --release -p starbreaker-mcp && cp target/release/starbreaker-mcp.exe mcp/starbreaker-mcp.exe
 
 # Linux
-pkill -f starbreaker-mcp || true
+pkill -x starbreaker-mcp || true   # -x = exact process NAME; -f would match this very command line and kill the shell
 cargo build --release -p starbreaker-mcp && cp target/release/starbreaker-mcp mcp/starbreaker-mcp
 ```
 

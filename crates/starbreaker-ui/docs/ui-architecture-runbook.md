@@ -411,14 +411,26 @@ that depend on these are in `crates/starbreaker-ui/docs/ui-clipper-parity-handof
   sibling swap; identity matching only, no prefix scans over shared standards.
   Every call site was migrated one per commit under the guards and the legacy
   `resolve_brand_style` prefix scan is deleted.
-- **Renderer-wide linear-light compositing (GATED — owner approval).** The
-  engine composites in LINEAR light; our renderer blends in sRGB. The
-  white-mask glow path was converted (scoped, landed —
-  `blit_white_mask_overlay_linear`), but the renderer-wide migration changes
-  EVERY alpha blend including text antialiasing → full gold/platinum
-  re-freeze + re-adjudication of all targets. Evidence says it moves
-  everything TOWARD the references (predicted linear (39,20,3)/(68,38,8) vs
-  reference (45,25,7)/(71,48,15) at chiclet top/side edges; the sRGB blend
-  reproduces the rendered (6,4,1)/(13,8,3) exactly). Candidate for a
-  dedicated arc; do NOT partially apply — image-only carve-outs are not
-  engine-faithful.
+- **Renderer-wide linear-light compositing (LANDED — B4, 2026-07-07).** The
+  engine composites in LINEAR light; the renderer previously blended in sRGB,
+  so antialiased edges and translucent overlays rendered too dark. The whole
+  compositor was migrated to blend in LINEAR (Strategy A: per-site composite
+  into a transparent scratch, then premultiplied linear source-over into the
+  u8-premultiplied-sRGB `Pixmap`/`RgbaImage` — storage stays sRGB u8, only the
+  blend math moved). Coverage is renderer-wide with NO carve-outs: fills,
+  strokes (via `ir_compose::fill_primitives` `fill_linear`/`stroke_linear`),
+  tinted blits (linear texel loop), the two manual clip composites
+  (`ir_compose::clip_composite`), and ttf+swf text antialiasing — all through
+  `crate::colour`'s `blend_premul_linear`/`blend_straight_linear`/
+  `blend_premul_add_linear`. The separate `swf_render` overlay compositor's two
+  composite functions (`composite_rgba_over_pixmap`/`composite_pixmap_over_rgba`)
+  were migrated too, so no sRGB island remains in the binary. The only
+  intentionally-sRGB draw is the opaque
+  full-pixmap background init (no blend). The earlier scoped
+  `blit_white_mask_overlay_linear` glow carve-out was folded into the now-linear
+  general blit and deleted (its white-texel result reproduced within ±2). All
+  15 gold/platinum targets re-frozen; the geometry-IR snapshot stayed
+  byte-identical (colour-only). The migration moved every target TOWARD its
+  reference (brighter, none darker; the annunciator's reference-verified
+  chiclet fills preserved within ±2, confirming the general blit reproduces the
+  carve-out that was itself verified against reference (71,48,15)).

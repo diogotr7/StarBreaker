@@ -37,7 +37,6 @@ pub(crate) fn linear_channel_to_srgb(l: f32) -> f32 {
 /// sRGB→linear for a u8 channel, via a 256-entry LUT (built once). Every blend
 /// input that is a stored u8 sRGB byte goes through here, avoiding a per-pixel
 /// `powf`.
-#[allow(dead_code)] // wired in B4 Task 3 (blit texel loop)
 pub(crate) fn u8_to_linear(v: u8) -> f32 {
     static LUT: OnceLock<[f32; 256]> = OnceLock::new();
     LUT.get_or_init(|| std::array::from_fn(|i| srgb_channel_to_linear(i as f32 / 255.0)))[v as usize]
