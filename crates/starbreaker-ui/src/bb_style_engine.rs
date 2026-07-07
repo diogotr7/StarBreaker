@@ -105,15 +105,20 @@ fn apply_sheet(scene: &mut BbScene, sheet: &StyleSheet<'_>, loc_fetcher: Option<
         _ => None,
     };
     // The text-format route is tier-scoped: the BRAND tier runs the full route
-    // (every Parent-wrapped / bare `Type(Text)` entry); the EMBEDDED tier runs
-    // it ONLY for unconditional bare `Type(Text)` declarations (the DRAK
-    // LR-indicator's `embeddedStyles` FontSize 100 — a canvas-wide text size),
-    // so conditional embedded state/overrides stay brand-tier-only. The
-    // `__BrandIdentifier` stamp is brand-tier-only.
+    // (every Parent-wrapped / bare `Type(Text)` entry, conditional overrides
+    // included); the STYLELINK, SHARED and EMBEDDED tiers run it ONLY for
+    // unconditional bare `Type(Text)` declarations (a canvas-wide text size —
+    // e.g. the DRAK LR-indicator's `embeddedStyles` FontSize 100, or a root
+    // `defaultStyles` / `mfd_g_*` shared FontSize), so conditional
+    // state/overrides stay brand-tier-only. StandardModule (element-instance
+    // markers/tags) and Inline (empty finishing pass) carry no canvas-wide bare
+    // `Type(Text)` — N/A. The `__BrandIdentifier` stamp is brand-tier-only.
     let text_format_route = match sheet.tier {
         Tier::Brand => crate::bb_brand_apply::TextFormatRoute::Full,
-        Tier::Embedded => crate::bb_brand_apply::TextFormatRoute::BareTextOnly,
-        _ => crate::bb_brand_apply::TextFormatRoute::Off,
+        Tier::StyleLink | Tier::Shared | Tier::Embedded => {
+            crate::bb_brand_apply::TextFormatRoute::BareTextOnly
+        }
+        Tier::StandardModule | Tier::Inline => crate::bb_brand_apply::TextFormatRoute::Off,
     };
     crate::bb_brand_apply::apply_style_entries_for_engine(
         scene,
@@ -398,5 +403,53 @@ mod tests {
         apply(&mut brand, &[StyleSheet::uniform(Tier::Brand, "s_drak_hud", &palette, &cond)], None);
         assert_eq!(label_fontsize(&brand), Some(99.0),
             "the brand tier still routes a conditional Type(Text) entry (unchanged)");
+    }
+
+    // --- StyleLink / Shared text-format route (widened per plan B2-3) --------
+    //
+    // StyleLink (pass 4, canvas `style` link applied only when no brand) and
+    // Shared (pass 5, `defaultStyles.sharedStyles` — `mfd_g_*`) join Embedded on
+    // the bare-only route: an UNCONDITIONAL bare `Type(Text)` FontSize is a
+    // canvas-wide text size and must reach the field, while CONDITIONAL
+    // selectors stay brand-tier-only (same discriminator as Embedded).
+
+    #[test]
+    fn stylelink_tier_routes_unconditional_bare_text_fontsize() {
+        let palette = serde_json::json!({});
+        let mut scene = parse_bb_canvas(&textfield_canvas()).expect("parses");
+        let size = [bare_text_fontsize(100.0)];
+        apply(&mut scene, &[StyleSheet::uniform(Tier::StyleLink, "linked_style", &palette, &size)], None);
+        assert_eq!(label_fontsize(&scene), Some(100.0),
+            "style-link bare Type(Text) FontSize must reach the field's text format");
+    }
+
+    #[test]
+    fn stylelink_tier_excludes_conditional_text_override_but_brand_keeps_it() {
+        let palette = serde_json::json!({});
+        let cond = [conditional_text_fontsize(99.0)];
+        let mut sl = parse_bb_canvas(&textfield_canvas()).expect("parses");
+        apply(&mut sl, &[StyleSheet::uniform(Tier::StyleLink, "linked_style", &palette, &cond)], None);
+        assert_eq!(label_fontsize(&sl), None,
+            "a CONDITIONAL style-link text entry must NOT take the route (stays brand-only)");
+    }
+
+    #[test]
+    fn shared_tier_routes_unconditional_bare_text_fontsize() {
+        let palette = serde_json::json!({});
+        let mut scene = parse_bb_canvas(&textfield_canvas()).expect("parses");
+        let size = [bare_text_fontsize(100.0)];
+        apply(&mut scene, &[StyleSheet::uniform(Tier::Shared, "mfd_g_content", &palette, &size)], None);
+        assert_eq!(label_fontsize(&scene), Some(100.0),
+            "shared-style bare Type(Text) FontSize must reach the field's text format");
+    }
+
+    #[test]
+    fn shared_tier_excludes_conditional_text_override_but_brand_keeps_it() {
+        let palette = serde_json::json!({});
+        let cond = [conditional_text_fontsize(99.0)];
+        let mut sh = parse_bb_canvas(&textfield_canvas()).expect("parses");
+        apply(&mut sh, &[StyleSheet::uniform(Tier::Shared, "mfd_g_content", &palette, &cond)], None);
+        assert_eq!(label_fontsize(&sh), None,
+            "a CONDITIONAL shared text entry must NOT take the route (stays brand-only)");
     }
 }
