@@ -1,9 +1,13 @@
 //! Hybrid UI IR renderer that composes IR-backed BB content with SWF overlays.
 //!
 //! `render_ui_ir_with_swf_overlay` renders the IR document with Phase 5 Flash-wins
-//! precedence: nodes with `is_flash_renderer == true` suppress their BB subtrees
-//! and instead composite the SWF stage at the node's `computed_rect`.  Nodes
-//! without `is_flash_renderer` render via the normal BB path unchanged.
+//! precedence, but ONLY for genuine full-stage SWF hosts: a `is_flash_renderer`
+//! node whose entire BB subtree paints nothing (a pure placeholder — see
+//! `is_full_stage_swf_host`). Such a node suppresses its (empty) BB subtree and
+//! composites the SWF stage at its `computed_rect`. An ordinary
+//! `rendererType:"Flash"` primitive node with real BB children keeps its BB
+//! subtree and is never over-painted. Nodes without `is_flash_renderer` render
+//! via the normal BB path unchanged.
 
 use std::collections::{HashMap, HashSet};
 
@@ -20,10 +24,14 @@ use crate::ui_ir::UiIrDocument;
 
 /// Render a UI IR document with SWF-wins / BB-fallback precedence (Phase 5).
 ///
-/// For each node with `is_flash_renderer == true`:
+/// For each genuine full-stage SWF host (see `is_full_stage_swf_host`): a
+/// `is_flash_renderer` node whose entire BB subtree paints no BB content:
 /// - The node and its entire BB subtree are removed from the BB render pass.
 /// - The SWF stage (frame 0, with sample-data suppression) is composited at
 ///   the node's `computed_rect` over the BB result.
+///
+/// An ordinary `rendererType:"Flash"` primitive node with a drawable BB
+/// descendant is NOT a host: its BB subtree is kept and no SWF is stamped.
 ///
 /// `loc_fn` resolves `@key` loc strings in EditText fields encountered during
 /// the SWF stage render.
@@ -36,7 +44,7 @@ pub fn render_ui_ir_with_swf_overlay(
     let flash_ids: Vec<u32> = document
         .nodes
         .iter()
-        .filter(|n| n.is_flash_renderer)
+        .filter(|n| n.is_flash_renderer && is_full_stage_swf_host(document, n.id))
         .map(|n| n.id)
         .collect();
 
@@ -94,6 +102,20 @@ fn collect_subtree_ids(document: &UiIrDocument, roots: &[u32]) -> HashSet<u32> {
         }
     }
     result
+}
+
+/// A `rendererType:"Flash"` node is a genuine full-stage SWF host only when its
+/// entire BB subtree (the node and all recursive children) paints nothing — a
+/// pure placeholder whose visual is meant to come from the SWF stage. If any
+/// node in the subtree paints real BB content, the Flash node is an ordinary
+/// primitive renderer and must keep its BB subtree (the overlay must not fire on
+/// it). Safe default for a populated subtree: NOT a host.
+fn is_full_stage_swf_host(document: &UiIrDocument, root_id: u32) -> bool {
+    let subtree = collect_subtree_ids(document, &[root_id]);
+    !document
+        .nodes
+        .iter()
+        .any(|n| subtree.contains(&n.id) && n.paints_bb_content())
 }
 
 #[cfg(test)]

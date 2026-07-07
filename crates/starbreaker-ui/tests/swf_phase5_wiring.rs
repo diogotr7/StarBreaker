@@ -4,8 +4,12 @@
 //! 1. `flash_widget_node_gets_is_flash_renderer` — IR compilation marks Flash nodes.
 //! 2. `compute_sample_data_export_ids_identifies_correct_sprites` — state detection.
 //! 3. `hybrid_render_composites_swf_for_flash_node` — SWF content appears in output.
-//! 4. `hybrid_render_suppresses_bb_subtree_of_flash_node` — BB child not drawn.
+//! 4. `hybrid_render_keeps_bb_subtree_of_flash_node_with_real_children` — a Flash
+//!    node with a real drawable BB child is an ordinary primitive, NOT a host:
+//!    its BB subtree is kept (landmine defused, B3).
 //! 5. `non_flash_node_still_renders_bb` — non-Flash BB nodes render normally.
+//! 6. `hybrid_render_composites_swf_for_placeholder_host_with_inactive_child` —
+//!    an inactive (non-drawing) child does not disqualify a full-stage host.
 
 mod swf_helpers;
 
@@ -292,12 +296,13 @@ fn hybrid_render_composites_swf_for_flash_node() {
     );
 }
 
-// ── Test 4: BB subtree of Flash node is suppressed ────────────────────────────
+// ── Test 4: real BB children of a Flash node are NOT blanked (landmine defused) ──
 
 #[test]
-fn hybrid_render_suppresses_bb_subtree_of_flash_node() {
-    // SWF has no drawable stage content; Flash node's BB child has red fill.
-    // After hybrid render: no red pixels (BB child suppressed), only black background.
+fn hybrid_render_keeps_bb_subtree_of_flash_node_with_real_children() {
+    // A `rendererType:"Flash"` node with a real drawable BB child is an ORDINARY
+    // primitive node, NOT a full-stage SWF host. The overlay must not remove its
+    // subtree or stamp the SWF stage over it. The red child must render.
     let assets = SwfAssetLibrary::new(vec![
         b'F', b'W', b'S', 6, 21, 0, 0, 0,
         0x00, 0x18, 0x00, 0x01, 0x00, 0x00, 0x00,
@@ -309,7 +314,7 @@ fn hybrid_render_suppresses_bb_subtree_of_flash_node() {
     let ctx = ComposeContext { style: &style, defaults: &defaults, assets: &assets, hologram_fetcher: None };
     let atlas = AtlasLibrary::new(&EmptyFetcher, None);
 
-    // Flash parent (id=1), child with red fill (id=2)
+    // Flash parent (id=1), active child with red fill (id=2).
     let red_fill = Some([1.0f32, 0.0, 0.0, 1.0]);
     let document = make_document(
         100,
@@ -325,10 +330,9 @@ fn hybrid_render_suppresses_bb_subtree_of_flash_node() {
         .expect("render failed");
 
     let red_pixels = result.pixels().filter(|p| p[0] > 200 && p[1] < 50 && p[2] < 50).count();
-    assert_eq!(
-        red_pixels,
-        0,
-        "BB child of Flash node must be suppressed — found {red_pixels} red pixels"
+    assert!(
+        red_pixels > 0,
+        "Flash node with a real BB child must keep its subtree — found {red_pixels} red pixels",
     );
 }
 
@@ -364,4 +368,39 @@ fn non_flash_node_still_renders_bb() {
         red_pixels > 0,
         "Non-Flash BB node with red fill must render — found 0 red pixels"
     );
+}
+
+// ── Test 6: an inactive/non-drawing child does not disqualify a full-stage host ──
+
+#[test]
+fn hybrid_render_composites_swf_for_placeholder_host_with_inactive_child() {
+    // SWF renders white "A" text; the Flash node's only descendant is INACTIVE
+    // (paints nothing), so the subtree is still a pure placeholder → host → overlay.
+    let swf_bytes = swf_helpers::make_edit_text_with_font_swf();
+    let assets = SwfAssetLibrary::new(swf_bytes).expect("SwfAssetLibrary");
+    let style = black_style();
+    let defaults = DefaultValueRegistry::with_well_known_path_defaults();
+    let ctx = ComposeContext { style: &style, defaults: &defaults, assets: &assets, hologram_fetcher: None };
+    let atlas = AtlasLibrary::new(&EmptyFetcher, None);
+
+    // Flash parent (id=1); child id=2 has a red fill but is INACTIVE → paints nothing.
+    let mut inactive_child = minimal_node(2, Some(1), vec![], false, (0.0, 0.0, 100.0, 100.0), Some([1.0, 0.0, 0.0, 1.0]));
+    inactive_child.is_active = false;
+    let document = make_document(
+        100,
+        100,
+        Some("test.swf"),
+        vec![
+            minimal_node(1, None, vec![2], true, (0.0, 0.0, 100.0, 100.0), None),
+            inactive_child,
+        ],
+    );
+
+    let result = render_ui_ir_with_swf_overlay(&document, &ctx, &atlas, &|_| None)
+        .expect("render failed");
+
+    let non_black = result.pixels().filter(|p| p[0] > 10 || p[1] > 10 || p[2] > 10).count();
+    assert!(non_black > 0, "placeholder host with an inactive child must still composite the SWF");
+    let red_pixels = result.pixels().filter(|p| p[0] > 200 && p[1] < 50 && p[2] < 50).count();
+    assert_eq!(red_pixels, 0, "inactive child must not paint");
 }

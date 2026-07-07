@@ -192,6 +192,46 @@ pub struct UiIrNode {
     pub colour_overlay_enabled: bool,
 }
 
+impl UiIrNode {
+    /// True iff this node would paint real BB content (so removing it from the
+    /// BB pass and stamping a SWF stage over it would blank something visible).
+    ///
+    /// Used to distinguish a genuine full-stage SWF-host placeholder (a Flash
+    /// node whose whole subtree paints nothing) from an ordinary
+    /// `rendererType:"Flash"` primitive node that draws real BB content.
+    ///
+    // ponytail: this list is the drawable set as of the current UiIrNode —
+    // paint-bearing FIELDS plus the one node_type-only paint (WidgetManufacturerLogo
+    // draws from node_type alone at ir_compose/engine_01.rs:339; every other
+    // node_type draw, e.g. WidgetCircle/WidgetSeparator, gates on a colour field
+    // that IS listed). Ceiling: a NEW paint-bearing field OR a new node_type-only
+    // paint path must be added here, or a node that paints via it reads as "paints
+    // nothing" and could be blanked by the overlay. Safe direction is
+    // over-inclusion (more nodes "paint" → fewer false full-stage hosts).
+    pub fn paints_bb_content(&self) -> bool {
+        self.is_active
+            && (self.background_fill_colour.is_some()
+                || self.background_fill_colour_token.is_some()
+                || self.circle_fill_colour_token.is_some()
+                || self.segmented_fill.is_some()
+                || self.polygon.is_some()
+                || self.border.is_some()
+                || self.stroke_colour.is_some()
+                || self.stroke_colour_token.is_some()
+                || self.separator_strip.is_some()
+                || self.icon_preset.is_some()
+                || self.text_payload.is_some()
+                || self.secondary_text_payload.is_some()
+                || self.meter_progress.is_some()
+                || self.asset_ref.is_some()
+                || self.custom_shape.is_some()
+                || self.primitive_material.is_some()
+                || self
+                    .node_type
+                    .eq_ignore_ascii_case("BuildingBlocks_WidgetManufacturerLogo"))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiIrAssetLayout {
     #[serde(skip_serializing_if = "Option::is_none")]
