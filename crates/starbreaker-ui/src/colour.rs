@@ -46,7 +46,6 @@ pub(crate) fn u8_to_linear(v: u8) -> f32 {
 /// Straight-alpha source-over in LINEAR light. `dst` is straight-alpha u8 sRGB
 /// (an `image::RgbaImage` pixel's `.0`); `src_rgb` is the straight u8 sRGB
 /// source colour; `src_a` in 0..1 already folds coverage × source alpha.
-#[allow(dead_code)] // wired in B4 Tasks 4-5 (clip-image + ttf glyph blends)
 pub(crate) fn blend_straight_linear(dst: &mut [u8; 4], src_rgb: [u8; 3], src_a: f32) {
     let src_a = src_a.clamp(0.0, 1.0);
     if src_a <= 0.0 {

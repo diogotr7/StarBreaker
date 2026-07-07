@@ -169,38 +169,6 @@ pub(crate) fn with_node_clip(
     }
 }
 
-/// SourceOver-composite `src`'s clip region onto `dst` (premultiplied RGBA).
-fn composite_clip_region_pixmap(dst: &mut Pixmap, src: &Pixmap, clip: &UiIrRect) {
-    let w = dst.width() as i32;
-    let h = dst.height() as i32;
-    let x0 = (clip.x.floor() as i32).clamp(0, w);
-    let y0 = (clip.y.floor() as i32).clamp(0, h);
-    let x1 = ((clip.x + clip.w).ceil() as i32).clamp(0, w);
-    let y1 = ((clip.y + clip.h).ceil() as i32).clamp(0, h);
-    if x0 >= x1 || y0 >= y1 {
-        return;
-    }
-    let src_data = src.data();
-    let dst_data = dst.data_mut();
-    for y in y0..y1 {
-        let row = (y * w) as usize;
-        for x in x0..x1 {
-            let i = (row + x as usize) * 4;
-            let sa = src_data[i + 3] as u32;
-            if sa == 0 {
-                continue;
-            }
-            // Premultiplied source-over: d' = s + d × (1 − sa).
-            let inv = 255 - sa;
-            for c in 0..4 {
-                let s = src_data[i + c] as u32;
-                let d = dst_data[i + c] as u32;
-                dst_data[i + c] = (s + (d * inv + 127) / 255).min(255) as u8;
-            }
-        }
-    }
-}
-
 /// Run `draw` against a straight-alpha image, restricted to the clip region
 /// (the text pass draws after the pixmap is converted to an `RgbaImage`).
 pub(crate) fn with_node_clip_image(
@@ -220,37 +188,6 @@ pub(crate) fn with_node_clip_image(
             let mut scratch = RgbaImage::new(img.width(), img.height());
             draw(&mut scratch);
             composite_clip_region_image(img, &scratch, clip);
-        }
-    }
-}
-
-/// SourceOver-composite `src`'s clip region onto `dst` (straight RGBA).
-fn composite_clip_region_image(dst: &mut RgbaImage, src: &RgbaImage, clip: &UiIrRect) {
-    let w = dst.width() as i32;
-    let h = dst.height() as i32;
-    let x0 = (clip.x.floor() as i32).clamp(0, w);
-    let y0 = (clip.y.floor() as i32).clamp(0, h);
-    let x1 = ((clip.x + clip.w).ceil() as i32).clamp(0, w);
-    let y1 = ((clip.y + clip.h).ceil() as i32).clamp(0, h);
-    for y in y0..y1 {
-        for x in x0..x1 {
-            let sp = src.get_pixel(x as u32, y as u32);
-            let sa = sp[3] as f32 / 255.0;
-            if sa <= 0.0 {
-                continue;
-            }
-            let dp = dst.get_pixel_mut(x as u32, y as u32);
-            let da = dp[3] as f32 / 255.0;
-            let out_a = sa + da * (1.0 - sa);
-            if out_a <= 0.0 {
-                continue;
-            }
-            for c in 0..3 {
-                let s = sp[c] as f32;
-                let d = dp[c] as f32;
-                dp[c] = (((s * sa) + (d * da * (1.0 - sa))) / out_a).round().min(255.0) as u8;
-            }
-            dp[3] = (out_a * 255.0).round().min(255.0) as u8;
         }
     }
 }
