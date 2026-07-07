@@ -17,9 +17,9 @@ picked. Wait for each answer before building the next question. Only SCOPE & MOD
 NOT count** — a one-option call fails with `InputValidationError: options
 too_small, expected >=2`. When a list built from discovered files/folders has fewer
 than two entries, ADD an explicit extra option (e.g. "A different ship — I'll name
-it"); the user still gets free-text "Other" on top. This bites the SHIP question
-today: `reference/in-game/` holds only one ship folder (`Clipper`), so a naive
-"one option per folder" call is invalid. Never skip the question to dodge this — PAD.
+it"); the user still gets free-text "Other" on top. This guards the SHIP question:
+whenever `reference/in-game/` holds only ONE ship folder, a naive "one option per
+folder" call is invalid — PAD to ≥2. Never skip the question to dodge this.
 
 1. **SHIP** — list the *folders* (not files — `ASOP.png` is a stray, skip it)
    under `~/projects/scorg_tools/reference/in-game/` (each folder = one ship's
