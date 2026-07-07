@@ -1641,8 +1641,21 @@ fn resolve_canvas_graph_inner(
     // `s_bioc` → `sk_bioc`) or, for brandStyles-selected canvases (the MFD
     // header's `s_drak_hud`), from the resolved brand identifier.
     let modular_style_id = local_style_identifier.clone().or_else(|| {
-        bb_brand_style::resolve_brand_style(root_json, manufacturer_id, preferred_brand)
-            .map(|brand| brand.identifier)
+        // Brand identifier by IDENTITY + canvas family (hud/env), not the legacy
+        // prefix scan (B1). `preferred_brand` is the canvas style link.
+        let canvas_name = root_json
+            .get("_RecordName_")
+            .and_then(|v| v.as_str())
+            .or_else(|| record_value.get("_RecordName_").and_then(|v| v.as_str()));
+        let class = bb_brand_style::brand_class_for_canvas(canvas_name);
+        bb_brand_style::resolve_brand_identity(
+            root_json,
+            preferred_brand,
+            manufacturer_id,
+            class,
+            bb_brand_style::BrandPolicy::Default,
+        )
+        .map(|brand| brand.identifier)
     });
     let standard_embedded_entries = expand_widget_standards(&mut scene, fetch_by_path);
     let tag_defaults_override;
