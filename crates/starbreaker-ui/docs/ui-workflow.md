@@ -11,6 +11,18 @@ arc's handoff doc (see the dossier's "open issues" column). The short
 per-screen prompt template is
 `crates/starbreaker-ui/docs/ui-matching-agent-prompt.md`.
 
+## Read WHEN (index)
+
+Read **§1 ALWAYS** (before any fix — non-negotiable, a full read). Then jump by need:
+
+- **§2** — locating which stage owns a wrong thing
+- **§3–§4** — during the working loop (per-item fix + workstream-boundary review)
+- **§5** — a guard tripped
+- **§6–§7** — before ANY freeze / known-outlier
+- **§8** — pinning or deriving a value
+- **§9** — at a pause / writing a handoff
+- **§10** — before retrying anything weird (the don't-retry list)
+
 ## 1. Non-negotiable rules
 
 1. **Engine-faithful and generic.** No hard-coding, no name-matching, no

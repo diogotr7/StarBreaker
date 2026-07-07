@@ -5,6 +5,16 @@ Every command here was executed during writing (2026-06-11). Paths marked
 (ws) are workspace-specific (this machine); the repo-relative ones are
 universal.
 
+## Read WHEN (index)
+
+- **§1–§2** — building / rendering / exporting
+- **§3** — at launch (the per-screen dossier) + any comparison
+- **§4 / §4b** — before style-data or code research (MCP tools / graphify)
+- **§5** — hunting a data value or asset location
+- **§6** — before adding a probe
+- **§7** — diagnostics
+- **§8** — glossary, on demand
+
 ## 1. Build & test
 
 ```bash
