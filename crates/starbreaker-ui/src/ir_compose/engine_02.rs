@@ -1227,24 +1227,27 @@ mod tests_c {
 
     #[test]
     fn white_mask_overlay_composites_in_linear_light() {
-        // The engine composites in linear light; sRGB-space blending crushes
-        // low-alpha bright-over-dark blends (the annunciator glow rendered
-        // (15,9,3) where the reference shows (71,48,15) at the chiclet edge).
-        // The white-mask overlay blit converts to linear, blends, re-encodes:
-        // white texel a=146/255, node alpha 0.1, tint (1.0,0.62,0.22) over
-        // opaque black => sRGB-encoded ~(68,38,8).
+        // The white-mask glow now routes through the GENERAL linear blit (the
+        // dedicated carve-out was folded in — B4 Task 6). The engine composites
+        // in linear light; sRGB-space blending crushes low-alpha bright-over-dark
+        // blends (the annunciator glow rendered (15,9,3) where the reference
+        // shows (71,48,15) at the chiclet edge). White texel a=146/255, node
+        // alpha 0.1, tint (1.0,0.62,0.22) over opaque black => sRGB ~(68,38,8),
+        // proving the general blit's per-texel `tint_lin × coverage` reproduces
+        // the old carve-out for a white texel.
         let mut pixmap = Pixmap::new(1, 1).expect("pixmap");
         pixmap.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
         let mut img = RgbaImage::new(1, 1);
         img.put_pixel(0, 0, image::Rgba([255, 255, 255, 146]));
 
-        blit_white_mask_overlay_linear(
+        blit_atlas_image_tinted_with_mode(
             &mut pixmap,
             &img,
             0,
             0,
             [1.0, 0.6196, 0.2235, 1.0],
             0.1,
+            BlendMode::SourceOver,
         );
 
         let px = pixmap.data();

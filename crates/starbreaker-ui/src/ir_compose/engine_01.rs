@@ -501,15 +501,22 @@ fn draw_non_text_node(
             let draw_x = rect.x as i32 + rot_dx;
             let draw_y = rect.y as i32 + rot_dy;
 
-            if fill_override.is_none()
-                && let Some(mask_tint) = white_mask_overlay_tint(node, asset_ref, Some(&img), ctx)
-            {
-                blit_white_mask_overlay_linear(pixmap, &img, draw_x, draw_y, mask_tint, node.alpha);
+            // The white-mask overlay (annunciator chiclet glow) and every other
+            // image now share the one linear blit; only the tint selection and
+            // blend mode vary. White-mask masks take the brand Base overlay; a
+            // white-mask node is a raster (`.tif`/`.dds`, `custom_shape` None)
+            // so `image_blend_mode_for_node` resolves to `SourceOver`, matching
+            // the folded-in carve-out's forced source-over.
+            let tint = if fill_override.is_none() {
+                match white_mask_overlay_tint(node, asset_ref, Some(&img), ctx) {
+                    Some(mask_tint) => mask_tint,
+                    None => image_tint_for_blit(node, asset_ref, fill_override, Some(&img), ctx),
+                }
             } else {
-                let tint = image_tint_for_blit(node, asset_ref, fill_override, Some(&img), ctx);
-                let blend_mode = image_blend_mode_for_node(node, asset_ref);
-                blit_atlas_image_tinted_with_mode(pixmap, &img, draw_x, draw_y, tint, node.alpha, blend_mode);
-            }
+                image_tint_for_blit(node, asset_ref, fill_override, Some(&img), ctx)
+            };
+            let blend_mode = image_blend_mode_for_node(node, asset_ref);
+            blit_atlas_image_tinted_with_mode(pixmap, &img, draw_x, draw_y, tint, node.alpha, blend_mode);
         }
     }
 
@@ -895,67 +902,6 @@ fn white_mask_overlay_tint(
         resolve_colour_token(ctx, "Base")
     } else {
         None
-    }
-}
-
-/// Source-over composite of a white-mask glow in LINEAR light. The engine
-/// blends in linear space; tiny-skia blends in the stored sRGB space, which
-/// crushes low-alpha bright-over-dark blends — the annunciator glow rendered
-/// (15,9,3) where linear-light blending (and the in-game reference) gives
-/// ~(68,38,8) at the chiclet edge. Scoped to the white-mask overlay path;
-/// the renderer-wide linear migration is a separate gated workstream
-/// (crates/starbreaker-ui/docs/ui-clipper-parity-handoff.md item 10).
-pub(crate) fn blit_white_mask_overlay_linear(
-    pixmap: &mut Pixmap,
-    img: &RgbaImage,
-    dx: i32,
-    dy: i32,
-    tint: [f32; 4],
-    alpha: f32,
-) {
-    let tint_lin = [
-        srgb_channel_to_linear(tint[0].clamp(0.0, 1.0)),
-        srgb_channel_to_linear(tint[1].clamp(0.0, 1.0)),
-        srgb_channel_to_linear(tint[2].clamp(0.0, 1.0)),
-    ];
-    let node_alpha = (tint[3] * alpha).clamp(0.0, 1.0);
-    let pw = pixmap.width() as i32;
-    let ph = pixmap.height() as i32;
-    let data = pixmap.data_mut();
-    for (sy, row) in img.rows().enumerate() {
-        let py = dy + sy as i32;
-        if py < 0 || py >= ph {
-            continue;
-        }
-        for (sx, px) in row.enumerate() {
-            let pxx = dx + sx as i32;
-            if pxx < 0 || pxx >= pw {
-                continue;
-            }
-            let coverage = px.0[3] as f32 / 255.0 * node_alpha;
-            if coverage <= 0.0 {
-                continue;
-            }
-            let idx = ((py * pw + pxx) * 4) as usize;
-            // Pixmap stores premultiplied sRGB-encoded channels.
-            let dst_a = data[idx + 3] as f32 / 255.0;
-            let out_a = coverage + dst_a * (1.0 - coverage);
-            if out_a <= 0.0 {
-                continue;
-            }
-            for c in 0..3 {
-                let dst_unpremul = if dst_a > 0.0 {
-                    (data[idx + c] as f32 / 255.0 / dst_a).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-                let dst_lin = srgb_channel_to_linear(dst_unpremul);
-                let out_lin = tint_lin[c] * coverage + dst_lin * dst_a * (1.0 - coverage);
-                let out_srgb = linear_channel_to_srgb((out_lin / out_a).clamp(0.0, 1.0));
-                data[idx + c] = (out_srgb * out_a * 255.0).clamp(0.0, 255.0) as u8;
-            }
-            data[idx + 3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
-        }
     }
 }
 
@@ -2829,7 +2775,7 @@ fn blit_atlas_image_tinted(
     );
 }
 
-fn blit_atlas_image_tinted_with_mode(
+pub(crate) fn blit_atlas_image_tinted_with_mode(
     pixmap: &mut Pixmap,
     img: &RgbaImage,
     dx: i32,
