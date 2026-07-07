@@ -75,6 +75,50 @@ pub fn is_cockpit_hud_canvas(record_name: &str) -> bool {
     lower.starts_with("hc_hud_") || lower.starts_with("h_hud_") || lower.starts_with("h_eng_")
 }
 
+/// hud vs env brand class of a canvas, by record-name family.
+///
+/// The single source of the `s_<mfr>_{hud|env}` split: MFD masters (`MC_*`/`M_*`)
+/// and cockpit HUD ship-components (`HC_HUD_*`/`H_Eng_*`) author the HUD-typography
+/// brand `s_<mfr>_hud`; every other canvas the environment brand `s_<mfr>_env`.
+/// Extracted from the standard text-style path (`ui_ir`) so the text, separator,
+/// and body-background paths share ONE classifier (B1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrandClass {
+    /// HUD-typography family (`s_<mfr>_hud`).
+    Hud,
+    /// Environment family (`s_<mfr>_env`).
+    Env,
+}
+
+impl BrandClass {
+    /// The slug segment: `"hud"` or `"env"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BrandClass::Hud => "hud",
+            BrandClass::Env => "env",
+        }
+    }
+}
+
+/// Classify a canvas into its brand class (hud/env) by record-name family.
+///
+/// Strips a leading `BuildingBlocks_Canvas.`, then returns [`BrandClass::Hud`] iff
+/// the family is [`CanvasFamily::Mfd`]/[`CanvasFamily::MfdRoot`] OR the canvas is a
+/// cockpit HUD component ([`is_cockpit_hud_canvas`]); otherwise [`BrandClass::Env`].
+/// `None` (no canvas name) → [`BrandClass::Env`].
+pub fn brand_class_for_canvas(canvas_name: Option<&str>) -> BrandClass {
+    let stripped =
+        canvas_name.map(|name| name.strip_prefix("BuildingBlocks_Canvas.").unwrap_or(name));
+    let family = stripped.map(classify_canvas_family);
+    let is_hud = matches!(family, Some(CanvasFamily::Mfd | CanvasFamily::MfdRoot))
+        || stripped.map(is_cockpit_hud_canvas).unwrap_or(false);
+    if is_hud {
+        BrandClass::Hud
+    } else {
+        BrandClass::Env
+    }
+}
+
 /// Borrowed view into a selected brand-style entry.
 ///
 /// Provides access to the entries array without copying.
@@ -219,6 +263,30 @@ mod tests {
         assert_eq!(classify_canvas_family("F_Test"), CanvasFamily::FluffModular);
         assert_eq!(classify_canvas_family("gen_mc_s_target"), CanvasFamily::Other);
         assert_eq!(classify_canvas_family("Some_Random_Canvas"), CanvasFamily::Other);
+    }
+
+    #[test]
+    fn test_brand_class_for_canvas() {
+        // MFD masters (MC_*/M_*) and cockpit HUD components → Hud (s_<mfr>_hud).
+        assert_eq!(brand_class_for_canvas(Some("MC_S_Target_Master")), BrandClass::Hud);
+        assert_eq!(brand_class_for_canvas(Some("M_MFD_Screen")), BrandClass::Hud);
+        assert_eq!(brand_class_for_canvas(Some("HC_HUD_Ship_Compass")), BrandClass::Hud);
+        assert_eq!(brand_class_for_canvas(Some("H_Eng_Annunciator")), BrandClass::Hud);
+        assert_eq!(brand_class_for_canvas(Some("H_HUD_Something")), BrandClass::Hud);
+        // Everything else → Env (s_<mfr>_env).
+        assert_eq!(brand_class_for_canvas(Some("IC_Med_MedicalCommon_A")), BrandClass::Env);
+        assert_eq!(brand_class_for_canvas(Some("FMS_Ambient")), BrandClass::Env);
+        assert_eq!(brand_class_for_canvas(Some("Some_Random_Canvas")), BrandClass::Env);
+        // Strips a leading `BuildingBlocks_Canvas.` before classifying.
+        assert_eq!(
+            brand_class_for_canvas(Some("BuildingBlocks_Canvas.MC_S_Target_Master")),
+            BrandClass::Hud
+        );
+        // None → Env.
+        assert_eq!(brand_class_for_canvas(None), BrandClass::Env);
+        // Slug segments.
+        assert_eq!(BrandClass::Hud.as_str(), "hud");
+        assert_eq!(BrandClass::Env.as_str(), "env");
     }
 
     #[test]

@@ -1298,23 +1298,12 @@ pub(crate) fn collect_standard_text_styles(
             .map(str::to_ascii_lowercase)
             .or_else(|| {
                 source.strip_prefix("manufacturer:").map(|mfr| {
-                    use crate::bb_brand_style::CanvasFamily;
-                    let stripped = canvas_name
-                        .map(|name| name.strip_prefix("BuildingBlocks_Canvas.").unwrap_or(name));
-                    let family = stripped.map(crate::bb_brand_style::classify_canvas_family);
-                    // MFD masters (MC_*/M_*) AND cockpit HUD ship-components
-                    // (HC_HUD_*/H_Eng_*) are HUD-typography canvases that author
-                    // s_<mfr>_hud; classify_canvas_family only catches the former,
-                    // so recognise the HUD family explicitly. Otherwise the HUD
-                    // labels (compass headings, …) fall to s_<mfr>_env, whose H1 is
-                    // audimatmono-Bold/Bright instead of the HUD brand's
-                    // audimatmono-regular/Accent2.
-                    let is_hud = matches!(family, Some(CanvasFamily::Mfd | CanvasFamily::MfdRoot))
-                        || stripped
-                            .map(crate::bb_brand_style::is_cockpit_hud_canvas)
-                            .unwrap_or(false);
-                    let class = if is_hud { "hud" } else { "env" };
-                    format!("s_{}_{}", mfr.to_ascii_lowercase(), class)
+                    // The hud/env split (MFD masters + cockpit HUD components author
+                    // s_<mfr>_hud, everything else s_<mfr>_env) is the shared
+                    // `brand_class_for_canvas` classifier (B1); the env H1 is
+                    // audimatmono-Bold/Bright vs the HUD brand's regular/Accent2.
+                    let class = crate::bb_brand_style::brand_class_for_canvas(canvas_name);
+                    format!("s_{}_{}", mfr.to_ascii_lowercase(), class.as_str())
                 })
             })
     });
