@@ -66,7 +66,16 @@ Shared across every language in the repo:
   `default_value_registry_v1.json` + `.notes.md` pattern). Test-only
   colours/values that are genuinely arbitrary must be visibly synthetic
   and annotated where a guard requires it — never copies of real game
-  values.
+  values. The discriminator between a LICENSED host-side fallback and a
+  banned copy is EVIDENCE LEVEL, not kind: a numeric constant is a
+  licensed host constant only when it is (a) proven absent from
+  DataCore/P4K/AVM1 by an exhausted, blocker-grade search AND (b)
+  registered in `crates/starbreaker-ui/docs/ui-fallback-register.md`
+  with owner, trigger signal, and sunset target. Anything plausibly
+  data-sourced — or unregistered — is a violation to fix or flag. A
+  blessed host constant (the MFD 44px inset, the annunciator 25px frame)
+  and a flagged hard-coded table (the heading font-size table) are the
+  same rule at two evidence levels, not two rules.
 - **The ban is self-correcting.** Finding existing hard-coded values
   while working is part of the task: replace them with the data-derived
   source, or — when out of scope — flag them explicitly (a tracking
