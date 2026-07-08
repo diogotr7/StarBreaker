@@ -47,8 +47,14 @@ _ui_check_marker() {
   local git_dir head
   if git_dir="$(git rev-parse --git-dir 2>/dev/null)"; then
     head="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
-    printf '%s\nhead=%s\nepoch=%s\n' "$status" "$head" "$(date +%s)" \
-      > "$git_dir/ui-check-marker" 2>/dev/null || true
+    # A swallowed write leaves a stale/absent marker that silently BLOCKS the
+    # next UI/script commit with no diagnostic (bit executors twice this arc).
+    # Warn to stderr; the `if !` keeps this off the script's exit status (the
+    # trap ends with `exit "$rc"`, so the marker outcome never flips it).
+    if ! printf '%s\nhead=%s\nepoch=%s\n' "$status" "$head" "$(date +%s)" \
+         > "$git_dir/ui-check-marker" 2>/dev/null; then
+      echo "WARNING: could not write ui_check marker ($git_dir/ui-check-marker) — the pre-commit gate will block UI/script commits until it is writable" >&2
+    fi
   fi
   exit "$rc"
 }

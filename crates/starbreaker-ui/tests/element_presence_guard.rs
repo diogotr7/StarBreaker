@@ -189,6 +189,30 @@ fn synthetic_missing_or_collapsed_node_fails_the_guard() {
     );
 }
 
+/// Element-granularity vacuity proof (runs without game data). An emptied /
+/// all-degenerate re-freeze contributes zero non-degenerate frozen elements —
+/// exactly the condition the `non_degenerate_frozen > 0` assert in
+/// `element_presence_all_frozen_targets` fires on. This exercises the same
+/// count expression (the `is_non_degenerate` filter) that guards it, so a
+/// regression that made the filter accept degenerate rects is caught here.
+#[test]
+fn all_degenerate_frozen_set_counts_as_zero() {
+    let degenerate = vec![
+        syn_element("1:a", 0.0, 0.0),
+        syn_element("2:b", 0.0, 5.0),
+        syn_element("3:c", 5.0, 0.0),
+    ];
+    let non_degenerate = degenerate.iter().filter(|e| is_non_degenerate(e)).count();
+    assert_eq!(
+        non_degenerate, 0,
+        "an all-degenerate frozen set must yield zero drawable elements — the vacuity assert must fire on it"
+    );
+
+    // Sanity: one non-degenerate element flips the count positive (assert passes).
+    let mixed = vec![syn_element("4:d", 0.0, 0.0), syn_element("5:e", 3.0, 4.0)];
+    assert_eq!(mixed.iter().filter(|e| is_non_degenerate(e)).count(), 1);
+}
+
 /// For every frozen target, every drawable + non-degenerate element in the frozen
 /// IR snapshot must still be present and non-degenerate in the live IR.
 #[test]
@@ -204,6 +228,22 @@ fn element_presence_all_frozen_targets() {
     assert!(
         !cases.is_empty(),
         "element-presence guard scanned zero frozen targets — vacuous"
+    );
+
+    // Element-granularity vacuity guard: !cases.is_empty() only proves targets
+    // were scanned, not that any of them froze a drawable element. A bad
+    // re-freeze that emptied the element lists (or left them all degenerate)
+    // would iterate nothing and pass the loop below vacuously. Require at least
+    // one non-degenerate frozen element across all targets, using the SAME
+    // drawable/non-degenerate predicate the guard checks live IR against.
+    let non_degenerate_frozen = cases
+        .iter()
+        .flat_map(|case| &case.baseline_snapshot.elements)
+        .filter(|element| is_non_degenerate(element))
+        .count();
+    assert!(
+        non_degenerate_frozen > 0,
+        "element-presence guard: zero non-degenerate frozen elements across all targets — vacuous (bad re-freeze?)"
     );
 
     let mut failures = Vec::new();
