@@ -2491,3 +2491,97 @@ read-only per-task review), scope A1–A9 → B1–B3, STOP at owner-gated B4.
 `docs/superpowers/plans/2026-07-04-ui-parity-process-and-crate-plan.md`, spec
 `docs/superpowers/specs/2026-07-04-ui-parity-process-and-crate-design.md`. Phase B (ui-crate
 convergence, B1–B3) follows; B4 (renderer linear-light re-freeze) is owner-gated and out of scope.
+
+### 109 — System alignment review (2026-07-07): the still-prose recurring traps converted to enforced gates + the knowledge store reconciled with reality (plan P0–P2)
+
+**Context:** a whole-system review of the working environment (5 system audits + 10
+chronological session-batch reviews + a merge + an adversarial critique, all on Opus
+subagents, ~2.7M tokens, workflow `wf_d4cf7369-1a4`) read what the project is trying to
+accomplish and what 61 sessions (2026-06-08 → 07-07) show worked and didn't. Its headline
+finding is the one this ledger keeps proving: **lessons stick only when they become an
+enforced gate (a test, guard, probe, tool, or hook); prose gets re-learned** — the font
+"proven blocker" recurred 4–5× after its prose fix (60→66→76→94→107), the stale-artifact
+trap ~10× in evolving forms, the `| tail` exit-code mask immediately after being documented
+(89). The review's recommendations were turned into a phased plan (P0 hygiene / P1
+prose→gates / P2 knowledge reconciliation / P3 measurement) and executed task-by-task via
+`superpowers:subagent-driven-development` (main-session edits, Opus per-task review), one
+commit each, each `ui_check.sh` green. This entry records P0–P2; P3 (arc-cost
+instrumentation, frozen-target drift audit, the A10 Carrack execution-test arc) is the
+measurement follow-on and is not yet run.
+
+**Observed / Improvement — P0 (hygiene, all OUTSIDE the git repo, no repo commits):** memory
+index pruned of superseded/DONE arc-status weight + `ui-parity-redesign-gated` → `-status`
+(T1); global settings dead-allowlist entries removed, zero-surface plugins disabled, ponytail
+set to `lite` (T2, owner-approved); project allowlist gained the per-cycle `git` / `ui_check`
+/ `ui_render` / `ui_arc_status` commands so "fully-auto" arcs stop prompt-stopping (T3).
+
+**Observed / Improvement — P1 (the recurring traps, now mechanical gates):**
+- **T4** — `ui_check.sh` writes a 3-line RESULT-MARKER file (`.git/ui-check-marker`) on BOTH
+  outcomes from its EXIT trap, and a tracked `pre-commit-ui-gate` hook (installer
+  `scripts/install_ui_precommit.sh`) blocks a renderer/script commit unless a fresh genuinely-
+  green marker exists — kills the ledger-89 piped-exit-code trap structurally.
+- **T5** — a shared `scripts/lib/guard_assert.sh` + `assert!(!targets.is_empty())` on the Rust
+  guards: every guard now FAILS when it matches zero targets (kills the vacuous-guard class,
+  ledger 3/61/105), including on post-retain subset filters (T5 review).
+- **T6** — a generic IR-derived `element_presence_all_frozen_targets` guard (derived per frozen
+  target from its own IR snapshot — no hand-authored ROI, so it honours generic-not-targeted),
+  plus the `ui-regression-policy.md` correction: the whole-image budget is structurally blind
+  below the tier %, so it no longer claims to "catch any rendered change" (closes the ledger-77
+  vanished-nav-arrows class).
+- **T7** — `scripts/ui_export_smoke.sh` checks the ACTUAL deliverable end-to-end through
+  production fetchers: expected PNG count DERIVED from the exported scene data (26 Clipper
+  screens observed — not the plan's guessed 54, self-correcting), every PNG non-blank (>1
+  distinct pixel), wired into `ui_check.sh --full`. Closes the blank-MFD-through-7-green-phases
+  gap between "tests green" and "the export looks right".
+- **T8** — `scripts/perf_provenance.sh` (sha256+mtime+HEAD on both before/after binaries) + an
+  optimisation-skill rule that a mismatched/unknown provenance invalidates a timing claim
+  (the stale-42s-baseline lesson, ledger 102, as a gate).
+- **T9** — folded the ledger-107 lessons into the parity skill (audit-then-add, no duplication):
+  fresh-export reproduction gate for owner-reported symptoms, thin-glyph colour by near-black
+  pixel COUNT not mean, fixed-size-vs-width-fit + sibling cap-height before any "size is correct"
+  claim, the evidence bar extended from "blocked" to "done"/"within tolerance", and a
+  wait-on-marker rule (no idle sleep-loops) in `ui-workflow.md` §3.
+
+**Observed / Improvement — P2 (knowledge store reconciled with reality + owner direction):**
+- **T10** — the goal's WHY, previously nowhere in the repo, stated atop `ui-workflow.md` +
+  crate `AGENTS.md`: near-pixel-perfect STATIC replicas baked as textures for `entity export`,
+  not a UI runtime.
+- **T11** — new `ui-residual-budget.md` (owner-approved classes): permanently-acceptable
+  capture-imperfection classes vs must-fix, per tier, each with the measurement that
+  distinguishes it — gives "within tolerance" an objective bar and a capture-provenance rule.
+- **T12** — the host-constant-vs-game-data discriminator codified in `AGENTS.md` + the fallback
+  register (licensed = proven-absent-from-data + registered with trigger/sunset; anything
+  plausibly data-sourced = violation), and the `compose/text_draw.rs` heading table registered
+  as unlicensed-pending-derivation debt (the code fix belongs to the owner-deferred SUB DECK
+  font arc, 107).
+- **T13** — the ledger head gained a **Current-truth index** (overturned→superseding: 67d→68,
+  75→76, 94→96/97, 104→105; the duplicate №19 and unused 99–100 documented, never renumbered)
+  + forward pointers on the overturned entries, and the retro-prompt's default action is now
+  "convert the recurring lesson into a gate/tool" (a prose bullet is last resort).
+- **T14** — governance reconciliation: cut the ~105-line imported "Delegating Phases" boilerplate
+  that contradicted the repo's own build rules, fixed the root/workspace branch + `SC_DATA_P4K` +
+  layout staleness, dropped the duplicate Copilot required-read, un-garbled the blender_addon
+  TEX0/TEX2 + stale test-count baseline.
+- **T15** — the parity skill's SCOPE&MODE now computes its recommended mode from the dossier
+  (known ship = row complete + manufacturer has a frozen screen → recommend fully-auto;
+  first-of-a-kind → semi; the ASK stays), plus persona-reconciling lines (in this repo the
+  laziest solution = the smallest change that is still engine-faithful and data-derived; the
+  skill IS the process skill for its arc).
+
+**Recorded observations (arc candidates, not actioned here):**
+- T7's smoke gate immediately paid off: it surfaced REAL blank
+  `scitemdisplayscreencanvasprovider` renders (a Clipper on-disk orphan in no gated scene.json,
+  and the Aurora equivalent) — an **open arc candidate** for the owner: fix the render or
+  structurally exempt no-content providers (by category, never by name).
+- T11's final review noted a T4 residual: the marker write is silently swallowed when
+  `ui_check.sh` runs background-sandboxed (`.git/` write behind `trap … || true`) — a
+  **hardening candidate** to make the trap WARN (not fail) on marker-write failure.
+
+**Action:** landed on `feature/ui`, one commit per task, each `ui_check.sh` green, each
+Opus-reviewed. P0 (T1–T3) touched only user-level config outside the repo. In-repo:
+`e81f7f9af`+`4ba06efec` (T4), `cfbf617d4`+`f78e3b12a` (T5), `a2d72e932` (T6),
+`62100ba46`+`7458b35d9` (T7), `a18219681` (T8), `4f9ffc091` (T9), `0e4d530e4` (T10),
+`1d7bd8dee` (T11), `6ae77b3f4` (T12), `4ef91b549` (T13), `2c1ad883a` (T14), `72d67379e` (T15).
+Plan `docs/superpowers/plans/2026-07-07-system-alignment-plan.md`, review/spec
+`docs/superpowers/specs/2026-07-07-system-alignment-review.md` (both archived in-repo by this
+task). P3 (measurement & validation) follows.
