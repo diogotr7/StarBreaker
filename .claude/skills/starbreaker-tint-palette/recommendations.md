@@ -42,3 +42,15 @@ instead, findings land here in two states, with a lifecycle:
   Workflow (`docs/tint-palette-workflow.md`) + ledger
   (`docs/tint-palette-process-improvements.md`, items 1–5) + `SKILL.md` +
   this file.
+
+- **2026-07-08 (alignment plan T15 — persona reconciliation; applied via
+  `superpowers:writing-skills` review).** `SKILL.md` strict rules gained the two always-on-persona
+  reconciliation lines (identical wording to the `starbreaker-ui-screen-parity` skill): (a) a
+  **ponytail note** — laziest-that-works = smallest change still engine-faithful + data-derived;
+  a hard-coded value / invented geometry / name-gate / heuristic is never "lazy" here, it trips
+  the guards; and (b) **this skill IS the process skill for its arc** — its own gates stand in
+  for superpowers:brainstorming's design gate; superpowers planning/TDD/debugging are sub-tools
+  WITHIN the loop. `writing-skills` pass: reframe-not-prohibition form, skill-name cross-refs
+  (no `@`), bold leads. NOTE for owner review: line (b) uses the shared verbatim "launch/catalog
+  gates" wording; this skill's gates are input-gather + mode-decision (no numbered "catalog"
+  phase), so the phrase is illustrative-of-parity rather than literal here.

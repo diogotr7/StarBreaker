@@ -604,3 +604,26 @@ under **Open recommendations** above.
   restatement, keyword coverage preserved, `SKILL.md` ≤220 lines held. Every cited command/marker
   verified on write: `ui_check: ALL GREEN`, `ui_arc_status: OK (…)`, `ui_render.sh` `latest -> …`,
   `ui_blocker_evidence.py`, `live_manifest_targets_match_gold_standard_tint_semantics`.
+
+- **2026-07-08 (alignment plan T15 — dossier-computed SCOPE&MODE default + persona
+  reconciliation; applied via `superpowers:writing-skills` review).** `references/launch.md`
+  step 4 now COMPUTES the recommended Mode from the chosen SCREEN's dossier row: "known" =
+  row COMPLETE (`preset`/`tier`/`target_id` all non-null) AND its manufacturer already has
+  ≥1 OTHER frozen GOLD/PLATINUM screen — manufacturer = the `scene_package` prefix
+  (`DRAK`/`ANVL`), DERIVED from the row, never a hard-coded ship→brand map → recommend
+  fully-automated; first-of-a-kind (new manufacturer / new widget family / no dossier row)
+  → semi-automated. Presented as the FIRST `AskUserQuestion` option (owner direction 2026-07:
+  auto for KNOWN ships, hands-on for first-of-a-kind); the ASK never disappears. `SKILL.md`
+  strict rules gained the two always-on-persona reconciliation lines: (a) a **ponytail note**
+  (laziest-that-works = smallest change still engine-faithful + data-derived; a hard-coded
+  value / invented geometry / name-gate / heuristic is never "lazy" here — it trips the
+  guards), and (b) **this skill IS the process skill for its arc** (its launch/catalog gates
+  stand in for superpowers:brainstorming's design gate; superpowers planning/TDD/debugging are
+  sub-tools WITHIN the loop). `writing-skills` pass: persona lines written as a REFRAME +
+  consequence (Match-the-Form-to-the-Failure — not a bare prohibition), skill-name cross-refs
+  (no `@` force-loads), bold scannable leads, keyword coverage kept, `SKILL.md` 179 ≤ 220.
+  Verify-on-write: the documented dossier snippet was EXTRACTED from `launch.md` and RUN
+  against the real `ui_screen_dossier_v1.json` — `Screen_Right_Upper_RTT` / `Screen_Left_Lower_RTT`
+  (DRAK, complete) → fully-automated; `console_liftcall_009` (ANVL, first-of-a-kind), a
+  no-dossier-row screen, and a synthetic new-manufacturer row → semi-automated. Battery:
+  `ui_check: ALL GREEN`, `validate_ui_dossier: OK (18 screens)`.

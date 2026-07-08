@@ -34,3 +34,12 @@ _(none yet)_
   serial-main-thread vs parallel phases for free; (4) tmpfs /tmp fills fast with
   multi-GB export outputs — budget bench dirs and clean between runs, or a later
   run fails mid-write with "Disk quota exceeded" and poisons the comparison.
+
+- **2026-07-08 (alignment plan T15 — ponytail reconciliation; applied via
+  `superpowers:writing-skills` review).** `SKILL.md` strict rules gained ONE line — the
+  **ponytail note** (laziest-that-works = smallest change still engine-faithful + data-derived;
+  a hard-coded value / invented geometry / name-gate / heuristic is never "lazy" here, it trips
+  the guards). This skill already names its superpowers sub-skills correctly
+  (`writing-plans`/`executing-plans`/`subagent-driven-development`/`systematic-debugging`), so it
+  did NOT get the process-skill/brainstorming line. `writing-skills` pass: reframe-not-prohibition
+  form, bold lead, no `SKILL.md` structural change beyond the one bullet.

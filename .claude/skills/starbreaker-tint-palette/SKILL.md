@@ -113,6 +113,13 @@ Never proceed on a presumed "yes."
 - **The decal stencil is part of the palette identity** — a wrong logo is a wrong
   palette, not a decal bug.
 - Fix the decode/assign stage, not a draw-time tint.
+- **Ponytail note:** in this repo the laziest solution that works = the smallest
+  change that is still engine-faithful and data-derived. A hard-coded value, invented
+  geometry, name-gate, or heuristic is never 'the lazy solution' here — it trips the
+  guards.
+- **This skill IS the process skill for its arc** — its launch/catalog gates stand in
+  for superpowers:brainstorming's design gate; superpowers planning/TDD/debugging
+  skills are sub-tools invoked WITHIN the loop.
 
 ## Self-improve every arc: the retrospective (MANDATORY closing step)
 

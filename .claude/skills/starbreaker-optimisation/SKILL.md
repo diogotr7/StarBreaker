@@ -244,6 +244,10 @@ Via `AskUserQuestion`, ask whether to run another pass against the NEW baseline
   AGENTS.md). Branch first if on the default branch.
 - **3000-line / small-file discipline; update `//!` headers** when a file's
   responsibility changes; verify-on-write any command you cite in a doc.
+- **Ponytail note:** in this repo the laziest solution that works = the smallest
+  change that is still engine-faithful and data-derived. A hard-coded value, invented
+  geometry, name-gate, or heuristic is never 'the lazy solution' here — it trips the
+  guards.
 
 ## Checkpoints
 

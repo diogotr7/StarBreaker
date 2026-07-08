@@ -47,9 +47,33 @@ folder" call is invalid — PAD to ≥2. Never skip the question to dodge this.
    - **Scope:** "Full review of every region" vs "Specific issues I'll name" (the
      free-text captures observed symptoms; named issues SEED the catalog, the review
      still surfaces the rest).
-   - **Mode:** "Semi-automated — gate commits and freezes" vs "Fully automated —
-     commit automatically, gate only freezes." Freezing is gated in BOTH modes; the
-     mode only changes whether commits and the final parity check pause.
+   - **Mode — COMPUTE the recommended default, then STILL ASK.** "Known" is
+     mechanical, not a vibe: the chosen SCREEN's dossier row is COMPLETE (`preset`,
+     `tier`, `target_id` all non-null) AND its manufacturer already has ≥1 OTHER
+     frozen GOLD/PLATINUM screen — manufacturer = the `scene_package` prefix
+     (`DRAK`/`ANVL`), DERIVED from the row, never a hard-coded ship→brand map. Known
+     → recommend **fully-automated**; first-of-a-kind (new manufacturer, new widget
+     family, or no dossier row) → recommend **semi-automated** (owner direction
+     2026-07: auto arcs for KNOWN ships, hands-on for first-of-a-kind). Compute it
+     from the dossier (`SCREEN` = the chosen stem):
+
+     ```python
+     import json
+     D = json.load(open("crates/starbreaker-ui/data/ui_screen_dossier_v1.json"))["screens"]
+     row = next((s for s in D if s["screen_id"] == SCREEN), None)          # None = no row yet
+     mfr = row["scene_package"].split()[0] if row else None               # "DRAK"/"ANVL" — derived
+     complete = bool(row) and all(row[k] is not None for k in ("preset", "tier", "target_id"))
+     mfr_frozen = any(s["screen_id"] != SCREEN
+                      and s["scene_package"].split()[0] == mfr
+                      and s["tier"] in ("GOLD", "PLATINUM") for s in D)
+     print("fully-automated" if (complete and mfr_frozen) else "semi-automated")
+     ```
+
+     Present the computed value as the FIRST `AskUserQuestion` option — the ASK NEVER
+     disappears and the user can override it. The two options are "Semi-automated —
+     gate commits and freezes" and "Fully automated — commit automatically, gate only
+     freezes." Freezing is gated in BOTH modes; the mode only changes whether commits
+     and the final parity check pause.
    Then build/seed the catalog and **order it by priority (workflow §4:
    structural/layout before styling; shared-root-cause items together) and work it
    top-down — never pause to ask which item next.** A HANDOFF doc named in the
