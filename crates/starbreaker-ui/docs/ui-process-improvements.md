@@ -11,6 +11,41 @@
 > have moved to `crates/starbreaker-ui/docs/ui-architecture-runbook.md`
 > §"Open architecture debt" — that is the live backlog; this is the history.
 
+## Current-truth index
+
+> Grep-and-stop hazard: this ledger is APPEND-ONLY and some entries were
+> overturned IN PLACE. If you land on an entry below, its guidance was later
+> corrected — follow the pointer before acting on it.
+
+**Overturned / superseded:**
+
+| Entry | See | Current truth |
+|---|---|---|
+| 67 (d) | 68 | Compass label colour was a HUD brand-class misclassification (`env`→`hud` H1), not an absent `heading-cardinal-dir` tag. Parts (a)–(c) stand. |
+| 75 | 76 | Master-mode text size AND colour were ONE unapplied authored `defaultStyles` `Type(Text)` (FontSize 350 / white) — not a "frozen-family blocker". |
+| 94 | 96 + 97 | (1) the authored size existed in the brand sub-canvas `embeddedStyles`, applied at the Embedded tier (96); (2) the residual was a portrait render font-scale (97), not undecoded engine scaling. |
+| 104 (F1) | 105 | The `engine_parts/*.part` → real `engine_NN.rs` conversion LANDED; 104's "F1 awaits owner decision" is done. |
+
+Items **60** (velocity-num) and **66** (compass ticks) self-corrected the same
+"inherited 'proven blocker' was under-research" trap (named again at 76); that
+recurring lesson is now an ENFORCED gate — `scripts/ui_blocker_evidence.py` +
+the `ui_variant_styles` probe (ledger **108** A4/A5), not prose. Treat any
+"proven blocker" verdict as under-research until that evidence gate is satisfied.
+
+**Numbering — NEVER renumber (entry numbers are provenance anchors cited by code/tests/commits):**
+№19 appears twice (Part C "What demonstrably worked", line ~515; Part D "Ad-hoc
+pixel measurement", line ~683); 99–100 are unused (98 → 101). The duplicate and
+the gap are documented here, not repaired.
+
+**Genre:** Parts A–E (items 1–34) are history + the executable phased plans of
+their era; from ~item 52 (Part F on) the ledger is a retro JOURNAL of
+self-contained entries — no new phased plans are added. The live architecture
+backlog is NOT here: it lives in
+`crates/starbreaker-ui/docs/ui-architecture-runbook.md` §"Open architecture
+debt" (former items 16/17/18).
+
+---
+
 A retrospective of the Clipper power-screen parity arc (2026-06-10 → 06-11)
 turned into concrete process changes, followed by the **phased, actionable
 plan** that implements them (§"Phased plan"). The plan is written to be
@@ -1626,6 +1661,7 @@ blocker). Retro docs:
    skill *Default to fixing* search-the-record-families reinforcement. [done]
 
 ### 67. Compass follow-up: `auto`≠`useRaw` fill, height-driven font, and a too-broad font gate (medical trap)
+> ⚠️ Part (d) OVERTURNED — see item 68 (the label-colour "blocker" was a HUD brand-class misclassification, not an absent tag binding). Parts (a)–(c) stand.
 **Observed (compass arc round 2, 2026-06-15, owner feedback "font/colour/tick-height wrong, minors missing"):** three findings.
 (a) **Canvas fill by `coordinateMethod`.** The compass ticks clipped because `bb_layout` lumped `coordinateMethod:"auto"` with `useRaw` (uniform cover/contain). The compass master UNIQUELY authors `auto` among cockpit screens (others `useRaw`; target `aspectOverridesWidth`); `auto` FILLS the target like `aspectOverrides*` (non-uniform sx/sy). Moved `auto` to that branch (`4f352b429`) — no frozen screen is `auto`. Lesson: check the authored `coordinateMethod` before treating a wide-screen-vs-16:9-canvas mismatch as a cover/contain problem.
 (b) **Height-driven text sizes its font to the field.** Labels with no FontSize fell to the Heading1 default (60, ~6% cap vs ref 19%). A text field whose box is height-driven (width `PercentOfY`, height `Percent`) has the engine size the glyph to fill the field; `resolve_effective_font_size` now does this before the named-style default (`ca5ec0b25`).
@@ -1763,6 +1799,7 @@ RESOLVED `colour`/`colour_token` directly (it did here: `colour_token:"Accent2"`
 **Action:** doc note here; no code change (the resolvers already use the correct enum).
 
 ### 75. `coordinateMethod=auto` font/colour render changes are WHOLE-IMAGE-only (invisible to `ui_check` live-IR) — run `--full` before judging an auto-canvas experiment "clean"; and master-mode's text size+colour are proven frozen-family blockers
+> ⚠️ OVERTURNED — see item 76 (master-mode size AND colour were ONE unapplied authored `defaultStyles` entry, not a frozen-family blocker). The `--full`-before-clean lesson still stands.
 **Observed:** the master-mode display authors `coordinateMethod=auto` with a fixed
 `Heading1`=60 text (no autoFontSize/scale/Percent-height); the reference cap is ~14%
 (icon-calibrated: the geom icon is 28%) ≈ ~340px. Two experiments to close the size and

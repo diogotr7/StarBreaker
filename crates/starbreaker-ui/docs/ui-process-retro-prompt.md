@@ -16,8 +16,8 @@ ones, and updating documentation with enough information to bootstrap the
 process so the next session needs less research at the start.
 
 First read crates/starbreaker-ui/docs/ui-process-improvements.md (the ledger — you will APPEND
-to it, matching its Observed/Improvement/Action format and its phased-plan
-style) and skim crates/starbreaker-ui/docs/ui-workflow.md + crates/starbreaker-ui/docs/ui-reference.md so proposals
+to it, matching its Observed/Improvement/Action format as a self-contained retro
+entry) and skim crates/starbreaker-ui/docs/ui-workflow.md + crates/starbreaker-ui/docs/ui-reference.md so proposals
 amend the current process rather than reinvent it. Use this session's own
 experience as the primary evidence; use the arc's git log, handoff, and
 memory file to recall anything context compaction has blurred.
@@ -69,8 +69,15 @@ Sweep these categories against what actually happened:
 
 Then:
 - APPEND the findings as new numbered items to
-  crates/starbreaker-ui/docs/ui-process-improvements.md and EXTEND its phased plan (same style:
-  per-step files, commands, acceptance; approval-gated items marked).
+  crates/starbreaker-ui/docs/ui-process-improvements.md — self-contained retro
+  entries (Observed/Improvement/Action, with the implementation inline). Do NOT
+  start a new phased plan: the ledger abandoned that genre around item 52 (see
+  its Current-truth index). For each recurring lesson, the DEFAULT action is to
+  convert it into an ENFORCED gate/test/probe/tool — the way the recurring
+  "inherited 'proven blocker' was under-research" lesson became the
+  blocker-evidence gate (scripts/ui_blocker_evidence.py) + the `ui_variant_styles`
+  probe (ledger 108 A4/A5), not another prose bullet. A prose-only bullet is the
+  LAST resort and must state WHY a gate/test/probe/tool is not possible.
 - IMPLEMENT the plan: quick tooling wins first, then docs, then automation;
   one commit per coherent item citing its ledger number; verify-on-write
   for every doc change; bash scripts/ui_check.sh green per commit. Process
