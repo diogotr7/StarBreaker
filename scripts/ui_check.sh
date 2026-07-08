@@ -109,7 +109,7 @@ if [[ "$FULL" == 1 ]]; then
   step "ui_export_smoke (composed-export PNG presence/non-blank, production path)"
   if [[ -d "$EXPORT_ROOT/Data/UI/Generated" ]]; then
     SMOKE_PKG="$(basename "$(dirname "$SCENE")")"   # e.g. DRAK Clipper_LOD1_TEX2
-    bash scripts/ui_export_smoke.sh --export-root "$EXPORT_ROOT" --packages "${SMOKE_PKG%%_LOD*}_*"
+    bash scripts/ui_export_smoke.sh --export-root "$EXPORT_ROOT" --packages "${SMOKE_PKG%%_LOD*}_LOD*"
   else
     echo "SKIP ui_export_smoke: no export at $EXPORT_ROOT/Data/UI/Generated (re-export first)." >&2
   fi

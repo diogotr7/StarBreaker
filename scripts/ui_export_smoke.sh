@@ -21,10 +21,18 @@
 #                 at run time — never a hard-coded number.
 #
 # ASSERTIONS
-#   (a) N := |distinct generated_image_path| > 0, and every one of those N paths
+#   (a) NO binding record has generated_image_path: null — the field is set only
+#       in the render Ok arm (decomposed.rs:3190), so a null IS the Err arm: a
+#       screen that failed to bake. The enumeration alone is success-conditioned
+#       and would silently shrink; this catches the Err class structurally.
+#   (b) N := |distinct generated_image_path| > 0, and every one of those N paths
 #       exists as a PNG on disk (presence: a render target with no baked file).
-#   (b) every one of those N PNGs has > 1 distinct pixel value (a uniform image
+#   (c) every one of those N PNGs has > 1 distinct pixel value (a uniform image
 #       is a dead / blank render — the blank-MFD signature).
+#   WARN (not fail): on-disk PNGs under the enumerated Generated subtrees that
+#       appear in NO gated scene.json — stale files across re-exports are
+#       legitimate, but were previously invisible (e.g. a stale blank provider
+#       PNG the success-conditioned enumeration never saw).
 #   Marker: `ui_export_smoke: OK (N screens)` / `ui_export_smoke: FAILED`.
 #
 # MODES
@@ -100,6 +108,27 @@ PY
   else
     echo "  ok: uniform PNG detected as blank"
   fi
+
+  # Null-path failure: a synthetic export root whose scene.json carries one
+  # binding with generated_image_path null (render Err arm) alongside one valid
+  # baked binding — run_check must FAIL and name the null, not pass on the 1
+  # good screen.
+  local synth="$dir/root"
+  mkdir -p "$synth/Data/UI/Generated/synth" "$synth/Packages/synth_pkg"
+  cp "$dir/twocolour.png" "$synth/Data/UI/Generated/synth/ok.png"
+  cat > "$synth/Packages/synth_pkg/scene.json" <<'JSON'
+{"placements":[{"ui_bindings":[
+  {"binding_kind":"mfd","generated_image_path":null},
+  {"binding_kind":"mfd","generated_image_path":"Data/UI/Generated/synth/ok.png"}
+]}]}
+JSON
+  local out rc=0
+  out="$( (run_check "$synth") 2>&1 )" || rc=$?
+  if [[ $rc -ne 0 && "$out" == *"null generated_image_path"* ]]; then
+    echo "  ok: null generated_image_path fails loudly"
+  else
+    echo "  FAIL: null-path scene not rejected (rc=$rc out='$out')" >&2; exit 2
+  fi
   SMOKE_SUMMARY="self-test"
 }
 
@@ -113,17 +142,23 @@ run_check() {
   local root="$1" pkg_glob="${2:-*}"
   [[ -d "$root/Data/UI/Generated" ]] || { echo "no Data/UI/Generated under $root" >&2; exit 1; }
 
-  # Derive the expected render-target set from scene.json (see header).
-  mapfile -t expected < <(
+  # Derive the expected render-target set from scene.json (see header), plus:
+  # NULLS — binding records whose generated_image_path is null (render Err arm);
+  # ORPHAN — on-disk PNGs under the enumerated subtrees in no gated scene.json.
+  mapfile -t enum_lines < <(
     python3 - "$root" "$pkg_glob" <<'PY'
 import json, sys, os, glob
 root, pkg_glob = sys.argv[1], sys.argv[2]
-paths = set()
+paths, nulls = set(), 0
 def walk(o):
+    global nulls
     if isinstance(o, dict):
-        p = o.get("generated_image_path")
-        if p:
-            paths.add(p)
+        if "generated_image_path" in o:          # binding record shape
+            p = o["generated_image_path"]
+            if p:
+                paths.add(p)
+            else:
+                nulls += 1
         for v in o.values():
             walk(v)
     elif isinstance(o, list):
@@ -131,13 +166,41 @@ def walk(o):
             walk(v)
 for s in glob.glob(os.path.join(root, "Packages", pkg_glob, "scene.json")):
     walk(json.load(open(s)))
+print("NULLS", nulls)
+disk = set()
+for d in {os.path.dirname(p) for p in paths}:    # only the gated subtrees
+    for dp, _, fns in os.walk(os.path.join(root, d)):
+        for fn in fns:
+            if fn.lower().endswith(".png"):
+                disk.add(os.path.relpath(os.path.join(dp, fn), root))
+for o in sorted(disk - paths):
+    print("ORPHAN", o)
 for p in sorted(paths):
-    print(p)
+    print("TARGET", p)
 PY
   )
 
+  local null_count=0 expected=() orphans=() line
+  for line in "${enum_lines[@]}"; do
+    case "$line" in
+      "NULLS "*)  null_count="${line#NULLS }" ;;
+      "ORPHAN "*) orphans+=("${line#ORPHAN }") ;;
+      "TARGET "*) expected+=("${line#TARGET }") ;;
+    esac
+  done
+
+  if (( null_count > 0 )); then
+    echo "FAIL: $null_count binding record(s) with null generated_image_path — render Err arm, screen(s) never baked" >&2
+    exit 1
+  fi
+
   local n=${#expected[@]}
   assert_nonzero_matches "$n" "UI render targets (generated_image_path) in $root scene.json"
+
+  if (( ${#orphans[@]} > 0 )); then
+    echo "WARNING: ${#orphans[@]} on-disk PNG(s) under the gated Generated subtree(s) in no scene.json (stale from a prior export?):" >&2
+    printf '  ORPHAN: %s\n' "${orphans[@]}" >&2
+  fi
 
   local missing=0 blank=0 p
   for p in "${expected[@]}"; do
@@ -173,7 +236,7 @@ case "${1:-}" in
     run_check "$root" "$pkg_glob"
     ;;
   "" | -h | --help)
-    sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'
     trap - EXIT   # --help runs no checks: don't mint a false OK marker.
     exit 0
     ;;
