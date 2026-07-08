@@ -87,7 +87,9 @@ if [[ "$FULL" == 1 ]]; then
   # when the test binary is >30min newer than the export stamp — surface the
   # stamp age BEFORE minutes of suites run, so a needed re-export (~50s)
   # happens first. Warning only; the in-guard check stays authoritative.
-  STAMP="$HOME/projects/scorg_tools/ships/Data/UI/Generated/.export_stamp.json"
+  EXPORT_ROOT="$HOME/projects/scorg_tools/ships"
+  STAMP="$EXPORT_ROOT/Data/UI/Generated/.export_stamp.json"
+  SCENE="${UI_CHECK_SCENE:-$EXPORT_ROOT/Packages/DRAK Clipper_LOD1_TEX2/scene.json}"
   if [[ -f "$STAMP" ]]; then
     AGE_MIN=$(( ( $(date +%s) - $(python3 -c "import json;print(json.load(open('$STAMP'))['written_at_epoch_s'])") ) / 60 ))
     echo "export stamp age: ${AGE_MIN}min"
@@ -96,6 +98,20 @@ if [[ "$FULL" == 1 ]]; then
     fi
   else
     echo "WARNING: no export stamp at $STAMP — the visual guard will fail unless game data is absent (skip path)." >&2
+  fi
+
+  # Composed-export smoke gate (alignment plan T7): checks the REAL deliverable —
+  # the baked screen PNGs — through the production fetchers (guards the blank-MFD
+  # class the unit mocks missed). Reads the SAME pre-existing export dir the
+  # visual guards read; never triggers a re-export (the export is an external
+  # precondition, like the stamp). Scoped to the ship under test (derived from
+  # SCENE's package prefix) so a stale sibling-ship export can't red-line the tier.
+  step "ui_export_smoke (composed-export PNG presence/non-blank, production path)"
+  if [[ -d "$EXPORT_ROOT/Data/UI/Generated" ]]; then
+    SMOKE_PKG="$(basename "$(dirname "$SCENE")")"   # e.g. DRAK Clipper_LOD1_TEX2
+    bash scripts/ui_export_smoke.sh --export-root "$EXPORT_ROOT" --packages "${SMOKE_PKG%%_LOD*}_*"
+  else
+    echo "SKIP ui_export_smoke: no export at $EXPORT_ROOT/Data/UI/Generated (re-export first)." >&2
   fi
 
   step "starbreaker-ui FULL test suite (export-coupled visual guards authoritative)"
@@ -110,7 +126,7 @@ if [[ "$FULL" == 1 ]]; then
   step "starbreaker-3d lib tests"
   cargo test -p starbreaker-3d --lib
 
-  SCENE="${UI_CHECK_SCENE:-$HOME/projects/scorg_tools/ships/Packages/DRAK Clipper_LOD1_TEX2/scene.json}"
+  # SCENE (UI_CHECK_SCENE or the Clipper LOD1 default) is defined above.
   if [[ -f "$SCENE" ]]; then
     step "font-size harness (scene: $SCENE)"
     DUMP="$(mktemp /tmp/ui_check_fontdump.XXXXXX.tsv)"
