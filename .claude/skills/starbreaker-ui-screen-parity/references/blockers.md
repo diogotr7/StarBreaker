@@ -58,7 +58,10 @@ suffix from the engine's enum→localization table).
 - **A MAJOR/dominant item is confirmed by the USER, both modes** — before accepting one as
   blocked, dispatch a dedicated "find-it-or-prove-absence" subagent, then surface the
   blocker + the validated evidence file to the user (gate). Never self-certified. (Minor
-  residuals deferred with proof don't need the gate.)
+  residuals deferred with proof don't need the gate.) Before deferring or accepting ANY
+  residual, classify it against `crates/starbreaker-ui/docs/ui-residual-budget.md`
+  (capture-caused permanent-acceptable vs renderer-caused must-fix; a capture claim needs
+  a distinguishing measurement).
 
 ## The wrong-stage / whack-a-mole trap
 

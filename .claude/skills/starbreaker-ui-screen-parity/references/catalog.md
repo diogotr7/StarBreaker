@@ -85,7 +85,10 @@ Closing an item as clean or within tolerance requires a MEASUREMENT (a sibling c
 connected-component isolation, `ui_measure.py`, the per-target `--full` %s), not an eyeballed
 "looks close": the SUB DECK "within tolerance" call was wrong twice on a width-match coincidence
 before a proper cap-h ratio proved it ~1.35× too small (ledger 107). Judge a residual on data
-before you accept it.
+before you accept it. Classify each catalog item against
+`crates/starbreaker-ui/docs/ui-residual-budget.md` (capture-caused permanent-acceptable vs
+renderer-caused must-fix, with the distinguishing measurement per class) BEFORE calling it
+within-tolerance.
 
 A proven-blocked remainder IS a valid terminal state — "deferred with proof, not
 clean": some screens have intrinsic engine-mechanism limits that bound achievable

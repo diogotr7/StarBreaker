@@ -12,7 +12,8 @@ end in itself. Everything below — the engine-faithful, generic *means* — ser
 that end. When trading off effort, how a screen *looks in the exported scene*
 outranks how it would behave live. Owner direction (2026-07): scale parity arcs
 across many ships once the process is proven; a public release eventually; the
-residual (acceptable-gap) bar being codified; fully-auto arcs on known ships.
+residual (acceptable-gap) bar — codified in
+`crates/starbreaker-ui/docs/ui-residual-budget.md`; fully-auto arcs on known ships.
 
 THE process for UI-matching work in `starbreaker-ui`: getting a rendered
 screen to match its in-game reference, engine-faithfully and generically.

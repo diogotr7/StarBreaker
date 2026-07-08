@@ -17,7 +17,8 @@ are the *means*; this static-visual fidelity is the *end* they serve — when
 prioritising, how a screen looks in the exported scene outranks how it would
 behave live. Owner direction (2026-07): scale parity arcs across many ships
 once the process is proven; a public release eventually; the residual
-(acceptable-gap) bar being codified; fully-auto arcs on known ships.
+(acceptable-gap) bar — codified in
+`crates/starbreaker-ui/docs/ui-residual-budget.md`; fully-auto arcs on known ships.
 
 ## Required first reads
 
