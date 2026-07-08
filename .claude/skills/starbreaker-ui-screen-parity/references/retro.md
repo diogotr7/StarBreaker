@@ -38,6 +38,36 @@ Two destinations:
 - **Improvements to THIS skill →** append under **Open recommendations** in
   `recommendations.md` (next to this file); do not rewrite `SKILL.md` mid-arc.
 
+## Log the arc's cost (MANDATORY — the Workstream-A measurement)
+
+Workstream A's whole justification is *"cheaper arcs"* — unverifiable until measured.
+So every arc appends ONE line to `crates/starbreaker-ui/data/arc_cost_log_v1.jsonl`
+(append-only; provenance + full field table in its `.notes.md`). The numbers are YOUR
+OWN honest count from this lived session — not estimates, not the targets below.
+
+Exact shape (one line, all fields):
+
+```json
+{"date":"YYYY-MM-DD","screen_id":"...","ship":"...","mode":"semi|full","bootstrap_lines_read":0,"loop_cycles":0,"tool_calls_per_cycle_median":0,"wall_clock_min":0,"gates_fired":[],"froze":false,"notes":"..."}
+```
+
+- `bootstrap_lines_read` = **total doc/skill lines you read before the FIRST render of
+  the arc** (the launch cost). `mode` = the automation mode this arc actually ran in
+  (semi-auto stop-and-ask vs fully-auto keep-fixing). `gates_fired` = which guard/freeze
+  gates tripped.
+- **Comparison bar** (targets from `docs/superpowers/plans/2026-07-04-ui-parity-process-and-crate-plan.md`,
+  Task A10 Step 2): `bootstrap_lines_read` ~**600**, `tool_calls_per_cycle_median` **1–2**.
+  A line above the bar is a signal to feed the next process retro, not a failure.
+
+Append it, then confirm the file still parses (empty file is valid):
+
+```bash
+python3 -c "import json;[json.loads(l) for l in open('crates/starbreaker-ui/data/arc_cost_log_v1.jsonl')]"
+```
+
+Do not close the arc with this line unwritten (it is part of the same mandatory retro
+TodoWrite item).
+
 Acceptance (bootstrap test): a fresh agent could run the next arc from `ui-workflow.md` +
 `ui-reference.md` + the dossier alone. Any excursion you needed is a doc bug — fix it
 before closing.
