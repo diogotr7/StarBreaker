@@ -211,11 +211,13 @@ Via `AskUserQuestion`, ask whether to run another pass against the NEW baseline
    order can make output vary run-to-run. Run the workload twice and diff.
 6. **The allocator is rarely the answer.** jemalloc via `LD_PRELOAD` was measured
    SLOWER here — the pipeline is not allocator-bound. Don't reach for it.
-7. **Validate the baseline's PROVENANCE.** A "fast prior run" may be a STALE
-   BINARY from before the regressing commit — stat the binary mtime against
-   `git log` before trusting any endpoint. Old hashed executables under
-   `target/release/deps/starbreaker-<hash>` are a free no-rebuild time-travel
-   bisect ladder.
+7. **Validate the baseline's PROVENANCE — GATE.** A "fast prior run" may be a
+   STALE BINARY from before the change under test (the 42s-baseline incident) or
+   the very SAME binary timed twice (a 0.21s no-op "build"). Before ANY
+   before/after timing claim, run `scripts/perf_provenance.sh <binary>` on BOTH
+   endpoints and include both outputs; a matching sha256, or an mtime/HEAD that
+   predates the change, INVALIDATES the comparison. Old hashed executables under
+   `target/release/deps/starbreaker-<hash>` are a free no-rebuild bisect ladder.
 8. **A silent probe means the WRONG LAYER, not "no cost".** Instrument the
    phase boundary first (per-item heartbeats), then descend — the DDNA
    regression bypassed `cached_load_keyed`, so a `[tex-miss]` probe there
