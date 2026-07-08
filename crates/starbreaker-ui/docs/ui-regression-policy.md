@@ -33,11 +33,26 @@ the frozen baseline beyond a small per-channel tolerance (platinum 0.5%, gold
 Do **not** add focused/ROI/heuristic per-screen pixel checks (e.g. cyan-coverage
 in a hand-picked title rectangle). Such tests only see the regions and colours
 they were written for and miss everything else (a white→grey caption, a
-white→blue button frame). The whole-image guard catches any rendered change on
-any screen with no per-screen knowledge. Compose-only effects (e.g. a synthetic
-close-button tint) and runtime-bound text (e.g. caption values) are invisible to
-the IR-level guards and rely on this pixel guard. IR-level/tint semantics are
-still gated separately by `manifest_live_ir_guard`.
+white→blue button frame).
+
+**The whole-image guard is bounded by its own tier budget.** It catches *large*
+drift on any screen with no per-screen knowledge, but a change that touches fewer
+pixels than the tolerated fraction stays under the threshold and is invisible to
+it: a vanished nav arrow or a collapsed few-pixel element can disappear entirely
+under a GREEN whole-image guard (ledger 77/106/107 — caught only by eye). That
+**sub-threshold element-loss class** is owned — generically — by the
+**element-presence guard** (`tests/element_presence_guard.rs`): for every frozen
+target it requires every drawable, non-degenerately-sized node in that target's
+own frozen IR snapshot to still be present, with a non-degenerate rect, in the
+freshly compiled live IR. It is *derived from each target's snapshot*, so it is
+generic in the same sense as the whole-image guard — adding a screen to the
+freeze extends it automatically — **not** a hand-targeted ROI check: it authors
+no per-screen element list and encodes no per-screen colours or coordinates.
+
+Compose-only effects (e.g. a synthetic close-button tint) and runtime-bound text
+(e.g. caption values) are invisible to the IR-level guards and rely on the pixel
+guard. IR-level/tint semantics are still gated separately by
+`manifest_live_ir_guard`.
 
 ## Contributor Guardrails
 

@@ -1,15 +1,13 @@
 use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-use starbreaker_ui::pipeline::AssetFetcher;
 use starbreaker_ui::{
-    CanvasFetcher, PipelineInputs, StyleFetcher, SwfFetcher, UiBindingView, UiError,
     UiIrDocument, UiKnownOutlier, UiKnownOutlierRegistry, UiRegressionManifest, UiScreenSnapshot,
     UiSnapshotElement, compare_manifest_targets_with_loader,
-    compare_manifest_targets_with_loader_and_outliers, compile_ir_for_binding, snapshot_from_ui_ir,
+    compare_manifest_targets_with_loader_and_outliers, snapshot_from_ui_ir,
 };
+
+mod live_ir_harness;
+use live_ir_harness::load_live_target_cases;
 
 /// Reference-anchored known-outlier overrides (committed numbers, no image).
 fn known_outliers() -> Vec<UiKnownOutlier> {
@@ -19,221 +17,9 @@ fn known_outliers() -> Vec<UiKnownOutlier> {
     registry.outliers
 }
 
-#[derive(Debug, Deserialize)]
-struct SnapshotFreezeFile {
-    targets: Vec<SnapshotFreezeTarget>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SnapshotFreezeTarget {
-    id: String,
-    source_generated_png: String,
-    canvas_guid: String,
-    baseline_snapshot: UiScreenSnapshot,
-}
-
-struct LiveTargetCase {
-    id: String,
-    current_ir: UiIrDocument,
-    baseline_snapshot: UiScreenSnapshot,
-}
-
-struct FsCanvasFetcher {
-    guid_to_path: HashMap<String, PathBuf>,
-    by_name: HashMap<String, String>,
-}
-
-impl CanvasFetcher for FsCanvasFetcher {
-    fn fetch_canvas_json(&self, guid: &str) -> Result<serde_json::Value, UiError> {
-        let path = self
-            .guid_to_path
-            .get(guid)
-            .ok_or_else(|| UiError::RenderError(format!("missing canvas guid: {guid}")))?;
-        load_canvas_json_from_path(path)
-            .map_err(|err| UiError::RenderError(format!("failed loading canvas {guid}: {err}")))
-    }
-
-    fn fetch_canvas_by_name(&self, record_name: &str) -> Result<serde_json::Value, UiError> {
-        let guid = self
-            .by_name
-            .get(record_name)
-            .or_else(|| self.by_name.get(&record_name.to_ascii_lowercase()))
-            .ok_or_else(|| UiError::RenderError(format!("missing canvas name: {record_name}")))?;
-        self.fetch_canvas_json(guid)
-    }
-}
-
-struct DummySwfFetcher;
-
-impl SwfFetcher for DummySwfFetcher {
-    fn fetch_swf_bytes(&self, _p4k_path: &str) -> Result<Vec<u8>, UiError> {
-        Err(UiError::RenderError("SWF fetch not required".to_string()))
-    }
-}
-
-struct DummyStyleFetcher {
-    manufacturer_id: String,
-}
-
-impl StyleFetcher for DummyStyleFetcher {
-    fn fetch_manufacturer_style(
-        &self,
-        _manufacturer_id: &str,
-    ) -> Result<starbreaker_ui::ManufacturerStyle, UiError> {
-        Ok(starbreaker_ui::StyleLoader::for_manufacturer(&self.manufacturer_id).neutral_fallback())
-    }
-}
-
-struct DummyAssetFetcher;
-
-impl AssetFetcher for DummyAssetFetcher {
-    fn fetch_image_bytes(&self, _p4k_path: &str) -> Option<Vec<u8>> {
-        None
-    }
-}
-
-fn collect_json_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_json_files(&path, out);
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
-            out.push(path);
-        }
-    }
-}
-
-fn load_canvas_json_from_path(path: &Path) -> Result<serde_json::Value, String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-    serde_json::from_str(&raw)
-        .map_err(|err| format!("failed to parse {}: {err}", path.display()))
-}
-
-fn load_canvas_index(root: &Path) -> Result<FsCanvasFetcher, String> {
-    let mut files = Vec::new();
-    collect_json_files(root, &mut files);
-
-    let mut guid_to_path = HashMap::new();
-    let mut by_name = HashMap::new();
-
-    for path in files {
-        let json = load_canvas_json_from_path(&path)?;
-        let Some(record_name) = json
-            .get("_RecordName_")
-            .and_then(|value| value.as_str())
-            .map(str::to_owned)
-        else {
-            continue;
-        };
-        let Some(record_id) = json
-            .get("_RecordId_")
-            .and_then(|value| value.as_str())
-            .map(str::to_owned)
-        else {
-            continue;
-        };
-
-        let bare_name = record_name
-            .strip_prefix("BuildingBlocks_Canvas.")
-            .unwrap_or(&record_name)
-            .to_string();
-        let path_stem = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or("")
-            .to_string();
-        let path_rel = path
-            .strip_prefix(root)
-            .ok()
-            .and_then(|relative| relative.to_str())
-            .map(|relative| relative.replace('\\', "/"));
-
-        guid_to_path.insert(record_id.clone(), path.clone());
-        by_name.insert(record_name.clone(), record_id.clone());
-        by_name.insert(record_name.to_ascii_lowercase(), record_id.clone());
-        by_name.insert(bare_name.clone(), record_id.clone());
-        by_name.insert(bare_name.to_ascii_lowercase(), record_id.clone());
-        by_name.insert(record_id.clone(), record_id.clone());
-        if !path_stem.is_empty() {
-            by_name.insert(path_stem.clone(), record_id.clone());
-            by_name.insert(path_stem.to_ascii_lowercase(), record_id.clone());
-        }
-        if let Some(rel) = path_rel {
-            by_name.insert(rel.clone(), record_id.clone());
-            by_name.insert(rel.to_ascii_lowercase(), record_id.clone());
-        }
-    }
-
-    Ok(FsCanvasFetcher { guid_to_path, by_name })
-}
-
-fn compile_target_ir(
-    fetcher: &FsCanvasFetcher,
-    localization_map: Option<HashMap<String, String>>,
-    manufacturer_id: &str,
-    canvas_guid: &str,
-    target_size: (u32, u32),
-) -> UiIrDocument {
-    let swf_fetcher = DummySwfFetcher;
-    let style_fetcher = DummyStyleFetcher {
-        manufacturer_id: manufacturer_id.to_string(),
-    };
-    let asset_fetcher = DummyAssetFetcher;
-
-    let binding = UiBindingView {
-        canvas_guid: Some(canvas_guid),
-        content_canvas_guid: Some(canvas_guid),
-        binding_kind: Some("mfd"),
-        manufacturer_id: Some(manufacturer_id),
-        helper_name: Some("freeze-ui-snapshot-ir"),
-        default_view_index: None,
-        default_screen_slot: None,
-        screen_name_loc_key: None,
-        transit_location_loc_key: None,
-        host_swf_path: None,
-        screen_aspect_w_over_h: None,
-    };
-
-    let inputs = PipelineInputs {
-        binding: &binding,
-        canvas_fetcher: fetcher,
-        swf_fetcher: &swf_fetcher,
-        style_fetcher: &style_fetcher,
-        asset_fetcher: &asset_fetcher,
-        target_size,
-        apply_postprocess: false,
-        animation_sample_percent: None,
-        localization_map,
-        loc_fetcher: None,
-        derived_values: None,
-        hologram_fetcher: None,
-    };
-
-    compile_ir_for_binding(&inputs).expect("target IR compile should succeed")
-}
-
 fn live_snapshot_manifest() -> UiRegressionManifest {
     serde_json::from_str(include_str!("fixtures/ui_ir/ui_snapshot_manifest.json"))
         .expect("snapshot manifest fixture should parse")
-}
-
-fn snapshot_freeze() -> SnapshotFreezeFile {
-    serde_json::from_str(include_str!("fixtures/ui_ir/ui_snapshot_freeze.json"))
-        .expect("snapshot freeze fixture should parse")
-}
-
-fn manufacturer_from_source_path(source_generated_png: &str) -> String {
-    let parts: Vec<&str> = source_generated_png.split('/').collect();
-    if let Some(index) = parts.iter().position(|part| *part == "ship") {
-        if let Some(manufacturer) = parts.get(index + 1) {
-            return (*manufacturer).to_string();
-        }
-    }
-    "drak".to_string()
 }
 
 fn focused_movement_snapshot(snapshot: &UiScreenSnapshot) -> UiScreenSnapshot {
@@ -376,63 +162,6 @@ fn missing_font_metadata_nodes(document: &UiIrDocument) -> Vec<String> {
             }
         })
         .collect()
-}
-
-fn load_live_target_cases() -> Option<Vec<LiveTargetCase>> {
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
-        .canonicalize()
-        .expect("workspace root should resolve from CARGO_MANIFEST_DIR");
-    let canvas_root = workspace_root.join("ships/dcb_canvas/libs/foundry/records");
-    if !canvas_root.is_dir() {
-        eprintln!(
-            "skipping live manifest IR guard (missing records root: {})",
-            canvas_root.display()
-        );
-        return None;
-    }
-    let fetcher = load_canvas_index(&canvas_root).expect("canvas index should load");
-
-    let localization_path = workspace_root.join("target/Data/Localization/english/global.ini");
-    let localization_map = fs::read(&localization_path)
-        .ok()
-        .map(|bytes| starbreaker_ui::bb_loc_p4k::parse_ini_bytes(&bytes));
-
-    let cases: Vec<LiveTargetCase> = snapshot_freeze()
-        .targets
-        .into_iter()
-        .map(|target| {
-            let manufacturer_id = manufacturer_from_source_path(&target.source_generated_png);
-            let target_size = (
-                target.baseline_snapshot.target_width,
-                target.baseline_snapshot.target_height,
-            );
-            let current_ir = compile_target_ir(
-                &fetcher,
-                localization_map.clone(),
-                &manufacturer_id,
-                &target.canvas_guid,
-                target_size,
-            );
-
-            LiveTargetCase {
-                id: target.id,
-                current_ir,
-                baseline_snapshot: target.baseline_snapshot,
-            }
-        })
-        .collect();
-
-    // Non-empty-target precondition (alignment plan T5, ledger 3/61/105): past
-    // the skip-if-missing gate above, an emptied snapshot-freeze fixture would
-    // leave every live-manifest guard iterating zero cases and passing
-    // vacuously. One assert here covers all four callers.
-    assert!(
-        !cases.is_empty(),
-        "live manifest guard built zero target cases — vacuous (snapshot freeze fixture emptied?)"
-    );
-
-    Some(cases)
 }
 
 #[test]
