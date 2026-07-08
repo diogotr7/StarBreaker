@@ -25,14 +25,16 @@ once the process is proven; a public release eventually; the residual
 Before planning or editing in this crate, read these in order:
 
 1. `StarBreaker/AGENTS.md`
-2. `StarBreaker/.github/copilot-instructions.md`
-3. `StarBreaker/crates/starbreaker-ui/AGENTS.md` (this file)
-4. `StarBreaker/crates/starbreaker-ui/docs/ui-workflow.md` (the process) and
+2. `StarBreaker/crates/starbreaker-ui/AGENTS.md` (this file)
+3. `StarBreaker/crates/starbreaker-ui/docs/ui-workflow.md` (the process) and
    `StarBreaker/crates/starbreaker-ui/docs/ui-reference.md` (commands/tools/data + per-screen
    dossier) for any UI parity/matching task. Read each doc's **"Read WHEN" index**
    (top of file) up front, then read full sections when the index or the parity
    skill's current phase directs — EXCEPT ui-workflow §1 (non-negotiable rules),
    which is always a full read before any fix.
+
+(`.github/copilot-instructions.md` duplicates this file for Copilot users —
+do not read both.)
 
 Do not rely on stale chat context for UI matching behavior. Re-read
 `crates/starbreaker-ui/docs/ui-workflow.md` when switching screens, after long detours, or when

@@ -115,9 +115,9 @@ cd StarBreaker/blender_addon
 python3 -m unittest discover -s tests -q
 ```
 
-Baseline: **165 tests, 0 failures, 2 skipped** (bpy-dependent). Keep
-this green after every change. Skipped tests require a real `bpy` and
-only run under Blender — do not try to make them pass headless.
+The suite must pass with **zero failures** after every change; the
+skips are bpy-only tests that require a real `bpy` and run only under
+Blender — do not try to make them pass headless.
 
 **TDD rule:** When a bug is found, write a failing test that reproduces
 it *before* changing any code. Verify the test fails. Then fix the code.
@@ -176,21 +176,11 @@ sub-modules keep serving stale code.
 
 ### Purge orphaned data between imports
 
-**Always reset the scene before importing a ship** — even if it looks
+Always reset the scene before importing a ship — even if it looks
 empty. Leftover `SB_*` / `POM_*` / `StarBreaker*` node groups and
-`__host_*` materials can silently poison the new import, and the only
-reliable way to drop them is the scene reset:
-
-```python
-import bpy
-bpy.ops.wm.read_homefile(app_template="")
-```
-
-Do NOT write by-hand cleanup loops (`bpy.data.node_groups.remove`,
-`bpy.data.materials.remove`, selection-based deletes, etc.) — they
-miss hidden users, leave orphaned drivers, and get out of sync with
-new datablock categories. `read_homefile(app_template="")` is the
-single source of truth for "start from a clean slate".
+`__host_*` materials silently poison the new import. Reset with
+`read_homefile(app_template="")` (see "ALWAYS reset the scene this way"
+above) — never with by-hand cleanup loops.
 
 ### Import a ship
 
@@ -227,22 +217,13 @@ standard Star Citizen install paths. You do **not** need `SC_DATA_P4K`
 unless you want a non-default install (e.g. PTU instead of LIVE). Omit
 the env-var for routine work.
 
-**Default test target: LOD 0.** Always use `--lod 0` for import
-testing. The resulting package will be named `<entity>_LOD0_TEX0` or
-`<entity>_LOD0_TEX2` depending on available textures. Either is fine
-for validation.
-testing. **Always use TEX0** — the resulting package will be named
-`<entity>_LOD0_TEX0`. Do not target TEX2 packages for validation;
-TEX0 is the canonical test baseline.
+**Default test target: LOD 0, TEX0.** Always use `--lod 0` and the
+`<entity>_LOD0_TEX0` package for validation. Do not target TEX2
+packages; TEX0 is the canonical test baseline.
 
-**Fresh import — always reset the scene first.** Before importing any
-ship, call:
-```python
-bpy.ops.wm.read_homefile(app_template="")
-```
-This is the **only** reliable way to get a clean slate. Do not use
-hand-rolled cleanup loops — they miss hidden users and leave residue.
-See "ALWAYS reset the scene this way" above for the full rationale.
+**Fresh import — always reset the scene first** with
+`read_homefile(app_template="")`; see "ALWAYS reset the scene this way"
+above for the full rationale.
 
 ### MCP animation tools
 

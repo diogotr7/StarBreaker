@@ -126,112 +126,22 @@ cargo test -p starbreaker-3d --lib
 cd blender_addon && python3 -m unittest discover -s tests -q
 ```
 
-## Delegating Phases to Sub-Agents: Planning, Review, & Execution
+## Sub-Agent Delegation
 
-When breaking down work into phases to delegate to sub-agents, use this structured approach to ensure quality, catch integration gaps early, and enable efficient parallel execution:
+When splitting work across sub-agents:
 
-### 1. **Phase Decomposition & Dependency Tracking**
-
-- **Break large work into phases** with clear, discrete deliverables (not vague umbrella tasks)
-  - **Example**: "Phase 5: .blend assembly" → decompose into 5A (scene.blend), 5B (lights), 5C (empties), 5D (decals), each 1–2 days
-  - Each sub-phase should have 1–3 clear functions/modules to add or modify
-- **Map dependencies explicitly** in a structured format
-  - **Options**: SQL `todo_deps` table, Markdown checklist in `plan.md`, spreadsheet, or even plain text comments in code
-  - **Example dependencies**: 
-    - Phase 5A must complete before 5B/5C (5A sets up collections; 5B/5C populate them)
-    - 5B/5C can run sequentially to avoid cargo build race conditions
-    - Phase 5D (decals) depends on 5C (empties) being done
-  - **Key**: Make dependencies **visible and queryable** so agents know what blocks them
-- **Avoid broad parallelism** for work that shares compilation targets
-  - Multiple agents running `cargo build` simultaneously cause target-directory race conditions
-  - **Solution**: Sequential execution (5A → 5B → 5C → 5D) is safer than parallel, even if slightly slower
-  - If parallelism is needed, ensure agents don't share the same build toolchain and lock file
-
-### 2. **Self-Review Checklist for Sub-Agents**
-
-Before a sub-agent claims "done", it must **run its own code review** against a 10-point checklist:
-
-```
-□ Architecture: Functions fit cohesively into the pipeline; no unexpected dependencies
-□ Integration: New code correctly calls/uses code from prior phases; no orphaned functions
-□ Tests: ≥ 5–6 unit tests written; all pass; edge cases covered (empty lists, null refs, etc.)
-□ Error handling: Invalid input is caught and reported clearly; no unwrap()/panic! on bad data
-□ Conventions: Naming, layout, module headers (//! blocks), and style match the codebase
-□ Regressions: All existing tests still pass; no previously-working code was broken
-□ Performance: No gratuitous allocations, redundant loops, or O(n²) bugs introduced
-□ Documentation: Function signatures have /// doc comments; public API is clear
-□ Commit message: Clear, references phase number, do not include a Co-authored-by trailer
-□ Final check: `cargo build --release` succeeds, `cargo test --workspace` all green
-```
-
-The agent should:
-1. Run all tests locally before reporting completion
-2. Verify the release build succeeds (not just debug)
-3. Call out any checklist items that don't apply (e.g., "no performance work needed for Phase X")
-4. Report all 10 items as green ✅ before saying "complete"
-
-**Why this works**: Agents catch 80% of their own issues before hand-off. Self-review is faster than discovery-via-testing and builds confidence in the code.
-
-### 3. **High-Level Code Review: Manager Perspective**
-
-After the sub-agent completes, **do a high-level review** (5–10 minutes) focusing on:
-
-- **✅ Architecture**: Does the new code fit cleanly into the pipeline? Are integration points correct?
-- **✅ Test coverage**: Are there ≥ 5–6 tests? Do they cover the happy path and edge cases?
-- **✅ Regressions**: Are all previously-passing tests still green? Did existing functionality break?
-- **✅ Integration with prior phases**: Does this phase correctly use output from Phase N-1?
-- **✅ No surprises**: Does the implementation match what was planned? Any scope creep or divergence?
-
-**You are NOT** checking:
-- Code style details (that's the agent's self-review)
-- Performance micro-optimizations (only flag if egregiously bad)
-- Every function signature (spot-check a few key ones)
-
-**Report**: A one-paragraph summary ("Phase 5B approved: lights extract correctly, 3 new tests pass, integrates cleanly with Phase 5A") with any concerns flagged.
-
-### 4. **Execution Flow**
-
-1. **Plan Phase**: Write phase breakdown to `plan.md` or equivalent tracking doc; record dependencies
-   - Use a format that suits your environment: Markdown checklist, SQL database, spreadsheet, or plain comments
-   - **Key**: Dependencies must be visible so you can unblock Phase N+1 once Phase N completes
-2. **Delegate Phase N**: Create sub-agent prompt with:
-   - Phase description (what, why, where)
-   - 10-point self-review checklist
-   - ≥ 5–6 test requirement
-   - Required: "Run self-review checklist before reporting done"
-3. **Wait for Completion**: Agent runs → self-reviews → commits
-4. **High-Level Review**: Read agent output; run tests locally; spot-check integration; approve/flag issues
-5. **Mark Done & Unlock Next**: Update your tracking doc (plan.md, SQL, spreadsheet, etc.) to mark Phase N complete and Phase N+1 unblocked
-6. **Delegate Phase N+1**: Repeat
-
-### 5. **Example: Phase 5 Delegation (Real Data)**
-
-**What Was Done**:
-- Phase 5A (Scene assembly): Delegated, 7 tests delivered ✅
-- Phase 5B (Light hierarchy): Delegated after 5A, 3 tests ✅
-- Phase 5C (Empty hierarchy): Delegated after 5B, 11 tests ✅
-- Phase 5D (Decals): Delegated after 5C, 5 tests ✅
-- **Cumulative**: 268 tests passing, no regressions, no post-review fixes
-
-**Tracking Used**: SQL `todos` table with `status` (pending/in_progress/done) and `todo_deps` for phase dependencies. But the same pattern works with:
-- **Markdown**: Checklist in `plan.md` with ✅/🔄/⏳ status indicators
-- **Spreadsheet**: Google Sheets or Excel with phase/status/dependency columns
-- **Simple comments**: In-code comments marking each phase as `// Phase 5A: COMPLETE`, `// Phase 5B: in progress`, etc.
-
-**Why It Worked**:
-- Clear handoff (plan → checklist → code → self-review → high-level approval)
-- Sequential execution (no build conflicts)
-- Early detection of integration gaps (Phase 5A had stubs that broke 5B; caught immediately, fixed within Phase 5C commit)
-- Tests validated integration end-to-end before Phase 6 validation started
-
-### When to Use This Process
-
-- **Large multi-phase features** (Phases 5–6, architecture refactors, pipeline rewrites)
-- **Parallel sub-agent work** (break into independent sub-phases + dependencies)
-- **Quality-critical paths** (export pipeline, data integrity, user-facing features)
-- **Not needed for** small bugfixes, docs updates, or single-file changes
-
----
+- **Builds are sequential.** Agents share one `target/` dir — concurrent
+  `cargo build` runs race it. Run build/test phases one at a time; only
+  read-only research is parallel-safe.
+- **Sub-agents default to Opus** (fewer tokens than Sonnet for the same
+  result).
+- **Self-review before reporting done.** Each agent checks its own work
+  against the conventions in this file (root-cause fixes, no
+  hard-coding, `//!` headers, matched neighbours) before claiming
+  completion.
+- **Completion check:** `cargo build` (debug) + `cargo test --workspace`
+  both green — NOT `--release`.
+- **No `Co-Authored-By` trailers** on any commit (see §Git).
 
 ## Troubleshooting
 
@@ -305,6 +215,12 @@ environment. If git complains that `user.name` / `user.email` are
 unset, configure them via `git config` rather than inlining `-c
 user.name=... -c user.email=...` on every commit — doing that leaks
 whatever placeholder you happen to use into the repo history.
+
+- **Work happens directly on `feature/ui`.** Never create branches or
+  worktrees for StarBreaker work unless the owner explicitly asks —
+  commit onto the existing `feature/ui` branch.
+- **No trailers.** Do not append `Co-Authored-By` or any other
+  generated trailer to commit messages.
 
 ## MCP Server
 
