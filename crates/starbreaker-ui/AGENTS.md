@@ -4,6 +4,21 @@ Scope: everything under `StarBreaker/crates/starbreaker-ui/`.
 
 Read this after the repo-level `StarBreaker/AGENTS.md` and before planning or editing work in this crate.
 
+## Purpose (why this crate exists)
+
+Produce near-pixel-perfect replicas of the in-game UI as **static images**, so
+the exported Blender files look as close to the in-game environments as
+possible. The renders are baked as textures onto screen meshes during
+`entity export` — **this crate is a texture source for the Blender export, not
+a UI runtime.** Interactivity and animation matter only insofar as they
+determine a screen's correct static visual state; runtime behaviour is never an
+end in itself. The Core rules below (engine-faithful, generic, no hard-coding)
+are the *means*; this static-visual fidelity is the *end* they serve — when
+prioritising, how a screen looks in the exported scene outranks how it would
+behave live. Owner direction (2026-07): scale parity arcs across many ships
+once the process is proven; a public release eventually; the residual
+(acceptable-gap) bar being codified; fully-auto arcs on known ships.
+
 ## Required first reads
 
 Before planning or editing in this crate, read these in order:

@@ -1,5 +1,19 @@
 # UI parity workflow (authoritative)
 
+## Purpose (the WHY — read before the how)
+
+Produce near-pixel-perfect replicas of the in-game UI as **static images**, so
+the exported Blender files look as close to the in-game environments as
+possible. The renders are baked as textures onto screen meshes during
+`entity export` — **this crate is a texture source for the Blender export, not
+a UI runtime.** Interactivity and animation matter only insofar as they
+determine a screen's correct static visual state; runtime behaviour is never an
+end in itself. Everything below — the engine-faithful, generic *means* — serves
+that end. When trading off effort, how a screen *looks in the exported scene*
+outranks how it would behave live. Owner direction (2026-07): scale parity arcs
+across many ships once the process is proven; a public release eventually; the
+residual (acceptable-gap) bar being codified; fully-auto arcs on known ships.
+
 THE process for UI-matching work in `starbreaker-ui`: getting a rendered
 screen to match its in-game reference, engine-faithfully and generically.
 Commands, tools, data locations, and the per-screen dossier live in the
