@@ -536,6 +536,9 @@ under **Open recommendations** above.
   SIZE is judged on the horizontal axis the fit constrains (aspect-invariant), not the
   cap-height (which the mesh aspect stretches) — this cleanly answered "is SUB DECK too
   small?" as "no, the width matches; the height gap is the deferred aspect + bloom."
+  **→ (a) FOLDED 2026-07-08 (T9) into `references/blockers.md`; (b) SUPERSEDED by the SAME-arc
+  correction below (the heading is FIXED, not width-fit) — that correction's rules are in
+  `catalog.md`.**
 - **2026-07-04 (SAME arc, correction) — that width-match answer was WRONG; the owner was
   right.** The heading is a FIXED Heading3 (28px, `autoScalingMethod:None`, no `autoFontSize`),
   NOT width-fit, so an 80%-width match proves nothing about its size. The owner repeated "still
@@ -572,3 +575,32 @@ under **Open recommendations** above.
   the font/size/colour drill, and `ui_blocker_evidence.py` (+ `blocker-evidence-schema.md`) as the
   required attachment for a gated blocker claim. Behavioral RED/GREEN test is plan A8 (the fresh
   Opus compliance dry-run narrating a parity arc from the restructured skill).
+
+- **2026-07-08 (plan T9 — ledger-107 folds + wait-on-marker + interim-rule RETIREMENT; applied
+  via `superpowers:writing-skills` review).** Audit-then-add pass over `blockers.md` + `catalog.md`
+  (both read in full first). ALREADY PRESENT, so NOT restated: blast-radius-by-CHANGE-CLASS
+  (colour/token → element tint-semantics snapshot; layout → `--full` per-target %s; ledger
+  77/106/107) in `blockers.md` Shared-mechanism rules; and width-fit-vs-FIXED heading + sibling
+  cap-h ratio + connected-component isolation + owner-repeats-complaint in `catalog.md` (A6).
+  Genuinely-missing pieces FOLDED: (1) thin-glyph colour by near-pure-black pixel COUNT
+  (`max(r,g,b)<25`), not a mean — the caret 395→0 discriminator → `blockers.md` colour-measurement
+  note (ledger 107); (2) fresh-export REPRODUCTION gate — the owner symptom must reproduce in a
+  FRESH export before any fix, else it is a stale VIEW → a compact cross-ref line in `blockers.md`
+  pointing at `catalog.md`'s stale-view rule (completes what the A6 entry claimed for `blockers.md`
+  without restating the detail); (3) the spec §4A1 evidence-bar extension — a "done" / "within
+  tolerance" close-gate verdict needs the same class of MEASUREMENT evidence as a blocker, not an
+  eyeball (the SUB DECK width-match miss as the cautionary case) → one line in `catalog.md`'s
+  closing re-review (measurement generally; Task 11's residual-budget doc adds its own pointer
+  later); (4) the wait-on-marker rule — long-running commands (`ui_render.sh`, exports, `--full`)
+  run via the harness background facility with completion detected by the command's exact terminal
+  marker in its log, never a sleep-loop / turn-hold / regex looser than the marker string →
+  `ui-workflow.md` §3 (one block) + a cross-ref clause on the SKILL Operating-posture MARKER
+  bullet. RETIRED (B4 linear-light compositing LANDED, `999d485ab`, all 15 gold/platinum baselines
+  re-frozen): the interim "blend-shaped colour residuals judged LENIENTLY and parked as §6
+  known-outliers pointing at B4" rule — replaced in `SKILL.md` strict rules + `blockers.md` with
+  "colour residuals judged NORMALLY; a genuine blend-shaped edge drift is a latent bug to
+  root-cause and adjudicate (§5)." `writing-skills` review applied: reference/measurement guidance
+  written as recipes not prohibitions (Match-the-Form-to-the-Failure), cross-references over
+  restatement, keyword coverage preserved, `SKILL.md` ≤220 lines held. Every cited command/marker
+  verified on write: `ui_check: ALL GREEN`, `ui_arc_status: OK (…)`, `ui_render.sh` `latest -> …`,
+  `ui_blocker_evidence.py`, `live_manifest_targets_match_gold_standard_tint_semantics`.

@@ -41,7 +41,10 @@ MEASUREMENT belonged.
 - **Read result MARKERS** (`…: ALL GREEN` / `…: OK (N …)`), NEVER a piped or
   notified exit code — a `2>&1 | tail`/`| grep` or a backgrounded run reports the
   PIPE's/notifier's status (0), so a real guard failure reads "green" until you
-  grep the marker or read it unpiped (ledger 89).
+  grep the marker or read it unpiped (ledger 89). Long-running commands
+  (`ui_render.sh`, exports, `ui_check.sh --full`) WAIT on their exact marker in the
+  log via the harness background facility — never a sleep-loop or turn-holding
+  (ui-workflow §3).
 - **Verify STRUCTURED-DATA claims by PARSING JSON + iterating the arrays** (or a
   runtime probe: `ui_variant_styles`, `BB_A3_STYLE_PROBE`, `SB_UI_FONT_DUMP`), NEVER
   a `sed`/`grep` line-window of a big nested record (serialization order lands you
@@ -144,9 +147,10 @@ presumed "yes," never act before the answer.
 - IR is the sole styling authority; fix the owning upstream stage, not the draw-time symptom.
 - Frozen platinum/gold baselines move ONLY via the audited freeze flow / §6 known-outlier.
 - 3000-line cap; revert no-effect experiments immediately; verify-on-write every doc command.
-- **INTERIM (until the linear-light arc, plan B4, lands):** blend-shaped colour
-  residuals at composited edges are judged LENIENTLY and registered as
-  known-outliers pointing at B4 (`references/blockers.md`).
+- **Linear-light compositing LANDED** (plan B4; all baselines re-frozen): colour
+  residuals are now judged NORMALLY, not leniently — a genuine blend-shaped drift at
+  a composited edge is a latent bug to root-cause and adjudicate (§5), not a
+  known-outlier to park (`references/blockers.md`).
 
 ## Core red flags — STOP, you're rationalizing
 

@@ -12,6 +12,11 @@ PLAN, then fix within this arc (fan the read-only research across subagents). Bu
 for an element the draw path can't natively produce (see the strict rules; ledger
 78–83).
 
+**Reproduce before you build a fix.** The owner-reported symptom must reproduce in a FRESH
+export first — a non-reproducing symptom (common right after an owner-requested re-export) is a
+STALE VIEW, not a bug: present the fresh-export evidence and confirm, don't fix a ghost. Full
+rule + example: `references/catalog.md` (ledger 107).
+
 De-risk a wide change EMPIRICALLY: run the disable→adjudicate audit (workflow §5) and
 `bash scripts/ui_check.sh --full` (re-export FIRST — `--full` does not re-export;
 ledger 56) so the frozen pins MEASURE the real blast radius instead of you estimating
@@ -124,13 +129,21 @@ ad-hoc timing. Its first move: pin BOTH baselines' binary provenance
 (`target/release/deps/starbreaker-<hash>` mtimes are a no-rebuild bisect ladder) before
 attributing anything to this arc's changes.
 
-## INTERIM colour rule (until plan B4, linear-light compositing, lands)
+## Colour compositing — linear-light LANDED (interim leniency RETIRED)
 
-The renderer composites in sRGB, not linear light, so colours at composited/chiclet EDGES
-read slightly off. Until the B4 arc lands: judge blend-shaped colour residuals at composited
-edges LENIENTLY, and register them as §6 known-outliers POINTING at the B4 arc (so the genuine
-fix lands there as a measured improvement). Do not chase an edge-blend colour residual with a
-draw-time hack.
+The renderer now composites in LINEAR light (plan B4 landed; all gold/platinum baselines
+re-frozen). The former interim rule — judge blend-shaped colour residuals at composited edges
+LENIENTLY and park them as §6 known-outliers pointing at B4 — is RETIRED. Colour residuals are
+now judged NORMALLY: a genuine blend-shaped drift at a composited/chiclet edge is a latent bug to
+root-cause and adjudicate (§5), not an outlier to register. Still resolve colour from the
+entry-driven token, never a draw-time hack.
+
+**Measuring a thin-glyph / edge colour:** a MEAN is unreliable — anti-aliasing against a bright
+background gives near-identical means for black vs a dark tint. Discriminate by the COUNT of
+near-pure-black pixels (`max(r,g,b)<25`) in the isolated region (395→0 caught the chevron fix),
+and confirm against the IR token. Uniform-colour screens defeat colour thresholds — use
+connected-component region isolation and require the measurement to survive a second, cleaner
+method (`references/catalog.md`; ledger 107).
 
 ## Red flags — blockers
 

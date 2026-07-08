@@ -80,6 +80,13 @@ closing re-review surfaces is fixed in the loop FIRST. Do NOT enter the retro to
 once the closing re-review is clean, OR every remaining diff carries an
 exhausted-search proven blocker (see `blockers.md`).
 
+**A "done" or "within tolerance" verdict needs evidence too — the same class as a blocker.**
+Closing an item as clean or within tolerance requires a MEASUREMENT (a sibling cap-height ratio,
+connected-component isolation, `ui_measure.py`, the per-target `--full` %s), not an eyeballed
+"looks close": the SUB DECK "within tolerance" call was wrong twice on a width-match coincidence
+before a proper cap-h ratio proved it ~1.35× too small (ledger 107). Judge a residual on data
+before you accept it.
+
 A proven-blocked remainder IS a valid terminal state — "deferred with proof, not
 clean": some screens have intrinsic engine-mechanism limits that bound achievable
 parity this arc. A MAJOR/dominant blocked item is surfaced for user confirmation

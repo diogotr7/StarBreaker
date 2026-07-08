@@ -126,6 +126,15 @@ provenance entry in `default_value_registry_v1.notes.md`.
 6. At a workstream boundary: `bash scripts/ui_check.sh --full`, re-export,
    full reference comparison, handoff/memory update.
 
+**Waiting on a long-running command — its marker, never a sleep-loop.**
+`ui_check.sh --full`, a full `entity export`, and `ui_arc_status.sh` / `ui_render.sh`
+run for tens of seconds to minutes. Launch them via the harness background facility
+and detect completion by the command's exact terminal line in its log —
+`ui_check: ALL GREEN`, `ui_arc_status: OK (…)`, or `ui_render.sh`'s closing
+`latest -> …` after its `png md5:` print. Never a `sleep` loop, never a turn-holding
+foreground wait, and never a regex looser than the exact marker string (a loose match
+fires on a progress line and reads an unfinished run as done; ledger 89).
+
 User gives relative feedback ("move it ~20px up")? Treat it as a calibration
 target: measure current values first, trace the mismatch to authored
 metadata / layout math / IR loss / draw-time adjustment, fix structurally,
