@@ -523,3 +523,16 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
   PNGs remain excluded (freeze gate + gfx encoders). `cli/src/dds.rs`
   (standalone `dds` subcommand, off the export path) left untouched — optional
   follow-up only. (no commit — ledger record)
+
+### mcp: tokio feature trim
+
+- **Observed** — `mcp/Cargo.toml` pulled `tokio` with `features=["full"]`
+  though the only runtime use is a single-task stdio server.
+- **Finding** — `full` compiles the entire tokio surface (net, fs, time,
+  multi-thread scheduler) that the stdio handshake never uses. The whole
+  server is `#[tokio::main]` + `.serve(stdio).await` / `.waiting().await`.
+- **Action** — `#[tokio::main(flavor = "current_thread")]` +
+  `features=["rt","macros","io-std"]` (no extra feature needed — build was
+  clean); rebuilt + redeployed; initialize handshake smoke green over stdio.
+  Compile-time/dep-graph win only: release `-p starbreaker-mcp` rebuild
+  45.33s → 28.29s (~17s, fewer tokio deps compiled). (commit `fa69db685`)
