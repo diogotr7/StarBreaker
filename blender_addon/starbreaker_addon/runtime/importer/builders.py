@@ -323,14 +323,14 @@ def _height_image_background_bias(image: Any) -> float | None:
         if path:
             tmp = bpy.data.images.load(path, check_existing=False)
             try:
-                bias = _luma(tmp.pixels[:])
+                bias = _luma(tmp.pixels[0:4])
             finally:
                 bpy.data.images.remove(tmp)
     except Exception:
         bias = None
     if bias is None:
         try:
-            bias = _luma(image.pixels[:])
+            bias = _luma(image.pixels[0:4])
         except Exception:
             bias = None
     if bias is None:

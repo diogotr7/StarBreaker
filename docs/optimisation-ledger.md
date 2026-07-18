@@ -432,3 +432,16 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
   `direct.exists()` then lazily build+consult the index on first miss;
   precedence unchanged. Regression `test_direct_hit_does_not_build_path_index`
   asserts `_path_index is None` after a direct hit. (commit `58c52aeb9`)
+
+### Addon: POM bias reads one pixel not the atlas
+
+- **Observed** — `_height_image_background_bias` copied the entire height
+  image (`pixels[:]`, ~500 MB transient for 2048² RGBA, twice) to read the
+  top-left pixel; `_luma` only touches `buf[0:3]`. The import has OOM'd at
+  12 GB+ (dead-end 2).
+- **Finding** — `pixels[:]` materialises the whole buffer; a bounded
+  `pixels[0:4]` slice yields the same four floats.
+- **Action** — `pixels[:]` → `pixels[0:4]` at both sites (temp-load :326 and
+  fallback :333); `orchestration.py:1247` (a real full-image loop) untouched.
+  Behaviour-identical; `PomBiasSliceTests` guards the slice bound.
+  (commit `6be59d4f8`)

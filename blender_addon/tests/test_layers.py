@@ -65,6 +65,7 @@ from starbreaker_addon.runtime.importer.builders import (
     _layered_wear_metallic_values,
     _layered_wear_first_non_neutral_tint,
     _layered_wear_uses_neutral_synthetic_palette_base,
+    _height_image_background_bias,
 )
 from starbreaker_addon.runtime.importer.layers import _detail_strength_or_zero, _stencil_override_selection
 from starbreaker_addon.runtime.importer.materials import _texture_reference_uses_packed_roughness_green
@@ -266,6 +267,42 @@ class LayerDetailTests(unittest.TestCase):
         self.assertTrue(_texture_reference_uses_packed_roughness_green(roughness_texture))
         self.assertFalse(_texture_reference_uses_packed_roughness_green(smoothness_texture))
         self.assertFalse(_texture_reference_uses_packed_roughness_green(grayscale_roughness))
+
+
+class PomBiasSliceTests(unittest.TestCase):
+    class _SliceGuardImage:
+        """pixels[:] raises; only pixels[0:4] is allowed — proves the fix
+        reads four floats, not the whole buffer."""
+
+        def __init__(self, head):
+            self._head = list(head)  # four RGBA floats
+
+        @property
+        def pixels(self):
+            return self
+
+        def __getitem__(self, key):
+            if key == slice(0, 4):
+                return self._head
+            raise AssertionError(
+                f"POM bias must read pixels[0:4], not {key!r}"
+            )
+
+        def get(self, key):  # cache lookup at top of the fn
+            return None
+
+        def __setitem__(self, key, value):  # cache write at the end
+            pass
+
+    def test_fallback_reads_only_first_pixel(self) -> None:
+        # No .filepath → the temp-load branch is skipped, exercising the
+        # image.pixels fallback (builders.py:333).
+        image = self._SliceGuardImage([0.2, 0.4, 0.6, 1.0])
+        bias = _height_image_background_bias(image)
+        self.assertIsNotNone(bias)
+        self.assertAlmostEqual(
+            bias, 0.299 * 0.2 + 0.587 * 0.4 + 0.114 * 0.6, places=6
+        )
 
 
 if __name__ == "__main__":
