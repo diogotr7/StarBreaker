@@ -27,6 +27,23 @@ Debug profile is `[optimized + debuginfo]` in this workspace — fast
 enough for testing. Release builds take much longer and are only
 needed for deployment (MCP server, final binaries, CLI re-exports).
 
+### Disk retention policy
+
+`target/` and generated caches regrow; keep them bounded without a blind
+`cargo clean` (the old hashed release binaries under `target/release/deps`
+are the time-travel-bisect ladder — see `docs/optimisation-ledger.md` item 4):
+
+- **Debug tree:** if a `target/debug` tree regrows, run `cargo sweep --time 30`
+  from the repo root (install `cargo-sweep` first). Never blind-`clean`.
+- **`release/deps` bisect ladder (~1.2 G):** leave it — it is the bisect
+  mechanism recorded in the optimisation ledger.
+- **`graphify-out/`:** keep the live `graph.json` (plus `cache/`, `cost.json`,
+  `manifest.json`) and the 3 newest dated snapshot dirs; delete older ones:
+  `ls -d 20*/ | sort | head -n -3 | xargs -r rm -rf`.
+- **`ships/dcb_canvas`:** do NOT delete — the starbreaker-ui live-IR harness
+  reads it (`crates/starbreaker-ui/tests/live_ir_harness/mod.rs`), skipping
+  gracefully only if it is absent (deleting silently disables that guard).
+
 ## Coding Practices
 
 Shared across every language in the repo:

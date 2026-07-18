@@ -445,3 +445,17 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
   fallback :333); `orchestration.py:1247` (a real full-image loop) untouched.
   Behaviour-identical; `PomBiasSliceTests` guards the slice bound.
   (commit `6be59d4f8`)
+
+### Ops: disk retention (item 5, re-scoped)
+
+- **Observed** — handoff premised a 46–66 G reclaim from `target/debug`
+  (68 G). Verified 2026-07-18: no `target/debug` tree exists; disk ~83 %
+  used / 187 G free — the reclaim target is void.
+- **Finding** — `dcb_canvas` (3.0 G) is read by the starbreaker-ui live-IR
+  harness (mod.rs:253) — the handoff's "nothing reads it" is wrong; deleting
+  it silently disables the guard. Only stale data left = `graphify-out` old
+  snapshots (14 dated dirs).
+- **Action** — pruned `graphify-out` to the 3 newest snapshots + live
+  `graph.json`; added a retention-policy note to `AGENTS.md §Building`
+  (cargo-sweep any regrown debug tree, keep the release-deps ladder, keep
+  `dcb_canvas`). `dcb_canvas` retention surfaced to the owner. (commit `07e0219cf`)
