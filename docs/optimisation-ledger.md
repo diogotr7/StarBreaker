@@ -168,3 +168,53 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
   (informational, serial `RAYON_NUM_THREADS=1`, load ~2 at start): `render`
   stage 12.080s vs B1's 14.151s = −2.07s (−14.6%), consistent with dropping two
   `powf` decodes per opaque-pixel channel.
+
+### Item-7: SWF parse-once + cached stage frames — LANDED (2026-07-18)
+
+- **Observed** — `SwfAssetLibrary::new` decompressed+parsed each SWF ~8× (one
+  full `decompress_swf`+`parse_swf` per extractor via the `with_parsed_swf!`
+  macro), `stage_frame`/`stage_size` re-parsed `self.raw` on every call (per
+  flash node), and `merge_swf_bytes` parsed 5 more times. Combined the SWF was
+  decompressed+parsed ~20×/image. The two load timers `swf_load` (`:750`) and
+  `swf_load_measure` (`:595`) summed to 3.302s (B1) — stage-cost rank #3.
+- **Finding** — every extractor iterates the SAME tag slice; parsing once and
+  running all extractors over `&parsed.tags` in one scope removes every
+  re-parse, byte-identically. Stage frames are deterministic given the tag
+  stream, so all main-timeline frame snapshots + the post-last-`ShowFrame` tail
+  can be captured in one walk at construction and served from cache. `raw` was
+  read only by the two stage accessors — droppable once stage data is cached.
+- **Action** — added a single `parse_tags(&[u8]) -> swf::SwfBuf` choke point
+  (with a `#[cfg(test)]` `SWF_PARSE_COUNT`) in `extract.rs`; deleted the
+  `with_parsed_swf!` macro; split each extractor into a `*_from_tags(&[Tag])`
+  core plus a thin `extract_*(bytes)` wrapper (the now-callerless
+  `extract_main_timeline_labels` wrapper was dropped — its `*_from_tags` core is
+  used directly and it was never re-exported). Two-pass structures preserved:
+  `extract_fonts_from_tags` (DefineFont build then DefineFontInfo mutate),
+  `extract_font_edit_text_metrics_from_tags` (ImportAssets then DefineEditText),
+  and the `ShowFrame` counter in `extract_main_timeline_labels_from_tags`. Added
+  `extract_all_stage_frames_from_tags -> (snapshots, tail)` in `stage.rs`
+  (byte-exact reproduction of the old `extract_stage_frame` break-on-`==`/`>`
+  loop, shared `apply_place_object` helper preserving the
+  `previous`/`Modify`/`Replace` + `Matrix::IDENTITY` inheritance). `library.rs`:
+  dropped `raw`, added cached `stage_size`/`stage_frames`/`stage_frames_tail`;
+  `new` and `merge_swf_bytes` now parse once over `&parsed.tags`; stage
+  accessors read the cache; `find_font_by_name` CharacterId-sorted determinism
+  left untouched. New `library_construction_parses_once` test asserts exactly
+  one decompress+parse per `new` and that cached `stage_size` matches the
+  standalone extractor.
+- **Lifetime deviation (amendment 5 / B3a)** — the literal
+  `parse_tags(bytes) -> Vec<Tag>` in the design is not expressible: `Tag<'a>`
+  borrows the decompressed `SwfBuf`, so tags cannot outlive it. `parse_tags`
+  instead returns the owned `SwfBuf` and each caller does
+  `let buf = parse_tags(b)?; let parsed = swf::parse_swf(&buf)?;` then runs all
+  `*_from_tags(&parsed.tags)` in that scope. Same "one decompress+parse per
+  construction" guarantee; no fully-owned Tag model (large, unnecessary).
+- **Verification** — `cargo test -p starbreaker-ui` / `-p starbreaker-3d` green,
+  freeze SHAs unchanged (only the unrelated pre-existing STALE-EXPORT timestamp
+  guard `manifest_targets_whole_image_colour_regression_guard` fails). Byte
+  oracle vs `ships_perf_bench/clipper_pre1`: `diff -rq` empty (export_stamp
+  filtered), all 26 UI PNGs `cmp`-identical; two-run determinism `diff` empty.
+  Timing (informational, serial `RAYON_NUM_THREADS=1`, machine load 1.6–5.5
+  during capture — indicative): `swf_load` 1.654s → 0.666s (−60%),
+  `swf_load_measure` 1.648s → 0.666s (−60%); combined stage-#3 cost
+  3.302s → 1.332s.

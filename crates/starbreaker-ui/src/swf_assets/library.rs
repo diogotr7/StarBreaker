@@ -7,10 +7,12 @@ use swf::CharacterId;
 use crate::error::UiError;
 
 use super::extract::{
-    extract_bitmaps, extract_edit_text_records, extract_exported_symbols,
-    extract_font_edit_text_metrics, extract_fonts, extract_main_timeline_labels, extract_shapes,
+    extract_bitmaps_from_tags, extract_edit_text_records_from_tags,
+    extract_exported_symbols_from_tags, extract_font_edit_text_metrics_from_tags,
+    extract_fonts_from_tags, extract_main_timeline_labels_from_tags, extract_shapes_from_tags,
+    parse_tags,
 };
-use super::stage::{extract_all_sprite_first_frames, extract_stage_frame, extract_stage_size};
+use super::stage::{extract_all_sprite_first_frames_from_tags, extract_all_stage_frames_from_tags};
 use super::types::{EditTextRecord, FontGlyphSet, PlaceRecord, ShapeRecord, SwfEditTextMetrics};
 
 /// Content-addressed cache of static visual atoms from one SWF.
@@ -26,7 +28,13 @@ pub struct SwfAssetLibrary {
     /// First-frame display list of every `DefineSprite`, parsed once at
     /// construction so the recursive renderer does not re-parse the SWF per node.
     sprite_first_frames: HashMap<CharacterId, Vec<PlaceRecord>>,
-    raw: Vec<u8>,
+    /// Stage dimensions in pixels, captured once at construction.
+    stage_size: (f32, f32),
+    /// Per-frame main-timeline display-list snapshots (`stage_frames[N]` = frame
+    /// `N`), captured once so `stage_frame` needs no re-parse.
+    stage_frames: Vec<Vec<PlaceRecord>>,
+    /// Final display list after all tags, returned for any out-of-range frame.
+    stage_frames_tail: Vec<PlaceRecord>,
 }
 
 impl SwfAssetLibrary {
@@ -37,14 +45,28 @@ impl SwfAssetLibrary {
             format!("{:x}", hasher.finalize())
         };
 
-        let bitmaps = extract_bitmaps(&swf_bytes)?;
-        let shapes = extract_shapes(&swf_bytes)?;
-        let fonts = extract_fonts(&swf_bytes)?;
-        let exports = extract_exported_symbols(&swf_bytes)?;
-        let edit_texts = extract_edit_text_records(&swf_bytes)?;
-        let font_edit_text_metrics = extract_font_edit_text_metrics(&swf_bytes)?;
-        let frame_labels = extract_main_timeline_labels(&swf_bytes)?;
-        let sprite_first_frames = extract_all_sprite_first_frames(&swf_bytes);
+        let buf = parse_tags(&swf_bytes)?;
+        let parsed = swf::parse_swf(&buf)?;
+        let tags = &parsed.tags;
+
+        let bitmaps = extract_bitmaps_from_tags(tags)?;
+        let shapes = extract_shapes_from_tags(tags)?;
+        let fonts = extract_fonts_from_tags(tags)?;
+        let exports = extract_exported_symbols_from_tags(tags)?;
+        let edit_texts = extract_edit_text_records_from_tags(tags)?;
+        let font_edit_text_metrics = extract_font_edit_text_metrics_from_tags(tags)?;
+        let frame_labels = extract_main_timeline_labels_from_tags(tags)?;
+        let sprite_first_frames = extract_all_sprite_first_frames_from_tags(tags);
+
+        let stage_size = {
+            let r = buf.header.stage_size();
+            (
+                (r.x_max - r.x_min).to_pixels() as f32,
+                (r.y_max - r.y_min).to_pixels() as f32,
+            )
+        };
+        let (stage_frames, stage_frames_tail) = extract_all_stage_frames_from_tags(tags);
+        // buf + parsed dropped here; `raw` no longer stored.
 
         Ok(Self {
             content_hash,
@@ -56,20 +78,26 @@ impl SwfAssetLibrary {
             font_edit_text_metrics,
             frame_labels,
             sprite_first_frames,
-            raw: swf_bytes,
+            stage_size,
+            stage_frames,
+            stage_frames_tail,
         })
     }
 
     pub fn merge_swf_bytes(&mut self, swf_bytes: &[u8]) -> Result<(), UiError> {
-        self.bitmaps.extend(extract_bitmaps(swf_bytes)?);
-        self.shapes.extend(extract_shapes(swf_bytes)?);
-        self.fonts.extend(extract_fonts(swf_bytes)?);
+        let buf = parse_tags(swf_bytes)?;
+        let parsed = swf::parse_swf(&buf)?;
+        let tags = &parsed.tags;
 
-        for (symbol, metrics) in extract_font_edit_text_metrics(swf_bytes)? {
+        self.bitmaps.extend(extract_bitmaps_from_tags(tags)?);
+        self.shapes.extend(extract_shapes_from_tags(tags)?);
+        self.fonts.extend(extract_fonts_from_tags(tags)?);
+
+        for (symbol, metrics) in extract_font_edit_text_metrics_from_tags(tags)? {
             self.font_edit_text_metrics.entry(symbol).or_insert(metrics);
         }
 
-        for (name, id) in extract_exported_symbols(swf_bytes)? {
+        for (name, id) in extract_exported_symbols_from_tags(tags)? {
             self.exports.entry(name).or_insert(id);
         }
 
@@ -152,11 +180,14 @@ impl SwfAssetLibrary {
     }
 
     pub fn stage_frame(&self, frame_index: u32) -> Vec<PlaceRecord> {
-        extract_stage_frame(&self.raw, frame_index)
+        self.stage_frames
+            .get(frame_index as usize)
+            .cloned()
+            .unwrap_or_else(|| self.stage_frames_tail.clone())
     }
 
     pub fn stage_size(&self) -> (f32, f32) {
-        extract_stage_size(&self.raw)
+        self.stage_size
     }
 
     pub fn stage_visual_bounds(&self, frame_index: u32) -> Option<(f32, f32, f32, f32)> {

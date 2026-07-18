@@ -216,6 +216,23 @@ fn library_content_hash_is_stable() {
 }
 
 #[test]
+fn library_construction_parses_once() {
+    use crate::swf_assets::extract::SWF_PARSE_COUNT;
+    use std::sync::atomic::Ordering;
+    let bytes = make_minimal_swf();
+    let before = SWF_PARSE_COUNT.load(Ordering::Relaxed);
+    let lib = SwfAssetLibrary::new(bytes.clone()).expect("library");
+    let after = SWF_PARSE_COUNT.load(Ordering::Relaxed);
+    assert_eq!(
+        after - before,
+        1,
+        "SwfAssetLibrary::new must decompress+parse exactly once"
+    );
+    // stage size matches the pre-refactor standalone extractor exactly.
+    assert_eq!(lib.stage_size(), extract_stage_size(&bytes));
+}
+
+#[test]
 fn library_shape_count_matches_extract_shapes() {
     let bytes = make_minimal_swf();
     let lib = SwfAssetLibrary::new(bytes.clone()).expect("library failed");
