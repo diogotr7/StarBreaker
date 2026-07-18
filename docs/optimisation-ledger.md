@@ -493,3 +493,33 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
   `graphify-out`. Verify: `git count-objects -vH` size-pack shrunk ~1.15 GiB;
   `cargo build` + tests green on the rewritten clone. (no commit — checklist
   record)
+
+### Spike: PNG fast-encode (item 9, report-only, not landed)
+
+- **Observed** — texture-export PNG encode via `image` 0.25.10
+  (`textures.rs::encode_png` :193 / `encode_png_rgba` :1098), both using
+  `img.write_to(..., ImageFormat::Png)`. Hypothesis: default DEFLATE is slow;
+  `PngEncoder::new_with_quality(CompressionType::Fast, FilterType::Adaptive)`
+  would trade size for encode speed.
+- **Finding** — **NO-OP on image 0.25.x.** In `image` 0.25.10 the default
+  `write_to(Png)` path (`PngEncoder::new`) already uses
+  `CompressionType::default()`, and `CompressionType`'s `#[default]` variant is
+  `Fast` (codec doc: "The default setting is `Fast`"), with `FilterType`
+  defaulting to `Adaptive`. The proposed change sets those exact same two
+  values, so it is byte-for-byte identical to the current code. Measured on a
+  Clipper texture export (`drak_clipper`, decomposed, lod 0, mip 0,
+  `--materials all`, 788 PNGs): PNG-encode aggregate wall (rayon-summed via a
+  temporary `AtomicU64` probe) 19.46s → 20.21s (within load noise; load ~2.4);
+  total PNG size 2,442,424,970 → 2,442,424,970 bytes (**0 B, +0.00 %**);
+  `diff -rq` base vs fast = only `.export_stamp.json` differs; decoded pixels
+  byte-identical over 788 PNGs (0 mismatch, 0 missing) vs the `clipper_post1`
+  oracle. There is no size-vs-speed tradeoff to make here — the current default
+  IS the fast path.
+- **Action** — SPIKE ONLY, reverted (`git checkout --` on
+  `pipeline/textures.rs`, `pipeline/mod.rs`, `decomposed.rs`; probe removed);
+  patch at `scratchpad/item9-png-fast.patch`. To actually cut encode time or
+  size the owner would need a different lever (e.g. `Best` for smaller/slower,
+  a non-`image` encoder, or fewer/smaller textures), not this switch. UI/holo
+  PNGs remain excluded (freeze gate + gfx encoders). `cli/src/dds.rs`
+  (standalone `dds` subcommand, off the export path) left untouched — optional
+  follow-up only. (no commit — ledger record)
