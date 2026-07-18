@@ -7,7 +7,7 @@ edition = "2024"
 starbreaker-common = { path = "../starbreaker-common" }
 zerocopy = { version = "0.8", features = ["derive"] }
 thiserror = "2"
-ruzstd = "0.8"
+zstd = "0.13"
 flate2 = { workspace = true }
 aes = "0.8"
 cbc = "0.1"

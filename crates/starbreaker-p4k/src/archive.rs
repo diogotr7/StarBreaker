@@ -794,12 +794,8 @@ fn read_entry(reader: &mut SpanReader, is_zip64: bool) -> Result<P4kEntry, P4kEr
 
 /// Decompress zstd data with a pre-allocation hint.
 fn zstd_decompress(data: &[u8], size_hint: usize) -> Result<Vec<u8>, P4kError> {
-    let cursor = std::io::Cursor::new(data);
-    let mut decoder = ruzstd::decoding::StreamingDecoder::new(cursor)
-        .map_err(|e| P4kError::Decompression(format!("zstd init: {e}")))?;
     let mut output = Vec::with_capacity(size_hint);
-    decoder
-        .read_to_end(&mut output)
+    zstd::stream::copy_decode(std::io::Cursor::new(data), &mut output)
         .map_err(|e| P4kError::Decompression(format!("zstd: {e}")))?;
     Ok(output)
 }

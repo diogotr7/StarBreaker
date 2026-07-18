@@ -384,3 +384,37 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
   `cargo test -p starbreaker-ui` freeze SHAs green (9/9; the known
   `manifest_targets_whole_image_colour_regression_guard` stale-export mtime
   exception is unrelated).
+
+### Item 10 — P4K zstd decode via the `zstd` crate (2026-07-18, `feature/ui`)
+
+- **Observed** — the Task-3 decode-time probe (item-10 gate) measured ~85 CPU-s
+  spent in `zstd_decompress` against ~59s wall on the decomposed capital-ship
+  export, i.e. zstd decode is a >5% share of the run (gate PASSED).
+- **Finding** — the C `libzstd` binding (`zstd` crate) decodes materially faster
+  than the pure-Rust `ruzstd` streaming decoder, and its output is byte-identical
+  by format (both emit the same decompressed payload; the P4K stores standard
+  zstd frames). `zstd = "0.13"` is already linked workspace-wide via
+  `starbreaker-blend` and `mcp`, so the swap adds no new toolchain.
+- **Action** — swapped `starbreaker-p4k::archive::zstd_decompress` from
+  `ruzstd::decoding::StreamingDecoder` to `zstd::stream::copy_decode` (size-hint
+  preallocated `Vec`); dropped `ruzstd = "0.8"` from `starbreaker-p4k/Cargo.toml`,
+  added `zstd = "0.13"`. Signature unchanged.
+  **Partial-consolidation tradeoff (amendment 3 / planner F3):** `starbreaker-chf`
+  is left wholly on `ruzstd` (both decode AND encode). chf encode (`to_chf`,
+  container.rs:82) writes game-consumed 4096-byte save files and is off every
+  byte oracle — no test proves the game accepts a `zstd`-crate frame — so it must
+  keep `ruzstd`. Swapping only chf decode would ADD `zstd` while NOT removing
+  `ruzstd` from chf (negative consolidation), and chf decode is off the export
+  hot path. So `ruzstd` remains a workspace dependency (chf only); this item
+  consolidates the P4K decode path solely.
+- **Verification** — `cargo build` + `cargo test -p starbreaker-p4k` green
+  (13 unit + 8 real-P4K integration incl. `open_real_p4k`, `read_socpak_as_zip`,
+  `read_encrypted_entry` — all exercise zstd decode); `cargo test -p
+  starbreaker-3d --lib` green (469 pass, 3 ignored). Byte oracles vs the NEW
+  post-A6 baselines `ships_perf_bench/{clipper,carrack}_post1`: `diff -rq …
+  | grep -v export_stamp` **empty** for BOTH ships.
+- **Timing (INDICATIVE — machine loaded, load avg ~6–8 during a concurrent
+  review)** — internal `[timing]` `write_decomposed_export`: clipper 30.67s,
+  carrack 32.81s, both below the loaded post1 wall captures (clipper 42.6s /
+  carrack 46.6s). Directional improvement, but not a clean comparison — re-bench
+  in a quiet window for a defensible delta.

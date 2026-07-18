@@ -5612,11 +5612,11 @@ dependencies = [
  "parking_lot",
  "rayon",
  "rustc-hash",
- "ruzstd",
  "smallvec",
  "starbreaker-common",
  "thiserror 2.0.18",
  "zerocopy",
+ "zstd",
 ]
 
 [[package]]
