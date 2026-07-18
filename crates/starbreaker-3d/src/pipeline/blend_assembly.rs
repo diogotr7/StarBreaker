@@ -983,6 +983,14 @@ pub fn write_decomposed_export_blend(
         prewarm_assets.len(),
         prewarmed_png_cache.len(),
     );
+    let prewarm_rough_start = Instant::now();
+    let prewarmed_roughness_cache =
+        crate::decomposed::prewarm_decomposed_roughness(p4k, &prewarm_assets, opts.texture_mip);
+    log::info!(
+        "[timing][blend] prewarm_roughness: {:.2}s ({} sources)",
+        prewarm_rough_start.elapsed().as_secs_f32(),
+        prewarmed_roughness_cache.len(),
+    );
 
     let mut interior_mesh_loader = |entry: &crate::pipeline::InteriorCgfEntry|
         -> Option<(Mesh, Option<crate::mtl::MtlFile>, Option<crate::nmc::NodeMeshCombo>)> {
@@ -1034,6 +1042,7 @@ pub fn write_decomposed_export_blend(
         existing_asset_paths,
         existing_interior_assets,
         prewarmed_png_cache,
+        prewarmed_roughness_cache,
         &mut interior_mesh_loader,
     )?;
     log::info!("[timing][blend] base_decomposed_export: {:.2}s", phase_start.elapsed().as_secs_f32());

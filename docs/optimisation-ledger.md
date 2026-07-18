@@ -218,3 +218,54 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
   during capture — indicative): `swf_load` 1.654s → 0.666s (−60%),
   `swf_load_measure` 1.648s → 0.666s (−60%); combined stage-#3 cost
   3.302s → 1.332s.
+
+### Item-8: DDNA→roughness parallel pre-decode — LANDED (2026-07-18)
+
+- **Pre-check (borderline)** — Task-2 serial-vs-parallel probe measured a
+  **4.09× parallel speedup over 50 DDNA sources** — above the 4× gate but only
+  just; the keep-or-revert decision was deferred to the post-change stage-delta
+  timing below.
+- **Observed** — the first decode of each unique DDNA→roughness source happened
+  serially inside the `child_assets` and `interior_assets` loops of
+  `write_decomposed_export`. The existing `ddna_status_cache` memo only
+  collapsed *repeat* touches of a source; the first full mip-decode +
+  smoothness-statistics pass + PNG encode of each of the 212 unique Carrack
+  sources was still paid serially on the writer thread.
+- **Finding** — pre-decoding those 212 sources in parallel (`par_iter`) up front
+  costs ~2.2s and removes ~9.7s of serial first-decode from the writer stages, a
+  net ~8s wall win at byte-identity. Carrack stage deltas (baseline = 3 runs
+  01:26–01:29 at low load; post = 2 runs 04:16–04:18 at 1-min load ~2.5, so
+  **indicative** per the load<2 rule — but both post runs beat all three
+  baselines despite higher load, so the gain is robust):
+  - `prewarm_roughness` (new): 2.20s (212 sources)
+  - `child_assets`: 6.12s → 4.78s (−1.34s)
+  - `interior_assets`: 19.83s → 11.43s (−8.40s)
+  - `[timing][decomposed] total`: 29.90s → 19.77s (−10.13s)
+  - `[timing][blend] total`: 56.85s → 48.56s (−8.29s)
+  - Max-RSS: 11.8G baseline → 12.72G (13,339,532 kB), **+7.8%** — the cost of
+    holding 212 decoded `RoughnessTextureLoad`s (png + grayscale_png) resident
+    during the write; under the 10% concern threshold, accepted.
+- **Action** — added `prewarm_decomposed_roughness` (decomposed.rs) driven from
+  the same `prewarm_assets` vec as `prewarm_decomposed_textures`, built in
+  `blend_assembly.rs` beside `prewarmed_png_cache` and threaded as a
+  **consult-only `&RoughnessCache`** (textures.rs alias:
+  `HashMap<String, Result<RoughnessTextureLoad, RoughnessTextureLoadError>>`,
+  keyed by RAW source path) down to `export_ddna_roughness_asset_with_status`,
+  which consults it before `load_roughness_texture_result` on a miss.
+  **CRITICAL trap honoured (D5):** `ddna_status_cache` is NEVER prewarmed — its
+  cache-hit early-return precedes the `files`/`texture_cache` inserts, so seeding
+  it would drop every roughness PNG. The prewarm holds ONLY the pure decode
+  `Result`; the serial writer keeps every bookkeeping insert. New gated unit test
+  `prewarmed_roughness_matches_cold_and_emits_png` proves the prewarmed path
+  yields an identical `(ref, status)` AND emits the roughness PNG into `files`.
+- **Amendment-11 note (read the delta correctly)** — layer submaterials resolved
+  via `resolve_layer_submaterial` (decomposed.rs, the `.mtl`-layer branch in
+  `extract_material_entry`) are NOT in the prewarm enumeration and still decode
+  serially on first touch. This is byte-safe (a miss falls back to the identical
+  serial decode) and means the parallel speedup is partial — the timing delta
+  above already reflects that residual serial cost.
+- **Verification** — `cargo build` + `cargo test -p starbreaker-3d --lib` green
+  (473 pass incl. the new gated test with SC_DATA_P4K set; skips without).
+  Byte oracle vs `ships_perf_bench/{carrack_pre1,clipper_pre1}`: `diff -rq`
+  empty (export_stamp filtered) on BOTH ships. Two-run Carrack determinism:
+  `diff` empty. RSS +7.8% (above).

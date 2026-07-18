@@ -17,7 +17,7 @@ use crate::mtl::{
 use crate::nmc::NodeMeshCombo;
 use crate::pipeline::{
     DecomposedExport, ExportFormat, ExportOptions, ExportedFile, ExportedFileKind,
-    InteriorCgfEntry, LoadedInteriors, MaterialMode, PngCache,
+    InteriorCgfEntry, LoadedInteriors, MaterialMode, PngCache, RoughnessCache,
 };
 use crate::skeleton::Bone;
 use crate::types::{EntityPayload, Mesh, UiBinding};
@@ -1022,6 +1022,7 @@ pub(crate) fn write_decomposed_export(
     existing_asset_paths: Option<&HashSet<String>>,
     existing_interior_assets: Option<&ExistingInteriorAssetMap>,
     png_cache: PngCache,
+    roughness_cache: RoughnessCache,
     load_interior_mesh: &mut dyn FnMut(
         &InteriorCgfEntry,
     )
@@ -1112,6 +1113,9 @@ pub(crate) fn write_decomposed_export(
     // Caller may pre-fill this with parallel-decoded textures (see
     // `prewarm_decomposed_textures`); otherwise it starts empty.
     let mut png_cache = png_cache;
+    // Prewarmed, consult-only DDNA→roughness decode cache (see
+    // `prewarm_decomposed_roughness`); passed by `&` downstream.
+    let roughness_cache = roughness_cache;
     let mut palette_records = BTreeMap::new();
     let mut livery_usage = BTreeMap::new();
     let package_leaf = package_directory_name(&input.entity_name, opts.lod_level, opts.texture_mip);
@@ -1177,6 +1181,7 @@ pub(crate) fn write_decomposed_export(
                 &mut png_cache,
                 &mut texture_cache,
                 &mut ddna_status_cache,
+                &roughness_cache,
                 &palettes_manifest_path,
                 &input.entity_name,
                 &input.geometry_path,
@@ -1233,6 +1238,7 @@ pub(crate) fn write_decomposed_export(
                     &mut png_cache,
                     &mut texture_cache,
                     &mut ddna_status_cache,
+                    &roughness_cache,
                     &palettes_manifest_path,
                     &input.entity_name,
                     &input.geometry_path,
@@ -1377,6 +1383,7 @@ pub(crate) fn write_decomposed_export(
                     &mut png_cache,
                     &mut texture_cache,
                     &mut ddna_status_cache,
+                    &roughness_cache,
                     &palettes_manifest_path,
                     &child.entity_name,
                     &child.geometry_path,
@@ -1695,6 +1702,7 @@ pub(crate) fn write_decomposed_export(
                                 &mut png_cache,
                                 &mut texture_cache,
                                 &mut ddna_status_cache,
+                                &roughness_cache,
                                 &palettes_manifest_path,
                                 &entry.name,
                                 &entry.cgf_path,
@@ -2465,6 +2473,7 @@ fn write_material_sidecar(
     png_cache: &mut PngCache,
     texture_cache: &mut HashMap<(String, TextureFlavor), String>,
     ddna_status_cache: &mut HashMap<String, (Option<TextureExportRef>, TextureDerivationStatus)>,
+    roughness_cache: &RoughnessCache,
     palettes_manifest_path: &str,
     fallback_name: &str,
     geometry_path: &str,
@@ -2503,6 +2512,7 @@ fn write_material_sidecar(
                 png_cache,
                 texture_cache,
                 ddna_status_cache,
+                roughness_cache,
                 material,
                 texture_mip,
                 existing_asset_paths,
@@ -2573,6 +2583,7 @@ fn extract_material_entry(
     png_cache: &mut PngCache,
     texture_cache: &mut HashMap<(String, TextureFlavor), String>,
     ddna_status_cache: &mut HashMap<String, (Option<TextureExportRef>, TextureDerivationStatus)>,
+    roughness_cache: &RoughnessCache,
     material: &SubMaterial,
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
@@ -2587,6 +2598,7 @@ fn extract_material_entry(
             p4k,
             texture_cache,
             ddna_status_cache,
+            roughness_cache,
             &path,
             texture_mip,
             existing_asset_paths,
@@ -2709,6 +2721,7 @@ fn extract_material_entry(
                         p4k,
                         texture_cache,
                         ddna_status_cache,
+                        roughness_cache,
                         &path,
                         texture_mip,
                         existing_asset_paths,
@@ -4846,6 +4859,42 @@ pub(crate) fn prewarm_decomposed_textures(
         .collect()
 }
 
+/// Parallel pre-decode of the DDNA→roughness sources the decomposed writer will
+/// process, returning a cache keyed by RAW `binding.path` (via the same
+/// `normal_gloss_ddna_source_paths` enumerator the writer uses, so keys match
+/// `export_ddna_roughness_asset_with_status`'s `source_path` exactly). Holds ONLY
+/// the pure decode `Result`; the serial writer still performs all
+/// `files`/`texture_cache`/`ddna_status_cache` inserts, so output is unchanged and
+/// a cache miss simply decodes serially as before.
+///
+/// NOTE: layer submaterials resolved via `resolve_layer_submaterial` (the
+/// `.mtl`-layer branch in `extract_material_entry`) are NOT enumerated here and
+/// still decode serially on their first touch — byte-safe, partial speedup.
+pub(crate) fn prewarm_decomposed_roughness(
+    p4k: &MappedP4k,
+    assets: &[(MtlFile, String, String)],
+    texture_mip: u32,
+) -> RoughnessCache {
+    use rayon::prelude::*;
+    let mut sources: HashSet<String> = HashSet::new();
+    for (materials, _material_path, _geometry_path) in assets {
+        for material in &materials.materials {
+            for src in normal_gloss_ddna_source_paths(material) {
+                sources.insert(src);
+            }
+        }
+    }
+    let jobs: Vec<String> = sources.into_iter().collect();
+    jobs.par_iter()
+        .map(|src| {
+            (
+                src.clone(),
+                crate::pipeline::load_roughness_texture_result(p4k, src, texture_mip),
+            )
+        })
+        .collect()
+}
+
 fn texture_export_kind(flavor: TextureFlavor) -> &'static str {
     match flavor {
         TextureFlavor::Generic => "source",
@@ -4898,6 +4947,7 @@ fn export_ddna_roughness_asset_with_status(
     p4k: &MappedP4k,
     texture_cache: &mut HashMap<(String, TextureFlavor), String>,
     ddna_status_cache: &mut HashMap<String, (Option<TextureExportRef>, TextureDerivationStatus)>,
+    roughness_cache: &RoughnessCache,
     source_path: &str,
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
@@ -4947,7 +4997,16 @@ fn export_ddna_roughness_asset_with_status(
     let requested_path =
         texture_relative_path(p4k, source_path, TextureFlavor::Roughness, texture_mip);
 
-    let result = match crate::pipeline::load_roughness_texture_result(p4k, source_path, texture_mip) {
+    // Consult the prewarmed pure-decode cache (keyed by RAW source path) before
+    // decoding. This is the ONLY roughness_cache use — the `ddna_status_cache`
+    // memo above and all `files`/`texture_cache` inserts below stay serial, so a
+    // cache hit replays exactly what a cold decode would produce.
+    let result = match roughness_cache
+        .get(source_path)
+        .cloned()
+        .unwrap_or_else(|| {
+            crate::pipeline::load_roughness_texture_result(p4k, source_path, texture_mip)
+        }) {
         Ok(loaded) => {
             let selected_mip = loaded.selected_mip;
             let requested_mip = loaded.requested_mip;
@@ -5818,6 +5877,56 @@ mod tests {
         assert_ne!(
             texture_cache_key("Data/Objects/Test/PANEL_DDNA.dds", TextureFlavor::Normal),
             texture_cache_key("Data/Objects/Test/PANEL_DDNA.dds", TextureFlavor::Roughness)
+        );
+    }
+
+    #[test]
+    #[ignore = "needs SC_DATA_P4K"]
+    fn prewarmed_roughness_matches_cold_and_emits_png() {
+        let Ok(p) = std::env::var("SC_DATA_P4K") else {
+            return;
+        };
+        let p4k = MappedP4k::open(&p).unwrap();
+        // Pick a DDNA source that actually decodes so the PNG-emission assertion
+        // is meaningful (a source that errors emits no roughness PNG on either path).
+        let src = p4k
+            .entries()
+            .iter()
+            .map(|e| e.name.clone())
+            .find(|n| {
+                n.to_ascii_lowercase().ends_with("_ddna.dds")
+                    && crate::pipeline::load_roughness_texture_result(&p4k, n, 0).is_ok()
+            })
+            .expect("a decodable ddna source");
+
+        // Cold path: empty prewarm cache, writer decodes serially.
+        let mut f0 = OutputFiles::new();
+        let mut tc0 = HashMap::new();
+        let mut sc0 = HashMap::new();
+        let empty = RoughnessCache::new();
+        let cold = export_ddna_roughness_asset_with_status(
+            &mut f0, &p4k, &mut tc0, &mut sc0, &empty, &src, 0, None,
+        );
+
+        // Prewarmed path: cache pre-seeded with the pure decode result.
+        let warm_cache: RoughnessCache = std::iter::once((
+            src.clone(),
+            crate::pipeline::load_roughness_texture_result(&p4k, &src, 0),
+        ))
+        .collect();
+        let mut f1 = OutputFiles::new();
+        let mut tc1 = HashMap::new();
+        let mut sc1 = HashMap::new();
+        let warm = export_ddna_roughness_asset_with_status(
+            &mut f1, &p4k, &mut tc1, &mut sc1, &warm_cache, &src, 0, None,
+        );
+
+        assert_eq!(cold.0, warm.0, "exported ref must match the cold path");
+        assert_eq!(cold.1, warm.1, "derivation status must match the cold path");
+        let rel = texture_relative_path(&p4k, &src, TextureFlavor::Roughness, 0);
+        assert!(
+            f1.contains_key(&rel),
+            "roughness PNG must be inserted on the prewarmed path"
         );
     }
 

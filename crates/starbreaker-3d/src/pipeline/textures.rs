@@ -17,6 +17,14 @@ use super::{P4kSiblingReader, datacore_path_to_p4k, try_load_mtl};
 
 pub(crate) type PngCache = std::collections::HashMap<String, Option<Vec<u8>>>;
 
+/// Prewarm cache for DDNA→roughness decodes, keyed by RAW source path (matching
+/// the writer's `source_path` key semantics). Holds ONLY the pure decode result
+/// so the serial writer keeps every `files`/`texture_cache`/`ddna_status_cache`
+/// bookkeeping insert; a hit clones cheaply (`RoughnessTextureLoad: Clone`,
+/// `RoughnessTextureLoadError: Copy`).
+pub(crate) type RoughnessCache =
+    std::collections::HashMap<String, Result<RoughnessTextureLoad, RoughnessTextureLoadError>>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RoughnessTextureLoadError {
     MissingSourceDds,
