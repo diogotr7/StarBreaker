@@ -1,3 +1,11 @@
+//! `SwfAssetLibrary` — owned caches of the static atoms of one SWF (bitmaps,
+//! shapes, fonts, edit-text records, sprite first frames), all built from a
+//! single decompress+parse of the source bytes.
+//!
+//! Stage size and per-frame display-list snapshots are captured at construction
+//! and served without re-parsing. `merge_swf_bytes` overlays additional SWFs
+//! onto an existing library (e.g. shared font sheets over a screen SWF).
+
 use std::collections::HashMap;
 
 use image::RgbaImage;

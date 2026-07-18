@@ -431,7 +431,7 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
 - **Action** — one-loop lazy init: `path_index=None`, per candidate try
   `direct.exists()` then lazily build+consult the index on first miss;
   precedence unchanged. Regression `test_direct_hit_does_not_build_path_index`
-  asserts `_path_index is None` after a direct hit. (commit `58c52aeb9`)
+  asserts `_path_index is None` after a direct hit. (commit `e9ef925fe`)
 
 ### Addon: POM bias reads one pixel not the atlas
 
@@ -444,7 +444,7 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
 - **Action** — `pixels[:]` → `pixels[0:4]` at both sites (temp-load :326 and
   fallback :333); `orchestration.py:1247` (a real full-image loop) untouched.
   Behaviour-identical; `PomBiasSliceTests` guards the slice bound.
-  (commit `6be59d4f8`)
+  (commit `30f3f60ca`)
 
 ### Ops: disk retention (item 5, re-scoped)
 
@@ -454,11 +454,11 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
 - **Finding** — `dcb_canvas` (3.0 G) is read by the starbreaker-ui live-IR
   harness (mod.rs:253) — the handoff's "nothing reads it" is wrong; deleting
   it silently disables the guard. Only stale data left = `graphify-out` old
-  snapshots (14 dated dirs).
+  snapshots (15 dated dirs).
 - **Action** — pruned `graphify-out` to the 3 newest snapshots + live
   `graph.json`; added a retention-policy note to `AGENTS.md §Building`
   (cargo-sweep any regrown debug tree, keep the release-deps ladder, keep
-  `dcb_canvas`). `dcb_canvas` retention surfaced to the owner. (commit `07e0219cf`)
+  `dcb_canvas`). `dcb_canvas` retention surfaced to the owner. (commit `fede2bbb7`)
 
 ### Addon: layout_key data_pointer drop — REJECTED
 
@@ -535,4 +535,4 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
   `features=["rt","macros","io-std"]` (no extra feature needed — build was
   clean); rebuilt + redeployed; initialize handshake smoke green over stdio.
   Compile-time/dep-graph win only: release `-p starbreaker-mcp` rebuild
-  45.33s → 28.29s (~17s, fewer tokio deps compiled). (commit `fa69db685`)
+  45.33s → 28.29s (~17s, fewer tokio deps compiled). (commit `83a07950b`)
