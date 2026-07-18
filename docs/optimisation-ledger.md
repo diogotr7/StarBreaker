@@ -477,3 +477,19 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
 - **Action** — REJECTED, no code change. Would be dischargeable only by proving
   both per-mesh fixes are no-ops whenever the keyed inputs match (unlikely: the
   rebind reads live vertex positions). (no commit — ledger record)
+
+### Release checklist: git history scrub (item 13, DO NOT run now)
+
+- **Observed** — `.git` size-pack ~1.22 GiB; ~821 historical `ships/Data`
+  blob paths (~1,155 MiB of once-committed, now-ignored export artifacts) ship
+  with every public clone.
+- **Finding** — a history rewrite removes them but rewrites all commit hashes —
+  destructive, never mid-arc.
+- **Action (PRE-PUBLIC-RELEASE ONLY, owner-scheduled)** — on a fresh clone run
+  `git filter-repo --path ships --invert-paths`; verify the 4 legitimately
+  tracked binaries survive (`material_templates.blend`, `pom_library.blend`,
+  `screen_effects_library.blend`, the app icon); force-push once; re-clone
+  everywhere. Pre-conditions: `.gitignore` covers `ships/`, `dcb_canvas`,
+  `graphify-out`. Verify: `git count-objects -vH` size-pack shrunk ~1.15 GiB;
+  `cargo build` + tests green on the rewritten clone. (no commit — checklist
+  record)
