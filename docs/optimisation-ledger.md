@@ -137,3 +137,34 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
   adjudicated). Task 3 (SWF parse-once: cache the parse across the `:595` and
   `:750` call sites) is IN SCOPE for this run. Docs-only here; no code change in
   this commit.
+
+### Item-6: colour.rs LUT fast path for opaque premul blends — LANDED (2026-07-18)
+
+- **Observed** — `blend_premul_linear` and `blend_premul_add_linear`
+  (`crates/starbreaker-ui/src/colour.rs`) un-premultiply each of the 3 colour
+  channels with `srgb_channel_to_linear(v/a)` — a `powf` — on BOTH the src and
+  dst side, every pixel, even when the side is fully opaque (`a==255`). The
+  compositor blends in linear light (B4), so these two fns are on the hot
+  `render` stage (14.151s serial, 52.5% of UI wall).
+- **Finding** — when `a==255` the un-premultiply divide is identity
+  (`v/255 / 1.0`), the `.clamp(0,1)` is a no-op (`v/255 ≤ 1`), and
+  `srgb_channel_to_linear(v/255.0) == u8_to_linear(v)` bit-exact for all `v`
+  (already proven by `lut_matches_powf_helper_for_all_bytes`). For the additive
+  fn the premultiply-back factor `* sa`/`* da` is `* 1.0` — exact in IEEE754.
+  So on an opaque side the two per-channel `powf` decodes can be replaced by a
+  256-entry LUT lookup with ZERO numeric change.
+- **Action** — hoisted `src_opaque`/`dst_opaque` (`==255`) bools and, per side,
+  substituted `u8_to_linear(_)` for the `powf` decode in both premul fns. No
+  opaque copy short-circuit (encode∘decode is not provably identity; encode
+  stays `powf`). Kept verbatim pre-change bodies as `#[cfg(test)]`
+  `blend_premul_*_slow` reference fns and added
+  `fast_path_matches_slow_over_all_bytes_and_boundaries` (exhaustive over all
+  256 byte values × {255,200,128,1,0}² sa/da, covering both fast and slow
+  branches) — passes, proving the refactor a no-op everywhere. Byte oracle vs
+  `ships_perf_bench/clipper_pre1`: `diff -rq` empty (export_stamp filtered), all
+  26 UI PNGs `cmp`-identical. `cargo test -p starbreaker-ui` green, freeze SHAs
+  unchanged (`manifest_targets_whole_image_colour_regression_guard` fails on an
+  unrelated pre-existing STALE-EXPORT timestamp guard only). Timing
+  (informational, serial `RAYON_NUM_THREADS=1`, load ~2 at start): `render`
+  stage 12.080s vs B1's 14.151s = −2.07s (−14.6%), consistent with dropping two
+  `powf` decodes per opaque-pixel channel.

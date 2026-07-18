@@ -79,9 +79,21 @@ pub(crate) fn blend_premul_linear(dst: &mut [u8; 4], src: [u8; 4]) {
     if out_a <= 0.0 {
         return;
     }
+    // Opaque sides skip the un-premultiply powf decode: when a==255 the divide
+    // is identity and `srgb_channel_to_linear(v/255) == u8_to_linear(v)` for all
+    // v (proven by `lut_matches_powf_helper_for_all_bytes`), so the LUT lookup
+    // is bit-exact.
+    let src_opaque = src[3] == 255;
+    let dst_opaque = dst[3] == 255;
     for c in 0..3 {
-        let s_lin = srgb_channel_to_linear(((src[c] as f32 / 255.0) / sa).clamp(0.0, 1.0));
-        let d_lin = if da > 0.0 {
+        let s_lin = if src_opaque {
+            u8_to_linear(src[c])
+        } else {
+            srgb_channel_to_linear(((src[c] as f32 / 255.0) / sa).clamp(0.0, 1.0))
+        };
+        let d_lin = if dst_opaque {
+            u8_to_linear(dst[c])
+        } else if da > 0.0 {
             srgb_channel_to_linear(((dst[c] as f32 / 255.0) / da).clamp(0.0, 1.0))
         } else {
             0.0
@@ -104,13 +116,22 @@ pub(crate) fn blend_premul_add_linear(dst: &mut [u8; 4], src: [u8; 4]) {
     if out_a <= 0.0 {
         return;
     }
+    // Opaque sides skip the un-premultiply powf decode: when a==255 the divide
+    // is identity, `* sa`/`* da` is `* 1.0` (bit-exact in IEEE754), and
+    // `srgb_channel_to_linear(v/255) == u8_to_linear(v)` for all v.
+    let src_opaque = src[3] == 255;
+    let dst_opaque = dst[3] == 255;
     for c in 0..3 {
-        let s_pl = if sa > 0.0 {
+        let s_pl = if src_opaque {
+            u8_to_linear(src[c])
+        } else if sa > 0.0 {
             srgb_channel_to_linear(((src[c] as f32 / 255.0) / sa).clamp(0.0, 1.0)) * sa
         } else {
             0.0
         };
-        let d_pl = if da > 0.0 {
+        let d_pl = if dst_opaque {
+            u8_to_linear(dst[c])
+        } else if da > 0.0 {
             srgb_channel_to_linear(((dst[c] as f32 / 255.0) / da).clamp(0.0, 1.0)) * da
         } else {
             0.0
@@ -127,6 +148,87 @@ pub(crate) fn blend_premul_add_linear(dst: &mut [u8; 4], src: [u8; 4]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Verbatim pre-fast-path bodies (all-powf decode, no opaque branch), kept as
+    // the reference oracle for `fast_path_matches_slow_over_all_bytes_and_boundaries`.
+    fn blend_premul_linear_slow(dst: &mut [u8; 4], src: [u8; 4]) {
+        let sa = src[3] as f32 / 255.0;
+        if sa <= 0.0 {
+            return;
+        }
+        let da = dst[3] as f32 / 255.0;
+        let out_a = sa + da * (1.0 - sa);
+        if out_a <= 0.0 {
+            return;
+        }
+        for c in 0..3 {
+            let s_lin = srgb_channel_to_linear(((src[c] as f32 / 255.0) / sa).clamp(0.0, 1.0));
+            let d_lin = if da > 0.0 {
+                srgb_channel_to_linear(((dst[c] as f32 / 255.0) / da).clamp(0.0, 1.0))
+            } else {
+                0.0
+            };
+            let out_lin = (s_lin * sa + d_lin * da * (1.0 - sa)) / out_a;
+            dst[c] = (linear_channel_to_srgb(out_lin.clamp(0.0, 1.0)) * out_a * 255.0)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+        }
+        dst[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+
+    fn blend_premul_add_linear_slow(dst: &mut [u8; 4], src: [u8; 4]) {
+        let sa = src[3] as f32 / 255.0;
+        let da = dst[3] as f32 / 255.0;
+        let out_a = (sa + da).min(1.0);
+        if out_a <= 0.0 {
+            return;
+        }
+        for c in 0..3 {
+            let s_pl = if sa > 0.0 {
+                srgb_channel_to_linear(((src[c] as f32 / 255.0) / sa).clamp(0.0, 1.0)) * sa
+            } else {
+                0.0
+            };
+            let d_pl = if da > 0.0 {
+                srgb_channel_to_linear(((dst[c] as f32 / 255.0) / da).clamp(0.0, 1.0)) * da
+            } else {
+                0.0
+            };
+            let out_pl = (s_pl + d_pl).min(out_a);
+            let out_straight = (out_pl / out_a).clamp(0.0, 1.0);
+            dst[c] = (linear_channel_to_srgb(out_straight) * out_a * 255.0)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+        }
+        dst[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+
+    #[test]
+    fn fast_path_matches_slow_over_all_bytes_and_boundaries() {
+        // sa/da include 255 (fast branch) AND non-255 (slow branch) so the
+        // refactor is proven a no-op EVERYWHERE, not just on the boundary.
+        for v in 0u16..=255 {
+            let v = v as u8;
+            for &sa in &[255u8, 200, 128, 1, 0] {
+                for &da in &[255u8, 200, 128, 1, 0] {
+                    let src = [v, 255 - v, v / 2, sa];
+                    let base = [255 - v, v, 200u8.wrapping_sub(v), da];
+
+                    let mut fast = base;
+                    blend_premul_linear(&mut fast, src);
+                    let mut slow = base;
+                    blend_premul_linear_slow(&mut slow, src);
+                    assert_eq!(fast, slow, "premul mismatch v={v} sa={sa} da={da}");
+
+                    let mut fast_a = base;
+                    blend_premul_add_linear(&mut fast_a, src);
+                    let mut slow_a = base;
+                    blend_premul_add_linear_slow(&mut slow_a, src);
+                    assert_eq!(fast_a, slow_a, "premul_add mismatch v={v} sa={sa} da={da}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn lut_matches_powf_helper_for_all_bytes() {
