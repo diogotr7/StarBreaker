@@ -269,3 +269,48 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
   Byte oracle vs `ships_perf_bench/{carrack_pre1,clipper_pre1}`: `diff -rq`
   empty (export_stamp filtered) on BOTH ships. Two-run Carrack determinism:
   `diff` empty. RSS +7.8% (above).
+
+### Item-12.1 + 12.2: per-CGF path precompute + prewarm mtl-cache reuse — LANDED (2026-07-18)
+
+- **Observed (12.1)** — the interior placement loop in `write_decomposed_export`
+  recomputed `normalize_source_path` for every placement's CGF path (and, when
+  present, its material path) **twice** — once to build the `interior_asset_lookup_key`
+  cache key (decomposed.rs, per-placement block) and again when constructing the
+  `InteriorPlacementRecord`. Placements re-reference a much smaller
+  `input.interiors.unique_cgfs` set by `mesh_index`, so on a capital ship this was
+  ~24k redundant normalizations over a few hundred distinct CGFs.
+- **Finding (12.1)** — normalizing each unique CGF once (a `Vec<PrecomputedCgf>`
+  indexed by `mesh_index`, built before the container loop) and looking up
+  `cache_key` / `normalized_cgf_path` / `normalized_material_path` per placement
+  yields byte-identical output: the values are identical strings and the
+  first-seen `case_index` only records what is written, which is unchanged.
+- **Action (12.1)** — added a local `PrecomputedCgf { normalized_cgf_path,
+  normalized_material_path, cache_key }`; the per-placement recomputation and the
+  `InteriorPlacementRecord` recomputation both now clone from `precomp`.
+- **Observed (12.2)** — `prewarm_decomposed_textures` built a local
+  `mtl_cache: HashMap<String, Option<MtlFile>>` while resolving each asset's
+  canonical source `.mtl` + sidecar slot paths, then **dropped it**. The serial
+  writer's own `mtl_cache` then re-parsed those same `.mtl` files on first touch.
+- **Finding (12.2)** — the mtl_cache is a pure path→parse memo consulted by key,
+  so seeding the writer's cache with the prewarm's entries avoids re-parsing with
+  zero output effect and introduces no new nondeterminism (retrieval is by key;
+  iteration order is irrelevant to output).
+- **Action (12.2)** — `prewarm_decomposed_textures` now returns
+  `(PngCache, HashMap<String, Option<MtlFile>>)`; `blend_assembly.rs` destructures
+  it (`prewarmed_mtl_cache`, logged in the `[timing][blend] prewarm_textures`
+  line — 115 mtl entries on Carrack) and threads it into a new
+  `write_decomposed_export` `mtl_cache` param (order `png_cache, roughness_cache,
+  mtl_cache`, composing with the Item-8 signature). The single blend caller passes
+  the prewarmed memo; a second caller would pass `HashMap::new()`.
+- **Timing (informational, INDICATIVE — 1-min load ~5.8, above the load<2 rule;
+  benchmark window pressure)** — Carrack stage deltas vs Item-8 post numbers:
+  - `child_assets`: 4.78s → 4.44s (−0.34s)
+  - `interior_assets`: 11.43s → 9.76s (−1.67s)
+  - `[timing][blend] total`: 48.56s → 44.11s (−4.45s)
+  These beat the Item-8 post numbers despite ~2× higher load, so the direction is
+  robust even though the magnitudes are not clean. No new parallelism was added
+  (12.2 seeds a memo; 12.1 removes redundant serial work), so no determinism
+  double-run is required for this task.
+- **Verification** — `cargo build` + `cargo test -p starbreaker-3d --lib` green
+  (472 pass). Byte oracle vs `ships_perf_bench/{carrack_pre1,clipper_pre1}`:
+  `diff -rq` empty (export_stamp filtered) on BOTH ships.

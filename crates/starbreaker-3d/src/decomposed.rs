@@ -1023,6 +1023,7 @@ pub(crate) fn write_decomposed_export(
     existing_interior_assets: Option<&ExistingInteriorAssetMap>,
     png_cache: PngCache,
     roughness_cache: RoughnessCache,
+    mtl_cache: HashMap<String, Option<MtlFile>>,
     load_interior_mesh: &mut dyn FnMut(
         &InteriorCgfEntry,
     )
@@ -1109,7 +1110,10 @@ pub(crate) fn write_decomposed_export(
     // decoded and statistics-scanned exactly once per export.
     let mut ddna_status_cache: HashMap<String, (Option<TextureExportRef>, TextureDerivationStatus)> =
         HashMap::new();
-    let mut mtl_cache: HashMap<String, Option<MtlFile>> = HashMap::new();
+    // Seeded from the prewarm's source-material resolution (see
+    // `prewarm_decomposed_textures`); the single blend caller passes the
+    // prewarmed memo, a second caller passes `HashMap::new()`.
+    let mut mtl_cache = mtl_cache;
     // Caller may pre-fill this with parallel-decoded textures (see
     // `prewarm_decomposed_textures`); otherwise it starts empty.
     let mut png_cache = png_cache;
@@ -1559,6 +1563,36 @@ pub(crate) fn write_decomposed_export(
     }
     interior_ui_binding_elapsed += ui_binding_start.elapsed();
 
+    // Normalize each unique interior CGF's paths + cache key exactly once.
+    // Placements re-reference `unique_cgfs` by `mesh_index`, so on a capital
+    // ship this collapses ~24k redundant `normalize_source_path` calls (one per
+    // placement, twice) down to one per distinct CGF. Values are identical to
+    // the per-placement recomputation, so output is byte-identical.
+    struct PrecomputedCgf {
+        normalized_cgf_path: String,
+        normalized_material_path: Option<String>,
+        cache_key: String,
+    }
+    let precomputed_cgfs: Vec<PrecomputedCgf> = input
+        .interiors
+        .unique_cgfs
+        .iter()
+        .map(|entry| {
+            let normalized_cgf_path = normalize_source_path(p4k, &entry.cgf_path);
+            let normalized_material_path = entry
+                .material_path
+                .as_deref()
+                .map(|path| normalize_source_path(p4k, path));
+            let cache_key =
+                interior_asset_lookup_key(&normalized_cgf_path, normalized_material_path.as_deref());
+            PrecomputedCgf {
+                normalized_cgf_path,
+                normalized_material_path,
+                cache_key,
+            }
+        })
+        .collect();
+
     for (index, container) in input.interiors.containers.iter().enumerate() {
         let palette_id = container
             .palette
@@ -1589,15 +1623,8 @@ pub(crate) fn write_decomposed_export(
                 .palette
                 .as_ref()
                 .or(container.palette.as_ref());
-            let normalized_cgf_path = normalize_source_path(p4k, &entry.cgf_path);
-            let normalized_material_path = entry
-                .material_path
-                .as_deref()
-                .map(|path| normalize_source_path(p4k, path));
-            let cache_key = interior_asset_lookup_key(
-                &normalized_cgf_path,
-                normalized_material_path.as_deref(),
-            );
+            let precomp = &precomputed_cgfs[placement.mesh_index];
+            let cache_key = precomp.cache_key.clone();
             if failed_interior_asset_cache.contains(&cache_key) {
                 interior_asset_resolve_elapsed += asset_resolve_start.elapsed();
                 processed_interior_placements += 1;
@@ -1761,11 +1788,8 @@ pub(crate) fn write_decomposed_export(
             }
 
             placements.push(InteriorPlacementRecord {
-                cgf_path: normalize_source_path(p4k, &entry.cgf_path),
-                material_path: entry
-                    .material_path
-                    .as_ref()
-                    .map(|path| normalize_source_path(p4k, path)),
+                cgf_path: precomp.normalized_cgf_path.clone(),
+                material_path: precomp.normalized_material_path.clone(),
                 mesh_asset,
                 material_sidecar,
                 entity_class_guid: None,
@@ -4805,7 +4829,9 @@ fn prerender_ui_bindings(
 }
 
 /// Decode, in parallel, every source texture the decomposed sidecar writer will
-/// need, returning a pre-filled `png_cache`. `assets` carries one
+/// need, returning a pre-filled `png_cache` and the source-material `mtl_cache`
+/// built while resolving slot paths (so the writer can reuse it instead of
+/// re-parsing the same `.mtl` files). `assets` carries one
 /// `(materials, material_path, geometry_path)` per root/child/interior asset.
 ///
 /// For each asset we resolve the same canonical source `.mtl` the serial writer
@@ -4820,7 +4846,7 @@ pub(crate) fn prewarm_decomposed_textures(
     p4k: &MappedP4k,
     assets: &[(MtlFile, String, String)],
     texture_mip: u32,
-) -> PngCache {
+) -> (PngCache, HashMap<String, Option<MtlFile>>) {
     // Resolve source materials + collect keys serially (cheap .mtl parses,
     // deduped via a local mtl cache). Texture DECODE is the expensive part and
     // is parallelized below.
@@ -4841,7 +4867,8 @@ pub(crate) fn prewarm_decomposed_textures(
         }
     }
     let jobs: Vec<(String, TextureFlavor)> = requests.into_iter().collect();
-    jobs.par_iter()
+    let png_cache: PngCache = jobs
+        .par_iter()
         .map(|(path, flavor)| match flavor {
             TextureFlavor::Generic => (
                 crate::pipeline::png_cache_key(path, texture_mip, ""),
@@ -4856,7 +4883,11 @@ pub(crate) fn prewarm_decomposed_textures(
                 crate::pipeline::load_roughness_texture(p4k, path, texture_mip),
             ),
         })
-        .collect()
+        .collect();
+    // Return the source-material memo too: the serial writer seeds its own
+    // `mtl_cache` from it so each `.mtl` is parsed once per export, not again
+    // during sidecar writing.
+    (png_cache, mtl_cache)
 }
 
 /// Parallel pre-decode of the DDNA→roughness sources the decomposed writer will
