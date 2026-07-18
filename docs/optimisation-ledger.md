@@ -314,3 +314,73 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
 - **Verification** — `cargo build` + `cargo test -p starbreaker-3d --lib` green
   (472 pass). Byte oracle vs `ships_perf_bench/{carrack_pre1,clipper_pre1}`:
   `diff -rq` empty (export_stamp filtered) on BOTH ships.
+
+### Item-2: canonicalize mesh + material sidecar paths to P4K-entry casing — LANDED (2026-07-18)
+
+- **Observed** — three divergent casing authorities in `decomposed.rs`:
+  `texture_relative_path`→`normalize_source_path` used **P4K-entry casing**
+  (correct); `mesh_asset_relative_path` discarded its `p4k` param (`let _ = p4k;`)
+  and used `normalize_requested_source_path` (source-string casing);
+  `material_sidecar_relative_path`→`normalize_material_source_for_manifest`
+  **force-lowercased** after `Data/`. The accumulating export tree at
+  `ships/Data` therefore carried dual-cased `objects`/`Objects` (1.6G/5.0G) and
+  `materials`/`Materials` (26M/14M) directories, and per-run casing varied.
+- **Finding** — mesh/material builders diverged from the texture (P4K-entry)
+  authority. Because Blender ID names inside each `.blend` derive from the mesh
+  asset stem, the lowercase builder also emitted **case-duplicated objects**
+  (one lowercase, one P4K-cased Object instance for the same mesh) — the
+  "case-dup export bug". Unifying on the P4K authority collapses the duplicate.
+- **Action** — `mesh_asset_relative_path` now builds from
+  `normalize_source_path(p4k, geometry_path)`;
+  `normalize_material_source_for_manifest(p4k, path)` and
+  `material_sidecar_relative_path(p4k, …)` gained a `p4k` param and delegate to
+  `normalize_source_path`. `p4k` threaded to all callers (five `.map` closures
+  at the paint/child/interior sites, `canonical_material_source_path`,
+  `reusable_interior_asset_paths`, `projected_material_sidecar_path`, and the
+  build-material-sidecar site). `OutputFiles.case_index` retained as
+  belt-and-braces. The three lowercase-asserting unit tests
+  (`_uses_source_mtl_not_geometry_path`, `_encodes_mip_level`,
+  `_normalizes_case`) were removed and subsumed by a new data-gated
+  (`SC_DATA_P4K`) integration test
+  `path_builders_use_p4k_entry_casing_regardless_of_input_case` that asserts the
+  builders adopt P4K-entry casing (and still cover source-vs-geometry identity +
+  mip encoding). Note: `datacore_path_to_p4k` still strips a `Data/` prefix
+  case-sensitively — an all-caps `DATA/` prefix is a separate, pre-existing
+  concern (shared with the texture authority) not addressed here; the test
+  varies only the path body.
+- **Case-modulo oracle (2026-07-18, INDICATIVE — machine loaded)** — vs
+  `ships_perf_bench/{clipper,carrack}_pre1` (confirmed byte-identical to HEAD
+  `f4dd29c9b` before this change, so a valid baseline): case-folded relative
+  path sets match **1:1** on both ships; every non-`.blend` file (JSON/PNG) is
+  identical modulo ASCII path casing. `.blend` files differ beyond casing but
+  **only** by (a) P4K casing re-cased into embedded Blender ID names and (b)
+  removal of the case-duplicated Object — proven benign: SDNA block inspection
+  of a diverging pair shows Mesh 6=6, Material 8=8, MDeformVert 6=6,
+  AttributeArray 48=48 (264384 B both), raw_data bytes identical (1953618 B);
+  only `Object 9→8`, `CollectionObject 9→8`, and two empty `raw_data` stubs
+  removed. No geometry/material/vertex data lost. Two-run determinism
+  (`clipper_item2_a` vs `_b`) diff empty (exact).
+- **Cleanup — BLOCKED-on-cleanup (deferred to owner)** — the strict
+  byte-subset/merge guards fail on stale historical content, so per the handoff
+  guard the destructive deletions were NOT performed:
+  - `ships/Data/objects` → `Objects`: **0** files unique to lowercase (Objects
+    is a strict path-superset, 1036 unique to it); of 54 shared-path diffs, 39
+    are case-only (stale pre-fix casing) and **15 genuine** (9 `.blend` via the
+    benign case-dup mechanism, 6 `.materials.json` — stale-version content).
+  - `ships/Data/materials` → `Materials`: **0** unique to canonical, 14
+    entries (incl. whole `bhvr/` subdir) unique to lowercase, **3** genuine
+    shared-path `.materials.json` diffs (stale versions).
+  Both trees are historical accumulations exported at different code versions;
+  the discrepancies are stale artifacts, not fix defects, but the guard mandates
+  stop-and-report on any non-case difference. ~1.6G+ reclaim pends owner sign-off.
+- **Fresh baselines** — `ships_perf_bench/clipper_post1` (42.6s wall, 9.6G RSS)
+  and `carrack_post1` (46.6s wall, 13.3G RSS) captured with `/usr/bin/time -v` +
+  `RUST_LOG=info` (one run each, machine loaded → INDICATIVE). These **replace**
+  `*_pre1` as the byte oracles for later tasks (e.g. Item-7 zstd swap); the
+  `*_pre1` dirs are retained for orchestrator-managed retirement.
+- **Verification** — TDD: gated invariant test FAILS pre-fix (mesh path
+  `Data/OBJECTS/…` vs `Data/objects/…` case-unstable), PASSES post-fix.
+  `cargo test -p starbreaker-3d --lib` green (469 pass, 3 ignored).
+  `cargo test -p starbreaker-ui` freeze SHAs green (9/9; the known
+  `manifest_targets_whole_image_colour_regression_guard` stale-export mtime
+  exception is unrelated).

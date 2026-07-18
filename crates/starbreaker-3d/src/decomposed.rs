@@ -1197,7 +1197,7 @@ pub(crate) fn write_decomposed_export(
                 &mut mtl_cache,
             )
         }
-    }).map(|path| normalize_material_source_for_manifest(&path));
+    }).map(|path| normalize_material_source_for_manifest(p4k, &path));
     let mut engine_glow_targets = Vec::new();
     register_livery_usage(
         &mut livery_usage,
@@ -1254,7 +1254,7 @@ pub(crate) fn write_decomposed_export(
                     &mut mtl_cache,
                 )
             }
-        }).map(|path| normalize_material_source_for_manifest(&path));
+        }).map(|path| normalize_material_source_for_manifest(p4k, &path));
         paint_variant_json.push(serde_json::json!({
             "subgeometry_tag": variant.subgeometry_tag,
             "palette_id": palette_id,
@@ -1399,7 +1399,7 @@ pub(crate) fn write_decomposed_export(
                     &mut mtl_cache,
                 )
             }
-        }).map(|path| normalize_material_source_for_manifest(&path));
+        }).map(|path| normalize_material_source_for_manifest(p4k, &path));
         if should_export_engine_glow_targets(child) {
             engine_glow_targets.extend(build_thruster_engine_glow_targets(
                 &child.mesh,
@@ -1710,7 +1710,7 @@ pub(crate) fn write_decomposed_export(
                             opts.texture_mip,
                             &mut mtl_cache,
                         )
-                    }).map(|path| normalize_material_source_for_manifest(&path));
+                    }).map(|path| normalize_material_source_for_manifest(p4k, &path));
                     let material_sidecar = interior_material_view.sidecar_materials.as_ref().map(|materials| {
                         if opts.ui_only_files {
                             projected_material_sidecar_path(
@@ -1741,7 +1741,7 @@ pub(crate) fn write_decomposed_export(
                                 &mut mtl_cache,
                             )
                         }
-                    }).map(|path| normalize_material_source_for_manifest(&path));
+                    }).map(|path| normalize_material_source_for_manifest(p4k, &path));
                     let reuse_existing_mesh_asset = (files.contains_key(&requested_mesh_asset)
                         || existing_asset_paths.is_some_and(|paths| paths.contains(&requested_mesh_asset.to_ascii_lowercase())))
                         && requested_material_sidecar
@@ -2515,7 +2515,8 @@ fn write_material_sidecar(
         geometry_path,
         mtl_cache,
     );
-    let relative_path = material_sidecar_relative_path(&source_material_path, fallback_name, texture_mip);
+    let relative_path =
+        material_sidecar_relative_path(p4k, &source_material_path, fallback_name, texture_mip);
     if files.contains_key(&relative_path) {
         return relative_path;
     }
@@ -3767,7 +3768,7 @@ fn projected_material_sidecar_path(
         geometry_path,
         mtl_cache,
     );
-    material_sidecar_relative_path(&source_material_path, fallback_name, texture_mip)
+    material_sidecar_relative_path(p4k, &source_material_path, fallback_name, texture_mip)
 }
 
 fn canonical_material_source_path(
@@ -3779,19 +3780,13 @@ fn canonical_material_source_path(
 ) -> String {
     let source_material_path = material_source_path(p4k, materials, material_path, geometry_path)
         .replace('\\', "/");
-    normalize_material_source_for_manifest(&source_material_path)
+    normalize_material_source_for_manifest(p4k, &source_material_path)
 }
 
-fn normalize_material_source_for_manifest(path: &str) -> String {
-    let normalized = path.replace('\\', "/");
-    if normalized
-        .get(..5)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data/"))
-    {
-        format!("Data/{}", normalized[5..].to_ascii_lowercase())
-    } else {
-        normalized.to_ascii_lowercase()
-    }
+fn normalize_material_source_for_manifest(p4k: &MappedP4k, path: &str) -> String {
+    // Adopt the P4K-entry casing authority (the same one `texture_relative_path`
+    // uses) so mesh, material sidecar, and texture paths agree on casing.
+    normalize_source_path(p4k, path)
 }
 
 fn material_source_request(materials: &MtlFile, material_path: &str, geometry_path: &str) -> String {
@@ -3881,9 +3876,11 @@ fn reusable_interior_asset_paths(
     }
 
     let material_source = normalize_material_source_for_manifest(
+        p4k,
         &requested_material_source_path(p4k, entry.material_path.as_deref(), &entry.cgf_path),
     );
-    let material_sidecar = material_sidecar_relative_path(&material_source, &entry.name, texture_mip);
+    let material_sidecar =
+        material_sidecar_relative_path(p4k, &material_source, &entry.name, texture_mip);
     if existing_asset_set_contains(existing_asset_paths, &material_sidecar) {
         Some((mesh_asset, Some(material_sidecar)))
     } else {
@@ -3913,14 +3910,19 @@ pub(crate) fn mesh_asset_relative_path(
             extension
         )
     } else {
-        let _ = p4k;
-        replace_extension(&normalize_requested_source_path(geometry_path), extension)
+        replace_extension(&normalize_source_path(p4k, geometry_path), extension)
     };
     insert_stem_suffix(&base, &format!("_LOD{lod}"))
 }
 
-fn material_sidecar_relative_path(source_material_path: &str, fallback_name: &str, mip: u32) -> String {
-    let normalized_source_material_path = normalize_material_source_for_manifest(source_material_path);
+fn material_sidecar_relative_path(
+    p4k: &MappedP4k,
+    source_material_path: &str,
+    fallback_name: &str,
+    mip: u32,
+) -> String {
+    let normalized_source_material_path =
+        normalize_material_source_for_manifest(p4k, source_material_path);
     let base = if normalized_source_material_path.is_empty() {
         format!("Data/generated/{}.materials.json", sanitize_identifier(fallback_name))
     } else {
@@ -5831,6 +5833,67 @@ mod tests {
             ),
             "Data/Objects/Ships/Test/hull_ddna.png"
         );
+    }
+
+    /// Item-2 invariant (case-canonicalization): the mesh-asset and material
+    /// sidecar path builders must adopt the P4K-entry casing (the same
+    /// authority `texture_relative_path` already uses), independent of the
+    /// casing of the caller-supplied source string. Data-gated because there
+    /// is no in-memory `MappedP4k` constructor — the only source of authentic
+    /// P4K-entry casing is a real archive.
+    #[test]
+    #[ignore = "needs SC_DATA_P4K"]
+    fn path_builders_use_p4k_entry_casing_regardless_of_input_case() {
+        let Ok(p) = std::env::var("SC_DATA_P4K") else {
+            return;
+        };
+        let p4k = MappedP4k::open(&p).expect("open SC_DATA_P4K");
+        // A real .cgf whose entry name carries lowercase characters, so
+        // uppercasing the input genuinely diverges from the P4K authority.
+        let cgf = p4k
+            .entries()
+            .iter()
+            .map(|e| e.name.replace('\\', "/"))
+            .find(|n| n.to_ascii_lowercase().ends_with(".cgf") && n != &n.to_ascii_uppercase())
+            .expect("a mixed-case .cgf entry");
+        let canonical = normalize_source_path(&p4k, &cgf);
+        let canonical_stem = replace_extension(&canonical, "");
+        // Vary only the path *body*, preserving a strippable `Data/` prefix —
+        // that is the shape real source strings take (a recognizable prefix,
+        // arbitrary-cased interior). Uppercasing the prefix itself is a
+        // separate `datacore_path_to_p4k` concern outside this invariant.
+        let body = cgf.strip_prefix("Data/").expect("Data/ prefix");
+        let upper = format!("Data/{}", body.to_ascii_uppercase());
+        let lower = format!("Data/{}", body.to_ascii_lowercase());
+
+        // Mesh asset builder: case-stable and P4K-authoritative.
+        let m_up = mesh_asset_relative_path(&p4k, &upper, "n", 0, ExportFormat::Blend);
+        let m_lo = mesh_asset_relative_path(&p4k, &lower, "n", 0, ExportFormat::Blend);
+        assert_eq!(m_up, m_lo, "mesh asset path must be case-stable");
+        assert!(
+            m_up.starts_with(&canonical_stem),
+            "mesh asset must adopt P4K-entry casing ({canonical_stem}), got {m_up}"
+        );
+
+        // Material sidecar builder: same authority; also encodes the mip and
+        // is independent of the fallback name when a real source is supplied.
+        let s_up = material_sidecar_relative_path(&p4k, &upper, "a", 0);
+        let s_lo = material_sidecar_relative_path(&p4k, &lower, "b", 0);
+        assert_eq!(
+            s_up, s_lo,
+            "material sidecar path must be case- and fallback-stable"
+        );
+        assert!(
+            s_up.starts_with(&canonical_stem),
+            "material sidecar must adopt P4K-entry casing ({canonical_stem}), got {s_up}"
+        );
+        let s_mip2 = material_sidecar_relative_path(&p4k, &cgf, "a", 2);
+        assert!(s_up.ends_with("_TEX0.materials.json"), "mip suffix, got {s_up}");
+        assert!(
+            s_mip2.ends_with("_TEX2.materials.json"),
+            "mip suffix, got {s_mip2}"
+        );
+        assert_ne!(s_up, s_mip2, "mip level must change the sidecar path");
     }
 
     #[test]
@@ -8114,44 +8177,9 @@ mod tests {
         assert_eq!(view_a.sidecar_original_indices, vec![0u32, 1u32]);
     }
 
-    /// Phase 58 invariant: the sidecar path is derived from the *source .mtl*
-    /// file, not from the per-CGF geometry path.  This ensures that two
-    /// different CGF meshes sharing the same `.mtl` file always produce the
-    /// same sidecar path (before dedup via `insert_json_file`), so identical
-    /// content can never accumulate hash-variant files.
-    #[test]
-    fn material_sidecar_relative_path_uses_source_mtl_not_geometry_path() {
-        // Both paths reference the same logical .mtl; the sidecar must resolve
-        // to the same output path regardless of the geometry file that triggers it.
-        let path_a = material_sidecar_relative_path(
-            "Data/Objects/Ships/Drak/Clipper/hull.mtl",
-            "fallback",
-            0,
-        );
-        let path_b = material_sidecar_relative_path(
-            "Data/Objects/Ships/Drak/Clipper/hull.mtl",
-            "other_fallback",
-            0,
-        );
-
-        assert_eq!(path_a, path_b, "same source .mtl must produce the same sidecar path");
-        assert_eq!(path_a, "Data/objects/ships/drak/clipper/hull_TEX0.materials.json");
-    }
-
-    #[test]
-    fn material_sidecar_relative_path_encodes_mip_level() {
-        let path0 = material_sidecar_relative_path("Data/Objects/Ships/Test/hull.mtl", "f", 0);
-        let path2 = material_sidecar_relative_path("Data/Objects/Ships/Test/hull.mtl", "f", 2);
-
-        assert_eq!(path0, "Data/objects/ships/test/hull_TEX0.materials.json");
-        assert_eq!(path2, "Data/objects/ships/test/hull_TEX2.materials.json");
-        assert_ne!(path0, path2);
-    }
-
-    #[test]
-    fn material_sidecar_relative_path_normalizes_case() {
-        let path = material_sidecar_relative_path("Data/Objects/Spaceships/Ships/DRAK/Clipper/EXTERIOR/DRAK_CLIPPER_EXT.mtl", "f", 0);
-
-        assert_eq!(path, "Data/objects/spaceships/ships/drak/clipper/exterior/drak_clipper_ext_TEX0.materials.json");
-    }
+    // Phase 58 invariants (source-vs-geometry identity, mip encoding) and the
+    // former `_normalizes_case` casing check now live in the data-gated
+    // `path_builders_use_p4k_entry_casing_regardless_of_input_case` test above:
+    // they require a real `MappedP4k` because the builders adopt P4K-entry
+    // casing (there is no in-memory archive to assert literal casing against).
 }
