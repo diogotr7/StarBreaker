@@ -427,6 +427,25 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(texture.texture_transform["scale"], [2.0, 3.0])
         self.assertEqual(texture.texture_transform["attributes"]["TileU"], 2)
 
+    def test_direct_hit_does_not_build_path_index(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Data" / "Objects").mkdir(parents=True)
+            target = root / "Data" / "Objects" / "thing_LOD0.glb"
+            target.write_bytes(b"glb")
+            bundle = PackageBundle(
+                export_root=root,
+                scene_path=root / "Packages" / "X" / "scene.json",
+                scene=None,
+                palettes={},
+                liveries={},
+                paints={},
+            )
+            resolved = bundle.resolve_path("Data/Objects/thing_LOD0.glb")
+            self.assertEqual(resolved, target)
+            self.assertIsNone(bundle._path_index)
+
 
 if __name__ == "__main__":
     unittest.main()

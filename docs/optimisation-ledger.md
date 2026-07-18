@@ -418,3 +418,17 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
   carrack 32.81s, both below the loaded post1 wall captures (clipper 42.6s /
   carrack 46.6s). Directional improvement, but not a clean comparison — re-bench
   in a quiet window for a defensible delta.
+
+### Addon: resolve_path lazy index
+
+- **Observed** — `PackageBundle.resolve_path` rglob'd the whole shared
+  `ships/` root (~9,150 files, grows per ship) on every call via an
+  unconditional `_build_path_index()`, though manifests store normalised
+  paths that almost always hit the direct `export_root/candidate` check
+  (bottleneck #1, `docs/blender-import-export-performance.md`, never applied).
+- **Finding** — the walk is pure waste on the direct-hit path; the index is
+  only needed as a case-insensitive fallback after all direct candidates miss.
+- **Action** — one-loop lazy init: `path_index=None`, per candidate try
+  `direct.exists()` then lazily build+consult the index on first miss;
+  precedence unchanged. Regression `test_direct_hit_does_not_build_path_index`
+  asserts `_path_index is None` after a direct hit. (commit `58c52aeb9`)

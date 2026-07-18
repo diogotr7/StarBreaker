@@ -852,11 +852,13 @@ class PackageBundle:
         return self.scene_path.parent.name
 
     def resolve_path(self, relative_path: str | None) -> Path | None:
-        path_index = self._build_path_index()
+        path_index = None
         for candidate in _candidate_relative_paths(relative_path):
             direct = self.export_root / Path(candidate)
             if direct.exists():
                 return direct
+            if path_index is None:
+                path_index = self._build_path_index()
             resolved = path_index.get(candidate.lower())
             if resolved is not None:
                 return resolved
