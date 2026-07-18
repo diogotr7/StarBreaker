@@ -93,3 +93,76 @@ secondary to the DataCore scan problem.
 3. **B2c** — stop decompressing textures for diagnostics (currently <0.1% — low priority but cheap).
 4. **B2d** — load localization once (currently <0.1% — low priority but cheap).
 5. **Re-profile** after B2a+B2b to see updated split before tackling SWF/graph work.
+---
+
+## Post-zlib-rs re-profile (item 6 step 0) — 2026-07-18
+
+**Date:** 2026-07-18
+**Machine:** Linux (dev machine)
+**Build profile:** release
+**P4K build:** LIVE Data.p4k (auto-detected)
+**Benchmark ship:** drak_clipper
+**Run mode:** serial (`RAYON_NUM_THREADS=1`) for per-image isolation; plus one parallel run for production wall
+**Command:**
+```bash
+SB_UI_TIMING=1 RAYON_NUM_THREADS=1 RUST_LOG=info \
+  StarBreaker/target/release/starbreaker entity export drak_clipper <root> \
+  --kind decomposed --lod 0 --mip 0 --materials all
+```
+
+Binding count fell 43 (B0, 2026-06-08) → 27 because the `UiRenderKey`
+render-dedup (commit `476a9503e`, 2026-06-21, landed after B0) renders one
+representative per distinct render key, collapsing duplicate screens to a
+single render each.
+
+### Aggregate stage breakdown (all 27 bindings, serial)
+
+| Stage | Total (s) | % of wall |
+|---|---|---|
+| `render` | 14.151 | 52.5% |
+| `ir_compile` | 4.976 | 18.5% |
+| `graph2` | 1.763 | 6.5% |
+| `swf_load` | 1.654 | 6.1% |
+| `swf_load_measure` | 1.648 | 6.1% |
+| `encode` | 0.249 | 0.9% |
+| `manifest` | 0.001 | 0.0% |
+| **Total serial wall** | **26.957** | 100% |
+
+> Note: `compile` (10.805s) is a wrapper that itself contains `ir_compile` +
+> `swf_load_measure`. `swf_load` (`pipeline/mod.rs:595`) and `swf_load_measure`
+> (`:750`) are two SEPARATE real SWF parses of the same asset with no cross-call
+> cache, so their cost SUMS (3.302s) — they are both paid, not one load counted
+> twice (correcting the earlier reading). The wall (26.957s = sum of per-binding
+> `total=`) decomposes non-overlappingly as `render` (14.151) + `compile`
+> (10.805) + `graph2` (1.763) + `encode` (0.249) ≈ 26.97s. Post-zlib-rs the
+> ir_compile collapse (303.9s → 4.98s) from the B2a/B2b memoisation has fully
+> landed; `render` is now the dominant stage.
+
+Parallel run: `interior_ui_bindings` = 0.00s (the decomposed-phase UI timer reads
+0.00s in the parallel path — the per-binding work is timed inside the parallel
+render, not this counter); full export wall = 40.98s (decomposed phase 27.06s).
+
+### Per-binding (canonical render paths)
+
+| Binding | Kind | total | swf_load | render | ir_compile |
+|---|---|---|---|---|---|
+| Screen_Left_Upper_RTT | mfd | 1.762 | 0.056 | 1.169 | 0.344 |
+| Screen_Central_Compass | physical (HUD) | 0.587 | 0.056 | 0.195 | 0.091 |
+| i_med_medicalbed_a | medical | N/A | N/A | N/A | N/A |
+
+> Medical: the Clipper export has no medical binding (`i_med_*` / `kind=medical`
+> absent); only `mfd`, `physical`, `radar` kinds are emitted. Compass is
+> `kind=physical` (the closest HUD path). Per-binding `swf_load` is uniform
+> (~0.056s) because SWF decompress+parse is a fixed per-binding cost.
+
+### Item-7 GATE VERDICT
+Rank the aggregate stages by serial time. **GATED-IN** if `swf_load`
+(+ any stage-parse cost surfaced inside `render`/`swf_load_measure`) is in
+the top 3 stages by total time; otherwise **GATED-OUT**.
+Verdict: **GATED-IN** (reviewer-overturned, orchestrator-adjudicated).
+`swf_load` (1.654s) and `swf_load_measure` (1.648s) are two SEPARATE real SWF
+parses of the same asset (`pipeline/mod.rs:595` and `:750`, no cross-call
+cache), so their cost SUMS to 3.302s — rank #3 by stage cost, above `graph2`
+(1.763s). The prior GATED-OUT verdict wrongly treated the two timers as one load
+counted twice; they are two loads, each paid. SWF parse-once (item 7, Task 3) is
+therefore a top-3 lever and is IN SCOPE for this run.
