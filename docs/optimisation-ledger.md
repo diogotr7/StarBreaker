@@ -114,3 +114,20 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
   next lever — the per-source result is a pure function, so it stays
   byte-identical; profile before building (DDS decode is CPU-bound, unlike the
   sidecar JSON dead-end).
+
+### Item-7 gate: SWF parse-once — GATED-OUT (2026-07-18)
+
+- **Observed** — post-zlib-rs re-profile of `drak_clipper --kind decomposed
+  --lod 0 --mip 0 --materials all`, serial (`RAYON_NUM_THREADS=1`), 27 UI
+  bindings, serial UI wall 26.957s. Per-stage totals: `render` 14.151s (52.5%),
+  `ir_compile` 4.976s (18.5%), `graph2` 1.763s (6.5%), `swf_load` 1.654s (6.1%),
+  `swf_load_measure` 1.648s (6.1%), `encode` 0.249s. Full table in
+  `docs/StarBreaker/starbreaker-ui-perf-baseline.md` (Post-zlib-rs re-profile).
+- **Finding** — `swf_load` ranks #4, not top-3. The B2a/B2b memoisation already
+  collapsed `ir_compile` (303.9s → 4.98s), so `render` now dominates; SWF
+  decompress+parse is a uniform ~0.056s/binding, ~6% of wall. Even the
+  doubly-counted `swf_load`+`swf_load_measure` (~3.3s, same load timed twice)
+  does not displace `ir_compile` from the top 3.
+- **Action** — item-7 GATE = **GATED-OUT**. Task 3 (SWF parse-once) is NOT
+  executed this run; it stays specified in the plan for a future pass if `render`
+  is later shown to re-parse SWF internally. Docs-only; no code change.
