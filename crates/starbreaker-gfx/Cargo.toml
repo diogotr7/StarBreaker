@@ -5,7 +5,7 @@ version.workspace = true
 
 [dependencies]
 anyhow = "1"
-flate2 = "1"
+flate2 = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"] }
 rusttype = "0.9"
 starbreaker-dds = { path = "../starbreaker-dds" }

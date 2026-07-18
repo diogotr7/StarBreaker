@@ -4,7 +4,7 @@ version.workspace = true
 edition = "2024"
 
 [dependencies]
-flate2 = "1"
+flate2 = { workspace = true }
 rustc-hash = "2"
 zstd = "0.13"
 

@@ -5,7 +5,7 @@ version.workspace = true
 description = "Static UI atom extractor and canvas composer for Star Citizen ship screens"
 
 [dependencies]
-flate2 = "1"
+flate2 = { workspace = true }
 quick-xml = "0.37"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"] }
 log = "0.4"

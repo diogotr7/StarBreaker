@@ -34,3 +34,4 @@ perf = { level = "warn" }
 
 [workspace.dependencies]
 parking_lot = "0.12"
+flate2 = { version = "1", features = ["zlib-rs"] }

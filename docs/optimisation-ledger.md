@@ -61,6 +61,22 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
    rebuilding; gdb/perf are locked down (ptrace_scope, perf_event_paranoid=4) so
    thread run-state (`/proc/<pid>/task/*/stat`) + staged eprintln probes are the
    available localisation tools.
+5. **flate2 → zlib-rs backend** (2026-07-18; workload `drak_clipper --kind
+   decomposed --lod 0 --mip 0 --materials all`). Observed: bare `flate2 = "1"`
+   resolves the default `miniz_oxide` (`rust_backend`) inflate on the P4K + SWF
+   deflate hot paths. Finding: zlib-rs is the faster inflate backend and, being a
+   format-exact DEFLATE decoder, produces bit-identical output — so it is a free
+   swap under the byte oracle. Action: hoisted a workspace dependency
+   `flate2 = { workspace = true, features = ["zlib-rs"] }` and pointed the four
+   consumer crates (p4k, ui, gfx, blend) at it; `cargo tree -i flate2` shows one
+   `flate2 v1.1.9` with the `zlib-rs` feature and `zlib-rs v0.6.6` linked. Byte
+   oracle **0-line** `diff -rq` (excl. export_stamp) pre1-vs-post. Timing Δ:
+   Clipper wall 48.0–49.0s (pre) → 45.6–48.3s (post, 3-run best 45.59s) — neutral
+   within run-to-run noise, because inflate is a small slice of the ~40s
+   asset/UI/interior-bound total (see the `[timing][blend] total: 39.59s`
+   breakdown: interior_asset_resolve 12.1s, child_assets 7.8s, prerender_ui 7.4s
+   dominate). Kept as a zero-risk backend upgrade that also speeds P4K reads
+   elsewhere (MCP, UI) off the measured export path.
 
 ### Dead-ends — do NOT re-attempt
 
