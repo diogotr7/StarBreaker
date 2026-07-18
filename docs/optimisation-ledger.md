@@ -459,3 +459,21 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
   `graph.json`; added a retention-policy note to `AGENTS.md §Building`
   (cargo-sweep any regrown debug tree, keep the release-deps ladder, keep
   `dcb_canvas`). `dcb_canvas` retention surfaced to the owner. (commit `07e0219cf`)
+
+### Addon: layout_key data_pointer drop — REJECTED
+
+- **Observed** — proposed removing `data_pointer` from `layout_key`
+  (`orchestration.py:746–758`) so distinct meshes sharing a slot layout reuse
+  one cache entry (keeping it in `slot_mapping_cache`, :657).
+- **Finding** — guard failed: the layout-cache hit path
+  (`orchestration.py:763–776`) skips
+  `_restore_generated_decal_host_variant_polygons` (`builders.py:2943`,
+  mutates polygons per-mesh) and `_rebind_mesh_decal_for_host`
+  (`builders.py:4849`, nearest-host spatial rebind reading vertex positions),
+  both per-mesh and geometry-dependent, not part of the cache key. With
+  `data_pointer` dropped, two distinct meshes could share an entry and the
+  second mesh's per-mesh fixes would never run — a correctness regression, not
+  a byte-identical win.
+- **Action** — REJECTED, no code change. Would be dischargeable only by proving
+  both per-mesh fixes are no-ops whenever the keyed inputs match (unlikely: the
+  rebind reads live vertex positions). (no commit — ledger record)
