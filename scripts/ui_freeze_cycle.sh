@@ -10,6 +10,19 @@
 # Usage:
 #   bash scripts/ui_freeze_cycle.sh --approver <name> --reason "<text>" \
 #       [--skip-export]   # only when the export is known-current
+#   bash scripts/ui_freeze_cycle.sh --preflight   # read-only; freezes NOTHING
+#
+# Flags:
+#   --approver <name>   required (audit identity; use `owner`)
+#   --reason "<text>"   required (freeze delta/hash scope justification)
+#   --skip-export       reuse the existing export instead of re-exporting
+#   --preflight         read-only pre-freeze report: snapshot-freeze validation,
+#                       generated-PNG vs frozen-baseline counts, export stamp
+#                       age, git status, and a DRY freeze (same sha256 compare
+#                       the real freeze does) so a metadata-only re-freeze —
+#                       churn with no artifact change — is caught before it is
+#                       committed. Writes nothing.
+#   -h, --help          this text
 #
 # The IR snapshot freeze (freeze_ui_snapshot_ir.sh) is intentionally NOT
 # included: it is only needed when IR semantics changed, and it prints a
@@ -22,21 +35,86 @@ cd "$REPO_ROOT"
 APPROVER=""
 REASON=""
 SKIP_EXPORT=0
+PREFLIGHT=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --approver) APPROVER="$2"; shift 2 ;;
         --reason) REASON="$2"; shift 2 ;;
         --skip-export) SKIP_EXPORT=1; shift ;;
-        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+        --preflight) PREFLIGHT=1; shift ;;
+        -h|--help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
-if [[ -z "$APPROVER" || -z "$REASON" ]]; then
+if [[ "$PREFLIGHT" -eq 0 && ( -z "$APPROVER" || -z "$REASON" ) ]]; then
     echo "error: --approver and --reason are required" >&2
     exit 2
 fi
 
 EXPORT_ROOT="$HOME/projects/scorg_tools/ships"
+FREEZE_FILE="crates/starbreaker-ui/tests/fixtures/ui_regression_freeze.json"
+STAMP="$EXPORT_ROOT/Data/UI/Generated/.export_stamp.json"
+
+if [[ "$PREFLIGHT" -eq 1 ]]; then
+    # READ-ONLY: no build, no export, no freeze, no file written anywhere.
+    echo "==> validate_ui_snapshot_freeze"
+    bash scripts/validate_ui_snapshot_freeze.sh
+
+    echo
+    echo "==> counts"
+    GEN_PNGS=$(find "$EXPORT_ROOT/Data/UI/Generated" -name '*.png' 2>/dev/null | wc -l)
+    FROZEN=$(jq '.artifacts | length' "$FREEZE_FILE")
+    echo "generated PNGs (export): $GEN_PNGS"
+    echo "frozen baselines:        $FROZEN"
+
+    echo
+    echo "==> export stamp"
+    if [[ -f "$STAMP" ]]; then
+        AGE_MIN=$(( ( $(date +%s) - $(jq '.written_at_epoch_s' "$STAMP") ) / 60 ))
+        echo "export stamp age: ${AGE_MIN}min ($STAMP)"
+        (( AGE_MIN > 30 )) && echo "WARNING: stale export — re-export before freezing" >&2
+    else
+        echo "WARNING: no export stamp at $STAMP — nothing to freeze from" >&2
+    fi
+
+    echo
+    echo "==> git status --short"
+    git status --short
+
+    # DRY FREEZE: the real freeze copies each target's source_generated_png to
+    # test-artifacts/ui/<id>.png and records its sha256. Re-hash the sources and
+    # compare against the recorded hashes — identical everywhere means a re-freeze
+    # would only rewrite frozen_at/approver/reason (churn to revert).
+    echo
+    echo "==> dry freeze (sha256 source vs frozen)"
+    WORKSPACE_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
+    DIFFS=0
+    while IFS=$'\t' read -r id src sha; do
+        case "$src" in
+            /*) src_path="$src" ;;
+            ships/*) src_path="$WORKSPACE_ROOT/$src" ;;
+            *) src_path="$REPO_ROOT/$src" ;;
+        esac
+        if [[ ! -f "$src_path" ]]; then
+            echo "delta id=$id status=missing_source path=$src_path"
+            DIFFS=$((DIFFS + 1))
+            continue
+        fi
+        cur="$(sha256sum "$src_path" | awk '{print $1}')"
+        if [[ "$cur" != "$sha" ]]; then
+            echo "delta id=$id status=changed frozen=${sha:0:12} current=${cur:0:12}"
+            DIFFS=$((DIFFS + 1))
+        fi
+    done < <(jq -r '.artifacts[] | [.id, .source_generated_png, .sha256] | @tsv' "$FREEZE_FILE")
+
+    echo
+    if [[ "$DIFFS" -eq 0 ]]; then
+        echo "PREFLIGHT: NOOP (metadata-only re-freeze — revert the churn)"
+    else
+        echo "PREFLIGHT: FREEZE NEEDED ($DIFFS identities differ)"
+    fi
+    exit 0
+fi
 
 echo "==> cargo build --release"
 cargo build --release
