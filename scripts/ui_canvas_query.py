@@ -19,11 +19,23 @@ Usage (paths may be absolute or relative to the workspace record root
 
   python3 scripts/ui_canvas_query.py tag <uuid-or-name-substring>
       Resolve tag uuid -> name, or list tags whose name contains the text.
+
+`node` and `entries` also take projection flags, so the raw JSON never has
+to be piped through an ad-hoc filter:
+
+  --fields a.b.c,d.e   print one `path=value` line per dotted path
+                       (absent paths print `path=<absent>`), replacing the
+                       summary/raw dump
+  --filter KEY=VALUE   keep only results whose dotted KEY equals VALUE
+                       (`entries` keeps its legacy name-substring meaning
+                       when the argument contains no `=`)
 """
 import argparse
 import json
 import sys
 from pathlib import Path
+
+from ui_ir_query import match_filter, parse_fields, project  # sibling script, same dir
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RECORD_ROOT = REPO_ROOT.parent / "ships/dcb_canvas/libs/foundry/records"
@@ -83,9 +95,14 @@ def cmd_node(args, tags):
     record = json.load(open(resolve_record_path(args.record)))
     hits = []
     find_nodes(record, args.name, hits)
+    hits = [n for n in hits if match_filter(n, args.filter)]
     if not hits:
         sys.exit(f"error: no node named {args.name!r}")
+    fields = parse_fields(args.fields)
     for node in hits:
+        if fields:
+            print("\n".join(project(node, fields)))
+            continue
         if args.raw:
             print(json.dumps(node, indent=1))
             continue
@@ -147,12 +164,21 @@ def cmd_entries(args, tags):
     record = json.load(open(resolve_record_path(args.record)))
     rv = record.get("_RecordValue_", record)
     entries = rv.get("entries") or []
+    fields = parse_fields(args.fields)
+    dotted = args.filter and "=" in args.filter
     shown = 0
     for e in entries:
         name = e.get("name", "?")
-        if args.filter and args.filter.lower() not in name.lower():
+        if dotted:
+            if not match_filter(e, args.filter):
+                continue
+        elif args.filter and args.filter.lower() not in name.lower():
             continue
         shown += 1
+        if fields:
+            print(f"=== {name}")
+            print("\n".join("  " + part for part in project(e, fields)))
+            continue
         conds = []
         for cl in e.get("conditionsList") or []:
             for c in cl.get("conditions") or []:
@@ -180,13 +206,19 @@ def cmd_tag(args, tags):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    fields_help = "comma-separated dotted paths to project (one path=value line each)"
     p = sub.add_parser("node")
     p.add_argument("record")
     p.add_argument("name")
     p.add_argument("--raw", action="store_true")
+    p.add_argument("--fields", help=fields_help)
+    p.add_argument("--filter", metavar="KEY=VALUE",
+                   help="keep only nodes whose dotted KEY equals VALUE")
     p = sub.add_parser("entries")
     p.add_argument("record")
-    p.add_argument("--filter")
+    p.add_argument("--filter", metavar="SUBSTR|KEY=VALUE",
+                   help="name substring, or dotted KEY=VALUE equality")
+    p.add_argument("--fields", help=fields_help)
     p = sub.add_parser("tag")
     p.add_argument("query")
     args = ap.parse_args()

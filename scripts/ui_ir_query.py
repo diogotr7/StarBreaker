@@ -4,20 +4,25 @@
 Input: an IR document produced by `ui render --dump-ir-dir <dir>` (one
 `*.ir.json` per helper; see docs/ui-reference.md §6).
 
+Every subcommand takes `--fields a.b,c` (append dotted-path lookups into
+each node's JSON as `path=value`, absent paths as `path=<absent>`) and
+`--filter KEY=VALUE` (print only nodes whose dotted KEY equals VALUE) —
+so no `| python3 -c '<json filter>'` pipe is needed, e.g.
+`--filter name=ComponentRoot --fields computed_rect,text_style.font_size`.
+
 Subcommands:
-  query <ir.json> <regex> [--fields a.b,c]
+  query <ir.json> <regex>
       One line per node whose `name` OR `text_payload.text` matches the
       regex (re.search, case-sensitive). Always prints id, parent,
-      node_type, name, computed_rect, is_active; `--fields` appends extra
-      dotted-path lookups into the node JSON (e.g.
-      `text_payload.text,text_style.font_size`).
+      node_type, name, computed_rect, is_active.
   tree <ir.json> <node_id>
       Ancestor chain (root first, indented) for one node: computed_rect,
       authored_size, anchor/pivot, padding, margin.
-  children <ir.json> <node_id> [--depth N] [--fields a.b,c]
+  children <ir.json> <node_id> [--depth N]
       Descendant subtree (indented by depth) for one node: id, name,
       node_type, x/y/w/h, right (x+w), is_active, and a non-Visible
       overflow mode — the mirror of `tree`, for clip/overflow tracing.
+      `--filter` hides non-matching rows but still walks their children.
 
 Dependency-free: stdlib json/re/argparse only.
 """
@@ -46,30 +51,57 @@ def fmt_rect(rect):
     )
 
 
-def lookup_path(node, dotted):
+MISSING = object()  # distinguishes "path absent" from "path present but null"
+
+
+def lookup_path(node, dotted, default=None):
     value = node
     for part in dotted.split("."):
-        if isinstance(value, dict):
-            value = value.get(part)
-        elif isinstance(value, list) and part.isdigit():
-            index = int(part)
-            value = value[index] if index < len(value) else None
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+            value = value[int(part)]
         else:
-            return None
-        if value is None:
-            return None
+            return default
     return value
+
+
+def parse_fields(spec):
+    """'a.b,c' -> ['a.b', 'c']; None/'' -> []."""
+    return [field for field in (spec or "").split(",") if field]
+
+
+def project(obj, fields):
+    """Dotted-path projection: ['a.b=1', 'c=<absent>'] (absent != null)."""
+    out = []
+    for field in fields:
+        value = lookup_path(obj, field, MISSING)
+        out.append(field + "=" + ("<absent>" if value is MISSING else json.dumps(value)))
+    return out
+
+
+def match_filter(obj, spec):
+    """`--filter key=value`: dotted-path equality against raw or JSON form."""
+    if not spec:
+        return True
+    key, _, want = spec.partition("=")
+    value = lookup_path(obj, key, MISSING)
+    if value is MISSING:
+        return False
+    return str(value) == want or json.dumps(value) == want
 
 
 def cmd_query(args):
     _, _, nodes = load_nodes(args.ir_json)
     pattern = re.compile(args.regex)
-    fields = [field for field in (args.fields or "").split(",") if field]
+    fields = parse_fields(args.fields)
     matched = 0
     for node in nodes:
         name = node.get("name") or ""
         text = ((node.get("text_payload") or {}).get("text")) or ""
         if not (pattern.search(name) or pattern.search(text)):
+            continue
+        if not match_filter(node, args.filter):
             continue
         matched += 1
         row = (
@@ -77,8 +109,7 @@ def cmd_query(args):
             f"type={node.get('node_type')} active={node.get('is_active')} "
             f"rect={fmt_rect(node.get('computed_rect'))} name={name!r}"
         )
-        for field in fields:
-            row += f" {field}={json.dumps(lookup_path(node, field))}"
+        row += "".join(" " + part for part in project(node, fields))
         print(row)
     if matched == 0:
         print(f"no nodes matched {args.regex!r} (searched name + text_payload.text)",
@@ -100,8 +131,11 @@ def cmd_tree(args):
             break  # cycle or dangling parent: stop rather than loop
         seen.add(parent_id)
         chain.insert(0, by_id[parent_id])
+    fields = parse_fields(args.fields)
     for depth, entry in enumerate(chain):
-        print(
+        if not match_filter(entry, args.filter):
+            continue
+        row = (
             "{indent}id={id} type={ty} name={name!r} rect={rect} "
             "authored_size={size} anchor={anchor} pivot={pivot} "
             "padding={padding} margin={margin}".format(
@@ -117,6 +151,8 @@ def cmd_tree(args):
                 margin=json.dumps(entry.get("margin")),
             )
         )
+        row += "".join(" " + part for part in project(entry, fields))
+        print(row)
     return 0
 
 
@@ -127,7 +163,7 @@ def cmd_children(args):
     children_of = {}
     for node in nodes:
         children_of.setdefault(node.get("parent_id"), []).append(node)
-    fields = [field for field in (args.fields or "").split(",") if field]
+    fields = parse_fields(args.fields)
 
     def overflow_mode(node):
         mode = node.get("overflow_mode")
@@ -149,9 +185,9 @@ def cmd_children(args):
         mode = overflow_mode(node)
         if mode and mode != "Visible":
             row += f" overflow={mode}"
-        for field in fields:
-            row += f" {field}={json.dumps(lookup_path(node, field))}"
-        print(row)
+        row += "".join(" " + part for part in project(node, fields))
+        if match_filter(node, args.filter):  # non-matches stay silent but still recurse
+            print(row)
         if depth >= args.depth:
             return
         for child in sorted(children_of.get(node.get("id"), []), key=lambda c: c.get("id")):
@@ -166,22 +202,28 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
+    def add_projection(parser_):
+        parser_.add_argument("--fields", help="comma-separated dotted paths to also print")
+        parser_.add_argument("--filter", metavar="KEY=VALUE",
+                             help="keep only nodes whose dotted KEY equals VALUE")
+
     query = sub.add_parser("query", help="list nodes matching a regex on name or text")
     query.add_argument("ir_json")
     query.add_argument("regex")
-    query.add_argument("--fields", help="comma-separated dotted paths to also print")
+    add_projection(query)
     query.set_defaults(func=cmd_query)
 
     tree = sub.add_parser("tree", help="ancestor chain with layout fields for one node")
     tree.add_argument("ir_json")
     tree.add_argument("node_id", type=int)
+    add_projection(tree)
     tree.set_defaults(func=cmd_tree)
 
     children = sub.add_parser("children", help="descendant subtree with rect/overflow for one node")
     children.add_argument("ir_json")
     children.add_argument("node_id", type=int)
     children.add_argument("--depth", type=int, default=6, help="max descendant depth (default 6)")
-    children.add_argument("--fields", help="comma-separated dotted paths to also print")
+    add_projection(children)
     children.set_defaults(func=cmd_children)
 
     args = parser.parse_args()

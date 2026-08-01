@@ -115,6 +115,13 @@ python3 scripts/ui_canvas_query.py node <record.json> <node-name> [--raw]
 python3 scripts/ui_canvas_query.py entries <record.json> [--filter SUBSTR]
 python3 scripts/ui_canvas_query.py tag <uuid-or-name-substring>
 ```
+`node` and `entries` take `--fields a.b,c` (project dotted paths — one
+`path=value` line each, absent paths print `<absent>`) and `--filter
+KEY=VALUE` (keep only results whose dotted KEY equals VALUE; `entries`
+keeps the legacy name-substring meaning when the argument has no `=`).
+Use them instead of `--raw | python3 -c '<json filter>'`, e.g.
+`node <record.json> Label_ThisFloor --fields rendererType,styleTags`.
+
 Record paths resolve relative to `ships/dcb_canvas/libs/foundry/records`;
 `entries` resolves condition tag UUIDs to names via the tag database (so a
 kit sheet's `RootFilled…` conditions read as `Tag(text-element-instance)`,
@@ -440,9 +447,9 @@ Example: `BB_SHRINK_PROBE=1 ./target/debug/starbreaker ui render --scene
 
 | Example | Use |
 |---|---|
-| `python3 scripts/ui_ir_query.py query <ir.json> <regex> [--fields a.b,c]` | list IR nodes whose name or text matches the regex: id, parent, type, rect, is_active + dotted-path extras (input: `ui render --dump-ir-dir` output). **Over-painter probe (ledger 63):** `query <ir.json> '.*' --fields background_fill_colour,stroke_colour` flat-lists EVERY node's fill/stroke — the fast way to find which node paints a wrong colour over the background (the compass white sheet was `CanvasProxyRoot` fill `[1,1,1,1]`) |
-| `python3 scripts/ui_ir_query.py tree <ir.json> <node_id>` | ancestor chain for one node with rect, authored_size, anchor/pivot, padding, margin |
-| `python3 scripts/ui_ir_query.py children <ir.json> <node_id> [--depth N] [--fields a.b,c]` | descendant subtree (rect, `right`=x+w, is_active, non-Visible overflow) — the mirror of `tree`, for clip/overflow tracing |
+| `python3 scripts/ui_ir_query.py query <ir.json> <regex> [--fields a.b,c] [--filter KEY=VALUE]` | list IR nodes whose name or text matches the regex: id, parent, type, rect, is_active + dotted-path extras (input: `ui render --dump-ir-dir` output). **Over-painter probe (ledger 63):** `query <ir.json> '.*' --fields background_fill_colour,stroke_colour` flat-lists EVERY node's fill/stroke — the fast way to find which node paints a wrong colour over the background (the compass white sheet was `CanvasProxyRoot` fill `[1,1,1,1]`) |
+| `python3 scripts/ui_ir_query.py tree <ir.json> <node_id> [--fields a.b,c] [--filter KEY=VALUE]` | ancestor chain for one node with rect, authored_size, anchor/pivot, padding, margin |
+| `python3 scripts/ui_ir_query.py children <ir.json> <node_id> [--depth N] [--fields a.b,c] [--filter KEY=VALUE]` | descendant subtree (rect, `right`=x+w, is_active, non-Visible overflow) — the mirror of `tree`, for clip/overflow tracing |
 | `python3 scripts/ui_measure.py <image> --box x0,y0,x1,y1 [--ir <ir.json> --node <id>] [--delta N] [--anchor … --anchor-rgb …]` | glyph-run cap heights (contamination-flagged) + colour ratios with `feature_width` (warns when ≤4px that a thin feature on a RECTIFIED capture has a smeared hue — measure colour on the ORIGINAL) + optional additive-haze correction (JSON to stdout) |
 | `python3 scripts/ui_measure.py --text-bands <image> [--ref <reference>]` | text-SCREEN mode (no box): bright-text bbox + `centre_x_frac` (is it centred?) + per-line cap-height bands as % of image height; with `--ref` adds `size_ratio_render_over_ref` (the resolution-independent font-scale gap — velocity-num measured 0.11 = render ~9× too small). For diagnosing blank/mispositioned/mis-sized text readouts |
 | `python3 scripts/ui_gauge_measure.py <render> [reference] [--montage out.png]` | circular HUD-gauge geometry (g-force/velocity ball, countermeasures, radar): centre-dot offset + circularity (circle vs squircle), cross-arm V/H symmetry, per-cardinal ring perp-offset + radius fraction (JSON), and a centre-aligned render\|reference montage. Use abs paths — a relative `ships/…` resolves to the STALE `StarBreaker/ships/` copy. Caveat: a cardinal window can catch an adjacent diagonal marker (the cross V/H band metric is robust) |
@@ -452,6 +459,11 @@ Example: `BB_SHRINK_PROBE=1 ./target/debug/starbreaker ui render --scene
 | `bb_layout_wireframe <fixture.json> <out.png> [--merge]` | wireframe overlay of layout rects |
 | `phase5_certification_dashboard` | representative-family certification table (CI) |
 | `freeze_ui_snapshot_ir` | driven by `scripts/freeze_ui_snapshot_ir.sh` |
+
+All three `ui_ir_query` subcommands share the projection flags: `--fields`
+appends `path=value` per node (absent paths print `<absent>`) and `--filter
+KEY=VALUE` keeps only nodes whose dotted KEY equals VALUE (`children` hides
+non-matching rows but still walks their subtree) — no `| python3 -c` pipe.
 
 ## 8. Glossary
 
