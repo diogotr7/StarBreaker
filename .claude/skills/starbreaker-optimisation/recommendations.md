@@ -43,3 +43,7 @@ _(none yet)_
   (`writing-plans`/`executing-plans`/`subagent-driven-development`/`systematic-debugging`), so it
   did NOT get the process-skill/brainstorming line. `writing-skills` pass: reframe-not-prohibition
   form, bold lead, no `SKILL.md` structural change beyond the one bullet.
+
+## Open recommendations (appended 2026-07-18, perf-handoff implementation run)
+- Handoff docs written in a prior session carry environmental claims (disk usage, dep versions, "nothing reads X") that drift: this run found the 46-66G disk-reclaim premise void, `image`'s png link mis-versioned, and dcb_canvas actually read by a live test guard. Re-verify every environmental number in a handoff during research, before scoping work on it.
+- Per-task adversarial review caught a gate-criterion misapplication (item-7 swf_load + swf_load_measure summation) that would have silently dropped a ~2s/export win. Keep gate-verdict tasks reviewable: the criterion and the numbers must appear together in the report.
