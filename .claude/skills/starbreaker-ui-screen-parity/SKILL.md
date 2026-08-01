@@ -35,7 +35,10 @@ MEASUREMENT belonged.
 - **Technical judgments → MEASURE.** Blast radius, "is this a blocker?", root
   cause, colour/position: prove it with the probes, `ui_arc_status.sh`,
   `ui_check.sh --full` (after a fresh export), the disable→adjudicate audit.
-  Never estimate-then-defer.
+  Never estimate-then-defer. Pixel measurements run through
+  `uv run python scripts/ui_measure.py` (`profile`/`bands`/`mask-bbox`/
+  `capheight`/`sidebyside`); an inline PIL heredoc is a red flag that the tool
+  is missing a subcommand — extend it instead.
 - **The work (a TDD structural fix) → JUST DO IT.** No per-fix permission.
 - **Hard-to-reverse → GATE.** Freeze (always); commit + final parity (semi).
 - **Read result MARKERS** (`…: ALL GREEN` / `…: OK (N …)`), NEVER a piped or
@@ -57,7 +60,10 @@ Asking and measuring are always safe; presuming and estimating are the failure m
 
 1. **LAUNCH — STOP: read `references/launch.md`.** SHIP → SCREEN → REFERENCE →
    SCOPE&MODE as sequential `AskUserQuestion`s (each answer feeds the next; the
-   REFERENCE options come from the chosen SCREEN — never batch them). Then the
+   REFERENCE options come from the chosen SCREEN — never batch them).
+   `bash scripts/ui_dossier_lookup.sh <ship> [screen]` enumerates the dossier row
+   and the matching reference PNGs — build each question's options from its
+   output, not from hand-read JSON. Then the
    required reads in order: `StarBreaker/AGENTS.md` → `crates/starbreaker-ui/AGENTS.md`
    → `ui-workflow.md` → `ui-reference.md` §3 dossier row (scene/LOD, canvas,
    preset, tier, open issues). SCREEN not in the dossier → adding its row (JSON +
@@ -74,7 +80,9 @@ Asking and measuring are always safe; presuming and estimating are the failure m
    c. font/size/colour wrong? → run the **`ui_variant_styles`** MCP tool FIRST
       (the authored-but-unapplied drill), THEN `references/blockers.md`.
    d. TDD failing test → ONE structural fix at the owning stage →
-      `bash scripts/ui_check.sh` → re-render (a).
+      `bash scripts/ui_iterate.sh --screen <id>` (build → test → ui_check →
+      re-render, marker-gated; `FAIL stage=<name>` on first red) → back to (a)'s
+      vision read.
    e. Shared mechanism (asset / icon / binding / **LAYOUT-RENDER FORMULA**)? →
       fresh export + `--full` + EYEBALL every sibling screen sharing it
       (`references/blockers.md`).
@@ -89,7 +97,8 @@ Asking and measuring are always safe; presuming and estimating are the failure m
 5. **FREEZE / COMMIT — STOP before ANY freeze: read `references/freeze.md`**
    (dry-freeze no-op check FIRST; freezes are ALWAYS user-gated, both modes).
 6. **RETRO (MANDATORY — a TodoWrite item from arc start) — STOP: read
-   `references/retro.md`.** The arc is done AFTER the retro, never before.
+   `references/retro.md`, which delegates the shared sweep to the arc-closeout
+   skill.** The arc is done AFTER the retro, never before.
 
 ## Stage table (which stage owns the wrong thing — workflow §2)
 

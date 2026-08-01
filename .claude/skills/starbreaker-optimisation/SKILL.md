@@ -92,23 +92,20 @@ not a scattered `eprintln`. Instrumentation must not change output.
 ### 2. Baseline (GATE: ask before benchmarking)
 
 Ask the user via `AskUserQuestion` whether now is a good time to run benchmarks
-(quiet machine). Then capture the baseline: **3+ runs**, clean release binary, no
-mem-cap overhead, recording wall time, the `[timing]` stage breakdown, CPU%, and
-max RSS:
+(quiet machine). Then capture the baseline with the scripted battery (3 runs,
+load preflight, provenance check, per-run + median table of wall/CPU%/RSS/`[timing]`):
 
 ```bash
-cargo build --release -p starbreaker        # AGENTS.md: release only for perf/deploy
-for r in 1 2 3; do
-  /usr/bin/time -v env RUST_LOG=info ./target/release/starbreaker \
-    entity export "<entity>" target/tmp/base$r --kind decomposed --lod 0 \
-    > target/tmp/base$r.log 2>&1
-  grep -aE "Elapsed \(wall|Percent of CPU|Maximum resident|\[timing\]" target/tmp/base$r.log
-done
+scripts/build-release-cli.sh                       # release only for perf/deploy
+bash scripts/perf_bench.sh "<entity>" base         # --runs N to override
 ```
 
-Keep one baseline export dir for the byte-identical oracle. Record the numbers in
-the TodoWrite/scratch so later deltas compare against a written baseline, not a
-memory.
+The byte-identity oracle and the twice-run determinism check are
+`bash scripts/perf_oracle.sh <baseline_dir> <new_dir> [--determinism <entity>]`;
+cross-commit A/B timing is `bash scripts/perf_bisect.sh <sha> <entity> <label>`
+(builds at the sha, benches, always restores HEAD). Keep one baseline export dir
+for the oracle. Record the numbers in the TodoWrite/scratch so later deltas
+compare against a written baseline, not a memory.
 
 ### 3. Analyse
 
@@ -263,41 +260,16 @@ concrete approve/decline). Never proceed on a presumed "yes".
 | **Behaviour change** (output not byte-identical) | **gate** — never ship a non-identical output without explicit approval |
 | **Repeat another pass** | **ask** — another pass vs stop |
 
-## Self-improve every pass: the retrospective (MANDATORY closing step)
+## Close-out (MANDATORY closing step)
 
-**The pass is not done when the speedup lands — it is done after the
-retrospective.** Run it in the SAME session (lived context), before declaring
-complete. It is the TodoWrite item added at the start; do not close with it open.
-
-Sweep this pass's lived experience — for each, FIX it, don't just note it:
-
-1. **Repeated manual work → tooling.** A profiling command battery, a
-   diff+grep oracle, a stash/build/time comparison typed >2× becomes a
-   `scripts/` helper.
-2. **Missing/inflated instrumentation → fix it.** A stage with no `[timing]`
-   line, or a probe whose own overhead skews the number (like `SB_UI_TIMING`),
-   gets a real boundary timer.
-3. **A dead-end proven → record it** so it isn't re-attempted (jemalloc slower;
-   parallelising a memory-bound stage; an allocator/cache that didn't pay).
-4. **A surprising win or root cause → record the lever** (the cost was JSON build
-   not decode; O(files²) canonicalisation; render redundancy).
-5. **Bootstrap cost.** Anything you re-derived (where the timing logs are, the
-   mem-cap flag, the oracle command, the quiet-machine rule) lands in the ledger or
-   this skill's reference.
-
-Two destinations:
-
-- **Profiling findings / dead-ends / levers / tooling →** APPEND numbered items to
-  `docs/optimisation-ledger.md` (Observed / Finding / Action format) and IMPLEMENT
-  the tooling/instrumentation wins; one commit per coherent item. Also update the
-  relevant project memory (e.g. `idris-export-perf`) with the cumulative numbers and
-  any new dead-end, so the next session starts from the current baseline.
-- **Improvements to THIS skill →** append under **Open recommendations** in
-  `recommendations.md` (next to this file); do not rewrite `SKILL.md` mid-pass.
-
-Acceptance (bootstrap test): a fresh agent could run the next pass from this skill
-+ `docs/optimisation-ledger.md` + the memory alone. Any excursion you needed is a
-doc bug — fix it before closing.
+**The pass is not done when the speedup lands — it is done after the close-out.**
+Invoke the **arc-closeout** skill (the TodoWrite item added at the start): it runs
+the sweep (repeated work → tooling; missing/inflated instrumentation → real
+boundary timers; dead-ends and levers → recorded), the ledger append
+(`docs/optimisation-ledger.md`, Observed/Finding/Action, via
+`scripts/ledger_append.py`), the `recommendations.md` split, the memory update
+(e.g. `idris-export-perf` with cumulative numbers and new dead-ends), and the
+bootstrap-test acceptance.
 
 ## Red flags — STOP, you're rationalizing
 

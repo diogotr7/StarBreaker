@@ -121,37 +121,18 @@ Never proceed on a presumed "yes."
   for superpowers:brainstorming's design gate; superpowers planning/TDD/debugging
   skills are sub-tools invoked WITHIN the loop.
 
-## Self-improve every arc: the retrospective (MANDATORY closing step)
+## Close-out (MANDATORY closing step)
 
 **The arc is not done when the colours are right — it is done after the
-retrospective.** Run it in the SAME session (lived context), before declaring
-complete. Track it as a todo from arc start so it is never dropped.
+close-out.** Invoke the **arc-closeout** skill (a todo from arc start): it runs
+the sweep, the ledger append (`docs/tint-palette-process-improvements.md`, via
+`scripts/ledger_append.py`), the `recommendations.md` split, the memory update,
+and the bootstrap-test acceptance. Ledger entries use Observed/Improvement/Action.
 
-Sweep this session's lived experience — for each, FIX it, don't just note it:
-
-1. **Repeated manual work → tooling.** Anything typed >2× (palette dumps, index
-   parses, re-export+re-import batteries) becomes/extends a `scripts/` or
-   `examples/` tool (extend before creating).
-2. **Silent failures → loud.** Any decode/guard that gave a wrong-but-plausible
-   answer (a wrong field offset that "worked", a role slot misread) gets a
-   distinct hard failure or a regression test.
-3. **Doc drift.** Every workflow claim you relied on that was wrong/stale gets
-   fixed with verify-on-write (run the command in the same commit).
-4. **Bootstrap cost.** Everything you had to RE-DERIVE (a field offset, a record
-   family, a data location, a don't-retry trap) lands in
-   `docs/tint-palette-workflow.md`.
-
-Two destinations:
-- **Process / tool / doc findings →** APPEND numbered items to
-  `docs/tint-palette-process-improvements.md` (Observed/Improvement/Action) and
-  IMPLEMENT them (quick tooling wins first, then docs); one commit per coherent
-  item; tests green per commit.
-- **Improvements to THIS skill →** append under **Open recommendations** in
-  `recommendations.md` (next to this file); do not rewrite `SKILL.md` mid-arc.
-
-**Acceptance (bootstrap test):** a fresh agent could run the next arc from
-`docs/tint-palette-workflow.md` + the ledger alone. Any excursion you needed is a
-doc bug — fix it before closing.
+The parse-don't-eyeball battery is scripted: `uv run python scripts/tint_audit.py
+<export_dir>` dumps per-palette object counts, out-of-range/all-same index signals
+(ledger 1), and no-override counts (ledger 2) — run it instead of hand-rolled
+index parses.
 
 ## Red flags — STOP, you're rationalizing
 

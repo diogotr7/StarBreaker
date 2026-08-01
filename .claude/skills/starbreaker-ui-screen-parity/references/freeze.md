@@ -12,9 +12,10 @@ freeze a value you can't explain.
 
 **First MEASURE that a re-freeze is even needed** — a change you *assume* "drifts a
 baseline" may sit within the captured metric tolerance. Run `ui_check.sh --full` (after
-a fresh export) and a dry freeze; if `--full` is green AND the artifact hashes are
-unchanged, the re-freeze is a metadata-only no-op that just overwrites the prior
-`reason`/`frozen_at` → REVERT the churn, don't bring it to the gate. Re-freeze only when
+a fresh export), then `bash scripts/ui_freeze_cycle.sh --preflight` (read-only: snapshot
+validation, PNG/baseline counts, export-stamp age, per-identity hash deltas, one-line
+verdict). `PREFLIGHT: NOOP` means the re-freeze is a metadata-only no-op that just
+overwrites the prior `reason`/`frozen_at` → REVERT the churn, don't bring it to the gate. Re-freeze only when
 a guard actually FAILS or to deliberately pin an improvement the owner wants (ledger 85).
 
 A wide change that moves many frozen baselines TOWARD the reference is the workflow §5
