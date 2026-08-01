@@ -186,6 +186,14 @@ When a bug is found or something behaves unexpectedly:
   `Data.p4k`. Mirroring the engine's own logic is almost always more
   correct and more robust than a derived heuristic.
 
+## Reading files in agent sessions
+
+Use the harness's Read/Grep tools, not `sed -n '<range>p'` or `grep -rn`
+via Bash — the dedicated tools are faster for the user to audit and
+transcript mining shows the shell forms dominate wasted calls. Reach for
+shell text tools only when a dedicated tool genuinely can't do the job
+(e.g. piping into another command).
+
 ## Python
 
 Always use `uv run python` instead of `python`, `python3`, or `py`
@@ -199,18 +207,20 @@ Exception: the Blender addon test suite runs with the system
 
 After changing the Rust exporter, re-export a ship and reimport it in
 Blender to verify behaviour. The binary is `target/release/starbreaker`
-(package name `starbreaker`, not `starbreaker-cli`). Invoke it with:
+(package name `starbreaker`, not `starbreaker-cli`). Build it with
+`scripts/build-release-cli.sh` (don't hand-type the cargo invocation),
+then export with the wrapper:
 
 ```bash
-SC_DATA_P4K=<path to Data.p4k> \
-  ./target/release/starbreaker entity export <entity_name> <export_root> \
-  --kind decomposed
+scripts/export_ship.sh <entity_name> <export_root>   # --lod N --mip N to override
 ```
 
-`--kind decomposed` emits the reusable `scene.json` +
-`Packages/<name>/` layout documented in
-`docs/decomposed-export-contract.md`. Workspace-specific ship paths
-and the `SC_DATA_P4K` location are in the workspace-root AGENTS.md.
+Do NOT set `SC_DATA_P4K` — the P4K path is auto-detected. The wrapper
+refuses to run a stale binary (older than the newest cli/crates commit)
+so timings and artifact comparisons aren't poisoned by an old build.
+`--kind decomposed` (the wrapper's default) emits the reusable
+`scene.json` + `Packages/<name>/` layout documented in
+`docs/decomposed-export-contract.md`.
 
 ## Naming & paths in repo content
 
