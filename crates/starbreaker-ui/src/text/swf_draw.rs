@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use image::RgbaImage;
 use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Transform};
 
@@ -119,7 +121,7 @@ impl TextRenderer {
         // to the source canvas/node. Compare with `font_size_check.py` against
         // `font_size_baseline.tsv`. Format:
         //   FONTDUMP \t canvas \t node \t font \t size_px \t visible_px \t em \t text
-        if std::env::var_os("SB_UI_FONT_DUMP").is_some() {
+        if font_dump_enabled() {
             let cap_units = layouts
                 .iter()
                 .map(|layout| (layout.max_y_units - layout.min_y_units).abs())
@@ -237,12 +239,14 @@ impl TextRenderer {
 
 }
 
+fn font_dump_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("SB_UI_FONT_DUMP").is_some())
+}
+
 fn swf_lookup_glyph(swf_font: &FontGlyphSet, ch: char) -> Option<(usize, &FontGlyph)> {
-    swf_font
-        .glyphs
-        .iter()
-        .enumerate()
-        .find(|(_, g)| g.code == Some(ch as u16))
+    let idx = *swf_font.glyph_index.get(&(ch as u16))?;
+    swf_font.glyphs.get(idx).map(|glyph| (idx, glyph))
 }
 
 fn swf_glyph_advance_px(

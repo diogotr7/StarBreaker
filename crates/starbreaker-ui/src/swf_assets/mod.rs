@@ -14,4 +14,4 @@ pub use extract::{
 };
 pub use library::SwfAssetLibrary;
 pub use stage::{extract_all_sprite_first_frames, extract_sprite_first_frame, extract_stage_frame, extract_stage_size};
-pub use types::{EditTextRecord, FontGlyph, FontGlyphSet, PlaceRecord, ShapeRecord, SwfEditTextMetrics};
+pub use types::{EditTextRecord, FontGlyph, FontGlyphSet, PlaceRecord, ShapeRecord, SwfEditTextMetrics, build_glyph_index};

@@ -16,7 +16,7 @@ use swf::{CharacterId, Tag};
 use crate::error::UiError;
 
 use super::decode::{decode_jpeg3, decode_lossless};
-use super::types::{EditTextRecord, FontGlyph, FontGlyphSet, ShapeRecord, SwfEditTextMetrics};
+use super::types::{EditTextRecord, FontGlyph, FontGlyphSet, ShapeRecord, SwfEditTextMetrics, build_glyph_index};
 
 // Per thread: each test runs on its own thread, so parallel tests parsing
 // SWFs don't move another test's count.
@@ -133,7 +133,7 @@ pub(crate) fn extract_fonts_from_tags(
     for tag in tags {
         match tag {
             Tag::DefineFont(fv1) => {
-                let glyphs = fv1
+                let glyphs: Vec<FontGlyph> = fv1
                     .glyphs
                     .iter()
                     .map(|records| FontGlyph {
@@ -152,12 +152,13 @@ pub(crate) fn extract_fonts_from_tags(
                         ascent: None,
                         descent: None,
                         leading: None,
+                        glyph_index: build_glyph_index(&glyphs),
                         glyphs,
                     },
                 );
             }
             Tag::DefineFont2(font) => {
-                let glyphs = font
+                let glyphs: Vec<FontGlyph> = font
                     .glyphs
                     .iter()
                     .map(|g| FontGlyph {
@@ -183,6 +184,7 @@ pub(crate) fn extract_fonts_from_tags(
                         ascent,
                         descent,
                         leading,
+                        glyph_index: build_glyph_index(&glyphs),
                         glyphs,
                     },
                 );
@@ -199,6 +201,7 @@ pub(crate) fn extract_fonts_from_tags(
                         descent: None,
                         leading: None,
                         glyphs: vec![],
+                        glyph_index: Default::default(),
                     },
                 );
             }

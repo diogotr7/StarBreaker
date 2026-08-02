@@ -50,6 +50,14 @@ pub(crate) fn blend_straight_linear(dst: &mut [u8; 4], src_rgb: [u8; 3], src_a: 
     if src_a <= 0.0 {
         return;
     }
+    // Fully-covering source: the blend collapses to `out_lin == s_lin` and
+    // `out_a == 1`, i.e. the source bytes round-tripped through
+    // encode∘decode — which is the identity for all 256 bytes (proven by
+    // `opaque_short_circuit_round_trip_is_identity`), so copy them straight.
+    if src_a >= 1.0 {
+        *dst = [src_rgb[0], src_rgb[1], src_rgb[2], 255];
+        return;
+    }
     let da = dst[3] as f32 / 255.0;
     let out_a = src_a + da * (1.0 - src_a);
     if out_a <= 0.0 {
@@ -74,6 +82,13 @@ pub(crate) fn blend_premul_linear(dst: &mut [u8; 4], src: [u8; 4]) {
     if sa <= 0.0 {
         return;
     }
+    // Opaque source: `out_a == 1`, the dst term drops out, and each channel is
+    // the source byte round-tripped through encode∘decode — the identity for
+    // all 256 bytes (see `opaque_short_circuit_round_trip_is_identity`).
+    if src[3] == 255 {
+        *dst = src;
+        return;
+    }
     let da = dst[3] as f32 / 255.0;
     let out_a = sa + da * (1.0 - sa);
     if out_a <= 0.0 {
@@ -83,14 +98,11 @@ pub(crate) fn blend_premul_linear(dst: &mut [u8; 4], src: [u8; 4]) {
     // is identity and `srgb_channel_to_linear(v/255) == u8_to_linear(v)` for all
     // v (proven by `lut_matches_powf_helper_for_all_bytes`), so the LUT lookup
     // is bit-exact.
-    let src_opaque = src[3] == 255;
     let dst_opaque = dst[3] == 255;
     for c in 0..3 {
-        let s_lin = if src_opaque {
-            u8_to_linear(src[c])
-        } else {
-            srgb_channel_to_linear(((src[c] as f32 / 255.0) / sa).clamp(0.0, 1.0))
-        };
+        // The src-opaque case returned above, so this side is always the
+        // un-premultiply decode.
+        let s_lin = srgb_channel_to_linear(((src[c] as f32 / 255.0) / sa).clamp(0.0, 1.0));
         let d_lin = if dst_opaque {
             u8_to_linear(dst[c])
         } else if da > 0.0 {
@@ -176,6 +188,27 @@ mod tests {
         dst[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
     }
 
+    fn blend_straight_linear_slow(dst: &mut [u8; 4], src_rgb: [u8; 3], src_a: f32) {
+        let src_a = src_a.clamp(0.0, 1.0);
+        if src_a <= 0.0 {
+            return;
+        }
+        let da = dst[3] as f32 / 255.0;
+        let out_a = src_a + da * (1.0 - src_a);
+        if out_a <= 0.0 {
+            return;
+        }
+        for c in 0..3 {
+            let s_lin = u8_to_linear(src_rgb[c]);
+            let d_lin = u8_to_linear(dst[c]);
+            let out_lin = (s_lin * src_a + d_lin * da * (1.0 - src_a)) / out_a;
+            dst[c] = (linear_channel_to_srgb(out_lin.clamp(0.0, 1.0)) * 255.0)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+        }
+        dst[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+
     fn blend_premul_add_linear_slow(dst: &mut [u8; 4], src: [u8; 4]) {
         let sa = src[3] as f32 / 255.0;
         let da = dst[3] as f32 / 255.0;
@@ -220,6 +253,14 @@ mod tests {
                     blend_premul_linear_slow(&mut slow, src);
                     assert_eq!(fast, slow, "premul mismatch v={v} sa={sa} da={da}");
 
+                    for &cov in &[1.0f32, 1.5, 0.75, 0.25, 0.0] {
+                        let mut fast_s = base;
+                        blend_straight_linear(&mut fast_s, [src[0], src[1], src[2]], cov);
+                        let mut slow_s = base;
+                        blend_straight_linear_slow(&mut slow_s, [src[0], src[1], src[2]], cov);
+                        assert_eq!(fast_s, slow_s, "straight mismatch v={v} cov={cov} da={da}");
+                    }
+
                     let mut fast_a = base;
                     blend_premul_add_linear(&mut fast_a, src);
                     let mut slow_a = base;
@@ -227,6 +268,28 @@ mod tests {
                     assert_eq!(fast_a, slow_a, "premul_add mismatch v={v} sa={sa} da={da}");
                 }
             }
+        }
+    }
+
+    // The premise of both opaque short-circuits: encoding a decoded byte back to
+    // a byte is the identity for all 256 values, so `*dst = src` is bit-exact.
+    #[test]
+    fn opaque_short_circuit_round_trip_is_identity() {
+        for v in 0u16..=255 {
+            let v = v as u8;
+            let back = (linear_channel_to_srgb(u8_to_linear(v).clamp(0.0, 1.0)) * 255.0)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+            assert_eq!(back, v, "encode∘decode must be identity for byte {v}");
+        }
+        for &da in &[255u8, 200, 0] {
+            let mut dst = [11u8, 22, 33, da];
+            blend_premul_linear(&mut dst, [7, 8, 9, 255]);
+            assert_eq!(dst, [7, 8, 9, 255], "opaque premul src must land verbatim");
+
+            let mut dst = [11u8, 22, 33, da];
+            blend_straight_linear(&mut dst, [7, 8, 9], 1.0);
+            assert_eq!(dst, [7, 8, 9, 255], "full-coverage straight src must land verbatim");
         }
     }
 

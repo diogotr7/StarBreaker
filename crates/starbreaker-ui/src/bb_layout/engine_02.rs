@@ -2067,7 +2067,11 @@ pub(crate) fn apply_flex_no_grow_shrink(
         return total_main;
     }
     let scale = target_shrinkable / shrinkable_main;
-    if std::env::var("BB_SHRINK_PROBE").as_deref() == Ok("1") {
+    fn shrink_probe_enabled() -> bool {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ENABLED.get_or_init(|| std::env::var("BB_SHRINK_PROBE").as_deref() == Ok("1"))
+    }
+    if shrink_probe_enabled() {
         for (child_id, w, h, _) in sizes.iter() {
             let node = scene.nodes.get(child_id);
             eprintln!(

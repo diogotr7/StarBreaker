@@ -472,11 +472,10 @@ fn draw_non_text_node(
             // `BB_DRAW_RECT_PROBE`: `1` prints every asset draw, any other value is
             // a case-insensitive substring filter on the node name / asset path.
             // Render-neutral (stderr only when the var is set).
-            if let Ok(probe) = std::env::var("BB_DRAW_RECT_PROBE") {
-                let probe_lc = probe.to_ascii_lowercase();
-                if probe == "1"
-                    || node.name.to_ascii_lowercase().contains(&probe_lc)
-                    || normalised_asset_ref.to_ascii_lowercase().contains(&probe_lc)
+            if let Some(probe_lc) = draw_rect_probe_filter() {
+                if probe_lc == "1"
+                    || node.name.to_ascii_lowercase().contains(probe_lc)
+                    || normalised_asset_ref.to_ascii_lowercase().contains(probe_lc)
                 {
                     eprintln!(
                         "BB_DRAW_RECT_PROBE name={} rect=({:.0},{:.0},{:.0},{:.0}) raster={}x{} asset={}",
@@ -493,7 +492,7 @@ fn draw_non_text_node(
                 && fill_override.is_some()
                 && !is_nine_slice_custom_shape
             {
-                img = strip_custom_shape_uniform_matte(&img);
+                img = strip_custom_shape_uniform_matte(img);
             }
             img = apply_asset_layout_flip(node, img);
             let (rotated_img, rot_dx, rot_dy) = apply_node_rotation(node, img);
@@ -1159,7 +1158,7 @@ fn sample_bilinear_rgba(img: &RgbaImage, x: f32, y: f32) -> Option<image::Rgba<u
 }
 
 
-pub(crate) fn strip_custom_shape_uniform_matte(img: &RgbaImage) -> RgbaImage {
+pub(crate) fn strip_custom_shape_uniform_matte(img: RgbaImage) -> RgbaImage {
     let (width, height) = img.dimensions();
     let total_pixels = (width as usize).saturating_mul(height as usize).max(1);
 
@@ -1176,7 +1175,7 @@ pub(crate) fn strip_custom_shape_uniform_matte(img: &RgbaImage) -> RgbaImage {
     }
 
     if opaque_counts.is_empty() || transparent_count == 0 {
-        return img.clone();
+        return img;
     }
 
     // Pick the dominant opaque colour as the matte candidate. `opaque_counts` is
@@ -1188,14 +1187,14 @@ pub(crate) fn strip_custom_shape_uniform_matte(img: &RgbaImage) -> RgbaImage {
         .max_by(|(px_a, count_a), (px_b, count_b)| count_a.cmp(count_b).then_with(|| px_a.cmp(px_b)))
         .map(|(px, count)| (*px, *count))
     else {
-        return img.clone();
+        return img;
     };
 
     let total_opaque: usize = opaque_counts.values().sum();
     let matte_fraction = matte_count as f32 / total_opaque.max(1) as f32;
     let full_image_fraction = matte_count as f32 / total_pixels as f32;
     if matte_fraction < 0.85 || full_image_fraction < 0.9 {
-        return img.clone();
+        return img;
     }
 
     let is_matte = |px: image::Rgba<u8>| {
@@ -1231,7 +1230,7 @@ pub(crate) fn strip_custom_shape_uniform_matte(img: &RgbaImage) -> RgbaImage {
     }
 
     if queue.is_empty() {
-        return img.clone();
+        return img;
     }
 
     while let Some((x, y)) = queue.pop_front() {
@@ -1281,7 +1280,7 @@ pub(crate) fn strip_custom_shape_uniform_matte(img: &RgbaImage) -> RgbaImage {
         }
     }
 
-    let mut out = img.clone();
+    let mut out = img;
     for y in 0..height {
         for x in 0..width {
             let idx = (y as usize)
@@ -1917,25 +1916,6 @@ fn center_anchored_heading_textfield_text_rect(
     if !node.node_type.eq_ignore_ascii_case("widget_text_field") {
         return None;
     }
-    // The anchored half-rect model belongs to the nested inline heading pair
-    // (the medical header: a Heading1 parent text field with a same-style
-    // text-field child sharing its band — both render in the band's lower
-    // half). A lone centre-anchored heading (the MFD footer's screen name)
-    // centres its glyph block ON the anchor line instead — verified against the
-    // Clipper target/power footer captures (cap centre == card midline).
-    if let Some(document) = document {
-        let has_same_style_text_child = document.nodes.iter().any(|candidate| {
-            candidate.parent_id == Some(node.id)
-                && candidate.node_type.eq_ignore_ascii_case("widget_text_field")
-                && candidate
-                    .text_style
-                    .as_ref()
-                    .is_some_and(|child| same_label_style(child, style))
-        });
-        if !has_same_style_text_child {
-            return None;
-        }
-    }
     if !style
         .label_style
         .as_deref()
@@ -1952,6 +1932,27 @@ fn center_anchored_heading_textfield_text_rect(
     }
     if node.anchor[1] > 0.0 && !(node.anchor[0] > 1.0 && node.pivot[0] >= 0.99) {
         return None;
+    }
+    // The anchored half-rect model belongs to the nested inline heading pair
+    // (the medical header: a Heading1 parent text field with a same-style
+    // text-field child sharing its band — both render in the band's lower
+    // half). A lone centre-anchored heading (the MFD footer's screen name)
+    // centres its glyph block ON the anchor line instead — verified against the
+    // Clipper target/power footer captures (cap centre == card midline).
+    // Last because it is the only O(nodes) test here; the cheap field checks
+    // above reject nearly every node first.
+    if let Some(document) = document {
+        let has_same_style_text_child = document.nodes.iter().any(|candidate| {
+            candidate.parent_id == Some(node.id)
+                && candidate.node_type.eq_ignore_ascii_case("widget_text_field")
+                && candidate
+                    .text_style
+                    .as_ref()
+                    .is_some_and(|child| same_label_style(child, style))
+        });
+        if !has_same_style_text_child {
+            return None;
+        }
     }
 
     let top = rect.y + rect.h * anchor_to_parent_y;
@@ -2224,6 +2225,19 @@ fn right_anchored_label_caption_pair_offset(
     // EXPERIMENT: zero the vertical offset (keep horizontal). The Y offset pushed
     // the right-anchored MEDGELS label down a stretched header band.
     (-(line_box_delta + stroke_pair_span), 0.0)
+}
+
+/// `BB_DRAW_RECT_PROBE` filter, read once and lower-cased (`1` = every draw,
+/// anything else is a substring filter on node name / asset path).
+fn draw_rect_probe_filter() -> Option<&'static str> {
+    static FILTER: OnceLock<Option<String>> = OnceLock::new();
+    FILTER
+        .get_or_init(|| {
+            std::env::var("BB_DRAW_RECT_PROBE")
+                .ok()
+                .map(|v| v.to_ascii_lowercase())
+        })
+        .as_deref()
 }
 
 fn font_telemetry_enabled() -> bool {
@@ -2775,6 +2789,14 @@ fn blit_atlas_image_tinted(
     );
 }
 
+/// Per-blit LUT of the tinted-texel encode for one channel: the straight sRGB
+/// result (0..1) of modulating each of the 256 texel bytes by `tint_lin`.
+pub(crate) fn tint_channel_lut(tint_lin: f32) -> [f32; 256] {
+    std::array::from_fn(|v| {
+        linear_channel_to_srgb((u8_to_linear(v as u8) * tint_lin).clamp(0.0, 1.0))
+    })
+}
+
 pub(crate) fn blit_atlas_image_tinted_with_mode(
     pixmap: &mut Pixmap,
     img: &RgbaImage,
@@ -2788,6 +2810,14 @@ pub(crate) fn blit_atlas_image_tinted_with_mode(
         srgb_channel_to_linear(tint[0].clamp(0.0, 1.0)),
         srgb_channel_to_linear(tint[1].clamp(0.0, 1.0)),
         srgb_channel_to_linear(tint[2].clamp(0.0, 1.0)),
+    ];
+    // The tinted-texel encode is a pure function of the texel byte once
+    // `tint_lin` is fixed, so evaluate its 256 outcomes per channel up front
+    // instead of once per pixel. Same expression, same f32 bits.
+    let tint_lut = [
+        tint_channel_lut(tint_lin[0]),
+        tint_channel_lut(tint_lin[1]),
+        tint_channel_lut(tint_lin[2]),
     ];
     let opacity = alpha.clamp(0.0, 1.0);
     let pw = pixmap.width() as i32;
@@ -2813,11 +2843,11 @@ pub(crate) fn blit_atlas_image_tinted_with_mode(
                 continue;
             }
             let src = [
-                (linear_channel_to_srgb((u8_to_linear(texel.0[0]) * tint_lin[0]).clamp(0.0, 1.0)) * a * 255.0)
+                (tint_lut[0][texel.0[0] as usize] * a * 255.0)
                     .round().clamp(0.0, 255.0) as u8,
-                (linear_channel_to_srgb((u8_to_linear(texel.0[1]) * tint_lin[1]).clamp(0.0, 1.0)) * a * 255.0)
+                (tint_lut[1][texel.0[1] as usize] * a * 255.0)
                     .round().clamp(0.0, 255.0) as u8,
-                (linear_channel_to_srgb((u8_to_linear(texel.0[2]) * tint_lin[2]).clamp(0.0, 1.0)) * a * 255.0)
+                (tint_lut[2][texel.0[2] as usize] * a * 255.0)
                     .round().clamp(0.0, 255.0) as u8,
                 (a * 255.0).round().clamp(0.0, 255.0) as u8,
             ];

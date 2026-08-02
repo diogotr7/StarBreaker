@@ -1156,7 +1156,7 @@ mod tests_c {
             img.put_pixel(5, y, image::Rgba([0, 0, 0, 255]));
         }
 
-        let stripped = strip_custom_shape_uniform_matte(&img);
+        let stripped = strip_custom_shape_uniform_matte(img);
         assert_eq!(stripped.get_pixel(5, 5).0, [0, 0, 0, 255]);
     }
 
@@ -1170,7 +1170,7 @@ mod tests_c {
             }
         }
 
-        let stripped = strip_custom_shape_uniform_matte(&img);
+        let stripped = strip_custom_shape_uniform_matte(img);
         assert_eq!(stripped.get_pixel(0, 0).0, [0, 0, 0, 0]);
         assert_eq!(stripped.get_pixel(9, 9).0, [0, 0, 0, 0]);
     }
@@ -2463,6 +2463,20 @@ mod tests_e {
     #![allow(unused_imports, dead_code)]
 
     use super::*;
+
+    #[test]
+    fn tint_channel_lut_matches_direct_computation() {
+        for &tint in &[0.0f32, 0.15, 0.5, 0.73, 1.0] {
+            let tint_lin = crate::colour::srgb_channel_to_linear(tint);
+            let lut = tint_channel_lut(tint_lin);
+            for v in 0u16..=255 {
+                let direct = crate::colour::linear_channel_to_srgb(
+                    (crate::colour::u8_to_linear(v as u8) * tint_lin).clamp(0.0, 1.0),
+                );
+                assert_eq!(lut[v as usize], direct, "tint={tint} texel={v}");
+            }
+        }
+    }
 
     use std::collections::HashMap;
 

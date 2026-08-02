@@ -10,7 +10,7 @@ fn make_img(w: u32, h: u32) -> RgbaImage {
 }
 
 fn test_swf_font() -> FontGlyphSet {
-    FontGlyphSet {
+    let mut font = FontGlyphSet {
         id: 1,
         name: "Test".to_string(),
         is_bold: false,
@@ -43,7 +43,29 @@ fn test_swf_font() -> FontGlyphSet {
                 },
             ],
         }],
-    }
+        glyph_index: Default::default(),
+    };
+    font.glyph_index = crate::swf_assets::build_glyph_index(&font.glyphs);
+    font
+}
+
+// The index replaces a linear `find`, which returned the FIRST glyph with a
+// given code — duplicates must still resolve to the earliest entry.
+#[test]
+fn glyph_index_is_first_wins() {
+    let mut font = test_swf_font();
+    let mut dup = font.glyphs[0].clone();
+    dup.advance = Some(999);
+    font.glyphs.push(dup);
+    font.glyph_index = crate::swf_assets::build_glyph_index(&font.glyphs);
+
+    assert_eq!(font.glyph_index.get(&('A' as u16)), Some(&0));
+    let scanned = font
+        .glyphs
+        .iter()
+        .position(|g| g.code == Some('A' as u16))
+        .unwrap();
+    assert_eq!(scanned, 0);
 }
 
 fn first_nonblack_y(img: &RgbaImage) -> Option<u32> {

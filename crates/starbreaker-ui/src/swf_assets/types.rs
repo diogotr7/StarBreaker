@@ -29,6 +29,21 @@ pub struct FontGlyphSet {
     pub descent: Option<u16>,
     pub leading: Option<i16>,
     pub glyphs: Vec<FontGlyph>,
+    /// `glyph.code` → index into `glyphs`, first occurrence wins (matching the
+    /// linear `find` this replaces). Built once at extraction so glyph lookup
+    /// during text layout is O(1) instead of a scan per character.
+    pub glyph_index: std::collections::HashMap<u16, usize>,
+}
+
+/// Build [`FontGlyphSet::glyph_index`] for an extracted glyph list.
+pub fn build_glyph_index(glyphs: &[FontGlyph]) -> std::collections::HashMap<u16, usize> {
+    let mut index = std::collections::HashMap::with_capacity(glyphs.len());
+    for (idx, glyph) in glyphs.iter().enumerate() {
+        if let Some(code) = glyph.code {
+            index.entry(code).or_insert(idx);
+        }
+    }
+    index
 }
 
 /// An extracted `DefineEditText` character from a SWF.
