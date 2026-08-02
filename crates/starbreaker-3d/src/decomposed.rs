@@ -1579,6 +1579,10 @@ pub(crate) fn write_decomposed_export(
     let resolved_lights = crate::pipeline::collect_entity_lights(
         &input.entity_name, &light_rigs, &light_ports, &input.interiors);
     let mut entity_light_records: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+    // Per-export memo for projector/gobo texture exports, keyed by the raw
+    // source path: thousands of lights reference a few dozen unique textures,
+    // and each BC6H decode + EXR encode is expensive.
+    let mut gobo_export_cache: HashMap<String, Option<String>> = HashMap::new();
     let mut interior_records = Vec::with_capacity(input.interiors.containers.len());
     let mut interior_placement_elapsed = std::time::Duration::ZERO;
     let mut interior_asset_resolve_elapsed = std::time::Duration::ZERO;
@@ -1905,51 +1909,57 @@ pub(crate) fn write_decomposed_export(
             // EXR preserves float values >1.0, allowing Blender to sample full HDR energy.
             let projector_texture_export = if light.light_type.as_deref() == Some("Projector") {
                 light.projector_texture.as_deref().and_then(|src| {
-                    let normalized = normalize_source_path(p4k, src);
-                    let exr_path = replace_extension(&normalized, ".exr");
-                    if existing_asset_paths
-                        .is_some_and(|paths| paths.contains(&exr_path.to_ascii_lowercase()))
-                    {
-                        return Some(exr_path);
+                    if let Some(cached) = gobo_export_cache.get(src) {
+                        return cached.clone();
                     }
+                    let result = (|| {
+                        let normalized = normalize_source_path(p4k, src);
+                        let exr_path = replace_extension(&normalized, ".exr");
+                        if existing_asset_paths
+                            .is_some_and(|paths| paths.contains(&exr_path.to_ascii_lowercase()))
+                        {
+                            return Some(exr_path);
+                        }
 
-                    // Try HDR EXR export first (for BC6H gobos with values >1.0)
-                    if let Some(exr_data) = export_gobo_as_exr(p4k, src, opts.texture_mip) {
-                        return Some(insert_binary_file(&mut files, exr_path, exr_data));
-                    }
+                        // Try HDR EXR export first (for BC6H gobos with values >1.0)
+                        if let Some(exr_data) = export_gobo_as_exr(p4k, src, opts.texture_mip) {
+                            return Some(insert_binary_file(&mut files, exr_path, exr_data));
+                        }
 
-                    // Fall back to standard PNG export (for SDR or unsupported formats)
-                    if export_texture_asset(
-                        &mut files,
-                        p4k,
-                        &mut png_cache,
-                        &mut texture_cache,
-                        src,
-                        TextureFlavor::Generic,
-                        opts.texture_mip,
-                        existing_asset_paths,
-                        TextureContainer::Png,
-                    )
-                    .is_some()
-                    {
-                        return Some(texture_relative_path(
+                        // Fall back to standard PNG export (for SDR or unsupported formats)
+                        if export_texture_asset(
+                            &mut files,
                             p4k,
+                            &mut png_cache,
+                            &mut texture_cache,
                             src,
                             TextureFlavor::Generic,
                             opts.texture_mip,
+                            existing_asset_paths,
                             TextureContainer::Png,
-                        ));
-                    }
+                        )
+                        .is_some()
+                        {
+                            return Some(texture_relative_path(
+                                p4k,
+                                src,
+                                TextureFlavor::Generic,
+                                opts.texture_mip,
+                                TextureContainer::Png,
+                            ));
+                        }
 
-                    // Both EXR and PNG failed. Log a warning and use white PNG fallback.
-                    log::warn!(
-                        "Failed to export projector texture '{}' (EXR and PNG both failed). Using white PNG fallback.",
-                        src
-                    );
-                    let normalized = normalize_source_path(p4k, src);
-                    let fallback_path = replace_extension(&normalized, ".png");
-                    let fallback_png = create_white_png_fallback();
-                    Some(insert_binary_file(&mut files, fallback_path, fallback_png))
+                        // Both EXR and PNG failed. Log a warning and use white PNG fallback.
+                        log::warn!(
+                            "Failed to export projector texture '{}' (EXR and PNG both failed). Using white PNG fallback.",
+                            src
+                        );
+                        let fallback_path = replace_extension(&normalized, ".png");
+                        let fallback_png = create_white_png_fallback();
+                        Some(insert_binary_file(&mut files, fallback_path, fallback_png))
+                    })();
+                    gobo_export_cache.insert(src.to_string(), result.clone());
+                    result
                 })
             } else {
                 None
@@ -4292,12 +4302,22 @@ fn export_gobo_as_exr(p4k: &MappedP4k, source_path: &str, texture_mip: u32) -> O
     // like every sibling P4K reader does. Without this the BC6H probe below
     // never fired and every HDR gobo silently degraded to the SDR PNG fallback
     // (1757 projector refs, 0 `.exr` in the corpus).
-    // Look up the entry first
-    let entry = p4k.entry_case_insensitive(source_path)?;
-    let bytes = p4k.read(&entry).ok()?;
+    // Convert the DataCore-style path (forward slashes, optional "Data/"
+    // prefix) to a P4K entry name like every sibling reader does —
+    // `cmp_lower_against` folds case only, not separators, so the raw path
+    // never matched and the BC6H branch below never fired.
+    let p4k_path = crate::pipeline::datacore_path_to_p4k(source_path);
+    let entry = p4k.entry_case_insensitive(&p4k_path)?;
+    let bytes = p4k.read(entry).ok()?;
 
-    // Parse DDS and check if it's BC6H
-    let dds = starbreaker_dds::DdsFile::from_bytes(&bytes).ok()?;
+    // Parse DDS with split-sibling support: gobo sources ship as a header-only
+    // `.dds` plus `.dds.N` mip siblings (the second reason no `.exr` was ever
+    // produced — `from_bytes` alone cannot decode them).
+    let sibling_reader = crate::pipeline::P4kSiblingReader {
+        p4k,
+        base_path: p4k_path,
+    };
+    let dds = starbreaker_dds::DdsFile::from_split(&bytes, &sibling_reader).ok()?;
 
     // Attempt BC6H float decode
     let (width, height, float_rgb) = match dds.decode_bc6h_to_float_rgb(texture_mip as usize) {
@@ -4344,7 +4364,11 @@ fn export_gobo_as_exr(p4k: &MappedP4k, source_path: &str, texture_mip: u32) -> O
 
     let buffer = Vec::new();
     let mut cursor = Cursor::new(buffer);
-    match image.write().to_buffered(&mut cursor) {
+    // non_parallel: the exr crate's default parallel compressor is
+    // non-deterministic (chunk completion order varies), which spawned
+    // hashed-variant duplicates of every gobo EXR and breaks the two-run
+    // determinism oracle. Serial encode is byte-stable.
+    match image.write().non_parallel().to_buffered(&mut cursor) {
         Ok(_) => Some(cursor.into_inner()),
         Err(e) => {
             log::warn!("Failed to encode gobo as EXR: {}", e);
@@ -6539,6 +6563,40 @@ mod tests {
         assert!(
             warm_cache.is_empty(),
             "the prewarmed entry must be consumed (drained) on first touch"
+        );
+    }
+
+    #[test]
+    #[ignore = "needs SC_DATA_P4K"]
+    fn gobo_exr_export_accepts_datacore_style_paths() {
+        let Ok(p) = std::env::var("SC_DATA_P4K") else {
+            return;
+        };
+        let p4k = MappedP4k::open(&p).unwrap();
+        // Find a BC6H gobo by probing `export_gobo_as_exr` itself with the
+        // P4K-native (backslashed) entry name — that form resolves on both the
+        // broken and fixed lookup — then assert the DataCore path style
+        // (forward slashes, no `Data\` prefix) that `light.projector_texture`
+        // actually carries also exports.
+        let candidate = p4k
+            .entries()
+            .iter()
+            .map(|e| e.name.clone())
+            .filter(|n| {
+                let l = n.to_ascii_lowercase();
+                l.ends_with(".dds") && (l.contains("gobo") || l.contains("projector"))
+            })
+            .find(|n| export_gobo_as_exr(&p4k, n, 0).is_some());
+        let Some(name) = candidate else {
+            panic!("no BC6H gobo/projector DDS found in this P4K — probe needs widening");
+        };
+        let datacore_style = name
+            .strip_prefix("Data\\")
+            .unwrap_or(&name)
+            .replace('\\', "/");
+        assert!(
+            export_gobo_as_exr(&p4k, &datacore_style, 0).is_some(),
+            "BC6H gobo '{datacore_style}' must export as EXR when addressed in DataCore path style"
         );
     }
 

@@ -330,9 +330,9 @@ impl ExportResult {
 /// Interior layout data: unique CGF paths + placement transforms.
 /// Mesh data is NOT loaded here — it's loaded JIT during GLB packing.
 
-struct P4kSiblingReader<'a> {
-    p4k: &'a MappedP4k,
-    base_path: String,
+pub(crate) struct P4kSiblingReader<'a> {
+    pub(crate) p4k: &'a MappedP4k,
+    pub(crate) base_path: String,
 }
 
 impl ReadSibling for P4kSiblingReader<'_> {
