@@ -120,7 +120,7 @@ fn generic_and_normal_emit_dds_reuse_dds_and_preserve_png_fallback() {
         }
         .unwrap();
         assert!(path.ends_with(".png"));
-        assert_eq!(files.get(&path).unwrap(), &expected);
+        assert_eq!(files.get(&path).unwrap(), expected);
         let existing = HashSet::from([path.to_ascii_lowercase()]);
         files = OutputFiles::new();
         cache.clear();
@@ -155,7 +155,7 @@ fn generic_and_normal_emit_dds_reuse_dds_and_preserve_png_fallback() {
             ExportOptions::default().texture_container,
         )
         .unwrap();
-        assert_eq!(files.get(&path).unwrap(), &expected);
+        assert_eq!(files.get(&path).unwrap(), expected);
     }
     assert!(load_texture_dds(p4k, "Data/Test/synthetic.tif", TextureFlavor::Normal, 0).is_none());
 }
@@ -180,13 +180,16 @@ fn smoothness_ref_and_prewarm_do_not_decode_or_encode_png() {
         "Data/Test/synthetic.mtl".into(),
         "Data/Test/synthetic.cgf".into(),
     )];
-    let (png, _) = prewarm_decomposed_textures(p4k, &assets, 0, TextureContainer::Dds);
+    let (png, _, ddna_sources) =
+        prewarm_decomposed_textures(p4k, &assets, 0, TextureContainer::Dds, None);
     assert!(png.is_empty());
-    let rough = prewarm_decomposed_roughness(p4k, &assets, 0, TextureContainer::Dds);
+    let mut rough = prewarm_decomposed_roughness(p4k, &ddna_sources, 0, TextureContainer::Dds);
     let loaded = rough.get(source).unwrap().as_ref().unwrap();
     assert!(loaded.png.is_empty());
     assert!(loaded.smoothness_mean.is_none());
     assert_eq!(loaded.container, TextureContainer::Dds);
+    // The writer drains the roughness cache on consult, so keep the bytes.
+    let package_bytes = loaded.package_bytes.clone();
     let mut files = OutputFiles::new();
     let mut tc = HashMap::new();
     let mut sc = HashMap::new();
@@ -195,7 +198,7 @@ fn smoothness_ref_and_prewarm_do_not_decode_or_encode_png() {
         p4k,
         &mut tc,
         &mut sc,
-        &rough,
+        &mut rough,
         source,
         0,
         None,
@@ -222,7 +225,7 @@ fn smoothness_ref_and_prewarm_do_not_decode_or_encode_png() {
     assert!(status.smoothness_min.is_none());
     assert_eq!(
         files.get(&reference.export_path),
-        Some(&loaded.package_bytes)
+        Some(package_bytes)
     );
     let existing = HashSet::from([reference.export_path.to_ascii_lowercase()]);
     files = OutputFiles::new();
@@ -233,7 +236,7 @@ fn smoothness_ref_and_prewarm_do_not_decode_or_encode_png() {
         p4k,
         &mut tc,
         &mut sc,
-        &rough,
+        &mut rough,
         source,
         0,
         Some(&existing),
@@ -293,7 +296,7 @@ fn dds_normal_source_does_not_claim_an_alpha_channel() {
         &mut PngCache::new(),
         &mut HashMap::new(),
         &mut HashMap::new(),
-        &RoughnessCache::new(),
+        &mut RoughnessCache::new(),
         &sub,
         0,
         None,
@@ -344,7 +347,7 @@ fn smoothness_size_mismatch_preserves_png_roughness_fallback() {
     let p4k = &fixture.p4k;
     let source = "Data/Test/fallback_ddna.tif";
     let expected =
-        crate::pipeline::load_roughness_texture_result(p4k, source, 0, TextureContainer::Png)
+        crate::pipeline::load_roughness_texture_status_result(p4k, source, 0, TextureContainer::Png)
             .unwrap();
     let mut files = OutputFiles::new();
     let mut tc = HashMap::new();
@@ -354,7 +357,7 @@ fn smoothness_size_mismatch_preserves_png_roughness_fallback() {
         p4k,
         &mut tc,
         &mut sc,
-        &RoughnessCache::new(),
+        &mut RoughnessCache::new(),
         source,
         0,
         None,
@@ -368,7 +371,7 @@ fn smoothness_size_mismatch_preserves_png_roughness_fallback() {
         Some("roughness_grayscale")
     );
     assert_eq!(
-        files.get(&reference.export_path),
+        files.get(&reference.export_path).as_ref(),
         Some(&expected.package_bytes)
     );
     assert!(status.smoothness_mean.is_some());
@@ -381,7 +384,7 @@ fn smoothness_size_mismatch_preserves_png_roughness_fallback() {
         p4k,
         &mut tc,
         &mut sc,
-        &RoughnessCache::new(),
+        &mut RoughnessCache::new(),
         source,
         0,
         Some(&existing),
@@ -422,7 +425,7 @@ fn unaligned_compressed_tops_use_identical_png_fallback() {
             }
             .unwrap();
             assert!(path.ends_with(".png"), "{source}");
-            assert_eq!(files.get(&path), Some(&expected));
+            assert_eq!(files.get(&path).as_ref(), Some(&expected));
         }
     }
 }

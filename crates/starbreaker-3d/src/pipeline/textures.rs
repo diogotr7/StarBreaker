@@ -1099,6 +1099,38 @@ pub(crate) fn cached_load_keyed(
     result
 }
 
+/// Consume-once variant of [`cached_load_keyed`] for callers whose repeat
+/// touches are short-circuited one layer up (the decomposed writer's
+/// `texture_cache` guard): a successful entry is REMOVED on consumption so the
+/// prewarmed cache does not keep a second copy of every PNG resident for the
+/// whole write (≈2–2.5 GB on a capital ship). Failure entries are kept as a
+/// negative cache, and a miss falls back to the identical serial decode —
+/// worst case a redundant re-decode of the same bytes, never different output.
+pub(crate) fn take_cached_load_keyed(
+    p4k: &MappedP4k,
+    path: &str,
+    mip: u32,
+    key_discriminator: &str,
+    cache: &mut PngCache,
+    loader: fn(&MappedP4k, &str, u32) -> Option<Vec<u8>>,
+) -> Option<Vec<u8>> {
+    let key = png_cache_key(path, mip, key_discriminator);
+    match cache.remove(&key) {
+        Some(Some(bytes)) => Some(bytes),
+        Some(None) => {
+            cache.insert(key, None);
+            None
+        }
+        None => {
+            let result = loader(p4k, path, mip);
+            if result.is_none() {
+                cache.insert(key, None);
+            }
+            result
+        }
+    }
+}
+
 pub(super) fn encode_png_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Option<Vec<u8>> {
     let img = image::RgbaImage::from_raw(width, height, rgba)?;
     let mut png_buf = Vec::new();
@@ -1248,6 +1280,32 @@ pub(crate) fn load_roughness_texture_result(
     mip_level: u32,
     container: TextureContainer,
 ) -> Result<RoughnessTextureLoad, RoughnessTextureLoadError> {
+    load_roughness_texture_result_impl(p4k, tif_path, mip_level, container, true)
+}
+
+/// Status-path variant of [`load_roughness_texture_result`]: skips the RGBA
+/// metallicRoughness PNG encode (`png` left empty). The decomposed sidecar path
+/// (`export_ddna_roughness_asset_with_status` and its prewarm) consumes only
+/// `grayscale_png` + the statistics fields — the RGBA variant is reachable only
+/// from the GLB/bundled `load_material_textures` path, so encoding and holding
+/// it per DDNA source there was pure waste (~1 s wall + up to ~1.5 G RSS on a
+/// capital ship).
+pub(crate) fn load_roughness_texture_status_result(
+    p4k: &MappedP4k,
+    tif_path: &str,
+    mip_level: u32,
+    container: TextureContainer,
+) -> Result<RoughnessTextureLoad, RoughnessTextureLoadError> {
+    load_roughness_texture_result_impl(p4k, tif_path, mip_level, container, false)
+}
+
+fn load_roughness_texture_result_impl(
+    p4k: &MappedP4k,
+    tif_path: &str,
+    mip_level: u32,
+    container: TextureContainer,
+    encode_metallic_png: bool,
+) -> Result<RoughnessTextureLoad, RoughnessTextureLoadError> {
     let dds_path = tif_path
         .strip_suffix(".tif")
         .map(|base| format!("{base}.dds"))
@@ -1313,8 +1371,12 @@ pub(crate) fn load_roughness_texture_result(
         let roughness = smoothness_to_perceptual_roughness(&smoothness);
         let roughness_stats =
             byte_statistics(&roughness).ok_or(RoughnessTextureLoadError::EncodePng)?;
-        let png = pack_perceptual_roughness_as_metallic_roughness_png(w, h, &roughness)
-            .ok_or(RoughnessTextureLoadError::EncodePng)?;
+        let png = if encode_metallic_png {
+            pack_perceptual_roughness_as_metallic_roughness_png(w, h, &roughness)
+                .ok_or(RoughnessTextureLoadError::EncodePng)?
+        } else {
+            Vec::new()
+        };
         let grayscale_png = pack_perceptual_roughness_as_grayscale_roughness_png(w, h, &roughness)
             .ok_or(RoughnessTextureLoadError::EncodePng)?;
         (

@@ -136,7 +136,10 @@ pub(crate) struct DecomposedMaterialView {
     pub(crate) sidecar_materials: Option<MtlFile>,
     /// Original (pre-filter) index in the source `.mtl` for each entry in `sidecar_materials`.
     /// Empty when `sidecar_materials` is `None`; identity mapping (0, 1, 2, …) when no
-    /// materials were hidden.
+    /// materials were hidden. Production readers use the mesh-free
+    /// [`sidecar_material_view`] instead; this stays as the reference value for
+    /// the `sidecar_material_view_matches_full_view` equivalence guard.
+    #[allow(dead_code)]
     sidecar_original_indices: Vec<u32>,
     pub(crate) glb_materials: Option<MtlFile>,
     pub(crate) glb_nmc: Option<NodeMeshCombo>,
@@ -617,6 +620,64 @@ fn normalize_package_subdir(subdir: &str) -> Option<String> {
     }
 }
 
+/// Mesh-free projection of [`build_decomposed_material_view`]: just the
+/// `(sidecar_materials, sidecar_original_indices)` pair. Both values are pure
+/// functions of the material list — the full view's mesh work only selects
+/// between two content-equal representations of the same pair (the identity
+/// branch requires zero hidden materials and zero compaction, in which case the
+/// hide-filtered list equals the full clone). The decomposed writer consumes
+/// only this pair (`write_mesh_asset` emits an empty placeholder), so the
+/// per-asset mesh clone + index rebuild there was pure waste.
+/// Equivalence is locked by `sidecar_material_view_matches_full_view`.
+pub(crate) fn sidecar_material_view(
+    materials: Option<&MtlFile>,
+    include_nodraw: bool,
+) -> (Option<MtlFile>, Vec<u32>) {
+    let Some(materials) = materials else {
+        return (None, Vec::new());
+    };
+    if include_nodraw {
+        let identity = (0..materials.materials.len() as u32).collect();
+        return (Some(materials.clone()), identity);
+    }
+    let mut filtered_materials = Vec::with_capacity(materials.materials.len());
+    let mut sidecar_original_indices = Vec::with_capacity(materials.materials.len());
+    for (orig_idx, material) in materials.materials.iter().enumerate() {
+        if !material.should_hide() {
+            sidecar_original_indices.push(orig_idx as u32);
+            filtered_materials.push(material.clone());
+        }
+    }
+    let non_hidden_materials = MtlFile {
+        materials: filtered_materials,
+        source_path: materials.source_path.clone(),
+        paint_override: materials.paint_override.clone(),
+        material_set: materials.material_set.clone(),
+    };
+    (Some(non_hidden_materials), sidecar_original_indices)
+}
+
+/// Filtered mesh view for a per-mesh GLB payload. Only the GLB format writes
+/// real mesh bytes in `write_mesh_asset`; the Blend format emits a placeholder
+/// that blend assembly fills, so the mesh clone + index rebuild is skipped
+/// there and the writer sites use [`sidecar_material_view`] alone.
+fn glb_mesh_view(
+    opts: &ExportOptions,
+    mesh: &Mesh,
+    materials: Option<&MtlFile>,
+    nmc: Option<&NodeMeshCombo>,
+) -> Option<DecomposedMaterialView> {
+    (opts.format == ExportFormat::Glb).then(|| {
+        build_decomposed_material_view(
+            mesh,
+            materials,
+            nmc,
+            opts.include_nodraw,
+            opts.include_shields,
+        )
+    })
+}
+
 pub(crate) fn build_decomposed_material_view(
     mesh: &Mesh,
     materials: Option<&MtlFile>,
@@ -1032,7 +1093,13 @@ pub(crate) fn write_decomposed_export(
     const CHILD_ASSETS_END: f32 = 0.38;
     const INTERIOR_ASSETS_END: f32 = 0.99;
 
-    let mut files = OutputFiles::new();
+    // Streaming is disabled for ui_only exports: the CLI filters non-UI files
+    // out of the write set, which is impossible once bytes hit the disk here.
+    let mut files = OutputFiles::with_stream_root(if opts.ui_only_files {
+        None
+    } else {
+        opts.stream_output_root.clone()
+    });
     let root_manufacturer_id: Option<String> =
         derive_manufacturer_id(export_entity_basename(&input.entity_name));
     // Per-ship UI values derived once from the root vehicle's DataCore
@@ -1116,8 +1183,8 @@ pub(crate) fn write_decomposed_export(
     // `prewarm_decomposed_textures`); otherwise it starts empty.
     let mut png_cache = png_cache;
     // Prewarmed, consult-only DDNA→roughness decode cache (see
-    // `prewarm_decomposed_roughness`); passed by `&` downstream.
-    let roughness_cache = roughness_cache;
+    // `prewarm_decomposed_roughness`); entries are DRAINED on consumption.
+    let mut roughness_cache = roughness_cache;
     let mut palette_records = BTreeMap::new();
     let mut livery_usage = BTreeMap::new();
     let package_leaf = package_directory_name(&input.entity_name, opts.lod_level, opts.texture_mip);
@@ -1144,13 +1211,8 @@ pub(crate) fn write_decomposed_export(
         register_palette(&mut palette_records, palette);
     }
 
-    let root_material_view = build_decomposed_material_view(
-        &input.root_mesh,
-        input.root_materials.as_ref(),
-        input.root_nmc.as_ref(),
-        opts.include_nodraw,
-        opts.include_shields,
-    );
+    let (root_sidecar_materials, root_sidecar_original_indices) =
+        sidecar_material_view(input.root_materials.as_ref(), opts.include_nodraw);
 
     // A root without geometry (no vertices, no NMC nodes) has no mesh asset.
     let root_has_geometry = !input.root_mesh.positions.is_empty()
@@ -1162,10 +1224,13 @@ pub(crate) fn write_decomposed_export(
                 p4k,
                 &input.entity_name,
                 &input.geometry_path,
-                &root_material_view.mesh,
-                root_material_view.sidecar_materials.as_ref(),
-                &root_material_view.sidecar_original_indices,
-                root_material_view.glb_nmc.as_ref(),
+                glb_mesh_view(
+                    opts,
+                    &input.root_mesh,
+                    input.root_materials.as_ref(),
+                    input.root_nmc.as_ref(),
+                )
+                .as_ref(),
                 &input.root_bones,
                 opts.lod_level,
                 opts.format,
@@ -1174,7 +1239,7 @@ pub(crate) fn write_decomposed_export(
             )
         })
         .transpose()?;
-    let root_material_sidecar = root_material_view.sidecar_materials.as_ref().map(|materials| {
+    let root_material_sidecar = root_sidecar_materials.as_ref().map(|materials| {
         if opts.ui_only_files {
             projected_material_sidecar_path(
                 p4k,
@@ -1192,13 +1257,13 @@ pub(crate) fn write_decomposed_export(
                 &mut png_cache,
                 &mut texture_cache,
                 &mut ddna_status_cache,
-                &roughness_cache,
+                &mut roughness_cache,
                 &palettes_manifest_path,
                 &input.entity_name,
                 &input.geometry_path,
                 &input.material_path,
                 materials,
-                &root_material_view.sidecar_original_indices,
+                &root_sidecar_original_indices,
                 opts.texture_mip,
                 existing_asset_paths,
                 &mut mtl_cache,
@@ -1250,7 +1315,7 @@ pub(crate) fn write_decomposed_export(
                     &mut png_cache,
                     &mut texture_cache,
                     &mut ddna_status_cache,
-                    &roughness_cache,
+                    &mut roughness_cache,
                     &palettes_manifest_path,
                     &input.entity_name,
                     &input.geometry_path,
@@ -1358,29 +1423,21 @@ pub(crate) fn write_decomposed_export(
     }
     let t_ui = ui_render_start.elapsed();
     for (index, child) in input.children.iter().enumerate() {
-        let child_material_view = build_decomposed_material_view(
-            &child.mesh,
-            child.materials.as_ref(),
-            child.nmc.as_ref(),
-            opts.include_nodraw,
-            opts.include_shields,
-        );
+        let (child_sidecar_materials, child_sidecar_original_indices) =
+            sidecar_material_view(child.materials.as_ref(), opts.include_nodraw);
         let mesh_asset = write_mesh_asset(
             &mut files,
             p4k,
             &child.entity_name,
             &child.geometry_path,
-            &child_material_view.mesh,
-            child_material_view.sidecar_materials.as_ref(),
-            &child_material_view.sidecar_original_indices,
-            child_material_view.glb_nmc.as_ref(),
+            glb_mesh_view(opts, &child.mesh, child.materials.as_ref(), child.nmc.as_ref()).as_ref(),
             &child.bones,
             opts.lod_level,
             opts.format,
             existing_asset_paths,
             opts.include_physics,
         )?;
-        let material_sidecar = child_material_view.sidecar_materials.as_ref().map(|materials| {
+        let material_sidecar = child_sidecar_materials.as_ref().map(|materials| {
             if opts.ui_only_files {
                 projected_material_sidecar_path(
                     p4k,
@@ -1398,13 +1455,13 @@ pub(crate) fn write_decomposed_export(
                     &mut png_cache,
                     &mut texture_cache,
                     &mut ddna_status_cache,
-                    &roughness_cache,
+                    &mut roughness_cache,
                     &palettes_manifest_path,
                     &child.entity_name,
                     &child.geometry_path,
                     &child.material_path,
                     materials,
-                    &child_material_view.sidecar_original_indices,
+                    &child_sidecar_original_indices,
                     opts.texture_mip,
                     existing_asset_paths,
                     &mut mtl_cache,
@@ -1415,9 +1472,9 @@ pub(crate) fn write_decomposed_export(
         if should_export_engine_glow_targets(child) {
             engine_glow_targets.extend(build_thruster_engine_glow_targets(
                 &child.mesh,
-                child_material_view.sidecar_materials.as_ref(),
+                child_sidecar_materials.as_ref(),
                 material_sidecar.as_deref(),
-                &child_material_view.sidecar_original_indices,
+                &child_sidecar_original_indices,
                 &crate::pipeline::engine_glow::glow_effect_materials(
                     db,
                     &child.entity_name,
@@ -1711,19 +1768,8 @@ pub(crate) fn write_decomposed_export(
                         }
                         continue;
                     };
-                    let interior_material_view = build_decomposed_material_view(
-                        &mesh,
-                        materials.as_ref(),
-                        if entry.cgf_path.to_ascii_lowercase().ends_with(".cga") && opts.format == ExportFormat::Glb { nmc.as_ref() } else { None },
-                        opts.include_nodraw,
-                        opts.include_shields,
-                    );
-                    log::debug!(
-                        "[interior-asset] {} submeshes: {} before -> {} after filtering",
-                        entry.name,
-                        mesh.submeshes.len(),
-                        interior_material_view.mesh.submeshes.len()
-                    );
+                    let (interior_sidecar_materials, interior_sidecar_original_indices) =
+                        sidecar_material_view(materials.as_ref(), opts.include_nodraw);
                     let requested_mesh_asset = mesh_asset_relative_path(
                         p4k,
                         &entry.cgf_path,
@@ -1731,7 +1777,7 @@ pub(crate) fn write_decomposed_export(
                         opts.lod_level,
                         opts.format,
                     );
-                    let requested_material_sidecar = interior_material_view.sidecar_materials.as_ref().map(|materials| {
+                    let requested_material_sidecar = interior_sidecar_materials.as_ref().map(|materials| {
                         projected_material_sidecar_path(
                             p4k,
                             materials,
@@ -1742,7 +1788,7 @@ pub(crate) fn write_decomposed_export(
                             &mut mtl_cache,
                         )
                     }).map(|path| normalize_material_source_for_manifest(p4k, &path));
-                    let material_sidecar = interior_material_view.sidecar_materials.as_ref().map(|materials| {
+                    let material_sidecar = interior_sidecar_materials.as_ref().map(|materials| {
                         if opts.ui_only_files {
                             projected_material_sidecar_path(
                                 p4k,
@@ -1760,13 +1806,13 @@ pub(crate) fn write_decomposed_export(
                                 &mut png_cache,
                                 &mut texture_cache,
                                 &mut ddna_status_cache,
-                                &roughness_cache,
+                                &mut roughness_cache,
                                 &palettes_manifest_path,
                                 &entry.name,
                                 &entry.cgf_path,
                                 entry.material_path.as_deref().unwrap_or(""),
                                 materials,
-                                &interior_material_view.sidecar_original_indices,
+                                &interior_sidecar_original_indices,
                                 opts.texture_mip,
                                 existing_asset_paths,
                                 &mut mtl_cache,
@@ -1787,12 +1833,19 @@ pub(crate) fn write_decomposed_export(
                             p4k,
                             &entry.name,
                             &entry.cgf_path,
-                            &interior_material_view.mesh,
-                            interior_material_view.sidecar_materials.as_ref(),
-                            &interior_material_view.sidecar_original_indices,
                             // Animated CGA interiors retain their receiving hierarchy; the loader
                             // leaves their vertices unbaked. Static CGFs retain the flat path.
-                            interior_material_view.glb_nmc.as_ref(),
+                            glb_mesh_view(
+                                opts,
+                                &mesh,
+                                materials.as_ref(),
+                                if entry.cgf_path.to_ascii_lowercase().ends_with(".cga") {
+                                    nmc.as_ref()
+                                } else {
+                                    None
+                                },
+                            )
+                            .as_ref(),
                             &[],
                             opts.lod_level,
                             opts.format,
@@ -2125,17 +2178,26 @@ pub(crate) fn write_decomposed_export(
     log::info!("[timing][decomposed] manifests: {:.2}s", phase_start.elapsed().as_secs_f32());
     log::info!("[timing][decomposed] total: {:.2}s", total_start.elapsed().as_secs_f32());
 
-    Ok(DecomposedExport {
-        files: files
-            .into_files()
-            .into_iter()
-            .map(|(relative_path, bytes)| ExportedFile {
+    let mut streamed_paths = std::collections::HashSet::new();
+    let files = files
+        .into_files()
+        .into_iter()
+        .map(|(relative_path, stored)| {
+            let bytes = match stored {
+                StoredBytes::Mem(bytes) => bytes,
+                StoredBytes::Streamed { .. } => {
+                    streamed_paths.insert(relative_path.clone());
+                    Vec::new()
+                }
+            };
+            ExportedFile {
                 kind: classify_exported_file_kind(&relative_path),
                 relative_path,
                 bytes,
-            })
-            .collect(),
-    })
+            }
+        })
+        .collect();
+    Ok(DecomposedExport { files, streamed_paths })
 }
 
 fn classify_exported_file_kind(relative_path: &str) -> ExportedFileKind {
@@ -2433,10 +2495,7 @@ fn write_mesh_asset(
     p4k: &MappedP4k,
     fallback_name: &str,
     geometry_path: &str,
-    mesh: &Mesh,
-    materials: Option<&MtlFile>,
-    sidecar_original_indices: &[u32],
-    nmc: Option<&NodeMeshCombo>,
+    glb_view: Option<&DecomposedMaterialView>,
     bones: &[Bone],
     lod_level: u32,
     format: ExportFormat,
@@ -2453,10 +2512,13 @@ fn write_mesh_asset(
     // The GLB decomposed format writes the per-mesh GLB
     // (untextured, material names preserved for sidecar slot mapping);
     // the Blend format keeps the placeholder that blend assembly fills later.
-    let bytes = if format == ExportFormat::Glb {
+    let nmc = glb_view.and_then(|view| view.glb_nmc.as_ref());
+    let bytes = if let Some(view) = glb_view {
+        let materials = view.sidecar_materials.as_ref();
+        let sidecar_original_indices = &view.sidecar_original_indices;
         // The shared sidecar contains all visible source slots, while the mesh
         // view compacts its used slots. Restore sidecar indices for GLB output.
-        let mut mesh = mesh.clone();
+        let mut mesh = view.mesh.clone();
         if materials.is_some() {
             for submesh in &mut mesh.submeshes {
                 let source = submesh.source_material_id.unwrap_or(submesh.material_id);
@@ -2511,7 +2573,11 @@ fn write_mesh_asset(
     } else {
         bytes
     };
-    Ok(insert_binary_file(files, requested_path, bytes))
+    // Stays IN MEMORY (plain insert): for the Blend format this is a placeholder
+    // that blend assembly regenerates at this same path, and a streamed
+    // placeholder would put the path into `streamed_paths`, making the CLI write
+    // loop skip the real file and leave a 0-byte .blend on disk.
+    Ok(files.insert_canonical(requested_path, bytes))
 }
 
 fn write_material_sidecar(
@@ -2520,7 +2586,7 @@ fn write_material_sidecar(
     png_cache: &mut PngCache,
     texture_cache: &mut HashMap<(String, TextureFlavor, TextureContainer), String>,
     ddna_status_cache: &mut HashMap<String, (Option<TextureExportRef>, TextureDerivationStatus)>,
-    roughness_cache: &RoughnessCache,
+    roughness_cache: &mut RoughnessCache,
     palettes_manifest_path: &str,
     fallback_name: &str,
     geometry_path: &str,
@@ -2647,7 +2713,7 @@ fn extract_material_entry(
     png_cache: &mut PngCache,
     texture_cache: &mut HashMap<(String, TextureFlavor, TextureContainer), String>,
     ddna_status_cache: &mut HashMap<String, (Option<TextureExportRef>, TextureDerivationStatus)>,
-    roughness_cache: &RoughnessCache,
+    roughness_cache: &mut RoughnessCache,
     material: &SubMaterial,
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
@@ -2900,32 +2966,66 @@ fn build_material_sidecar_value(
     let blender_material_names =
         preferred_blender_material_names(&materials.materials, source_stem);
 
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "version": 2,
         "source_material_path": source_material_path,
         "normalized_export_relative_path": relative_path,
-        "authored_material_set": {
-            "attributes": authored_attributes_json(&materials.material_set.attributes),
-            "public_params": raw_public_params_json(&materials.material_set.public_params),
-            "child_blocks": authored_blocks_json(&materials.material_set.child_blocks),
-        },
         "palette_contract": {
             "shared_manifest": palettes_manifest_path,
             "scene_instance_field": "palette_id",
         },
-        "paint_override": materials.paint_override.as_ref().map(paint_override_json),
-        "submaterials": materials.materials.iter().enumerate().map(|(i, material)| {
-            let source_index = original_indices.get(i).copied().unwrap_or(i as u32);
-            build_submaterial_json(
-                material,
-                source_material_path,
-                source_stem,
-                &blender_material_names[i],
-                source_index as usize,
-                &extracted[i],
-            )
-        }).collect::<Vec<_>>(),
-    })
+    });
+    // Pre-built `Value`s are moved in rather than routed through the `json!`
+    // leaf (`to_value(&expr)` — a deep rebuild). Map keys are content-sorted,
+    // so insertion order does not affect the serialized bytes.
+    let obj = value.as_object_mut().expect("sidecar json is an object");
+    let mut authored_material_set = serde_json::Map::new();
+    authored_material_set.insert(
+        "attributes".into(),
+        authored_attributes_json(&materials.material_set.attributes),
+    );
+    authored_material_set.insert(
+        "public_params".into(),
+        raw_public_params_json(&materials.material_set.public_params),
+    );
+    authored_material_set.insert(
+        "child_blocks".into(),
+        authored_blocks_json(&materials.material_set.child_blocks),
+    );
+    obj.insert(
+        "authored_material_set".into(),
+        serde_json::Value::Object(authored_material_set),
+    );
+    obj.insert(
+        "paint_override".into(),
+        materials
+            .paint_override
+            .as_ref()
+            .map(paint_override_json)
+            .unwrap_or(serde_json::Value::Null),
+    );
+    obj.insert(
+        "submaterials".into(),
+        serde_json::Value::Array(
+            materials
+                .materials
+                .iter()
+                .enumerate()
+                .map(|(i, material)| {
+                    let source_index = original_indices.get(i).copied().unwrap_or(i as u32);
+                    build_submaterial_json(
+                        material,
+                        source_material_path,
+                        source_stem,
+                        &blender_material_names[i],
+                        source_index as usize,
+                        &extracted[i],
+                    )
+                })
+                .collect(),
+        ),
+    );
+    value
 }
 
 fn preferred_blender_material_names(materials: &[SubMaterial], source_stem: &str) -> Vec<String> {
@@ -2997,17 +3097,7 @@ fn build_submaterial_json(
             "has_iridescence": decoded_flags.has_iridescence,
             "has_vertex_colors": decoded_flags.has_vertex_colors,
         },
-        "texture_slots": extracted.slot_exports,
         "virtual_inputs": virtual_inputs,
-        "screen_effects": screen_effects,
-        "public_params": public_params,
-        "direct_textures": extracted.direct_texture_exports.iter().map(texture_ref_json).collect::<Vec<_>>(),
-        "derived_textures": extracted.derived_texture_exports.iter().map(texture_ref_json).collect::<Vec<_>>(),
-        "ddna_derivations": extracted
-            .ddna_derivations
-            .iter()
-            .map(texture_derivation_status_json)
-            .collect::<Vec<_>>(),
         "layer_manifest": material.layers.iter().enumerate().map(|(layer_index, layer)| {
             let extracted_layer = extracted.layer_exports.get(layer_index);
             let palette_channel = palette_channel_json(layer.palette_tint, false);
@@ -3086,6 +3176,51 @@ fn build_submaterial_json(
             "layered": !material.layers.is_empty(),
         },
     });
+    // Pre-built `Value`s are MOVED into the object here instead of being routed
+    // through the `json!` macro, whose expression leaf is `to_value(&expr)` — a
+    // full serialize→deserialize deep rebuild of an already-built tree. Key
+    // order is content-sorted (`Map` is a BTreeMap), so bytes are unchanged.
+    let obj = value.as_object_mut().expect("submaterial json is an object");
+    obj.insert(
+        "authored_attributes".into(),
+        authored_attributes_json(&material.authored_attributes),
+    );
+    obj.insert(
+        "authored_public_params".into(),
+        raw_public_params_json(&material.public_params),
+    );
+    obj.insert(
+        "authored_child_blocks".into(),
+        authored_blocks_json(&material.authored_child_blocks),
+    );
+    obj.insert(
+        "texture_slots".into(),
+        serde_json::Value::Array(extracted.slot_exports.clone()),
+    );
+    obj.insert("screen_effects".into(), screen_effects);
+    obj.insert("public_params".into(), serde_json::Value::Object(public_params));
+    obj.insert(
+        "direct_textures".into(),
+        serde_json::Value::Array(
+            extracted.direct_texture_exports.iter().map(texture_ref_json).collect(),
+        ),
+    );
+    obj.insert(
+        "derived_textures".into(),
+        serde_json::Value::Array(
+            extracted.derived_texture_exports.iter().map(texture_ref_json).collect(),
+        ),
+    );
+    obj.insert(
+        "ddna_derivations".into(),
+        serde_json::Value::Array(
+            extracted
+                .ddna_derivations
+                .iter()
+                .map(texture_derivation_status_json)
+                .collect(),
+        ),
+    );
     value["emissive"] = crate::material_semantics::emissive(material);
     value["alpha_config"] = crate::material_semantics::alpha_config(material);
     value["decal"] = crate::material_semantics::decal(material).unwrap_or(serde_json::Value::Null);
@@ -3699,7 +3834,7 @@ fn export_texture_asset(
     }
 
     let bytes = match flavor {
-        TextureFlavor::Generic => crate::pipeline::cached_load_keyed(
+        TextureFlavor::Generic => crate::pipeline::take_cached_load_keyed(
             p4k,
             source_path,
             texture_mip,
@@ -3707,7 +3842,7 @@ fn export_texture_asset(
             png_cache,
             crate::pipeline::load_diffuse_texture,
         ),
-        TextureFlavor::Normal => crate::pipeline::cached_load_keyed(
+        TextureFlavor::Normal => crate::pipeline::take_cached_load_keyed(
             p4k,
             source_path,
             texture_mip,
@@ -3715,7 +3850,7 @@ fn export_texture_asset(
             png_cache,
             crate::pipeline::load_normal_texture,
         ),
-        TextureFlavor::Roughness => crate::pipeline::cached_load_keyed(
+        TextureFlavor::Roughness => crate::pipeline::take_cached_load_keyed(
             p4k,
             source_path,
             texture_mip,
@@ -4151,6 +4286,12 @@ fn export_gobo_as_exr(p4k: &MappedP4k, source_path: &str, texture_mip: u32) -> O
     // If successful, export to EXR format so Blender can sample values >1.0.
     // This preserves light energy for gobos that use HDR formats.
 
+    // Look up the entry first. The raw DataCore-style path (forward slashes,
+    // optional "Data/" prefix) never matches the backslash-separated P4K entry
+    // names (`cmp_lower_against` folds case only, not separators), so convert
+    // like every sibling P4K reader does. Without this the BC6H probe below
+    // never fired and every HDR gobo silently degraded to the SDR PNG fallback
+    // (1757 projector refs, 0 `.exr` in the corpus).
     // Look up the entry first
     let entry = p4k.entry_case_insensitive(source_path)?;
     let bytes = p4k.read(&entry).ok()?;
@@ -4252,11 +4393,24 @@ const UI_EXPORT_STAMP_NAME: &str = ".export_stamp.json";
 fn insert_ui_export_stamp(
     files: &mut OutputFiles, package_dir: &str, build_id: &str, entity: &str, opts: &ExportOptions,
 ) -> Result<(), Error> {
-    let generated: Vec<_> = files.iter()
-        .filter(|(path, _)| path.starts_with("Data/UI/Generated/"))
-        .map(|(path, bytes)| (path.as_str(), bytes.as_slice())).collect();
+    // `get` reads a streamed entry back from disk, so the payload hashes cover
+    // the bytes the export wrote whether or not they stayed in memory.
+    let generated: Vec<(String, Vec<u8>)> = files
+        .keys()
+        .filter(|path| path.starts_with("Data/UI/Generated/"))
+        .map(|path| {
+            files.get(path).map(|bytes| (path.clone(), bytes)).ok_or_else(|| {
+                Error::Other(format!("generated UI file {path} is unreadable for the export stamp"))
+            })
+        })
+        .collect::<Result<_, _>>()?;
     if generated.is_empty() { return Ok(()); }
-    let stamp = crate::export_stamp::stamp(build_id, entity, opts, generated.into_iter())?;
+    let stamp = crate::export_stamp::stamp(
+        build_id,
+        entity,
+        opts,
+        generated.iter().map(|(path, bytes)| (path.as_str(), bytes.as_slice())),
+    )?;
     insert_json_file(files, format!("{package_dir}/{UI_EXPORT_STAMP_NAME}"), stamp);
     Ok(())
 }
@@ -4267,56 +4421,140 @@ fn insert_ui_export_stamp(
 /// maps a lowercase path prefix to the canonical-cased final segment of the
 /// FIRST key that introduced it, exactly matching the previous "first key wins"
 /// behaviour.
+/// A stored output entry: bytes held in memory, or already written to disk
+/// under the export's stream root (only its length stays resident).
+pub(crate) enum StoredBytes {
+    Mem(Vec<u8>),
+    Streamed { len: u64 },
+}
+
 pub(crate) struct OutputFiles {
-    files: BTreeMap<String, Vec<u8>>,
+    files: BTreeMap<String, StoredBytes>,
     case_index: HashMap<String, String>,
+    /// When set, binary payloads inserted via [`Self::insert_canonical_streamed`]
+    /// are written straight to `<stream_root>/<canonical path>` and dropped from
+    /// memory. This is what keeps a capital-ship export from holding its whole
+    /// ~3 GB payload resident until the final CLI write loop.
+    stream_root: Option<std::path::PathBuf>,
 }
 
 impl OutputFiles {
     pub(crate) fn new() -> Self {
+        Self::with_stream_root(None)
+    }
+    pub(crate) fn with_stream_root(stream_root: Option<std::path::PathBuf>) -> Self {
         Self {
             files: BTreeMap::new(),
             case_index: HashMap::new(),
+            stream_root,
         }
     }
     pub(crate) fn contains_key(&self, key: &str) -> bool {
         self.files.contains_key(key)
     }
-    #[allow(dead_code)] // used by tests and the Phase-2 merge/logging
-    pub(crate) fn get(&self, key: &str) -> Option<&Vec<u8>> {
-        self.files.get(key)
+    /// Fetch a stored entry's bytes, reading a streamed entry back from disk.
+    /// Used by tests and the rare collision compare — not a hot path.
+    #[allow(dead_code)]
+    pub(crate) fn get(&self, key: &str) -> Option<Vec<u8>> {
+        match self.files.get(key)? {
+            StoredBytes::Mem(bytes) => Some(bytes.clone()),
+            StoredBytes::Streamed { .. } => {
+                let root = self.stream_root.as_ref()?;
+                std::fs::read(root.join(key)).ok()
+            }
+        }
     }
     #[allow(dead_code)] // used by tests and the Phase-2 merge/logging
     pub(crate) fn len(&self) -> usize {
         self.files.len()
     }
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&String, &Vec<u8>)> {
-        self.files.iter()
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &String> {
+        self.files.keys()
     }
-    /// Consume the wrapper, yielding the underlying path→bytes map (no copy).
-    pub(crate) fn into_files(self) -> BTreeMap<String, Vec<u8>> {
+    /// Consume the wrapper, yielding path → (bytes-or-streamed marker).
+    pub(crate) fn into_files(self) -> BTreeMap<String, StoredBytes> {
         self.files
+    }
+    /// Exact byte comparison against a stored entry (reads a streamed entry
+    /// back from disk — collisions on the same canonical path are rare).
+    fn stored_eq(&self, key: &str, stored: &StoredBytes, bytes: &[u8]) -> bool {
+        match stored {
+            StoredBytes::Mem(existing) => existing == bytes,
+            StoredBytes::Streamed { len } => {
+                if *len != bytes.len() as u64 {
+                    return false;
+                }
+                let Some(root) = self.stream_root.as_ref() else {
+                    return false;
+                };
+                match std::fs::read(root.join(key)) {
+                    Ok(existing) => existing == bytes,
+                    Err(_) => false,
+                }
+            }
+        }
     }
     /// Canonicalize `requested_path`'s segment case against prior inserts, then
     /// insert `bytes` (deduping identical content, hashing genuine collisions).
     /// Returns the stored path.
     pub(crate) fn insert_canonical(&mut self, requested_path: String, bytes: Vec<u8>) -> String {
+        self.insert_canonical_impl(requested_path, bytes, false)
+    }
+    /// Like [`Self::insert_canonical`], but when a stream root is configured the
+    /// bytes are written to disk immediately and only a length marker stays in
+    /// the map. Byte-identical on disk either way — the CLI write loop skips
+    /// entries that were already streamed.
+    pub(crate) fn insert_canonical_streamed(
+        &mut self,
+        requested_path: String,
+        bytes: Vec<u8>,
+    ) -> String {
+        self.insert_canonical_impl(requested_path, bytes, true)
+    }
+    fn insert_canonical_impl(
+        &mut self,
+        requested_path: String,
+        bytes: Vec<u8>,
+        streamable: bool,
+    ) -> String {
         let requested_path = self.canonicalize_case(&requested_path);
         if let Some(existing) = self.files.get(&requested_path) {
-            if existing == &bytes {
+            if self.stored_eq(&requested_path, existing, &bytes) {
                 return requested_path;
             }
         }
         let mut candidate = requested_path.clone();
         while let Some(existing) = self.files.get(&candidate) {
-            if existing == &bytes {
+            if self.stored_eq(&candidate, existing, &bytes) {
                 return candidate;
             }
             candidate = hashed_variant_path(&requested_path, &bytes);
         }
         self.record_case(&candidate);
-        self.files.insert(candidate.clone(), bytes);
+        let stored = if streamable {
+            match self.stream_write(&candidate, &bytes) {
+                Ok(len) => StoredBytes::Streamed { len },
+                Err(_) => StoredBytes::Mem(bytes),
+            }
+        } else {
+            StoredBytes::Mem(bytes)
+        };
+        self.files.insert(candidate.clone(), stored);
         candidate
+    }
+    /// Write `bytes` to `<stream_root>/<path>`, creating parent dirs. Returns
+    /// `Err` when no stream root is configured (caller keeps bytes in memory).
+    fn stream_write(&self, relative_path: &str, bytes: &[u8]) -> std::io::Result<u64> {
+        let root = self
+            .stream_root
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("no stream root"))?;
+        let path = root.join(relative_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, bytes)?;
+        Ok(bytes.len() as u64)
     }
     /// O(depth) replacement for the old `canonicalize_output_path_case` scan.
     fn canonicalize_case(&self, requested_path: &str) -> String {
@@ -4361,7 +4599,7 @@ fn insert_json_file(
 }
 
 fn insert_binary_file(files: &mut OutputFiles, requested_path: String, bytes: Vec<u8>) -> String {
-    files.insert_canonical(requested_path, bytes)
+    files.insert_canonical_streamed(requested_path, bytes)
 }
 
 fn hashed_variant_path(path: &str, bytes: &[u8]) -> String {
@@ -4957,12 +5195,19 @@ pub(crate) fn prewarm_decomposed_textures(
     assets: &[(MtlFile, String, String)],
     texture_mip: u32,
     texture_container: TextureContainer,
-) -> (PngCache, HashMap<String, Option<MtlFile>>) {
+    existing_asset_paths: Option<&HashSet<String>>,
+) -> (PngCache, HashMap<String, Option<MtlFile>>, Vec<String>) {
     // Resolve source materials + collect keys serially (cheap .mtl parses,
     // deduped via a local mtl cache). Texture DECODE is the expensive part and
     // is parallelized below.
     let mut mtl_cache: HashMap<String, Option<MtlFile>> = HashMap::new();
     let mut requests: HashSet<(String, TextureFlavor)> = HashSet::new();
+    // DDNA→roughness sources, enumerated from the SAME canonical sidecar
+    // materials the writer walks — including layer submaterials via
+    // `resolve_layer_submaterial` (previously enumerated from the raw
+    // geometry-attached materials, which missed canonical-only sources and all
+    // layer submaterials; those decoded serially inside the writer loops).
+    let mut ddna_sources: HashSet<String> = HashSet::new();
     for (materials, material_path, geometry_path) in assets {
         let source_material_path = canonical_material_source_path(
             p4k,
@@ -4981,8 +5226,40 @@ pub(crate) fn prewarm_decomposed_textures(
         for key in texture_load_keys_from_materials(&sidecar_materials) {
             requests.insert(key);
         }
+        for material in &sidecar_materials.materials {
+            for src in normal_gloss_ddna_source_paths(material) {
+                ddna_sources.insert(src);
+            }
+            for layer in &material.layers {
+                let Some(layer_mtl) = load_mtl_cached(p4k, &mut mtl_cache, &layer.path) else {
+                    continue;
+                };
+                if let Some(layer_sub) =
+                    crate::mtl::resolve_layer_submaterial(&layer_mtl, &layer.sub_material)
+                {
+                    for src in normal_gloss_ddna_source_paths(layer_sub) {
+                        ddna_sources.insert(src);
+                    }
+                }
+            }
+        }
     }
-    let jobs: Vec<(String, TextureFlavor)> = requests.into_iter().collect();
+    // Honour `--skip-existing-assets`: the writer short-circuits on
+    // `existing_asset_paths` BEFORE consulting the cache, so decoding those
+    // textures here would be paid in full and never consulted.
+    let jobs: Vec<(String, TextureFlavor)> = requests
+        .into_iter()
+        .filter(|(path, flavor)| {
+            !existing_asset_paths.is_some_and(|paths| {
+                // The PNG cache is consulted only on the writer's PNG path, so
+                // the skip key is the PNG one for either container.
+                paths.contains(
+                    &texture_relative_path(p4k, path, *flavor, texture_mip, TextureContainer::Png)
+                        .to_ascii_lowercase(),
+                )
+            })
+        })
+        .collect();
     let png_cache: PngCache = jobs
         .par_iter()
         .filter(|(path, flavor)| {
@@ -5006,8 +5283,8 @@ pub(crate) fn prewarm_decomposed_textures(
         .collect();
     // Return the source-material memo too: the serial writer seeds its own
     // `mtl_cache` from it so each `.mtl` is parsed once per export, not again
-    // during sidecar writing.
-    (png_cache, mtl_cache)
+    // during sidecar writing. `ddna_sources` feeds `prewarm_decomposed_roughness`.
+    (png_cache, mtl_cache, ddna_sources.into_iter().collect())
 }
 
 /// Parallel pre-decode of the DDNA→roughness sources the decomposed writer will
@@ -5018,30 +5295,24 @@ pub(crate) fn prewarm_decomposed_textures(
 /// `files`/`texture_cache`/`ddna_status_cache` inserts, so output is unchanged and
 /// a cache miss simply decodes serially as before.
 ///
-/// NOTE: layer submaterials resolved via `resolve_layer_submaterial` (the
-/// `.mtl`-layer branch in `extract_material_entry`) are NOT enumerated here and
-/// still decode serially on their first touch — byte-safe, partial speedup.
+/// The source set comes from `prewarm_decomposed_textures`' canonical-material
+/// walk (including layer submaterials — the former raw-material enumeration
+/// missed both, ledger amendment-11). NOT filtered by `existing_asset_paths`:
+/// the writer needs the decoded statistics for the sidecar status even when the
+/// roughness PNG itself is skipped as already-existing.
 pub(crate) fn prewarm_decomposed_roughness(
     p4k: &MappedP4k,
-    assets: &[(MtlFile, String, String)],
+    sources: &[String],
     texture_mip: u32,
     texture_container: TextureContainer,
 ) -> RoughnessCache {
     use rayon::prelude::*;
-    let mut sources: HashSet<String> = HashSet::new();
-    for (materials, _material_path, _geometry_path) in assets {
-        for material in &materials.materials {
-            for src in normal_gloss_ddna_source_paths(material) {
-                sources.insert(src);
-            }
-        }
-    }
-    let jobs: Vec<String> = sources.into_iter().collect();
-    jobs.par_iter()
+    sources
+        .par_iter()
         .map(|src| {
             (
                 src.clone(),
-                crate::pipeline::load_roughness_texture_result(
+                crate::pipeline::load_roughness_texture_status_result(
                     p4k,
                     src,
                     texture_mip,
@@ -5127,7 +5398,7 @@ fn export_ddna_roughness_asset_with_status(
     p4k: &MappedP4k,
     texture_cache: &mut HashMap<(String, TextureFlavor, TextureContainer), String>,
     ddna_status_cache: &mut HashMap<String, (Option<TextureExportRef>, TextureDerivationStatus)>,
-    roughness_cache: &RoughnessCache,
+    roughness_cache: &mut RoughnessCache,
     source_path: &str,
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
@@ -5182,12 +5453,15 @@ fn export_ddna_roughness_asset_with_status(
     // Consult the prewarmed pure-decode cache (keyed by RAW source path) before
     // decoding. This is the ONLY roughness_cache use — the `ddna_status_cache`
     // memo above and all `files`/`texture_cache` inserts below stay serial, so a
-    // cache hit replays exactly what a cold decode would produce.
+    // cache hit replays exactly what a cold decode would produce. The entry is
+    // REMOVED on consumption (the status memo above short-circuits every repeat
+    // touch of the same raw path) so the two decoded PNG buffers per source do
+    // not stay resident for the rest of the write; a re-consult would fall back
+    // to the identical serial decode.
     let result = match roughness_cache
-        .get(source_path)
-        .cloned()
+        .remove(source_path)
         .unwrap_or_else(|| {
-            crate::pipeline::load_roughness_texture_result(
+            crate::pipeline::load_roughness_texture_status_result(
                 p4k,
                 source_path,
                 texture_mip,
@@ -6220,7 +6494,7 @@ mod tests {
             .map(|e| e.name.clone())
             .find(|n| {
                 n.to_ascii_lowercase().ends_with("_ddna.dds")
-                    && crate::pipeline::load_roughness_texture_result(&p4k, n, 0,
+                    && crate::pipeline::load_roughness_texture_status_result(&p4k, n, 0,
                     TextureContainer::Png,
                 ).is_ok()
             })
@@ -6230,16 +6504,17 @@ mod tests {
         let mut f0 = OutputFiles::new();
         let mut tc0 = HashMap::new();
         let mut sc0 = HashMap::new();
-        let empty = RoughnessCache::new();
+        let mut empty = RoughnessCache::new();
         let cold = export_ddna_roughness_asset_with_status(
-            &mut f0, &p4k, &mut tc0, &mut sc0, &empty, &src, 0, None,
+            &mut f0, &p4k, &mut tc0, &mut sc0, &mut empty, &src, 0, None,
             TextureContainer::Png,
         );
 
-        // Prewarmed path: cache pre-seeded with the pure decode result.
-        let warm_cache: RoughnessCache = std::iter::once((
+        // Prewarmed path: cache pre-seeded with the pure decode result (the
+        // status variant, exactly what `prewarm_decomposed_roughness` stores).
+        let mut warm_cache: RoughnessCache = std::iter::once((
             src.clone(),
-            crate::pipeline::load_roughness_texture_result(&p4k, &src, 0,
+            crate::pipeline::load_roughness_texture_status_result(&p4k, &src, 0,
             TextureContainer::Png,
         ),
         ))
@@ -6248,7 +6523,7 @@ mod tests {
         let mut tc1 = HashMap::new();
         let mut sc1 = HashMap::new();
         let warm = export_ddna_roughness_asset_with_status(
-            &mut f1, &p4k, &mut tc1, &mut sc1, &warm_cache, &src, 0, None,
+            &mut f1, &p4k, &mut tc1, &mut sc1, &mut warm_cache, &src, 0, None,
             TextureContainer::Png,
         );
 
@@ -6260,6 +6535,10 @@ mod tests {
         assert!(
             f1.contains_key(&rel),
             "roughness PNG must be inserted on the prewarmed path"
+        );
+        assert!(
+            warm_cache.is_empty(),
+            "the prewarmed entry must be consumed (drained) on first touch"
         );
     }
 
@@ -7743,7 +8022,7 @@ mod tests {
         let stamp = files
             .get("Packages/Synthetic/.export_stamp.json")
             .expect("stamp written in the package");
-        let value: serde_json::Value = serde_json::from_slice(stamp).expect("stamp parses");
+        let value: serde_json::Value = serde_json::from_slice(&stamp).expect("stamp parses");
         assert_eq!(value["schema_version"], 2);
         assert_eq!(value["archive_build_id"], "synthetic-build");
         assert_eq!(value["exporter"]["source_sha256"], crate::export_stamp::SOURCE_SHA256);
@@ -7788,6 +8067,44 @@ mod tests {
         assert_eq!(second, "scene.json");
         assert_ne!(third, "scene.json");
         assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn streamed_inserts_write_to_disk_and_keep_dedup_semantics() {
+        let root = std::env::temp_dir().join(format!(
+            "sb_stream_test_{}_{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("t").replace("::", "_")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut of = OutputFiles::with_stream_root(Some(root.clone()));
+
+        // Streamed insert lands on disk immediately; map keeps only a marker.
+        let p = of.insert_canonical_streamed("Data/Tex/a.png".to_string(), vec![1, 2, 3]);
+        assert_eq!(p, "Data/Tex/a.png");
+        assert_eq!(std::fs::read(root.join("Data/Tex/a.png")).unwrap(), vec![1, 2, 3]);
+        assert_eq!(of.get("Data/Tex/a.png"), Some(vec![1, 2, 3]));
+
+        // Identical re-insert dedupes to the same path without a rewrite.
+        let p2 = of.insert_canonical_streamed("Data/Tex/a.png".to_string(), vec![1, 2, 3]);
+        assert_eq!(p2, "Data/Tex/a.png");
+        // Different bytes at the same path hash to a variant, matching the
+        // in-memory collision semantics.
+        let p3 = of.insert_canonical_streamed("Data/Tex/a.png".to_string(), vec![9]);
+        assert_ne!(p3, "Data/Tex/a.png");
+        assert_eq!(std::fs::read(root.join(&p3)).unwrap(), vec![9]);
+
+        // Mixed: a mem insert colliding with a streamed entry compares
+        // byte-exactly via read-back.
+        let p4 = of.insert_canonical("Data/Tex/a.png".to_string(), vec![1, 2, 3]);
+        assert_eq!(p4, "Data/Tex/a.png");
+
+        // Case canonicalization applies before the disk write.
+        let p5 = of.insert_canonical_streamed("data/tex/b.png".to_string(), vec![7]);
+        assert_eq!(p5, "Data/Tex/b.png");
+        assert!(root.join("Data/Tex/b.png").is_file());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -8480,6 +8797,61 @@ mod tests {
             "sidecar original indices should be identical"
         );
         assert_eq!(view_a.sidecar_original_indices, vec![0u32, 1u32]);
+    }
+
+    #[test]
+    fn sidecar_material_view_matches_full_view() {
+        // The mesh-free helper must reproduce the full view's sidecar pair for
+        // every branch: no materials, include_nodraw, hidden materials, and a
+        // mesh-triggered compaction (which the helper never sees — the full
+        // view returns the pre-compaction non-hidden set for the sidecar).
+        let mut hull = sample_submaterial();
+        hull.name = "hull".into();
+        let mut hidden = sample_submaterial();
+        hidden.name = "proxy".into();
+        hidden.shader = "NoDraw".into();
+        hidden.is_nodraw = true;
+        let mut decal = sample_submaterial();
+        decal.name = "decal".into();
+
+        let materials = MtlFile {
+            materials: vec![hull, hidden, decal],
+            source_path: Some("Data/Objects/Ships/Test/hull.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
+        };
+        // Mesh referencing only material 0 → hide-filter AND compaction fire.
+        let mesh = sample_mesh(vec![crate::types::SubMesh {
+            material_name: Some("hull".into()),
+            material_id: 0,
+            source_material_id: None,
+            first_index: 0,
+            num_indices: 3,
+            first_vertex: 0,
+            num_vertices: 3,
+            node_parent_index: 0,
+        }]);
+
+        for include_nodraw in [false, true] {
+            let full =
+                build_decomposed_material_view(&mesh, Some(&materials), None, include_nodraw, false);
+            let (sidecar, indices) = sidecar_material_view(Some(&materials), include_nodraw);
+            assert_eq!(
+                format!("{sidecar:?}"),
+                format!("{:?}", full.sidecar_materials),
+                "sidecar materials must match full view (include_nodraw={include_nodraw})"
+            );
+            assert_eq!(
+                indices, full.sidecar_original_indices,
+                "sidecar indices must match full view (include_nodraw={include_nodraw})"
+            );
+        }
+
+        // No materials → (None, []) on both paths.
+        let full = build_decomposed_material_view(&mesh, None, None, false, false);
+        let (sidecar, indices) = sidecar_material_view(None, false);
+        assert_eq!(format!("{sidecar:?}"), format!("{:?}", full.sidecar_materials));
+        assert_eq!(indices, full.sidecar_original_indices);
     }
 
     // Phase 58 invariants (source-vs-geometry identity, mip encoding) and the

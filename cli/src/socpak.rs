@@ -94,7 +94,13 @@ fn export(
                         path: parent.display().to_string(),
                     })?;
                 }
-                write_decomposed_file(file, &output_path, opts.skip_existing_assets, &p4k)?;
+                write_decomposed_file(
+                    file,
+                    &output_path,
+                    opts.skip_existing_assets,
+                    &p4k,
+                    decomposed.streamed_paths.contains(&file.relative_path),
+                )?;
             }
             eprintln!(
                 "Written decomposed socpak Blender package with {} files to {}",

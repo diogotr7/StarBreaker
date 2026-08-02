@@ -27,8 +27,9 @@ thread_local! {
 use self::textures::*;
 pub(crate) use self::textures::cached_load;
 pub(crate) use self::textures::{
-    PngCache, RoughnessCache, cached_load_keyed, load_diffuse_texture, load_normal_texture,
-    load_roughness_texture, load_roughness_texture_result, load_package_texture_dds, png_cache_key,
+    PngCache, RoughnessCache, load_diffuse_texture, load_normal_texture,
+    load_roughness_texture, load_roughness_texture_status_result, load_package_texture_dds,
+    png_cache_key, take_cached_load_keyed,
 };
 mod interiors;
 pub(crate) use self::interiors::*;
@@ -193,6 +194,11 @@ pub struct ExportOptions {
     #[serde(serialize_with = "crate::export_stamp::serialize_socpak_filter")]
     pub socpak_path_filter: Option<HashSet<String>>,
     pub geometry_tag: Option<String>,
+    /// When set, large binary payloads (textures, UI renders, EXRs) are written
+    /// straight to `<root>/<relative path>` as they are produced instead of
+    /// accumulating in memory until the final write loop. The write loop skips
+    /// paths listed in `DecomposedExport::streamed_paths`.
+    pub stream_output_root: Option<std::path::PathBuf>,
 }
 
 impl Default for ExportOptions {
@@ -218,6 +224,7 @@ impl Default for ExportOptions {
             ui_only_files: false,
             socpak_path_filter: None,
             geometry_tag: None,
+            stream_output_root: None,
         }
     }
 }
@@ -250,6 +257,10 @@ impl ExportFormat {
 #[derive(Debug, Clone, Default)]
 pub struct DecomposedExport {
     pub files: Vec<ExportedFile>,
+    /// Relative paths whose bytes were already streamed to disk during the
+    /// export (see `ExportOptions::stream_output_root`); their `ExportedFile`
+    /// carries empty bytes and the write loop must not rewrite them.
+    pub streamed_paths: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

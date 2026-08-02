@@ -83,7 +83,14 @@ pub(crate) fn write_decomposed_file(
     output_path: &PathBuf,
     skip_existing_assets: bool,
     p4k: &MappedP4k,
+    streamed: bool,
 ) -> Result<()> {
+    if streamed {
+        // Bytes were already written to this exact path during the export
+        // (ExportOptions::stream_output_root); only the source mtime remains.
+        apply_source_mtime(output_path, p4k, &file.relative_path)?;
+        return Ok(());
+    }
     if output_path.exists() {
         if !output_path.is_file() {
             return Err(CliError::InvalidInput(format!(
@@ -568,6 +575,10 @@ fn export(
             starbreaker_3d::ExportKind::Decomposed => PathBuf::from(name.clone()),
         }
     });
+    let mut export_opts = export_opts;
+    if export_opts.kind == starbreaker_3d::ExportKind::Decomposed {
+        export_opts.stream_output_root = Some(output.clone());
+    }
     let existing_asset_paths = if export_opts.kind == starbreaker_3d::ExportKind::Decomposed
         && opts.skip_existing_assets
     {
@@ -646,17 +657,36 @@ fn export(
                 export_opts.lod_level, export_opts.texture_mip
             );
             prepare_decomposed_output_root(&output, &package_name)?;
-            for file in &decomposed.files {
-                if opts.ui_only_files && !should_write_ui_only_decomposed_file(&file.relative_path) {
-                    continue;
-                }
-                let output_path = output.join(&file.relative_path);
-                if let Some(parent) = output_path.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| CliError::IoPath { source: e, path: parent.display().to_string() })?;
-                }
-                write_decomposed_file(file, &output_path, opts.skip_existing_assets, &p4k)?;
+            // Parallel write: paths are distinct (`OutputFiles` guarantees
+            // uniqueness) so ordering is irrelevant to the on-disk result.
+            // Parent dirs are deduped and created up front — `create_dir_all`
+            // per file was one syscall-heavy serial pass over ~2.4k files.
+            use rayon::prelude::*;
+            let files_to_write: Vec<_> = decomposed
+                .files
+                .iter()
+                .filter(|file| {
+                    !opts.ui_only_files || should_write_ui_only_decomposed_file(&file.relative_path)
+                })
+                .collect();
+            let parents: HashSet<PathBuf> = files_to_write
+                .iter()
+                .filter_map(|file| output.join(&file.relative_path).parent().map(Path::to_path_buf))
+                .collect();
+            for parent in &parents {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| CliError::IoPath { source: e, path: parent.display().to_string() })?;
             }
+            files_to_write.par_iter().try_for_each(|file| {
+                let output_path = output.join(&file.relative_path);
+                write_decomposed_file(
+                    file,
+                    &output_path,
+                    opts.skip_existing_assets,
+                    &p4k,
+                    decomposed.streamed_paths.contains(&file.relative_path),
+                )
+            })?;
         }
     }
     crate::log_mem_stats("after write");
@@ -705,6 +735,7 @@ fn export_blend(
         export_opts.kind = starbreaker_3d::ExportKind::Decomposed;
 
         let output_dir = output.unwrap_or_else(|| PathBuf::from(&name));
+        export_opts.stream_output_root = Some(output_dir.clone());
         let package_name = format!(
             "{export_name}_LOD{}_TEX{}",
             export_opts.lod_level, export_opts.texture_mip
@@ -758,7 +789,13 @@ fn export_blend(
                     path: parent.display().to_string(),
                 })?;
             }
-            write_decomposed_file(file, &output_path, opts.skip_existing_assets, &p4k)?;
+            write_decomposed_file(
+                file,
+                &output_path,
+                opts.skip_existing_assets,
+                &p4k,
+                decomposed.streamed_paths.contains(&file.relative_path),
+            )?;
         }
 
         let scene_json_path = output_dir.join("Packages").join(&package_name).join("scene.json");

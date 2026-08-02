@@ -926,7 +926,13 @@ pub fn write_decomposed_export_blend(
         material_mode: crate::pipeline::MaterialMode::Colors,
         ..opts.clone()
     };
+    let preload_start = Instant::now();
     let preloaded_interior_meshes = preload_interior_meshes(&input.interiors, p4k, &interior_mesh_opts);
+    log::info!(
+        "[timing][blend] preload_interior_meshes: {:.2}s ({} unique cgfs)",
+        preload_start.elapsed().as_secs_f32(),
+        preloaded_interior_meshes.len(),
+    );
     let mut preloaded_interior_mesh_map: HashMap<String, Option<(Mesh, Option<crate::mtl::MtlFile>, Option<crate::nmc::NodeMeshCombo>)>> = input
         .interiors
         .unique_cgfs
@@ -968,15 +974,10 @@ pub fn write_decomposed_export_blend(
             &entry.cgf_path,
             entry.material_path.as_deref(),
         );
-        if let Some(Some((mesh, materials, nmc))) = preloaded_interior_mesh_map.get(&lookup_key) {
-            let view = crate::decomposed::build_decomposed_material_view(
-                mesh,
-                materials.as_ref(),
-                nmc.as_ref(),
-                opts.include_nodraw,
-                opts.include_shields,
-            );
-            if let Some(sidecar_materials) = view.sidecar_materials {
+        if let Some(Some((_mesh, materials, _nmc))) = preloaded_interior_mesh_map.get(&lookup_key) {
+            let (sidecar_materials, _) =
+                crate::decomposed::sidecar_material_view(materials.as_ref(), opts.include_nodraw);
+            if let Some(sidecar_materials) = sidecar_materials {
                 prewarm_assets.push((
                     sidecar_materials,
                     entry.material_path.clone().unwrap_or_default(),
@@ -985,8 +986,14 @@ pub fn write_decomposed_export_blend(
             }
         }
     }
-    let (prewarmed_png_cache, prewarmed_mtl_cache) =
-        crate::decomposed::prewarm_decomposed_textures(p4k, &prewarm_assets, opts.texture_mip, opts.texture_container);
+    let (prewarmed_png_cache, prewarmed_mtl_cache, prewarm_ddna_sources) =
+        crate::decomposed::prewarm_decomposed_textures(
+            p4k,
+            &prewarm_assets,
+            opts.texture_mip,
+            opts.texture_container,
+            existing_asset_paths,
+        );
     log::info!(
         "[timing][blend] prewarm_textures: {:.2}s ({} assets, {} cached, {} mtl)",
         prewarm_start.elapsed().as_secs_f32(),
@@ -996,7 +1003,7 @@ pub fn write_decomposed_export_blend(
     );
     let prewarm_rough_start = Instant::now();
     let prewarmed_roughness_cache =
-        crate::decomposed::prewarm_decomposed_roughness(p4k, &prewarm_assets, opts.texture_mip, opts.texture_container);
+        crate::decomposed::prewarm_decomposed_roughness(p4k, &prewarm_ddna_sources, opts.texture_mip, opts.texture_container);
     log::info!(
         "[timing][blend] prewarm_roughness: {:.2}s ({} sources)",
         prewarm_rough_start.elapsed().as_secs_f32(),
@@ -1013,7 +1020,6 @@ pub fn write_decomposed_export_blend(
                 let mut interior_png_cache = PngCache::new();
                 load_interior_mesh_asset(p4k, entry, &interior_mesh_opts, &mut interior_png_cache)
             })?;
-        let (mesh, materials, nmc) = loaded.clone();
         let mesh_asset = crate::decomposed::mesh_asset_relative_path(
             p4k,
             &entry.cgf_path,
@@ -1022,9 +1028,9 @@ pub fn write_decomposed_export_blend(
             opts.format,
         );
         let material_view = crate::decomposed::build_decomposed_material_view(
-            &mesh,
-            materials.as_ref(),
-            nmc.as_ref(),
+            &loaded.0,
+            loaded.1.as_ref(),
+            loaded.2.as_ref(),
             opts.include_nodraw,
             opts.include_shields,
         );
@@ -1065,6 +1071,7 @@ pub fn write_decomposed_export_blend(
         report_progress(progress, 1.0, "Export complete");
         return Ok(base_export);
     }
+    let streamed_paths = base_export.streamed_paths.clone();
     phase_start = Instant::now();
 
     // Extract updated projector_texture paths from the generated scene.json
@@ -1291,11 +1298,14 @@ pub fn write_decomposed_export_blend(
         }
     }
 
+    // Parse the (possibly just-mutated) scene manifest once; the 8+ MB
+    // scene.json was previously re-parsed at every consumer below.
+    let manifest_instances = scene_manifest_instances(&manifest_files);
     let mut scheduled_blend_assets = blend_asset_jobs
         .iter()
         .map(|job| job.blend_path.to_ascii_lowercase())
         .collect::<HashSet<_>>();
-    for instance in scene_manifest_instances(&manifest_files) {
+    for instance in &manifest_instances {
         if scheduled_blend_assets.insert(instance.mesh_asset.to_ascii_lowercase()) {
             let mesh_name = instance
                 .mesh_asset
@@ -1361,7 +1371,6 @@ pub fn write_decomposed_export_blend(
                 .map(ToOwned::to_owned)
         })
         .unwrap_or_else(|| scene_entity_name.clone());
-    let manifest_instances = scene_manifest_instances(&manifest_files);
     let mut used_scene_object_names = HashMap::new();
     if manifest_instances.is_empty() {
         for (scene_instance_id, file) in blend_files.iter().enumerate() {
@@ -1530,7 +1539,7 @@ pub fn write_decomposed_export_blend(
 
     report_progress(progress, 1.0, "Export complete");
 
-    Ok(DecomposedExport { files: all_files })
+    Ok(DecomposedExport { files: all_files, streamed_paths })
 }
 
 /// Convert a mesh to `.blend` file bytes (uncompressed).
