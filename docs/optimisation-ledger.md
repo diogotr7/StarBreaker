@@ -535,3 +535,104 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
   clean); rebuilt + redeployed; initialize handshake smoke green over stdio.
   Compile-time/dep-graph win only: release `-p starbreaker-mcp` rebuild
   45.33s → 28.29s (~17s, fewer tokio deps compiled). (commit `83a07950b`)
+
+## Pass 2026-08-02 — full-pipeline review + implementation (multi-agent)
+
+Review report: `docs/superpowers/plans/2026-08-02-perf-review.md`. Baselines
+(3-run medians, load<2, `perf_bench.sh`): Carrack 45.86s / 13.31G, Clipper
+37.80s / 9.48G. Byte oracle: `diff -rq` EMPTY vs `carrack_post1` +
+`clipper_pre_aug02` for the perf batch; two-run determinism diff empty.
+
+### Landed (byte-identical batch)
+
+- **Mesh-free sidecar view.** `write_mesh_asset` ignores its mesh args (empty
+  placeholder), so `build_decomposed_material_view`'s mesh clone + index
+  rebuild at the three writer sites + the blend prewarm site was dead work.
+  New `sidecar_material_view(materials, include_nodraw)` returns the
+  `(sidecar_materials, sidecar_original_indices)` pair — a pure function of
+  the material list (the full view only selects between two content-equal
+  representations). Equivalence locked by
+  `sidecar_material_view_matches_full_view`.
+- **Cache drains.** `export_texture_asset` consumes `png_cache` via
+  `take_cached_load_keyed` (entry REMOVED on first successful consume; the
+  `texture_cache` guard precedes every consult, incl. the slot/palette sites);
+  `RoughnessCache` threaded `&mut` and drained on consult (guarded by
+  `ddna_status_cache`). Kills the duplicate residency of every decoded PNG.
+- **Prewarm fixes.** Both prewarms now honour `existing_asset_paths`
+  (texture prewarm filtered by the writer's own skip key; roughness prewarm
+  NOT filtered — the decode feeds status metadata even when the write is
+  skipped). Roughness enumeration moved into `prewarm_decomposed_textures`'
+  canonical-material walk incl. layer submaterials via
+  `resolve_layer_submaterial` — closes amendment-11 AND the undocumented
+  canonical-vs-raw gap. D5 trap still honoured (`ddna_status_cache` never
+  seeded).
+- **Dead metallicRoughness encode.** `load_roughness_texture_status_result`
+  skips the RGBA PNG encode (`png` empty) on the status/prewarm path; only the
+  GLB `load_material_textures` path still pays it.
+- **scene.json parse-once** in blend_assembly (was 3-4 full parses of 8.4 MB);
+  **`json!` → move-inserts** for pre-built Values in the two sidecar builders
+  (macro leaf is `to_value(&expr)` — a deep rebuild; `Map` is a BTreeMap so
+  key order/bytes unchanged); **interior loader tuple clone** removed;
+  **parallel final write** with parent-dir dedupe in the CLI;
+  **`preload_interior_meshes` timer** added.
+- **UI render batch** (all bit-exact, exhaustive tests in the item-6 style):
+  opaque-source short-circuit in `blend_premul_linear`/`blend_straight_linear`
+  — item-6's "encode∘decode not provably identity" is OVERTURNED (verified:
+  0/256 mismatches in f32, margin ~0.49998 from the rounding boundary);
+  per-blit `[f32;256]` tint LUTs in `blit_atlas_image_tinted_with_mode`;
+  `strip_custom_shape_uniform_matte` by-value (4 full-image clones gone);
+  `env::var` → OnceLock at 3 per-node sites; predicate reorder before the
+  O(nodes) scan; SWF `code→glyph` HashMap (was linear scan per char).
+- **Streaming output (R1).** `OutputFiles` gained a `stream_root`: binary
+  payloads (`insert_binary_file` — textures, UI PNGs, EXRs) are written to
+  `<output>/<path>` at insert and only a length marker stays resident;
+  `DecomposedExport.streamed_paths` tells the CLI write loop to skip them
+  (mtime still applied). Collision compare reads streamed entries back
+  (rare); mesh PLACEHOLDERS stay in memory — streaming them put their paths
+  into `streamed_paths` and the CLI then skipped blend_assembly's REAL
+  `.blend` bytes, leaving 0-byte files (caught by the oracle: 925 empty
+  blends). Disabled for `ui_only_files`. Off by default
+  (`stream_output_root: None`) — the CLI enables it for decomposed exports.
+- **Addon batch** (9 items): `children_recursive` for the POM bitangent walk,
+  per-draw NLA mute-state map, `resolve_path` memo, numpy gobo mean-luminance
+  (`foreach_get`, ~50-100×), height-bias negative cache (BUGFIX), dead
+  palette-memo argument (BUGFIX), submaterial identity-hash fast path, POM
+  sampler signature stamp, POM canonical-map cache, `batch_remove` purges +
+  user-image purge guard (BUGFIX: only addon-stamped images), poll memo.
+- **Disk.** `target/release/deps` swept keeping the `starbreaker-<hash>`
+  ladder + newest generation per crate: **5.93 GB reclaimed** (7.7G→2.1G).
+  AGENTS.md retention note corrected (old "~1.2 G ladder" was 6× stale and
+  `cargo sweep --time` pointed at the wrong tree / would eat the ladder).
+
+### Landed (output-changing bug fix, own commit)
+
+- **HDR gobo export was fully dead (B1, two stacked bugs).**
+  `export_gobo_as_exr` (a) got the RAW DataCore-style path
+  (`entry_case_insensitive` folds case, not separators → never matched) and
+  (b) used `DdsFile::from_bytes` with no sibling reader while every gobo ships
+  as header-only `.dds` + `.dds.N` split mips → BC6H decode always failed.
+  All 33 unique Carrack projector textures are BC6hUf16; every one silently
+  degraded to the SDR PNG fallback. Fixed with `datacore_path_to_p4k` +
+  `from_split(P4kSiblingReader)`; gated TDD test
+  `gobo_exr_export_accepts_datacore_style_paths` (fails pre-fix). Two more
+  latent issues surfaced and fixed: the exr crate's parallel compressor is
+  NON-DETERMINISTIC (same input → different bytes; hashed-variant spam) →
+  `.write().non_parallel()`; and the per-light export had no memo (1757
+  encodes of 33 textures) → `gobo_export_cache` keyed by raw source path.
+  Expected diff vs `carrack_post1`: +33 `.exr`, −31 stale PNG fallbacks,
+  scene.json/scene.blend path updates; two-run determinism diff empty.
+
+### Test-infra fixes (pre-existing, per owner instruction)
+
+- `manifest_targets_whole_image_colour_regression_guard` STALE-EXPORT failure
+  cleared by re-exporting the Clipper into `ships/` — and the guard then
+  PASSED against the frozen SHAs, independently confirming the UI batch is
+  byte-identical.
+- `library_construction_parses_once` was flaky under the parallel harness
+  (global `AtomicU64` counted other tests' constructions); `SWF_PARSE_COUNT`
+  is now thread-local.
+
+### Post-change medians (see bench logs)
+
+Recorded after the final quiet-machine bench — see the report addendum /
+commit message for the numbers.

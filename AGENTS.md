@@ -41,8 +41,14 @@ are the time-travel-bisect ladder — see `docs/optimisation-ledger.md` item 4):
 
 - **Debug tree:** if a `target/debug` tree regrows, run `cargo sweep --time 30`
   from the repo root (install `cargo-sweep` first). Never blind-`clean`.
-- **`release/deps` bisect ladder (~1.2 G):** leave it — it is the bisect
-  mechanism recorded in the optimisation ledger.
+  Note: `cargo sweep` is atime/mtime-based — an actively used debug tree
+  reclaims nothing; the stale bytes historically live in `release/deps`.
+- **`release/deps`:** the bisect ladder is ONLY the bare `starbreaker-<hash>`
+  CLI binaries (~0.5 G) — never delete those. Stale `.rlib`/`.rmeta`/`.so`
+  generations (multiple hashes per crate name) can be swept by keeping the
+  newest generation per crate name; ~6 G was reclaimed that way 2026-08-02.
+  Do NOT `cargo sweep` this dir — its time cutoff would delete old ladder
+  binaries.
 - **`graphify-out/`** (only if graphify is in use): keep the live
   `graph.json` (plus `cache/`, `cost.json`, `manifest.json`) and the 3
   newest dated snapshot dirs; delete older ones:
