@@ -55,8 +55,8 @@ while [[ $# -gt 0 ]]; do
 done
 [[ "$runs" =~ ^[0-9]+$ && "$runs" -ge 1 ]] || { echo "perf_bench: --runs must be a positive integer" >&2; exit 64; }
 
-bin="$repo_root/target/release/starbreaker"
-[[ -x "$bin" ]] || { echo "perf_bench: no release binary at $bin (cargo build --release -p starbreaker)" >&2; exit 1; }
+bin="${SB_BENCH_BIN:-$repo_root/target/release/starbreaker}"
+[[ -x "$bin" ]] || { echo "perf_bench: no binary at $bin (cargo build --release -p starbreaker, or set SB_BENCH_BIN)" >&2; exit 1; }
 
 mkdir -p "$outdir"
 

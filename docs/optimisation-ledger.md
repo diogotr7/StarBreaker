@@ -642,3 +642,16 @@ Review report: `docs/superpowers/plans/2026-08-02-perf-review.md`. Baselines
   (run-1 dirs of the post bench). `*_post1` retained pending owner retirement —
   vs `_aug02` they differ only by the gobo fix (+33 .exr, −31 png fallbacks,
   scene.json/scene.blend paths).
+
+### R2 spike result — `[profile.perf]` (fat LTO + codegen-units=1 + target-cpu=x86-64-v3)
+
+- Build: `RUSTFLAGS="-C target-cpu=x86-64-v3" cargo build --profile perf -p starbreaker`
+  (~4.5 min). Binary `target/perf/starbreaker`, 21 MB (vs release ~thin-LTO).
+- Byte oracle vs `{carrack,clipper}_aug02`: **BYTE-IDENTICAL** both ships —
+  the vectorised/inlined codegen changes no output bytes.
+- Medians (3 runs, quiet gate): Carrack **33.41s** (vs 37.01s release, −9.7%),
+  RSS 9.12G (flat); Clipper **26.36s** (vs 29.40s, −10.3%), RSS 5.54G (flat).
+- KEPT: `[profile.perf]` in the workspace `Cargo.toml`. NON-PORTABLE with the
+  RUSTFLAGS pairing — local-only, never ship that combination. Benchmarks of
+  perf-profile binaries via `SB_BENCH_BIN=target/perf/starbreaker
+  scripts/perf_bench.sh ...`; keep comparing like-for-like profiles.

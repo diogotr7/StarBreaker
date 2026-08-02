@@ -20,6 +20,15 @@ opt-level = 3
 lto = "thin"
 strip = true
 
+# Opt-in local perf profile (2026-08-02 spike): fat LTO + one codegen unit for
+# maximum inlining of the pixel/compositor hot loops. Pair with
+# RUSTFLAGS="-C target-cpu=x86-64-v3" for a NON-PORTABLE local binary — never
+# ship that combination. Byte-oracle-verified before use.
+[profile.perf]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
 
 [workspace.lints.rust]
 warnings = { level = "warn" }
