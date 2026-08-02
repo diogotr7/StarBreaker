@@ -780,11 +780,22 @@ class STARBREAKER_OT_refresh_materials(Operator):
     bl_description = "Rebuild StarBreaker materials without reimporting meshes, empties, or lights"
 
     package_root_name: StringProperty(options={"HIDDEN"}, default="")  # type: ignore[assignment]
+    #: ``(object count, any package root)`` — see :meth:`poll`.
+    _any_package_root_cache: tuple[int, bool] | None = None
+
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
-        return _package_root_from_context(context) is not None or any(
-            bool(obj.get(PROP_PACKAGE_ROOT)) for obj in bpy.data.objects
-        )
+        if _package_root_from_context(context) is not None:
+            return True
+        # The fallback scans every object in the file and this poll runs on
+        # every sidebar redraw. Package roots only appear or disappear when
+        # objects do, so memoise against the object count.
+        count = len(bpy.data.objects)
+        cached = cls._any_package_root_cache
+        if cached is None or cached[0] != count:
+            cached = (count, any(bool(obj.get(PROP_PACKAGE_ROOT)) for obj in bpy.data.objects))
+            cls._any_package_root_cache = cached
+        return cached[1]
 
     def _package_root(self, context: bpy.types.Context) -> bpy.types.Object | None:
         if self.package_root_name:
@@ -1155,15 +1166,22 @@ class STARBREAKER_OT_delete_animation_instance(Operator):
         return {"FINISHED"}
 
 
-def _nla_track_mute_state(package_root: bpy.types.Object, track_name: str) -> bool:
-    """Return True when the named NLA track is muted on any object in the package."""
+def _nla_track_mute_states(package_root: bpy.types.Object) -> dict[str, bool]:
+    """Map track name -> mute state for every NLA track in the package.
+
+    First occurrence wins, matching the old per-track lookup that returned the
+    first match in this same traversal order. The sidebar asks about one track
+    per animation instance; querying each separately re-walked the whole
+    package (``children_recursive`` is ``O(len(bpy.data.objects))``) once per
+    instance, every redraw.
+    """
+    states: dict[str, bool] = {}
     for obj in [package_root, *package_root.children_recursive]:
         if not obj.animation_data:
             continue
         for track in obj.animation_data.nla_tracks:
-            if track.name == track_name:
-                return track.mute
-    return False
+            states.setdefault(track.name, track.mute)
+    return states
 
 
 def _set_nla_track_mute(
@@ -1419,6 +1437,8 @@ class STARBREAKER_PT_tools(Panel):
                     for values in instances_by_animation.values():
                         values.sort(key=lambda item: float(item.get("start_frame", 1.0)))
                     fps_policy = getattr(context.scene, _SCENE_ANIMATION_FPS_POLICY_PROP, "adapt_scene")
+                    # One hierarchy walk per redraw, not one per instance row.
+                    nla_mute_states = _nla_track_mute_states(package_root)
                     for animation_name, animation_display_name in animation_items:
                         animation_box.label(text=animation_display_name)
                         current_mode = mode_map.get(animation_name, "none")
@@ -1439,7 +1459,7 @@ class STARBREAKER_PT_tools(Panel):
                                 start = int(round(float(instance.get("start_frame", 1.0))))
                                 instance_id = str(instance.get("id", ""))
                                 track_name = f"{animation_name}@{start}"
-                                is_muted = _nla_track_mute_state(package_root, track_name)
+                                is_muted = nla_mute_states.get(track_name, False)
 
                                 row = animation_box.row(align=True)
                                 row.label(text=animation_display_name)

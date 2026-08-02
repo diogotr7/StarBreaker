@@ -96,40 +96,50 @@ _RUNTIME_GROUP_PREFIXES: tuple[str, ...] = (
 )
 
 
+#: ID-property stamps the addon writes onto every image datablock it loads.
+#: Their presence is what marks an image as addon-owned and therefore safe to
+#: purge when it falls to zero users.
+_ADDON_IMAGE_STAMPS: tuple[str, ...] = (
+    "starbreaker_source_mtime_ns",
+    "starbreaker_gobo_mean_luminance",
+)
+
+
+def _batch_remove(ids: list) -> int:
+    """Drop ``ids`` in one ``bpy.data.batch_remove`` call.
+
+    Per-datablock ``.remove()`` re-runs Blender's internal user-remap
+    bookkeeping every time; ``batch_remove`` does it once for the whole set.
+    """
+    if not ids:
+        return 0
+    bpy.data.batch_remove(ids=ids)
+    return len(ids)
+
+
 def _purge_orphaned_runtime_groups() -> int:
-    removed = 0
-    for group in list(bpy.data.node_groups):
-        if group.users > 0:
-            continue
-        name = group.name
-        if any(name.startswith(prefix) for prefix in _RUNTIME_GROUP_PREFIXES):
-            bpy.data.node_groups.remove(group)
-            removed += 1
-    return removed
+    return _batch_remove([
+        group
+        for group in bpy.data.node_groups
+        if group.users == 0
+        and any(group.name.startswith(prefix) for prefix in _RUNTIME_GROUP_PREFIXES)
+    ])
 
 
 def _purge_orphaned_managed_materials() -> int:
-    removed = 0
-    for material in list(bpy.data.materials):
-        if material.users > 0:
-            continue
-        if not material.get("starbreaker_material_identity"):
-            continue
-        bpy.data.materials.remove(material)
-        removed += 1
-    return removed
+    return _batch_remove([
+        material
+        for material in bpy.data.materials
+        if material.users == 0 and material.get("starbreaker_material_identity")
+    ])
 
 
 def _purge_orphaned_runtime_actions() -> int:
-    removed = 0
-    for action in list(bpy.data.actions):
-        if action.users > 0:
-            continue
-        if not action.name.startswith("HeightMapAction"):
-            continue
-        bpy.data.actions.remove(action)
-        removed += 1
-    return removed
+    return _batch_remove([
+        action
+        for action in bpy.data.actions
+        if action.users == 0 and action.name.startswith("HeightMapAction")
+    ])
 
 
 def _purge_orphaned_file_backed_images() -> int:
@@ -144,16 +154,18 @@ def _purge_orphaned_file_backed_images() -> int:
     pixel data (and, transitively, the VRAM Cycles would have uploaded
     for them).
 
-    Only file-backed images are considered, so internal datablocks like
-    ``Render Result`` and ``Viewer Node`` (which always have
-    ``users == 0`` and no backing file) are left alone.
+    Only file-backed images the addon itself loaded are considered — every
+    such load stamps one of :data:`_ADDON_IMAGE_STAMPS` (see
+    ``MaterialsMixin._refresh_image_source`` and the gobo loader in
+    ``orchestration``). Without that restriction this purged *any* zero-user
+    file-backed image, including ones the user had loaded by hand and merely
+    left unassigned. Stampless datablocks like ``Render Result`` and
+    ``Viewer Node`` (which always have ``users == 0``) are likewise left alone.
     """
-    removed = 0
-    for image in list(bpy.data.images):
-        if image.users > 0:
-            continue
-        if not image.filepath:
-            continue
-        bpy.data.images.remove(image)
-        removed += 1
-    return removed
+    return _batch_remove([
+        image
+        for image in bpy.data.images
+        if image.users == 0
+        and image.filepath
+        and any(image.get(stamp) is not None for stamp in _ADDON_IMAGE_STAMPS)
+    ])

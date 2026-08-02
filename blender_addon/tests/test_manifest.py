@@ -466,6 +466,26 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual(resolved, target)
             self.assertIsNone(bundle._path_index)
 
+    def test_repeated_misses_are_memoised(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle = PackageBundle(
+                export_root=root,
+                scene_path=root / "Packages" / "X" / "scene.json",
+                scene=None,
+                palettes={},
+                liveries={},
+                paints={},
+            )
+            self.assertIsNone(bundle.resolve_path("Data/Objects/missing.glb"))
+            self.assertIsNotNone(bundle._path_index)
+            # A repeat miss must answer from the memo without rebuilding the
+            # index (the rebuild is guarded by ``_path_index`` being None).
+            bundle._path_index = None
+            self.assertIsNone(bundle.resolve_path("Data/Objects/missing.glb"))
+            self.assertIsNone(bundle._path_index)
+
 
 
 

@@ -534,6 +534,7 @@ class MaterialsMixin:
             palette,
             palette_scope,
             ui_image_path=ui_image_path,
+            material_identity=material_identity,
         ):
             return preferred
 
@@ -551,6 +552,7 @@ class MaterialsMixin:
             palette,
             palette_scope,
             ui_image_path=ui_image_path,
+            material_identity=material_identity,
         ):
             return indexed_material
         return None

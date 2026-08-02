@@ -38,6 +38,10 @@ from ..node_utils import (
 
 _POM_LIBRARY_PATH = Path(__file__).resolve().parent.parent.parent / "resources" / "pom_library.blend"
 _SCREEN_EFFECTS_LIBRARY_PATH = Path(__file__).resolve().parent.parent.parent / "resources" / "screen_effects_library.blend"
+#: Stamped on an appended POM root group with the ``(height image, sampler
+#: extension)`` its internal samplers were last bound to, so a cache hit can
+#: skip the whole-chain re-walk.
+_POM_SAMPLER_SIGNATURE_PROP = "starbreaker_pom_sampler_signature"
 _POM_LIBRARY_ROOT_GROUPS = (
     "POM_Vector",
     "POM_10x_Layer_Steps",
@@ -2106,6 +2110,13 @@ class GroupsMixin:
             shift), so callers always pass REPEAT here.
             """
 
+            # The DFS below touches every node of every group in the POM chain.
+            # Stamp what it configured on the root so a cache hit that would
+            # re-assign the identical image/extension can skip the walk.
+            signature = f"{height_image.name}|{sampler_extension}"
+            if root_tree.get(_POM_SAMPLER_SIGNATURE_PROP) == signature:
+                return
+
             seen: set[int] = set()
             stack: list[bpy.types.ShaderNodeTree] = [root_tree]
             while stack:
@@ -2120,6 +2131,10 @@ class GroupsMixin:
                         node.extension = sampler_extension
                     elif node.bl_idname == "ShaderNodeGroup" and node.node_tree is not None:
                         stack.append(node.node_tree)
+            try:
+                root_tree[_POM_SAMPLER_SIGNATURE_PROP] = signature
+            except Exception:
+                pass
 
         if cached is not None:
             _configure_pom_sampler_nodes(cached)
@@ -2170,19 +2185,27 @@ class GroupsMixin:
         # we can collapse every copy back onto a canonical shared
         # version, dropping ~one node group per POM-using material.
         _CANONICAL_SHARED = {"tangent_space", "Clamp"}
-        canonical_by_base: dict[str, bpy.types.ShaderNodeTree] = {}
-        for existing in bpy.data.node_groups:
-            base = existing.name.rsplit(".", 1)[0]
-            if (
-                base in _CANONICAL_SHARED
-                and existing not in added
-                and not any(n.bl_idname == "ShaderNodeTexImage" for n in existing.nodes)
-                and not any(
-                    n.bl_idname == "ShaderNodeGroup" and n.node_tree is not None
-                    for n in existing.nodes
-                )
-            ):
-                canonical_by_base.setdefault(base, existing)
+        # The eligibility scan reads every node of every group in the file, and
+        # this runs once per POM material while ``bpy.data.node_groups`` grows
+        # with each append. Nothing but this function creates or removes the
+        # shared helpers, so scan once per importer and carry the map (plus the
+        # canonicals promoted below) across subsequent appends.
+        canonical_by_base = getattr(self, "_pom_canonical_by_base", None)
+        if canonical_by_base is None:
+            canonical_by_base = {}
+            for existing in bpy.data.node_groups:
+                base = existing.name.rsplit(".", 1)[0]
+                if (
+                    base in _CANONICAL_SHARED
+                    and existing not in added
+                    and not any(n.bl_idname == "ShaderNodeTexImage" for n in existing.nodes)
+                    and not any(
+                        n.bl_idname == "ShaderNodeGroup" and n.node_tree is not None
+                        for n in existing.nodes
+                    )
+                ):
+                    canonical_by_base.setdefault(base, existing)
+            self._pom_canonical_by_base = canonical_by_base
 
         redundant: list[bpy.types.ShaderNodeTree] = []
         promoted: list[bpy.types.ShaderNodeTree] = []

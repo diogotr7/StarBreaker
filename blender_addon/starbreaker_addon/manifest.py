@@ -809,6 +809,7 @@ class PackageBundle:
     paints: dict[str, PaintVariantRecord]
     _material_cache: dict[str, tuple[int, MaterialSidecar]] = field(default_factory=dict, repr=False)
     _path_index: dict[str, Path] | None = field(default=None, repr=False)
+    _resolve_cache: dict[str, Path | None] = field(default_factory=dict, repr=False)
 
     @classmethod
     def load(cls, scene_path: str | Path) -> PackageBundle:
@@ -866,14 +867,25 @@ class PackageBundle:
         return self.scene_path.parent.name
 
     def resolve_path(self, relative_path: str | None) -> Path | None:
+        # Memoised per candidate string: an import resolves the same handful of
+        # relative paths thousands of times and each miss costs a stat() plus a
+        # dict lookup. A file that appears mid-import is not picked up — the
+        # export tree is static while the addon reads it.
         path_index = None
         for candidate in _candidate_relative_paths(relative_path):
+            if candidate in self._resolve_cache:
+                cached = self._resolve_cache[candidate]
+                if cached is not None:
+                    return cached
+                continue
             direct = self.export_root / Path(candidate)
             if direct.exists():
+                self._resolve_cache[candidate] = direct
                 return direct
             if path_index is None:
                 path_index = self._build_path_index()
             resolved = path_index.get(candidate.lower())
+            self._resolve_cache[candidate] = resolved
             if resolved is not None:
                 return resolved
         return None

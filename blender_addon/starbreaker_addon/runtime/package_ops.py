@@ -311,6 +311,7 @@ def refresh_materials_for_package_root(
     applied = 0
     needs_view_layer_update = False
     sidecar_cache: dict[str, Any] = {}
+    default_palette_cache: dict[str, str | None] = {}
     objects = target_objects if target_objects is not None else list(_iter_package_objects(package_root))
     work_items: list[tuple[bpy.types.Object, str, Any]] = []
     for obj in objects:
@@ -329,7 +330,9 @@ def refresh_materials_for_package_root(
         progress_callback(0.0, f"Refreshing 0/{total_work_items} objects")
     with _suspend_heavy_viewports(context), _temporary_object_mode(context):
         for index, (obj, _sidecar_path, _sidecar) in enumerate(work_items, start=1):
-            object_palette_id = _material_refresh_palette_id(package, obj, palette_id)
+            object_palette_id = _material_refresh_palette_id(
+                package, obj, palette_id, default_palette_cache
+            )
             applied += importer.rebuild_object_materials(obj, object_palette_id)
             needs_view_layer_update = _refresh_mesh_material_evaluation(obj) or needs_view_layer_update
             if palette_id is not None:

@@ -304,6 +304,33 @@ class PomBiasSliceTests(unittest.TestCase):
             bias, 0.299 * 0.2 + 0.587 * 0.4 + 0.114 * 0.6, places=6
         )
 
+    class _UnreadableImage:
+        """No filepath and no readable pixels — the failure path."""
+
+        def __init__(self):
+            self.props: dict[str, object] = {}
+            self.pixel_reads = 0
+
+        @property
+        def pixels(self):
+            self.pixel_reads += 1
+            raise RuntimeError("buffer evicted")
+
+        def get(self, key):
+            return self.props.get(key)
+
+        def __setitem__(self, key, value):
+            self.props[key] = value
+
+    def test_failure_is_negative_cached(self) -> None:
+        image = self._UnreadableImage()
+        self.assertIsNone(_height_image_background_bias(image))
+        reads = image.pixel_reads
+        self.assertGreater(reads, 0)
+        # Second call must answer from the cache, not re-attempt the decode.
+        self.assertIsNone(_height_image_background_bias(image))
+        self.assertEqual(image.pixel_reads, reads)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -305,10 +305,14 @@ def _height_image_background_bias(image: Any) -> float | None:
     if image is None:
         return None
     cache_key = "starbreaker_pom_bg_bias"
+    # Luminance is always >= 0, so a negative value is the sentinel for "this
+    # image has no readable pixels". Without it every POM material re-ran the
+    # images.load + full decode below on each rebuild.
     try:
         cached = image.get(cache_key)
         if cached is not None:
-            return float(cached)
+            cached = float(cached)
+            return None if cached < 0.0 else cached
     except Exception:
         pass
 
@@ -338,10 +342,8 @@ def _height_image_background_bias(image: Any) -> float | None:
             bias = _luma(image.pixels[0:4])
         except Exception:
             bias = None
-    if bias is None:
-        return None
     try:
-        image[cache_key] = bias
+        image[cache_key] = -1.0 if bias is None else bias
     except Exception:
         pass
     return bias

@@ -87,26 +87,38 @@ def _material_is_compatible(
     palette: PaletteRecord | None,
     palette_scope: str,
     ui_image_path: str | None = None,
+    material_identity: str | None = None,
 ) -> bool:
     existing_sidecar_path = _string_prop(material, PROP_MATERIAL_SIDECAR)
     canonical_sidecar_path = _canonical_material_sidecar_path(sidecar_path, sidecar)
     if existing_sidecar_path is None or existing_sidecar_path not in {sidecar_path, canonical_sidecar_path}:
         return False
 
-    payload = material.get(PROP_SUBMATERIAL_JSON)
-    if not isinstance(payload, str):
-        return False
-    try:
-        existing_submaterial = json.loads(payload)
-    except json.JSONDecodeError:
-        return False
-    if existing_submaterial != submaterial.raw:
-        return False
+    # ``material_identity`` is a blake2s hash over exactly the submaterial
+    # payload plus the canonical sidecar path and palette scope (see
+    # ``_material_identity``), so an identity hit already proves the two
+    # checks below. Skipping them avoids a full ``json.loads`` + deep dict
+    # compare per candidate. A miss falls through to the authoritative
+    # comparison — the hash is a fast path, never a new rejection reason.
+    identity_hit = (
+        material_identity is not None
+        and _string_prop(material, PROP_MATERIAL_IDENTITY) == material_identity
+    )
+    if not identity_hit:
+        payload = material.get(PROP_SUBMATERIAL_JSON)
+        if not isinstance(payload, str):
+            return False
+        try:
+            existing_submaterial = json.loads(payload)
+        except json.JSONDecodeError:
+            return False
+        if existing_submaterial != submaterial.raw:
+            return False
 
     if not _managed_material_runtime_graph_is_sane(material):
         return False
 
-    if _string_prop(material, PROP_PALETTE_SCOPE) != palette_scope:
+    if not identity_hit and _string_prop(material, PROP_PALETTE_SCOPE) != palette_scope:
         return False
 
     if ui_image_path is not None:

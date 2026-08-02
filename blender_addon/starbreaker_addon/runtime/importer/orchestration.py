@@ -21,6 +21,7 @@ from typing import Any, Callable
 
 import bpy
 import mathutils
+import numpy as np
 from .layer_blend_decals import prepare_decal_coordinates
 
 from ..constants import (
@@ -615,10 +616,10 @@ class OrchestrationMixin:
         from a baked template) are skipped.
         """
         seen: set[int] = set()
-        stack: list[bpy.types.Object] = [package_root]
-        while stack:
-            obj = stack.pop()
-            stack.extend(obj.children)
+        # ``Object.children`` costs O(len(bpy.data.objects)) per access, so the
+        # old stack walk was quadratic in scene size. ``children_recursive``
+        # builds the parent -> children map in a single pass.
+        for obj in [package_root, *package_root.children_recursive]:
             if getattr(obj, "type", None) != "MESH":
                 continue
             mesh = getattr(obj, "data", None)
@@ -1258,13 +1259,15 @@ class OrchestrationMixin:
         image = tex_image.image
         mean_luminance = image.get("starbreaker_gobo_mean_luminance") if image is not None else None
         if image is not None and mean_luminance is None:
-            pixels = image.pixels[:]
-            luminance_total = 0.0
-            sample_count = 0
-            for index in range(0, len(pixels), 4):
-                luminance_total += (pixels[index] + pixels[index + 1] + pixels[index + 2]) / 3.0
-                sample_count += 1
-            mean_luminance = (luminance_total / sample_count) if sample_count else 0.0
+            # Vectorised: ``pixels[:]`` copies the whole RGBA buffer into a
+            # Python list and the per-pixel loop dominated gobo light setup.
+            sample_count = len(image.pixels) // 4
+            if sample_count:
+                buffer = np.empty(sample_count * 4, dtype=np.float32)
+                image.pixels.foreach_get(buffer)
+                mean_luminance = float(buffer.reshape(-1, 4)[:, :3].mean())
+            else:
+                mean_luminance = 0.0
             image["starbreaker_gobo_mean_luminance"] = mean_luminance
         # Headlight cookies are sparse masks; normalize them so the cookie
         # shape does not erase most of the authored projector energy.
