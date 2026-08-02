@@ -100,6 +100,20 @@ def _material_datablock_is_valid(material: bpy.types.Material | None) -> bool:
     return True
 
 
+def _identity_conflicts(material: bpy.types.Material, material_identity: str) -> bool:
+    """True when ``material`` was built for a *different* cache key.
+
+    Reuse is keyed on the preferred material NAME, which is not unique per
+    identity (e.g. two screen materials sharing a submaterial but differing in
+    ``|ui:`` image path). Handing such a datablock back lets the second build
+    overwrite it in place, silently changing the material of already-bound
+    objects. Materials with no stored identity are legacy/hand-made and fall
+    through to the full ``_material_is_compatible`` comparison.
+    """
+    existing_identity = material.get(PROP_MATERIAL_IDENTITY)
+    return isinstance(existing_identity, str) and existing_identity != material_identity
+
+
 def _illum_payload_is_local_opacity_decal(payload: dict[str, Any]) -> bool:
     if str(payload.get("shader_family", "")).strip() != "Illum":
         return False
@@ -525,7 +539,7 @@ class MaterialsMixin:
             ui_image_path = material_identity.split("|ui:", 1)[1]
         preferred_name = submaterial.blender_material_name or _derived_material_name(sidecar_path, sidecar, submaterial)
         preferred = bpy.data.materials.get(preferred_name)
-        if preferred is not None and _material_is_compatible(
+        if preferred is not None and not _identity_conflicts(preferred, material_identity) and _material_is_compatible(
             preferred,
             self.package,
             sidecar_path,
@@ -543,16 +557,20 @@ class MaterialsMixin:
         if indexed_material is not None and not _material_datablock_is_valid(indexed_material):
             self.material_identity_index.pop(material_identity, None)
             indexed_material = None
-        if indexed_material is not None and _material_is_compatible(
-            indexed_material,
-            self.package,
-            sidecar_path,
-            sidecar,
-            submaterial,
-            palette,
-            palette_scope,
-            ui_image_path=ui_image_path,
-            material_identity=material_identity,
+        if (
+            indexed_material is not None
+            and not _identity_conflicts(indexed_material, material_identity)
+            and _material_is_compatible(
+                indexed_material,
+                self.package,
+                sidecar_path,
+                sidecar,
+                submaterial,
+                palette,
+                palette_scope,
+                ui_image_path=ui_image_path,
+                material_identity=material_identity,
+            )
         ):
             return indexed_material
         return None

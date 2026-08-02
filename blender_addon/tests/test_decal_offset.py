@@ -4363,5 +4363,79 @@ class SceneAttachmentOffsetTests(unittest.TestCase):
         self.assertEqual(location, (0.9120000004768372, -1.0, -1.2000000476837158))
 
 
+class TestReusableMaterialIdentityCollision(unittest.TestCase):
+    """B5: reuse by preferred NAME must not hand back a datablock whose stored
+    identity differs from the incoming cache key (two keys, one material)."""
+
+    SIDECAR_PATH = "Data/Objects/Ships/screen_TEX0.materials.json"
+    PALETTE_SCOPE = "test-scope"
+
+    def _sidecar(self) -> MaterialSidecar:
+        return MaterialSidecar(
+            geometry_path=None,
+            normalized_export_relative_path=self.SIDECAR_PATH,
+            source_material_path="Data/screen.mtl",
+            palette_contract={},
+            submaterials=[],
+            raw={},
+        )
+
+    def _submaterial(self) -> SubmaterialRecord:
+        return SubmaterialRecord.from_value({
+            "index": 0,
+            "submaterial_name": "screen",
+            "blender_material_name": "SCREEN_MAT",
+        })
+
+    @contextlib.contextmanager
+    def _materials(self, **props):
+        sidecar = self._sidecar()
+        submaterial = self._submaterial()
+        bpy = sys.modules["bpy"]
+        original = getattr(bpy.data, "materials", None)
+        collection = FakeMaterialsCollection()
+        bpy.data.materials = collection
+        existing = FakeMaterial(
+            "SCREEN_MAT",
+            **{
+                PROP_MATERIAL_SIDECAR: self.SIDECAR_PATH,
+                PROP_SUBMATERIAL_JSON: json.dumps(submaterial.raw),
+                PROP_PALETTE_SCOPE: self.PALETTE_SCOPE,
+                **props,
+            },
+        )
+        collection[existing.name] = existing
+        try:
+            yield sidecar, submaterial, existing
+        finally:
+            bpy.data.materials = original
+
+    def _reuse(self, sidecar, submaterial, cache_key):
+        importer = MaterialReuseImporterUnderTest()
+        return importer._reusable_material(
+            self.SIDECAR_PATH, sidecar, submaterial, None, self.PALETTE_SCOPE, cache_key
+        )
+
+    def test_stored_identity_mismatch_blocks_name_based_reuse(self) -> None:
+        base = _material_identity(self.SIDECAR_PATH, self._sidecar(), self._submaterial(), None, self.PALETTE_SCOPE)
+        # Existing datablock was built for the "|ui:" variant of the same submaterial.
+        with self._materials(**{PROP_MATERIAL_IDENTITY: f"{base}|ui:screen_a.png"}) as (
+            sidecar,
+            submaterial,
+            _existing,
+        ):
+            self.assertIsNone(self._reuse(sidecar, submaterial, base))
+
+    def test_stored_identity_match_still_reuses(self) -> None:
+        base = _material_identity(self.SIDECAR_PATH, self._sidecar(), self._submaterial(), None, self.PALETTE_SCOPE)
+        with self._materials(**{PROP_MATERIAL_IDENTITY: base}) as (sidecar, submaterial, existing):
+            self.assertIs(self._reuse(sidecar, submaterial, base), existing)
+
+    def test_legacy_material_without_identity_still_reuses(self) -> None:
+        base = _material_identity(self.SIDECAR_PATH, self._sidecar(), self._submaterial(), None, self.PALETTE_SCOPE)
+        with self._materials() as (sidecar, submaterial, existing):
+            self.assertIs(self._reuse(sidecar, submaterial, base), existing)
+
+
 if __name__ == "__main__":
     unittest.main()
