@@ -632,7 +632,13 @@ Review report: `docs/superpowers/plans/2026-08-02-perf-review.md`. Baselines
   (global `AtomicU64` counted other tests' constructions); `SWF_PARSE_COUNT`
   is now thread-local.
 
-### Post-change medians (see bench logs)
+### Post-change medians (perf_bench.sh, 3 runs, quiet gate)
 
-Recorded after the final quiet-machine bench — see the report addendum /
-commit message for the numbers.
+- Carrack: wall 45.86s → **37.01s** (−19.3%), maxRSS 13.31G → **9.19G** (−31%).
+- Clipper: wall 37.80s → **29.40s** (−22.2%), maxRSS 9.48G → **5.51G** (−42%)
+  — clipper runs started at 1-min load ~7.6 (carrack bench tail), so its wall
+  delta is INDICATIVE-favourable (beat baseline despite the load).
+- Fresh byte-oracle baselines (post-gobo): `ships_perf_bench/{carrack,clipper}_aug02`
+  (run-1 dirs of the post bench). `*_post1` retained pending owner retirement —
+  vs `_aug02` they differ only by the gobo fix (+33 .exr, −31 png fallbacks,
+  scene.json/scene.blend paths).
