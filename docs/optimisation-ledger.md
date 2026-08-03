@@ -714,3 +714,12 @@ work: `docs/superpowers/plans/2026-08-03-perf-handoff.md`. Baselines (release,
 Handoff doc items 1–11 (U1 scratch pool, U3/U4/U5, small UI items, R8 import
 measurement, A1 POM copy, R6 session wiring, A6, R4 Luma8 re-freeze, B1
 batch); owner-decision queue in the report §Owner decisions.
+
+### Owner decisions (2026-08-03, recorded post-pass)
+
+- --mip 1 default: REJECTED (`--mip` stays per-run; no script-default change).
+- B2 sidecar-DefaultPalette fallback: FIX APPROVED (re-freeze) — see handoff §12.
+- B3b exporter `starbreaker_bitangent_sign`: APPROVED, live-session premise
+  check first — see handoff §12.
+- R3 resvg bump: CLOSED (no perf payoff; hygiene-only, bundle with a future
+  unavoidable re-freeze if ever).

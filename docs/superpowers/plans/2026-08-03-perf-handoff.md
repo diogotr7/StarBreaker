@@ -176,12 +176,31 @@ oracle on B. ~2.7s/ship saved at scale; zero single-ship gain. Check
 process-lifetime caches are ship-independent (registry.rs:14, colour.rs:41 —
 they are).
 
-## 12. Owner-decision queue (from the report)
+## 12. Owner decisions (recorded 2026-08-03)
 
---mip 1 iteration default; R3 resvg 0.48.1 defer-or-do; B2 palette-fallback
-FIX (re-freeze; evidence: 207/216 palette-less Clipper interior placements);
-B3b exporter `starbreaker_bitangent_sign` attribute (re-freeze; verify the
-linked-mesh premise in one live session first — also check
-`_ensure_active_uv_layer` writes on linked meshes, `package_ops.py:588-604`);
-EP-F7 prerender/prewarm overlap; PGO spike; EP-F10 prewarm byte budget;
-ships/Data case-dup.
+- **--mip 1 default: REJECTED** — `--mip` stays a per-run choice; do not change
+  script defaults or cut mip-1 baselines.
+- **B2 palette fallback: FIX APPROVED (re-freeze).** Wire the sidecar files
+  into `scene_manifest_instances` (`blend_assembly.rs:527-543` filter reads
+  `manifest_files`, which only ever holds PackageManifest kinds; classify loop
+  `:1151-1191`). Regression test: one PackageManifest + one MaterialSidecar
+  file, fallback resolves. Changes scene.blend palette assignment for
+  palette-less instances whose sidecar declares DefaultPalette (Clipper:
+  207/216 placements + 37/85 children; Carrack: 5/185 + 4/84). scene.json
+  unaffected. Verify the diff is scene.blend-only (use the blend_python_diff
+  MCP tool for data-level comparison), then re-cut `*_aug02` oracle baselines
+  in the same session — owner has approved this re-freeze.
+- **B3b exporter bitangent-sign: APPROVED, premise check first.** One live
+  Blender session: open Clipper scene.blend fresh, confirm mesh data is
+  library-linked, `starbreaker_bitangent_sign` absent, and whether
+  `mesh.attributes.new` raises; also check `_ensure_active_uv_layer` writes on
+  linked meshes (`package_ops.py:588-604`). If confirmed, write the per-corner
+  FLOAT attribute in the exporter mesh writer (`blend_assembly.rs`; sign bit
+  already decoded at `dequant.rs:100-117`), verify sign agreement per corner
+  against a `calc_tangents()` bake, oracle re-freeze. Import path then skips
+  `calc_tangents()` on attribute-bearing meshes (est. −0.5–2s Carrack import).
+- **R3 resvg: CLOSED** (no perf payoff — text never touches resvg; revisit
+  only bundled with another unavoidable UI re-freeze, retargeting to the then-
+  current version).
+- Still open for a later ask: EP-F7 prerender/prewarm overlap; PGO spike;
+  EP-F10 prewarm byte budget; ships/Data case-dup.
