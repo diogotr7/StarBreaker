@@ -359,6 +359,20 @@ def refresh_materials_for_package_root(
         apply_engine_glow_to_package_root(package_root, engine_glow_strength(package_root))
     if shared_glow_control_enabled(package_root):
         apply_shared_glow_to_package_root(package_root, shared_glow_strength(package_root))
+    # Rebuilt POM materials carry the deferred background-bias tag; without this
+    # pass (import_scene runs it, this path previously did not) Bias stays at
+    # the 0.5 fallback on every file-open refresh. Idempotent: handled nodes
+    # drop their tag, so a repeat call is a cheap tag-less scan.
+    pom_bias = getattr(importer, "_apply_deferred_pom_background_bias", None)
+    if callable(pom_bias):
+        pom_bias()
+    # Drain the importer's pending-orphan queue (identity-less replaced slot
+    # materials) exactly as MaterialRefreshSession._finish_objects does — the
+    # purge passes below deliberately skip identity-less materials, so nothing
+    # else removes them on this path.
+    flush_orphans = getattr(importer, "_flush_pending_orphan_materials", None)
+    if callable(flush_orphans):
+        flush_orphans()
     if progress_callback is not None:
         progress_callback(0.95, "Cleaning up...")
     _purge_orphaned_managed_materials()
@@ -501,6 +515,12 @@ class MaterialRefreshSession:
         if self._objects_finalized:
             return
         try:
+            # Deferred POM background-bias pass (B3a): same rationale as in
+            # refresh_materials_for_package_root — rebuilt POM materials would
+            # otherwise keep the 0.5 Bias fallback after a file-open refresh.
+            pom_bias = getattr(self.importer, "_apply_deferred_pom_background_bias", None)
+            if callable(pom_bias):
+                pom_bias()
             flush_orphans = getattr(self.importer, "_flush_pending_orphan_materials", None)
             if callable(flush_orphans):
                 flush_orphans()

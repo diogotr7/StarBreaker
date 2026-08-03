@@ -20,7 +20,9 @@
 #     --outdir D  where bench dirs+logs go (default <repo>/target/tmp)
 #
 #   Machine must be QUIET (the skill GATES benchmarking on asking the user).
-#   Timing runs carry NO --mem-cap (rule 4: it adds allocation-tracking overhead).
+#   Memory stats come from /proc/self/status at phase boundaries (debug log
+#   level); the old per-allocation TrackingAllocator (and its --mem-cap flag)
+#   was deleted 2026-08-03 — it taxed every alloc/free on all rayon workers.
 #   SC_DATA_P4K is NOT exported — the P4K is auto-detected.
 set -euo pipefail
 

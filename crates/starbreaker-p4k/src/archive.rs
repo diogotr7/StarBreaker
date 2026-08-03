@@ -509,19 +509,26 @@ fn build_archive_indexes(entries: Vec<P4kEntry>) -> Result<CentralDirectory, P4k
         path_index.insert_unique(h, i as u32, |&j| hash_path(&entries[j as usize].name));
     }
 
+    use rayon::prelude::*;
     // Parallel lowercased view used by search and entry_case_insensitive.
-    let lowercase_names: Vec<String> = entries
-        .iter()
-        .map(|e| e.name.to_ascii_lowercase())
-        .collect();
+    // par_iter().map().collect() preserves order, so this is identical to the
+    // serial map (1.35M String allocations on the live archive).
+    let lowercase_names: Vec<String> =
+        entries.par_iter().map(|e| e.name.to_ascii_lowercase()).collect();
 
-    // Case-sensitive sorted index for list_dir / list_subdirs.
+    // Case-sensitive sorted index for list_dir / list_subdirs. Kept SERIAL and
+    // comparator untouched: it has no tiebreak, so for duplicate names the
+    // current unstable order is arbitrary-but-stable per build; a parallel sort
+    // could pick a different tie order.
     let mut sorted_index: Vec<u32> = (0..entries.len() as u32).collect();
     sorted_index.sort_unstable_by(|&a, &b| entries[a as usize].name.cmp(&entries[b as usize].name));
 
-    // Case-insensitive sorted index for entry_case_insensitive.
+    // Case-insensitive sorted index for entry_case_insensitive. The comparator
+    // ends in a strict total order (`.then_with(|| a.cmp(&b))`), so ANY correct
+    // sort — including the parallel unstable one — yields the identical
+    // permutation.
     let mut sorted_lower_index: Vec<u32> = (0..entries.len() as u32).collect();
-    sorted_lower_index.sort_unstable_by(|&a, &b| {
+    sorted_lower_index.par_sort_unstable_by(|&a, &b| {
         lowercase_names[a as usize]
             .cmp(&lowercase_names[b as usize])
             .then_with(|| entries[a as usize].name.cmp(&entries[b as usize].name))

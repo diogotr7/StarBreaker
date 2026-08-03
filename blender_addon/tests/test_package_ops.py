@@ -266,7 +266,16 @@ def _load_package_ops() -> tuple[types.ModuleType, types.ModuleType]:
             importer_stub.events.append(("rebuild", obj.name, palette_id))
             return 1
 
+        # Counters (not events) so exact-event-list assertions stay stable.
+        def _flush_pending_orphan_materials(self):
+            importer_stub.flush_calls += 1
+
+        def _apply_deferred_pom_background_bias(self):
+            importer_stub.pom_bias_calls += 1
+
     importer_stub.PackageImporter = PackageImporter
+    importer_stub.flush_calls = 0
+    importer_stub.pom_bias_calls = 0
     sys.modules["sb_pkg_test_runtime.importer"] = importer_stub
 
     source = (ADDON_ROOT / "runtime" / "package_ops.py").read_text()
@@ -717,6 +726,86 @@ class PackageOpsTests(unittest.TestCase):
         self.assertEqual(importer_stub.events, [("rebuild", "interior_panel", "palette/interior")])
         self.assertEqual(package_root["starbreaker_palette_id"], "palette/root")
         self.assertEqual(mesh["starbreaker_palette_id"], "palette/interior")
+
+    def test_refresh_materials_reapplies_pom_bias_and_flushes_orphans(self) -> None:
+        # The blocking refresh path must run the deferred POM background-bias
+        # pass (B3a: otherwise Bias stays at the 0.5 fallback on file-open) and
+        # flush the importer's pending-orphan-material queue (A7: previously
+        # only MaterialRefreshSession._finish_objects did).
+        @contextmanager
+        def _no_suspend(_context):
+            yield
+
+        @contextmanager
+        def _no_mode(_context):
+            yield
+
+        package_root = FakeObject(
+            "StarBreaker RSI Aurora",
+            starbreaker_package_root=True,
+            starbreaker_scene_path="/tmp/aurora/scene.json",
+        )
+        mesh = FakeObject(
+            "interior_panel",
+            starbreaker_material_sidecar="interior.materials.json",
+        )
+        mesh.type = "MESH"
+        mesh.parent = package_root
+        package_root.children.append(mesh)
+
+        importer_stub = sys.modules["sb_pkg_test_runtime.importer"]
+        importer_stub.events = []
+        importer_stub.flush_calls = 0
+        importer_stub.pom_bias_calls = 0
+        original_suspend = self.package_ops._suspend_heavy_viewports
+        original_mode = self.package_ops._temporary_object_mode
+        try:
+            self.package_ops._suspend_heavy_viewports = _no_suspend
+            self.package_ops._temporary_object_mode = _no_mode
+            self.package_ops.refresh_materials_for_package_root(
+                types.SimpleNamespace(), package_root
+            )
+        finally:
+            self.package_ops._suspend_heavy_viewports = original_suspend
+            self.package_ops._temporary_object_mode = original_mode
+
+        self.assertEqual(importer_stub.pom_bias_calls, 1)
+        self.assertEqual(importer_stub.flush_calls, 1)
+
+    def test_session_finish_reapplies_pom_bias(self) -> None:
+        @contextmanager
+        def _no_suspend(_context):
+            yield
+
+        @contextmanager
+        def _no_mode(_context):
+            yield
+
+        package_root = FakeObject(
+            "StarBreaker RSI Aurora",
+            starbreaker_package_root=True,
+            starbreaker_scene_path="/tmp/aurora/scene.json",
+        )
+
+        importer_stub = sys.modules["sb_pkg_test_runtime.importer"]
+        importer_stub.pom_bias_calls = 0
+        original_suspend = self.package_ops._suspend_heavy_viewports
+        original_mode = self.package_ops._temporary_object_mode
+        try:
+            self.package_ops._suspend_heavy_viewports = _no_suspend
+            self.package_ops._temporary_object_mode = _no_mode
+            context = types.SimpleNamespace(view_layer=FakeViewLayer())
+            session = self.package_ops.MaterialRefreshSession(
+                context,
+                package_root,
+                purge_orphans=False,
+            )
+            self.assertTrue(session.step())
+        finally:
+            self.package_ops._suspend_heavy_viewports = original_suspend
+            self.package_ops._temporary_object_mode = original_mode
+
+        self.assertEqual(importer_stub.pom_bias_calls, 1)
 
     def test_refresh_materials_uses_sidecar_default_palette_when_object_palette_missing(self) -> None:
         @contextmanager

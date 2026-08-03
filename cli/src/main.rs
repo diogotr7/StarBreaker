@@ -18,70 +18,34 @@ mod wwise;
 
 use clap::{Parser, Subcommand};
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-
-pub struct TrackingAllocator;
-
-static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
-static PEAK: AtomicUsize = AtomicUsize::new(0);
-static CAP: AtomicUsize = AtomicUsize::new(0); // 0 = no cap
-
-unsafe impl GlobalAlloc for TrackingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let cap = CAP.load(Relaxed);
-        if cap > 0 {
-            let current = ALLOCATED.load(Relaxed);
-            if current + layout.size() > cap {
-                eprintln!(
-                    "\n[mem] ABORT: allocation would exceed cap ({:.0}MB). Current={:.0}MB, peak={:.0}MB",
-                    cap as f64 / 1_048_576.0,
-                    current as f64 / 1_048_576.0,
-                    PEAK.load(Relaxed) as f64 / 1_048_576.0,
-                );
-                std::process::exit(137);
-            }
-        }
-        let ptr = unsafe { System.alloc(layout) };
-        if !ptr.is_null() {
-            let current = ALLOCATED.fetch_add(layout.size(), Relaxed) + layout.size();
-            PEAK.fetch_max(current, Relaxed);
-        }
-        ptr
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) };
-        ALLOCATED.fetch_sub(layout.size(), Relaxed);
-    }
-}
-
-#[global_allocator]
-static GLOBAL: TrackingAllocator = TrackingAllocator;
-
-/// Set the memory cap in bytes. 0 = no cap.
-pub fn set_mem_cap(bytes: usize) {
-    CAP.store(bytes, Relaxed);
-}
-
-/// Log current and peak memory usage at debug level.
+/// Log current and peak process RSS at debug level, read from
+/// `/proc/self/status` (VmRSS / VmHWM). Sampled at phase boundaries only — the
+/// previous per-allocation `TrackingAllocator` taxed every alloc/free with
+/// contended atomics on all rayon workers to feed this same debug line.
 pub fn log_mem_stats(label: &str) {
-    let current = ALLOCATED.load(Relaxed);
-    let peak = PEAK.load(Relaxed);
-    log::debug!(
-        "[mem] {label}: current={:.1}MB peak={:.1}MB",
-        current as f64 / 1_048_576.0,
-        peak as f64 / 1_048_576.0,
-    );
+    if !log::log_enabled!(log::Level::Debug) {
+        return;
+    }
+    let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
+        return;
+    };
+    let field = |key: &str| {
+        status
+            .lines()
+            .find(|l| l.starts_with(key))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|kb| kb / 1024.0)
+    };
+    if let (Some(rss), Some(hwm)) = (field("VmRSS:"), field("VmHWM:")) {
+        log::debug!("[mem] {label}: rss={rss:.1}MB peak={hwm:.1}MB");
+    }
 }
 
 /// StarBreaker — Star Citizen data extraction toolkit
 #[derive(Parser)]
 #[command(name = "starbreaker", version, about)]
 struct Cli {
-    /// Memory cap in MB — abort if exceeded (0 = unlimited)
-    #[arg(long, global = true, default_value = "0")]
-    mem_cap: usize,
     /// Increase log verbosity (-v = debug, -vv = trace)
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -197,11 +161,6 @@ fn main() {
         logger.filter_module("usvg::parser::image", log::LevelFilter::Error);
     }
     logger.init();
-
-    if cli.mem_cap > 0 {
-        set_mem_cap(cli.mem_cap * 1_048_576);
-        log::debug!("[mem] cap set to {}MB", cli.mem_cap);
-    }
 
     let result = match cli.command {
         Command::P4k { command } => command.run(),

@@ -13,12 +13,14 @@ pub(super) struct P4kSwfFetcher<'a> {
 
 impl<'a> SwfFetcher for P4kSwfFetcher<'a> {
     fn fetch_swf_bytes(&self, p4k_path: &str) -> Result<Vec<u8>, UiError> {
+        // Binary search per candidate (same shape as `read_p4k_asset` /
+        // `asset_exists`) instead of the old O(all archive entries) linear
+        // scan per fetch. Candidate order is [native, Data\native], so the
+        // `Data\`-prefixed real location still wins whenever only it exists.
         let candidates = p4k_swf_candidates(p4k_path);
-        let entry = self
-            .p4k
-            .entries()
+        let entry = candidates
             .iter()
-            .find(|entry| candidates.iter().any(|candidate| entry.name.eq_ignore_ascii_case(candidate)))
+            .find_map(|candidate| self.p4k.entry_case_insensitive(candidate))
             .ok_or_else(|| UiError::FetchFailed {
                 guid: p4k_path.to_string(),
                 source: format!("SWF not found in P4K: {p4k_path}").into(),

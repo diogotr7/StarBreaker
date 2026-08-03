@@ -655,3 +655,62 @@ Review report: `docs/superpowers/plans/2026-08-02-perf-review.md`. Baselines
   RUSTFLAGS pairing — local-only, never ship that combination. Benchmarks of
   perf-profile binaries via `SB_BENCH_BIN=target/perf/starbreaker
   scripts/perf_bench.sh ...`; keep comparing like-for-like profiles.
+
+## Pass 2026-08-03 — follow-up review + implementation (multi-agent)
+
+Review report: `docs/superpowers/plans/2026-08-03-perf-review.md`; remaining
+work: `docs/superpowers/plans/2026-08-03-perf-handoff.md`. Baselines (release,
+3-run medians, quiet): Carrack 37.01s / 9.19G, Clipper 29.40s / 5.51G.
+
+### Landed (one commit batch, byte-oracle EMPTY vs `*_aug02` both ships, two-run determinism EMPTY, UI freeze guard PASSED)
+
+- **EP1 — layer-submaterial textures enter the parallel texture prewarm**
+  (`decomposed.rs` layer walk now feeds `texture_load_keys_from_material`).
+  This WAS the "Clipper interior anomaly": layer textures decoded one at a
+  time inside the serial writer. Clipper interior_asset_resolve 5.4s→0.49s,
+  root+child 5.5s→0.41s.
+- **EP2 — dead-branch fix**: the 2026-08-02 parallel final write + parent-dir
+  dedupe + all 8 `log_mem_stats` sites landed in `export()`'s Decomposed arm,
+  which `--kind decomposed` never reaches (entity.rs early-returns to
+  `export_blend`). Write path + instrumentation moved onto the live branch;
+  dead arm now errors.
+- **AL1 — TrackingAllocator deleted** (3 atomics per alloc/free on all rayon
+  workers feeding a debug logger + an off-by-default `--mem-cap`).
+  `log_mem_stats` now samples /proc/self/status (VmRSS/VmHWM) at phase
+  boundaries; `--mem-cap` removed (use ulimit/systemd-run). mimalloc NOT
+  attempted (ledger dead-end #1 stands).
+- **EP3 (partial) — P4K index build**: lowercase pass par_iter'd; lower index
+  par_sort'd (comparator is a strict total order ⇒ identical permutation);
+  `sorted_index` left serial (no tiebreak ⇒ tie order would move).
+- **EP4b — `MtlCache` values are `Arc<MtlFile>`**: cache hits were deep clones
+  (order 10^4 per export via per-layer walks; rsi_int_master_01 = 866 KB).
+- **U2 — SWF parse-once across measure/compose** (the GATED-IN half of item-7):
+  `compile_ir_for_binding_with_assets` returns the measure library and the
+  compose pass reuses it — 82→41 `load_first_swf` calls on Carrack.
+- **U6a** `P4kSwfFetcher::fetch_swf_bytes` linear entry-table scan →
+  `entry_case_insensitive` binary search per candidate.
+- **U6b** dead SHA-256 (`content_hash`) removed from `SwfAssetLibrary` (only
+  consumer was a test; determinism now pinned on extracted contents).
+- **B3a (addon) — deferred POM background-bias pass** now runs on BOTH refresh
+  paths (blocking `refresh_materials_for_package_root` + session
+  `_finish_objects`); previously import_scene-only, so file-open refresh left
+  Bias at the 0.5 fallback. TDD'd (2 new stub tests, 381 addon tests green).
+- **A7 (addon) — pending-orphan-material queue flushed on the blocking path**
+  (was session-only; the purge passes deliberately skip identity-less
+  materials, so the queue leaked).
+
+### Post-change medians (perf_bench.sh, 3 runs, quiet gate, release binary)
+
+- Carrack: wall 37.01s → **31.52s** (−14.8%), maxRSS 9.19G → 9.71G (+0.5G).
+- Clipper: wall 29.40s → **17.57s** (−40.2%), maxRSS 5.51G → 7.04G (+1.5G).
+- RSS growth = layer PNGs resident between prewarm completion and writer
+  drain (predicted by the review; drain-on-consume still applies). If a
+  tighter peak matters, the EP-F10 deterministic prewarm byte-budget knob in
+  the handoff is the lever.
+- Oracle baselines unchanged: `ships_perf_bench/{carrack,clipper}_aug02`.
+
+### Open
+
+Handoff doc items 1–11 (U1 scratch pool, U3/U4/U5, small UI items, R8 import
+measurement, A1 POM copy, R6 session wiring, A6, R4 Luma8 re-freeze, B1
+batch); owner-decision queue in the report §Owner decisions.

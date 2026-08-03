@@ -338,6 +338,19 @@ pub fn compile_ir_for_binding_with(
     inputs: &PipelineInputs<'_>,
     defaults: &DefaultValueRegistry,
 ) -> Result<UiIrDocument, UiError> {
+    compile_ir_for_binding_with_assets(inputs, defaults).map(|(ir, _)| ir)
+}
+
+/// Like [`compile_ir_for_binding_with`], but also returns the SWF asset
+/// library loaded for draw-faithful text measurement. The compose pass draws
+/// with the SAME library (measure == draw), so returning it lets
+/// [`render_for_binding_ir_with`] skip a second fetch + parse of the screen
+/// SWF, Canvas.swf and the shared `fonts_en.gfx` glyph sheet per render
+/// (ledger task 3, SWF parse-once across the measure/compose call sites).
+fn compile_ir_for_binding_with_assets(
+    inputs: &PipelineInputs<'_>,
+    defaults: &DefaultValueRegistry,
+) -> Result<(UiIrDocument, crate::swf_assets::SwfAssetLibrary), UiError> {
     // A transit screen overlays its floor name onto the shared registry
     // (per-binding value; see `transit_overlay_registry`).
     let transit_overlay = transit_overlay_registry(inputs.binding, defaults);
@@ -663,7 +676,7 @@ pub fn compile_ir_for_binding_with(
         }
     }
 
-    Ok(ir)
+    Ok((ir, measure_assets))
 }
 
 /// Render via IR compilation and IR-only rendering.
@@ -684,7 +697,8 @@ pub fn render_for_binding_ir_with(
     inputs: &PipelineInputs<'_>,
     defaults: &DefaultValueRegistry,
 ) -> Result<Vec<u8>, UiError> {
-    let ir = timed("compile", || compile_ir_for_binding_with(inputs, defaults))?;
+    let (ir, swf_assets) =
+        timed("compile", || compile_ir_for_binding_with_assets(inputs, defaults))?;
 
     let mut style = timed("style_load", || load_style_for_ir(&ir, inputs))?;
     // A SWF-hosted screen whose authored screen-name background image is
@@ -742,12 +756,11 @@ pub fn render_for_binding_ir_with(
             a: 255,
         };
     }
-    let swf_paths = ir
-        .selected_swf_source
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>();
-    let assets = timed("swf_load", || load_first_swf(&swf_paths, inputs.swf_fetcher));
+    // Parse-once (ledger task 3): the compile pass loaded this library for
+    // draw-faithful measurement from the same path list (`selected_swf_source`
+    // is stored verbatim into the IR); reuse it instead of fetching + parsing
+    // everything a second time per render.
+    let assets = swf_assets;
     let ctx = ComposeContext {
         style: &style,
         defaults: &defaults,

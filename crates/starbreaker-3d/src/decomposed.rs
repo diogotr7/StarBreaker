@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
+use std::sync::Arc;
 
 use gltf_json as json;
 use rayon::prelude::*;
@@ -1082,7 +1083,7 @@ pub(crate) fn write_decomposed_export(
     existing_interior_assets: Option<&ExistingInteriorAssetMap>,
     png_cache: PngCache,
     roughness_cache: RoughnessCache,
-    mtl_cache: HashMap<String, Option<MtlFile>>,
+    mtl_cache: MtlCache,
     load_interior_mesh: &mut dyn FnMut(
         &InteriorCgfEntry,
     )
@@ -2605,7 +2606,7 @@ fn write_material_sidecar(
     original_indices: &[u32],
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
-    mtl_cache: &mut HashMap<String, Option<MtlFile>>,
+    mtl_cache: &mut MtlCache,
     texture_container: TextureContainer,
 ) -> String {
     let source_material_path = canonical_material_source_path(
@@ -2668,18 +2669,18 @@ fn canonical_sidecar_materials_from_source(
     source_material_path: &str,
     fallback_materials: &MtlFile,
     fallback_indices: &[u32],
-    mtl_cache: &mut HashMap<String, Option<MtlFile>>,
+    mtl_cache: &mut MtlCache,
 ) -> (MtlFile, Vec<u32>) {
     if let Some(parsed) = load_mtl_cached(p4k, mtl_cache, source_material_path) {
         let mut original_indices = Vec::new();
         let mut non_hidden = Vec::new();
         let source_count = parsed.materials.len() as u32;
-        for (idx, material) in parsed.materials.into_iter().enumerate() {
+        for (idx, material) in parsed.materials.iter().enumerate() {
             if material.should_hide() {
                 continue;
             }
             original_indices.push(idx as u32);
-            non_hidden.push(material);
+            non_hidden.push(material.clone());
         }
         // Slots past the source's submaterials draw with the engine default
         // (`crate::material_slots`), appended to the loaded set after them.
@@ -2691,9 +2692,9 @@ fn canonical_sidecar_materials_from_source(
         }
         let canonical = MtlFile {
             materials: non_hidden,
-            source_path: parsed.source_path,
-            paint_override: parsed.paint_override,
-            material_set: parsed.material_set,
+            source_path: parsed.source_path.clone(),
+            paint_override: parsed.paint_override.clone(),
+            material_set: parsed.material_set.clone(),
         };
         return (canonical, original_indices);
     }
@@ -2702,17 +2703,22 @@ fn canonical_sidecar_materials_from_source(
     (fallback_materials.clone(), fallback_indices.to_vec())
 }
 
+/// Per-export `.mtl` parse memo keyed by lowercased P4K path. Values are
+/// `Arc`-shared: hot walks (per-layer, per-asset) previously deep-cloned the
+/// whole parsed `MtlFile` on every cache hit.
+pub(crate) type MtlCache = HashMap<String, Option<Arc<MtlFile>>>;
+
 fn load_mtl_cached(
     p4k: &MappedP4k,
-    cache: &mut HashMap<String, Option<MtlFile>>,
+    cache: &mut MtlCache,
     material_path: &str,
-) -> Option<MtlFile> {
+) -> Option<Arc<MtlFile>> {
     let p4k_path = crate::pipeline::datacore_path_to_p4k(material_path);
     let cache_key = p4k_path.to_ascii_lowercase();
     if let Some(cached) = cache.get(&cache_key) {
         return cached.clone();
     }
-    let loaded = crate::pipeline::try_load_mtl(p4k, &p4k_path);
+    let loaded = crate::pipeline::try_load_mtl(p4k, &p4k_path).map(Arc::new);
     cache.insert(cache_key, loaded.clone());
     loaded
 }
@@ -2727,7 +2733,7 @@ fn extract_material_entry(
     material: &SubMaterial,
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
-    mtl_cache: &mut HashMap<String, Option<MtlFile>>,
+    mtl_cache: &mut MtlCache,
     source_material_path: &str,
     texture_container: TextureContainer,
 ) -> ExtractedMaterialEntry {
@@ -4028,7 +4034,7 @@ fn projected_material_sidecar_path(
     geometry_path: &str,
     fallback_name: &str,
     texture_mip: u32,
-    mtl_cache: &mut HashMap<String, Option<MtlFile>>,
+    mtl_cache: &mut MtlCache,
 ) -> String {
     let source_material_path = canonical_material_source_path(
         p4k,
@@ -4045,7 +4051,7 @@ fn canonical_material_source_path(
     materials: &MtlFile,
     material_path: &str,
     geometry_path: &str,
-    _mtl_cache: &mut HashMap<String, Option<MtlFile>>,
+    _mtl_cache: &mut MtlCache,
 ) -> String {
     let source_material_path = material_source_path(p4k, materials, material_path, geometry_path)
         .replace('\\', "/");
@@ -5099,26 +5105,38 @@ fn slot_texture_flavor(role: TextureSemanticRole) -> TextureFlavor {
 /// semantic slots plus direct diffuse (Generic) and normal-gloss (Normal)
 /// textures. Pure and P4K-free: paths are the verbatim slot paths, matching the
 /// keys `export_texture_asset` passes to `cached_load_keyed`. May contain
-/// duplicates; callers dedupe. Layer/decal textures are intentionally omitted —
-/// because the decode cache is flavor-aware, a missing path only forfeits
-/// pre-decode speedup, never correctness (it decodes serially as before).
+/// duplicates; callers dedupe. Layer submaterial textures are collected by the
+/// prewarm walk via [`texture_load_keys_from_material`] on each resolved layer
+/// submaterial (an unenumerated path only forfeits pre-decode speedup, never
+/// correctness — it decodes serially as before).
 fn texture_load_keys_from_materials(materials: &MtlFile) -> Vec<(String, TextureFlavor)> {
     let mut keys = Vec::new();
     for material in &materials.materials {
-        for binding in material.semantic_texture_slots() {
-            if binding.is_virtual {
-                continue;
-            }
-            keys.push((binding.path.clone(), slot_texture_flavor(binding.role)));
-        }
-        if let Some(path) = material.diffuse_tex.as_deref() {
-            keys.push((path.to_string(), TextureFlavor::Generic));
-        }
-        if let Some(path) = material.normal_tex.as_deref() {
-            keys.push((path.to_string(), TextureFlavor::Normal));
-        }
+        texture_load_keys_from_material(material, &mut keys);
     }
     keys
+}
+
+/// Collect the `(raw texture path, flavor)` pairs `export_texture_asset` would
+/// decode for one submaterial: non-virtual semantic slots plus direct diffuse
+/// (Generic) and normal-gloss (Normal). Shared by the top-level walk and the
+/// layer-submaterial walk so both feed the same prewarm request set.
+fn texture_load_keys_from_material(
+    material: &crate::mtl::SubMaterial,
+    keys: &mut Vec<(String, TextureFlavor)>,
+) {
+    for binding in material.semantic_texture_slots() {
+        if binding.is_virtual {
+            continue;
+        }
+        keys.push((binding.path.clone(), slot_texture_flavor(binding.role)));
+    }
+    if let Some(path) = material.diffuse_tex.as_deref() {
+        keys.push((path.to_string(), TextureFlavor::Generic));
+    }
+    if let Some(path) = material.normal_tex.as_deref() {
+        keys.push((path.to_string(), TextureFlavor::Normal));
+    }
 }
 
 /// Identity of a UI binding's rendered image. Two bindings with equal
@@ -5220,11 +5238,11 @@ pub(crate) fn prewarm_decomposed_textures(
     texture_mip: u32,
     texture_container: TextureContainer,
     existing_asset_paths: Option<&HashSet<String>>,
-) -> (PngCache, HashMap<String, Option<MtlFile>>, Vec<String>) {
+) -> (PngCache, MtlCache, Vec<String>) {
     // Resolve source materials + collect keys serially (cheap .mtl parses,
     // deduped via a local mtl cache). Texture DECODE is the expensive part and
     // is parallelized below.
-    let mut mtl_cache: HashMap<String, Option<MtlFile>> = HashMap::new();
+    let mut mtl_cache: MtlCache = HashMap::new();
     let mut requests: HashSet<(String, TextureFlavor)> = HashSet::new();
     // DDNA→roughness sources, enumerated from the SAME canonical sidecar
     // materials the writer walks — including layer submaterials via
@@ -5264,6 +5282,13 @@ pub(crate) fn prewarm_decomposed_textures(
                     for src in normal_gloss_ddna_source_paths(layer_sub) {
                         ddna_sources.insert(src);
                     }
+                    // Layer submaterial textures were previously decoded one at
+                    // a time inside the serial writer (`layer_exports`); feed
+                    // them into the parallel prewarm with the same raw-path
+                    // keys the writer's `export_texture_asset` calls use.
+                    let mut layer_keys = Vec::new();
+                    texture_load_keys_from_material(layer_sub, &mut layer_keys);
+                    requests.extend(layer_keys);
                 }
             }
         }
@@ -6698,6 +6723,27 @@ mod tests {
         assert!(keys.contains(&(
             "Objects/Ships/Test/hull_ddna.dds".to_string(),
             TextureFlavor::Normal
+        )));
+    }
+
+    #[test]
+    fn texture_load_keys_from_single_material_matches_layer_walk_needs() {
+        // The prewarm layer walk feeds each resolved layer SUBMATERIAL through
+        // this collector; it must yield the same slot/diffuse/normal keys the
+        // whole-file collector yields for a top-level submaterial.
+        let material = sample_submaterial();
+        let mut keys = Vec::new();
+        texture_load_keys_from_material(&material, &mut keys);
+        let whole_file = texture_load_keys_from_materials(&MtlFile {
+            materials: vec![sample_submaterial()],
+            source_path: None,
+            paint_override: None,
+            material_set: Default::default(),
+        });
+        assert_eq!(keys, whole_file);
+        assert!(keys.contains(&(
+            "Objects/Ships/Test/hull_diff.dds".to_string(),
+            TextureFlavor::Generic
         )));
     }
 

@@ -645,48 +645,12 @@ fn export(
                 .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
         }
         starbreaker_3d::ExportKind::Decomposed => {
-            let decomposed = result.decomposed.as_ref().ok_or_else(|| {
-                CliError::InvalidInput("entity export returned no decomposed files".into())
-            })?;
-            eprintln!("Decomposed export file count: {}", decomposed.files.len());
-            // The decomposed exporter names its package folder with a
-            // `_LOD<n>_TEX<n>` suffix. Use that exact name here so we clean
-            // the right directory and don't leave an empty sibling folder.
-            let package_name = format!(
-                "{export_name}_LOD{}_TEX{}",
-                export_opts.lod_level, export_opts.texture_mip
-            );
-            prepare_decomposed_output_root(&output, &package_name)?;
-            // Parallel write: paths are distinct (`OutputFiles` guarantees
-            // uniqueness) so ordering is irrelevant to the on-disk result.
-            // Parent dirs are deduped and created up front — `create_dir_all`
-            // per file was one syscall-heavy serial pass over ~2.4k files.
-            use rayon::prelude::*;
-            let files_to_write: Vec<_> = decomposed
-                .files
-                .iter()
-                .filter(|file| {
-                    !opts.ui_only_files || should_write_ui_only_decomposed_file(&file.relative_path)
-                })
-                .collect();
-            let parents: HashSet<PathBuf> = files_to_write
-                .iter()
-                .filter_map(|file| output.join(&file.relative_path).parent().map(Path::to_path_buf))
-                .collect();
-            for parent in &parents {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| CliError::IoPath { source: e, path: parent.display().to_string() })?;
-            }
-            files_to_write.par_iter().try_for_each(|file| {
-                let output_path = output.join(&file.relative_path);
-                write_decomposed_file(
-                    file,
-                    &output_path,
-                    opts.skip_existing_assets,
-                    &p4k,
-                    decomposed.streamed_paths.contains(&file.relative_path),
-                )
-            })?;
+            // Unreachable: `--kind decomposed` is intercepted at the top of
+            // `export()` and routed to `export_blend`, which owns the
+            // decomposed write path (parallel write + parent-dir dedupe).
+            return Err(CliError::InvalidInput(
+                "decomposed exports are handled by export_blend".into(),
+            ));
         }
     }
     crate::log_mem_stats("after write");
@@ -708,9 +672,12 @@ fn export_blend(
     p4k_path: Option<PathBuf>,
     opts: ExportOpts,
 ) -> Result<()> {
+    crate::log_mem_stats("start");
     let (p4k, dcb_bytes) = load_dcb_bytes(p4k_path.as_deref(), None)?;
+    crate::log_mem_stats("after p4k+dcb load");
     let p4k = p4k.ok_or_else(|| CliError::MissingRequirement("P4k required for entity blend export".into()))?;
     let db = Database::from_bytes(&dcb_bytes)?;
+    crate::log_mem_stats("after db parse");
 
     let candidates = find_candidates(&db, &name)?;
     if candidates.is_empty() {
@@ -761,6 +728,7 @@ fn export_blend(
             |relative_path: &str| existing_asset_paths.as_ref().and_then(|paths| {
                 read_reusable_decomposed_asset(&output_dir, paths, relative_path)
             });
+        crate::log_mem_stats("before export");
         let result = starbreaker_3d::assemble_glb_with_loadout_with_progress(
             &db,
             &p4k,
@@ -778,25 +746,40 @@ fn export_blend(
             .as_ref()
             .ok_or_else(|| CliError::InvalidInput("entity export returned no decomposed files".into()))?;
 
-        for file in &decomposed.files {
-            if opts.ui_only_files && !should_write_ui_only_decomposed_file(&file.relative_path) {
-                continue;
-            }
+        crate::log_mem_stats("after export");
+        // Parallel write: paths are distinct (`OutputFiles` guarantees
+        // uniqueness) so ordering is irrelevant to the on-disk result.
+        // Parent dirs are deduped and created up front — `create_dir_all`
+        // per file was one syscall-heavy serial pass over ~2.4k files.
+        use rayon::prelude::*;
+        let files_to_write: Vec<_> = decomposed
+            .files
+            .iter()
+            .filter(|file| {
+                !opts.ui_only_files || should_write_ui_only_decomposed_file(&file.relative_path)
+            })
+            .collect();
+        let parents: HashSet<PathBuf> = files_to_write
+            .iter()
+            .filter_map(|file| {
+                output_dir.join(&file.relative_path).parent().map(Path::to_path_buf)
+            })
+            .collect();
+        for parent in &parents {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| CliError::IoPath { source: e, path: parent.display().to_string() })?;
+        }
+        files_to_write.par_iter().try_for_each(|file| {
             let output_path = output_dir.join(&file.relative_path);
-            if let Some(parent) = output_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| CliError::IoPath {
-                    source: e,
-                    path: parent.display().to_string(),
-                })?;
-            }
             write_decomposed_file(
                 file,
                 &output_path,
                 opts.skip_existing_assets,
                 &p4k,
                 decomposed.streamed_paths.contains(&file.relative_path),
-            )?;
-        }
+            )
+        })?;
+        crate::log_mem_stats("after write");
 
         let scene_json_path = output_dir.join("Packages").join(&package_name).join("scene.json");
         if !scene_json_path.is_file() {

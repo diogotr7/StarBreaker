@@ -207,12 +207,20 @@ fn font_edit_text_metrics_use_imported_font_templates() {
 }
 
 #[test]
-fn library_content_hash_is_stable() {
+fn library_construction_is_deterministic() {
+    // Replaces the deleted content-hash check (the SHA-256 of every SWF buffer
+    // had no production consumer): pin determinism on the extracted contents.
     let bytes = make_minimal_swf();
     let lib1 = SwfAssetLibrary::new(bytes.clone()).expect("library 1 failed");
     let lib2 = SwfAssetLibrary::new(bytes).expect("library 2 failed");
-    assert_eq!(lib1.content_hash(), lib2.content_hash());
-    assert!(!lib1.content_hash().is_empty());
+    let entries = |lib: &SwfAssetLibrary| {
+        let mut v: Vec<(String, _)> =
+            lib.export_entries().map(|(name, id)| (name.to_string(), id)).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(entries(&lib1), entries(&lib2));
+    assert_eq!(lib1.stage_size(), lib2.stage_size());
 }
 
 #[test]

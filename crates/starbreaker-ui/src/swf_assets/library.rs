@@ -9,7 +9,6 @@
 use std::collections::HashMap;
 
 use image::RgbaImage;
-use sha2::{Digest, Sha256};
 use swf::CharacterId;
 
 use crate::error::UiError;
@@ -23,9 +22,8 @@ use super::extract::{
 use super::stage::{extract_all_sprite_first_frames_from_tags, extract_all_stage_frames_from_tags};
 use super::types::{EditTextRecord, FontGlyphSet, PlaceRecord, ShapeRecord, SwfEditTextMetrics};
 
-/// Content-addressed cache of static visual atoms from one SWF.
+/// Cache of static visual atoms from one SWF, parsed once at construction.
 pub struct SwfAssetLibrary {
-    content_hash: String,
     bitmaps: HashMap<CharacterId, RgbaImage>,
     shapes: HashMap<CharacterId, ShapeRecord>,
     fonts: HashMap<CharacterId, FontGlyphSet>,
@@ -47,12 +45,6 @@ pub struct SwfAssetLibrary {
 
 impl SwfAssetLibrary {
     pub fn new(swf_bytes: Vec<u8>) -> Result<Self, UiError> {
-        let content_hash = {
-            let mut hasher = Sha256::new();
-            hasher.update(&swf_bytes);
-            hex::encode(hasher.finalize())
-        };
-
         let buf = parse_tags(&swf_bytes)?;
         let parsed = swf::parse_swf(&buf)?;
         let tags = &parsed.tags;
@@ -77,7 +69,6 @@ impl SwfAssetLibrary {
         // buf + parsed dropped here; `raw` no longer stored.
 
         Ok(Self {
-            content_hash,
             bitmaps,
             shapes,
             fonts,
@@ -110,10 +101,6 @@ impl SwfAssetLibrary {
         }
 
         Ok(())
-    }
-
-    pub fn content_hash(&self) -> &str {
-        &self.content_hash
     }
 
     pub fn get_bitmap(&self, id: CharacterId) -> Option<&RgbaImage> {
