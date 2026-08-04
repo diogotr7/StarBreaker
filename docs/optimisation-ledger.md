@@ -639,9 +639,9 @@ Review report: `docs/superpowers/plans/2026-08-02-perf-review.md`. Baselines
   — clipper runs started at 1-min load ~7.6 (carrack bench tail), so its wall
   delta is INDICATIVE-favourable (beat baseline despite the load).
 - Fresh byte-oracle baselines (post-gobo): `ships_perf_bench/{carrack,clipper}_aug02`
-  (run-1 dirs of the post bench). `*_post1` retained pending owner retirement —
-  vs `_aug02` they differ only by the gobo fix (+33 .exr, −31 png fallbacks,
-  scene.json/scene.blend paths).
+  (run-1 dirs of the post bench). `*_post1` RETIRED 2026-08-04 (owner-approved
+  deletion, 5.5G freed) — vs `_aug02` they differed only by the gobo fix
+  (+33 .exr, −31 png fallbacks, scene.json/scene.blend paths).
 
 ### R2 spike result — `[profile.perf]` (fat LTO + codegen-units=1 + target-cpu=x86-64-v3)
 
