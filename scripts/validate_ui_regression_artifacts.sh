@@ -33,6 +33,13 @@ if [[ "${#MANIFEST_CANDIDATES[@]}" -eq 1 ]]; then
 fi
 MANIFEST_PATH="${UI_REGRESSION_MANIFEST_PATH:-${DEFAULT_MANIFEST_PATH}}"
 
+# Inputs before environment: a missing freeze file is reported even where
+# the full-mode tools (magick, sha256sum) or local artifacts are absent.
+if [[ "${VALIDATION_MODE}" == "full" && ! -f "${FREEZE_FILE}" ]]; then
+  echo "error: freeze file not found: ${FREEZE_FILE}" >&2
+  exit 1
+fi
+
 if ! command -v jq >/dev/null 2>&1; then
   echo "error: jq is required but not installed" >&2
   exit 1
@@ -88,11 +95,6 @@ fi
 
 if [[ ! -f "${SNAPSHOT_FREEZE_FILE}" ]]; then
   echo "error: snapshot freeze file not found: ${SNAPSHOT_FREEZE_FILE}" >&2
-  exit 1
-fi
-
-if [[ "${VALIDATION_MODE}" == "full" && ! -f "${FREEZE_FILE}" ]]; then
-  echo "error: freeze file not found: ${FREEZE_FILE}" >&2
   exit 1
 fi
 
