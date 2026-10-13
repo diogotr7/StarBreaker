@@ -34,6 +34,7 @@ mod loadout;
 pub use self::loadout::resolve_loadout_meshes;
 pub(crate) use self::loadout::*;
 mod entity_export;
+mod geometry_variant;
 pub(crate) use self::entity_export::*;
 mod weapon_assembly;
 pub(crate) use self::weapon_assembly::*;
@@ -150,6 +151,7 @@ pub struct ExportOptions {
     /// Optional normalized lowercase socpak paths to include during inherited
     /// interior discovery. `None` exports every discovered container.
     pub socpak_path_filter: Option<HashSet<String>>,
+    pub geometry_tag: Option<String>,
 }
 
 impl Default for ExportOptions {
@@ -172,6 +174,7 @@ impl Default for ExportOptions {
             decomposed_package_subdir: None,
             ui_only_files: false,
             socpak_path_filter: None,
+            geometry_tag: None,
         }
     }
 }

@@ -34,7 +34,7 @@ function App() {
         <main className="flex-1 flex flex-col overflow-hidden">
           {mode === "p4k" && <P4kBrowser />}
           {mode === "datacore" && <DataCoreBrowser />}
-          {mode === "export" && <ExportView />}
+          {(mode === "export" || mode === "armor") && <ExportView armorOnly={mode === "armor"} />}
           {mode === "socpak-export" && <SocpakExportView />}
           {mode === "audio" && <AudioView />}
         </main>

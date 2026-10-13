@@ -21,6 +21,9 @@ import uuid
 from typing import Any
 
 import bpy
+from .layer_blend_gloss import build_layer_blend_roughness
+from .layer_blend_color import apply_layer_blend_color
+from .layer_blend_decals import apply_layer_blend_decals
 
 try:
     from mathutils import kdtree as _mathutils_kdtree
@@ -2309,6 +2312,16 @@ class BuildersMixin:
             nodes, base_color_texture, x=-280, y=220, is_color=True
         )
         if base_image_node is not None:
+            image_source_layer = next(
+                (layer for layer in submaterial.layer_manifest
+                 if layer.diffuse_export_path == base_color_texture), None
+            )
+            if image_source_layer is not None:
+                self._apply_uv_tiling(
+                    nodes, links, base_image_node,
+                    image_source_layer.uv_tiling if image_source_layer.uv_tiling is not None else 1.0,
+                    x=-700, y=220,
+                )
             base_image_socket = _input_socket(layered_group, "Base Image")
             if base_image_socket is not None:
                 links.new(base_image_node.outputs[0], base_image_socket)
@@ -2359,6 +2372,11 @@ class BuildersMixin:
                     is_color=True,
                 )
                 if fallback_image_node is not None:
+                    self._apply_uv_tiling(
+                        nodes, links, fallback_image_node,
+                        image_source_layer.uv_tiling if image_source_layer.uv_tiling is not None else 1.0,
+                        x=-700, y=220,
+                    )
                     fallback_target = _input_socket(layered_group, "Base Image")
                     if fallback_target is not None:
                         links.new(fallback_image_node.outputs[0], fallback_target)
@@ -2386,6 +2404,11 @@ class BuildersMixin:
                     nodes, wear_layer.diffuse_export_path, x=-280, y=-140, is_color=True
                 )
                 if layer_image_node is not None:
+                    self._apply_uv_tiling(
+                        nodes, links, layer_image_node,
+                        wear_layer.uv_tiling if wear_layer.uv_tiling is not None else 1.0,
+                        x=-700, y=-140,
+                    )
                     target = _input_socket(layered_group, "Layer Image")
                     if target is not None:
                         links.new(layer_image_node.outputs[0], target)
@@ -2441,6 +2464,13 @@ class BuildersMixin:
             nodes, submaterial, x=-280, y=-780
         )
         layer_roughness_target = _input_socket(layered_group, "Layer Roughness")
+        layer_blend_roughness = build_layer_blend_roughness(self, nodes, submaterial)
+        if layer_blend_roughness is not None:
+            base_roughness_source, wear_roughness_source = layer_blend_roughness
+            if base_roughness_target is not None:
+                links.new(base_roughness_source, base_roughness_target)
+            if wear_roughness_source is not None:
+                layer_roughness_source = wear_roughness_source
         if layer_roughness_source is not None and layer_roughness_target is not None:
             links.new(layer_roughness_source, layer_roughness_target)
 
@@ -2455,6 +2485,9 @@ class BuildersMixin:
             target = _input_socket(principled_group, "Roughness")
             if target is not None:
                 links.new(roughness_output, target)
+
+        apply_layer_blend_color(self, nodes, submaterial, palette, wear_factor_socket, principled_group)
+        apply_layer_blend_decals(self, nodes, submaterial, wear_factor_socket, principled_group)
 
         # Normal map.
         normal_path = textures["normal"]

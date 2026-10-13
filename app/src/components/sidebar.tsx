@@ -1,4 +1,4 @@
-import { Archive, Database, Box, Boxes, Volume2, type LucideIcon } from "lucide-react";
+import { Archive, Database, Box, Boxes, Shield, Volume2, type LucideIcon } from "lucide-react";
 import { useAppStore, type AppMode } from "../stores/app-store";
 import { getAppVersion, type AppVersion } from "../lib/commands";
 import { useEffect, useState } from "react";
@@ -21,6 +21,7 @@ const modes: ModeButton[] = [
   { id: "p4k", label: "P4k Browser", icon: Archive },
   { id: "datacore", label: "DataCore", icon: Database },
   { id: "export", label: "3D Export", icon: Box },
+  { id: "armor", label: "Armor", icon: Shield },
   { id: "socpak-export", label: "Socpak Export", icon: Boxes },
   { id: "audio", label: "Audio", icon: Volume2 },
 ];

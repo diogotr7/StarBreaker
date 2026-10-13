@@ -34,6 +34,8 @@ pub fn load_dcb_bytes(
 /// Shared glTF export options.
 #[derive(clap::Args, Debug)]
 pub struct ExportOpts {
+    #[arg(long)]
+    pub geometry_tag: Option<String>,
     /// Export kind: bundled or decomposed
     #[arg(long, default_value = "bundled")]
     pub kind: String,
@@ -108,9 +110,10 @@ impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
             include_animations: matches!(kind, starbreaker_3d::ExportKind::Decomposed),
             apply_default_animation_pose: !matches!(kind, starbreaker_3d::ExportKind::Decomposed),
             default_animation_tags: vec!["landing_gear_extend".to_string()],
-            decomposed_package_subdir: None,
+            decomposed_package_subdir: opts.geometry_tag.as_ref().map(|tag| crate::entity::sanitize_export_name(tag)),
             ui_only_files: opts.ui_only_files,
             socpak_path_filter: None,
+            geometry_tag: opts.geometry_tag.clone(),
         }
     }
 }

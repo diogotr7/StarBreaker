@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 import bpy
 import mathutils
+from .layer_blend_decals import prepare_decal_coordinates
 
 from ..constants import (
     DECAL_OFFSET_MODIFIER_NAME,
@@ -648,6 +649,7 @@ class OrchestrationMixin:
         sidecar = self.package.load_material_sidecar(sidecar_path)
         if sidecar is None:
             return 0
+        prepare_decal_coordinates(obj, sidecar)
         effective_palette_id = self._effective_palette_id(palette_id)
         palette = palette_for_id(self.package, effective_palette_id)
         applied = 0

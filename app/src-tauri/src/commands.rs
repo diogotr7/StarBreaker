@@ -848,6 +848,7 @@ pub struct EntityDto {
     /// True if not a player-available variant (inclusionMode != "ReadyToInclude").
     /// Covers AI, template, unmanned, and other non-player variants.
     pub is_npc_or_internal: bool,
+    pub armor_type: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -886,6 +887,10 @@ pub async fn scan_categories(state: State<'_, AppState>) -> Result<Vec<CategoryD
 
         let inclusion_compiled = db.compile_rooted::<Value>(
             "EntityClassDefinition.StaticEntityClassData[EAEntityDataParams].inclusionMode",
+        ).optional()?;
+
+        let armor_compiled = db.compile_rooted::<String>(
+            "EntityClassDefinition.Components[SAttachableComponentParams].AttachDef.Type",
         ).optional()?;
 
         let mut ships = Vec::new();
@@ -935,6 +940,13 @@ pub async fn scan_categories(state: State<'_, AppState>) -> Result<Vec<CategoryD
                 id: format!("{}", record.id),
                 display_name,
                 is_npc_or_internal,
+                armor_type: armor_compiled.as_ref()
+                    .map(|query| db.query_single::<String>(query, record))
+                    .transpose()?
+                    .flatten()
+                    .and_then(|kind| kind.strip_prefix("Char_Armor_")
+                        .filter(|part| !part.is_empty())
+                        .map(|part| part.replace('_', " "))),
             };
 
             if file_path_lower.contains("entities/spaceships") {
@@ -1044,6 +1056,8 @@ fn decomposed_package_directory_name(
 
 #[derive(Debug, serde::Deserialize)]
 pub struct ExportRequest {
+    #[serde(default)]
+    pub geometry_tag: Option<String>,
     pub record_ids: Vec<String>,
     pub names: Vec<String>,
     pub output_dir: String,
@@ -1676,6 +1690,7 @@ pub async fn export_socpaks(
             decomposed_package_subdir: None,
             ui_only_files: false,
             socpak_path_filter: request.socpak_path_filter.as_ref().map(normalize_socpak_path_filter),
+            geometry_tag: None,
         };
         let output_root = PathBuf::from(&request.output_dir);
         let mut file_count = 0usize;
@@ -1958,6 +1973,7 @@ pub async fn start_export(
         ui_only_files: false,
         decomposed_package_subdir: None,
         socpak_path_filter: None,
+        geometry_tag: request.geometry_tag.clone(),
     };
 
     log::info!(
@@ -2162,7 +2178,9 @@ fn export_single(
         &tree,
         &starbreaker_3d::ExportOptions {
             decomposed_package_subdir: if opts.kind == starbreaker_3d::ExportKind::Decomposed {
-                object_type_dir.map(ToOwned::to_owned)
+                let parts: Vec<String> = object_type_dir.into_iter().map(ToOwned::to_owned)
+                    .chain(opts.geometry_tag.as_deref().map(sanitize_export_name)).collect();
+                if parts.is_empty() { None } else { Some(parts.join("/")) }
             } else {
                 None
             },

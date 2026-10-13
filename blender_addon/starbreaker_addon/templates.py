@@ -106,8 +106,18 @@ def representative_textures(submaterial: SubmaterialRecord) -> dict[str, str | N
         ),
         None,
     )
+    base_color = first_texture_export(submaterial, BASE_COLOR_ROLES)
+    if submaterial.shader_family in {"Layer", "LayerBlend_V2"}:
+        flags = submaterial.decoded_feature_flags
+        has_decals = flags.has_decal or "DECALS" in flags.tokens
+        base_color = next((
+            texture.export_path for texture in _all_texture_candidates(submaterial)
+            if texture.export_path and texture.role in BASE_COLOR_ROLES
+            and texture.role != "decal_sheet"
+            and not (has_decals and texture.slot in {"TexSlot3", "TexSlot9"})
+        ), None)
     return {
-        "base_color": first_texture_export(submaterial, BASE_COLOR_ROLES) or layer_base,
+        "base_color": base_color or layer_base,
         "normal": first_texture_export(submaterial, NORMAL_ROLES) or layer_normal,
         "roughness": first_texture_export(submaterial, ROUGHNESS_ROLES) or layer_roughness,
         "mask": first_texture_export(submaterial, MASK_ROLES),

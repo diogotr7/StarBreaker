@@ -101,6 +101,10 @@ pub fn resolve_loadout_meshes(
         .and_then(|c| db.query_single::<String>(&c, record).ok().flatten())
         .unwrap_or_default();
 
+    let (geometry_path, material_path) = super::geometry_variant::resolve(
+        db, record, opts.geometry_tag.as_deref(), geometry_path, material_path,
+    )?;
+
     // Load NMC + skeleton from .cga/.chr
     let (nmc, _mtl) = load_nmc_and_material(p4k, &geometry_path, &material_path);
 

@@ -5,6 +5,7 @@ pub mod error;
 pub mod owned;
 pub(crate) mod posread;
 pub mod types;
+mod v2;
 
 pub use archive::{DirEntry, P4kArchive, P4kEntry};
 pub use discover::{find_p4k, open_p4k};

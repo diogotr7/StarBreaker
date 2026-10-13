@@ -113,6 +113,10 @@ fn export_entity_payload_cached(
         .query_single::<String>(&mtl_compiled, record)?
         .unwrap_or_default();
 
+    let (geometry_path, material_path) = super::geometry_variant::resolve(
+        db, record, opts.geometry_tag.as_deref(), geometry_path, material_path,
+    )?;
+
     let (mesh, mtl_file, textures, nmc, skeleton_bones, primary_path, skeleton_source_path) =
         load_geometry_parts(p4k, &geometry_path, &material_path, opts, png_cache, false)?;
 
@@ -130,7 +134,9 @@ fn export_entity_payload_cached(
         ));
     }
 
-    let palette = query_tint_palette(db, record);
+    let palette = opts.geometry_tag.as_deref()
+        .and_then(|tag| super::palette::query_geometry_variant_palette(db, record, tag))
+        .or_else(|| query_tint_palette(db, record));
     Ok((
         mesh,
         mtl_file,

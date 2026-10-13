@@ -1,10 +1,10 @@
-use std::io::{Read, Seek, SeekFrom};
 use std::cmp::Ordering;
+use std::io::{Read, Seek, SeekFrom};
 
-use rustc_hash::FxHasher;
 use hashbrown::HashTable;
-use std::hash::{Hash, Hasher};
+use rustc_hash::FxHasher;
 use starbreaker_common::SpanReader;
+use std::hash::{Hash, Hasher};
 
 use crate::crypto;
 use crate::error::P4kError;
@@ -24,6 +24,7 @@ pub struct P4kEntry {
     /// upper 16 bits = DOS date (year-1980, month, day). Use
     /// [`Self::last_modified_unix`] to get Unix seconds.
     pub last_modified: u32,
+    pub has_local_header: bool,
 }
 
 impl P4kEntry {
@@ -138,19 +139,21 @@ impl<'a> P4kArchive<'a> {
         }
 
         let mut reader = SpanReader::new_at(data, offset);
-        let local_header = reader.read_type::<LocalFileHeader>()?;
-        let sig = local_header.signature;
-        if sig != LOCAL_FILE_SIGNATURE && sig != LOCAL_FILE_CIG_SIGNATURE {
-            return Err(P4kError::InvalidSignature {
-                expected: LOCAL_FILE_SIGNATURE,
-                got: sig,
-            });
-        }
+        if entry.has_local_header {
+            let local_header = reader.read_type::<LocalFileHeader>()?;
+            let sig = local_header.signature;
+            if sig != LOCAL_FILE_SIGNATURE && sig != LOCAL_FILE_CIG_SIGNATURE {
+                return Err(P4kError::InvalidSignature {
+                    expected: LOCAL_FILE_SIGNATURE,
+                    got: sig,
+                });
+            }
 
-        // Skip the file name and extra field to reach the raw data
-        let skip =
-            local_header.file_name_length as usize + local_header.extra_field_length as usize;
-        reader.advance(skip)?;
+            // Skip the file name and extra field to reach the raw data
+            let skip =
+                local_header.file_name_length as usize + local_header.extra_field_length as usize;
+            reader.advance(skip)?;
+        }
 
         let raw = reader.read_bytes(entry.compressed_size as usize)?;
 
@@ -177,29 +180,31 @@ impl<'a> P4kArchive<'a> {
     pub fn read_from_file_at(file: &std::fs::File, entry: &P4kEntry) -> Result<Vec<u8>, P4kError> {
         use crate::posread::pread_exact;
 
-        // 1. Local file header
-        let mut header_buf = [0u8; size_of::<LocalFileHeader>()];
-        pread_exact(file, &mut header_buf, entry.offset)?;
-        let local_header: LocalFileHeader =
-            *zerocopy::FromBytes::ref_from_bytes(&header_buf).map_err(|_| {
+        let data_offset = if entry.has_local_header {
+            let mut header_buf = [0u8; size_of::<LocalFileHeader>()];
+            pread_exact(file, &mut header_buf, entry.offset)?;
+            let local_header: LocalFileHeader = *zerocopy::FromBytes::ref_from_bytes(&header_buf)
+                .map_err(|_| {
                 P4kError::Parse(starbreaker_common::ParseError::InvalidLayout(
                     "LocalFileHeader".to_string(),
                 ))
             })?;
 
-        let sig = local_header.signature;
-        if sig != LOCAL_FILE_SIGNATURE && sig != LOCAL_FILE_CIG_SIGNATURE {
-            return Err(P4kError::InvalidSignature {
-                expected: LOCAL_FILE_SIGNATURE,
-                got: sig,
-            });
-        }
+            let sig = local_header.signature;
+            if sig != LOCAL_FILE_SIGNATURE && sig != LOCAL_FILE_CIG_SIGNATURE {
+                return Err(P4kError::InvalidSignature {
+                    expected: LOCAL_FILE_SIGNATURE,
+                    got: sig,
+                });
+            }
 
-        // 2. Compressed data starts past the variable-length filename + extra field
-        let data_offset = entry.offset
-            + size_of::<LocalFileHeader>() as u64
-            + local_header.file_name_length as u64
-            + local_header.extra_field_length as u64;
+            entry.offset
+                + size_of::<LocalFileHeader>() as u64
+                + local_header.file_name_length as u64
+                + local_header.extra_field_length as u64
+        } else {
+            entry.offset
+        };
 
         let mut raw = vec![0u8; entry.compressed_size as usize];
         pread_exact(file, &mut raw, data_offset)?;
@@ -369,10 +374,10 @@ pub(crate) fn hash_path(s: &str) -> u64 {
 /// - sorted_lower_index (sorted by lowercase_names[i])
 pub(crate) type CentralDirectory = (
     Vec<P4kEntry>,
-    HashTable<u32>,            // path_index (exact case, keyed by entry index)
-    Vec<u32>,                  // sorted_index (case-sensitive, for prefix scans)
-    Vec<String>,               // lowercase_names (parallel to entries)
-    Vec<u32>,                  // sorted_lower_index (sorted by lowercase_names[i])
+    HashTable<u32>, // path_index (exact case, keyed by entry index)
+    Vec<u32>,       // sorted_index (case-sensitive, for prefix scans)
+    Vec<String>,    // lowercase_names (parallel to entries)
+    Vec<u32>,       // sorted_lower_index (sorted by lowercase_names[i])
 );
 
 /// Location of the central directory within an archive.
@@ -482,7 +487,10 @@ fn build_archive_indexes(entries: Vec<P4kEntry>) -> Result<CentralDirectory, P4k
     }
 
     // Parallel lowercased view used by search and entry_case_insensitive.
-    let lowercase_names: Vec<String> = entries.iter().map(|e| e.name.to_ascii_lowercase()).collect();
+    let lowercase_names: Vec<String> = entries
+        .iter()
+        .map(|e| e.name.to_ascii_lowercase())
+        .collect();
 
     // Case-sensitive sorted index for list_dir / list_subdirs.
     let mut sorted_index: Vec<u32> = (0..entries.len() as u32).collect();
@@ -497,7 +505,13 @@ fn build_archive_indexes(entries: Vec<P4kEntry>) -> Result<CentralDirectory, P4k
             .then_with(|| a.cmp(&b))
     });
 
-    Ok((entries, path_index, sorted_index, lowercase_names, sorted_lower_index))
+    Ok((
+        entries,
+        path_index,
+        sorted_index,
+        lowercase_names,
+        sorted_lower_index,
+    ))
 }
 
 fn parse_local_file_entries(data: &[u8]) -> Result<CentralDirectory, P4kError> {
@@ -507,14 +521,17 @@ fn parse_local_file_entries(data: &[u8]) -> Result<CentralDirectory, P4kError> {
     while offset + size_of::<LocalFileHeader>() <= data.len() {
         let mut reader = SpanReader::new_at(data, offset);
         let header = reader.read_type::<LocalFileHeader>()?;
-        if header.signature != LOCAL_FILE_SIGNATURE && header.signature != LOCAL_FILE_CIG_SIGNATURE {
+        if header.signature != LOCAL_FILE_SIGNATURE && header.signature != LOCAL_FILE_CIG_SIGNATURE
+        {
             break;
         }
 
         if header.flags & 0x0008 != 0 {
-            return Err(P4kError::Parse(starbreaker_common::ParseError::InvalidLayout(
-                "local-header fallback does not support data descriptors".to_string(),
-            )));
+            return Err(P4kError::Parse(
+                starbreaker_common::ParseError::InvalidLayout(
+                    "local-header fallback does not support data descriptors".to_string(),
+                ),
+            ));
         }
 
         let name_bytes = reader.read_bytes(header.file_name_length as usize)?;
@@ -558,6 +575,7 @@ fn parse_local_file_entries(data: &[u8]) -> Result<CentralDirectory, P4kError> {
             offset: offset as u64,
             crc32: header.crc32,
             last_modified: ((header.last_mod_date as u32) << 16) | header.last_mod_time as u32,
+            has_local_header: true,
         });
 
         offset = end_offset;
@@ -577,6 +595,15 @@ pub(crate) fn parse_central_directory(
     data: &[u8],
     progress: Option<&starbreaker_common::Progress>,
 ) -> Result<CentralDirectory, P4kError> {
+    if crate::v2::is_v2(data) {
+        let entries = crate::v2::read_entries(
+            &mut std::io::Cursor::new(data),
+            data,
+            data.len() as u64,
+            progress,
+        )?;
+        return build_archive_indexes(entries);
+    }
     let loc = locate_central_directory(data, 0)?;
     let cd_data = &data[loc.cd_offset as usize..];
     parse_entries(cd_data, loc.total_entries, loc.is_zip64, progress)
@@ -598,6 +625,10 @@ pub(crate) fn parse_central_directory_from_file(
     file.seek(SeekFrom::Start(tail_offset))?;
     let mut tail = vec![0u8; tail_size];
     file.read_exact(&mut tail)?;
+
+    if crate::v2::is_v2(&tail) {
+        return build_archive_indexes(crate::v2::read_entries(file, &tail, file_len, progress)?);
+    }
 
     let loc = locate_central_directory(&tail, tail_offset)?;
 
@@ -787,6 +818,7 @@ fn read_entry(reader: &mut SpanReader, is_zip64: bool) -> Result<P4kEntry, P4kEr
         compression_method: header.compression_method,
         is_encrypted,
         offset: local_header_offset,
+        has_local_header: true,
         crc32: header.crc32,
         last_modified: header.last_modified,
     })
@@ -817,6 +849,7 @@ mod tests {
 
     fn make_entry(name: &str) -> P4kEntry {
         P4kEntry {
+            has_local_header: true,
             name: name.to_string(),
             compressed_size: 0,
             uncompressed_size: 0,
@@ -835,8 +868,10 @@ mod tests {
             make_entry("data\\BAR.xml"),
             make_entry("Other\\baz.dds"),
         ];
-        let lowercase_names: Vec<String> =
-            entries.iter().map(|e| e.name.to_ascii_lowercase()).collect();
+        let lowercase_names: Vec<String> = entries
+            .iter()
+            .map(|e| e.name.to_ascii_lowercase())
+            .collect();
         let mut sorted_lower_index: Vec<u32> = (0..entries.len() as u32).collect();
         sorted_lower_index.sort_unstable_by(|&a, &b| {
             lowercase_names[a as usize].cmp(&lowercase_names[b as usize])
@@ -852,11 +887,15 @@ mod tests {
         };
 
         assert_eq!(
-            archive.entry_case_insensitive("DATA\\foo.mtl").map(|e| e.name.as_str()),
+            archive
+                .entry_case_insensitive("DATA\\foo.mtl")
+                .map(|e| e.name.as_str()),
             Some("Data\\Foo.MTL")
         );
         assert_eq!(
-            archive.entry_case_insensitive("data\\bar.xml").map(|e| e.name.as_str()),
+            archive
+                .entry_case_insensitive("data\\bar.xml")
+                .map(|e| e.name.as_str()),
             Some("data\\BAR.xml")
         );
         assert!(archive.entry_case_insensitive("nope").is_none());
@@ -869,8 +908,10 @@ mod tests {
             make_entry("Data\\Objects\\Spaceships\\Ships\\RSI\\Aurora\\aurora.cga"),
             make_entry("Data\\Textures\\hornet_diffuse.dds"),
         ];
-        let lowercase_names: Vec<String> =
-            entries.iter().map(|e| e.name.to_ascii_lowercase()).collect();
+        let lowercase_names: Vec<String> = entries
+            .iter()
+            .map(|e| e.name.to_ascii_lowercase())
+            .collect();
         let mut sorted_lower_index: Vec<u32> = (0..entries.len() as u32).collect();
         sorted_lower_index.sort_unstable_by(|&a, &b| {
             lowercase_names[a as usize].cmp(&lowercase_names[b as usize])
@@ -921,7 +962,10 @@ mod tests {
             .map(|i| a.entries[i as usize].name.as_str())
             .collect();
         hits.sort();
-        assert_eq!(hits, vec!["Data\\Objects\\Spaceships\\Ships\\AEGS\\Hornet\\hornet_glass.mtl"]);
+        assert_eq!(
+            hits,
+            vec!["Data\\Objects\\Spaceships\\Ships\\AEGS\\Hornet\\hornet_glass.mtl"]
+        );
     }
 
     #[test]
@@ -977,8 +1021,10 @@ mod tests {
             make_entry("AAB"), // sort-adjacent to "aaa" lowercased
             make_entry("z"),
         ];
-        let lowercase_names: Vec<String> =
-            entries.iter().map(|e| e.name.to_ascii_lowercase()).collect();
+        let lowercase_names: Vec<String> = entries
+            .iter()
+            .map(|e| e.name.to_ascii_lowercase())
+            .collect();
         let mut sorted_lower_index: Vec<u32> = (0..entries.len() as u32).collect();
         sorted_lower_index.sort_unstable_by(|&a, &b| {
             lowercase_names[a as usize].cmp(&lowercase_names[b as usize])
@@ -994,11 +1040,24 @@ mod tests {
         };
 
         // Exact case
-        assert_eq!(archive.entry_case_insensitive("a").map(|e| e.name.as_str()), Some("a"));
+        assert_eq!(
+            archive.entry_case_insensitive("a").map(|e| e.name.as_str()),
+            Some("a")
+        );
         // Upper -> matches lowercase entry
-        assert_eq!(archive.entry_case_insensitive("AAA").map(|e| e.name.as_str()), Some("aaa"));
+        assert_eq!(
+            archive
+                .entry_case_insensitive("AAA")
+                .map(|e| e.name.as_str()),
+            Some("aaa")
+        );
         // Lower -> matches uppercase entry
-        assert_eq!(archive.entry_case_insensitive("aab").map(|e| e.name.as_str()), Some("AAB"));
+        assert_eq!(
+            archive
+                .entry_case_insensitive("aab")
+                .map(|e| e.name.as_str()),
+            Some("AAB")
+        );
         // Miss in the middle of the sort range
         assert!(archive.entry_case_insensitive("aac").is_none());
         // Miss past the end
@@ -1043,20 +1102,23 @@ mod tests {
                 }
             }));
         }
-        for h in handles { h.join().expect("thread"); }
+        for h in handles {
+            h.join().expect("thread");
+        }
         let _ = std::fs::remove_file(&path);
     }
 
     /// Build a `P4kArchive<'static>` from a list of entries, matching the
     /// production index construction.
     fn build_test_archive(entries: Vec<P4kEntry>) -> P4kArchive<'static> {
-        let lowercase_names: Vec<String> =
-            entries.iter().map(|e| e.name.to_ascii_lowercase()).collect();
+        let lowercase_names: Vec<String> = entries
+            .iter()
+            .map(|e| e.name.to_ascii_lowercase())
+            .collect();
 
         let mut sorted_index: Vec<u32> = (0..entries.len() as u32).collect();
-        sorted_index.sort_unstable_by(|&a, &b| {
-            entries[a as usize].name.cmp(&entries[b as usize].name)
-        });
+        sorted_index
+            .sort_unstable_by(|&a, &b| entries[a as usize].name.cmp(&entries[b as usize].name));
 
         let mut sorted_lower_index: Vec<u32> = (0..entries.len() as u32).collect();
         sorted_lower_index.sort_unstable_by(|&a, &b| {
@@ -1098,7 +1160,10 @@ mod tests {
                 e.name
             );
         }
-        assert!(archive.entry("Data\\foo.mtl").is_none(), "wrong case must miss");
+        assert!(
+            archive.entry("Data\\foo.mtl").is_none(),
+            "wrong case must miss"
+        );
         assert!(archive.entry("nope").is_none());
     }
 

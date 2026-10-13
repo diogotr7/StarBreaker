@@ -670,6 +670,7 @@ class FakeSubmaterial:
     def __init__(self, index: int, name: str):
         self.index = index
         self.submaterial_name = name
+        self.shader_family = "MeshDecal"
 
 
 class TestMeshDecalNeutralBreakupDefault(unittest.TestCase):

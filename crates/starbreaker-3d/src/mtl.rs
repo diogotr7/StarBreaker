@@ -472,7 +472,7 @@ impl SubMaterial {
         };
 
         DecodedStringGenMask {
-            has_decal: has_token("DECAL"),
+            has_decal: has_token("DECAL") || has_token("DECALS"),
             has_parallax_occlusion_mapping: has_token("PARALLAX_OCCLUSION_MAPPING"),
             has_stencil_map: has_token("STENCIL_MAP"),
             has_iridescence: has_token("IRIDESCENCE"),
@@ -1649,6 +1649,18 @@ mod tests {
             .collect();
 
         assert_eq!(roles, vec![TextureSemanticRole::BaseColor]);
+    }
+
+    #[test]
+    fn layer_blend_plural_decals_classifies_slot_nine_without_filename_hints() {
+        let mut material = dummy_submaterial("LayerBlend_V2", "%NORMAL_MAP%BLEND_MAP%DECALS");
+        material.texture_slots = vec![TextureSlotBinding {
+            slot: "TexSlot9".into(),
+            path: "textures/helmet_diff.tif".into(),
+            is_virtual: false,
+        }];
+        assert!(material.decoded_string_gen_mask().has_decal);
+        assert_eq!(material.semantic_texture_slots()[0].role, TextureSemanticRole::DecalSheet);
     }
 
     #[test]

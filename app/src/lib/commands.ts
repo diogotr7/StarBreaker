@@ -139,6 +139,7 @@ export interface EntityDto {
   id: string;
   display_name: string | null;
   is_npc_or_internal: boolean;
+  armor_type: string | null;
 }
 
 export interface CategoryDto {
@@ -147,6 +148,7 @@ export interface CategoryDto {
 }
 
 export interface ExportRequest {
+  geometry_tag?: string;
   record_ids: string[];
   names: string[];
   output_dir: string;

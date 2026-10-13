@@ -1342,7 +1342,7 @@ class GroupsMixin:
         """
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime Principled",
-            "principled_v2",
+            "principled_v3",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -1355,11 +1355,12 @@ class GroupsMixin:
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime Principled",
-            signature="principled_v2",
+            signature="principled_v3",
             inputs=[
                 ("Base Color", "NodeSocketColor"),
                 ("Roughness", "NodeSocketFloat"),
                 ("Metallic", "NodeSocketFloat"),
+                ("Specular Tint", "NodeSocketColor"),
                 ("Normal Color", "NodeSocketColor"),
                 ("Normal Strength", "NodeSocketFloat"),
                 ("Use Normal", "NodeSocketFloat"),
@@ -1372,12 +1373,13 @@ class GroupsMixin:
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "principled_v2":
+        if group_tree.get("starbreaker_runtime_built_signature") == "principled_v3":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
 
         _set_group_input_default(group_input, "Base Color", (1.0, 1.0, 1.0, 1.0))
+        _set_group_input_default(group_input, "Specular Tint", (1.0, 1.0, 1.0, 1.0))
         _set_group_input_default(group_input, "Roughness", 0.45)
         _set_group_input_default(group_input, "Metallic", 0.0)
         _set_group_input_default(group_input, "Normal Color", (0.5, 0.5, 1.0, 1.0))
@@ -1429,6 +1431,9 @@ class GroupsMixin:
         principled = nodes.new("ShaderNodeBsdfPrincipled")
         principled.location = (220, 0)
         principled.label = "StarBreaker Surface"
+        principled.inputs["IOR"].default_value = 1.5
+        principled.inputs["Specular IOR Level"].default_value = 0.5
+        links.new(_output_socket(group_input, "Specular Tint"), principled.inputs["Specular Tint"])
         links.new(_output_socket(group_input, "Base Color"), _input_socket(principled, "Base Color"))
         links.new(_output_socket(group_input, "Roughness"), _input_socket(principled, "Roughness"))
         links.new(_output_socket(group_input, "Metallic"), _input_socket(principled, "Metallic"))
@@ -1444,7 +1449,7 @@ class GroupsMixin:
         links.new(bump_toggle.outputs[1], _input_socket(principled, "Normal"))
 
         links.new(principled.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "principled_v2"
+        group_tree["starbreaker_runtime_built_signature"] = "principled_v3"
         return group_tree
 
     def _ensure_runtime_hardsurface_stencil_group(self) -> bpy.types.ShaderNodeTree:

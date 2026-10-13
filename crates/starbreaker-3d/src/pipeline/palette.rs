@@ -21,15 +21,19 @@ use crate::mtl;
 use super::{datacore_path_to_p4k, decode_png, load_diffuse_texture};
 
 pub(crate) fn resolve_mtl_p4k_path(mtl_name: &str, p4k_geom_path: &str) -> String {
-    if mtl_name.contains('/') || mtl_name.contains('\\') {
-        format!("Data\\{}.mtl", mtl_name.replace('/', "\\"))
+    let mut path = if mtl_name.contains('/') || mtl_name.contains('\\') {
+        datacore_path_to_p4k(mtl_name)
     } else {
         let dir = p4k_geom_path
             .rfind('\\')
             .map(|i| &p4k_geom_path[..i])
             .unwrap_or(p4k_geom_path);
-        format!("{dir}\\{mtl_name}.mtl")
+        format!("{dir}\\{mtl_name}")
+    };
+    if !path.to_ascii_lowercase().ends_with(".mtl") {
+        path.push_str(".mtl");
     }
+    path
 }
 
 /// Resolve and parse the .mtl material file for a mesh.
@@ -598,6 +602,24 @@ fn read_rgb_value_field(
 
 /// Query the default tint palette colors from a DataCore entity.
 ///
+pub(crate) fn query_geometry_variant_palette(
+    db: &Database,
+    record: &Record,
+    tag: &str,
+) -> Option<mtl::TintPalette> {
+    let compiled = db.compile_path::<Value>(record.struct_id(), "Components[SGeometryResourceParams]").ok()?;
+    let components = db.query::<Value>(&compiled, record).ok()?;
+    let source_name = format!("{}:{}", db.resolve_string2(record.name_offset), tag.to_ascii_lowercase());
+    components.iter().find_map(|component| {
+        let node = get_value_field(component, "Geometry")?;
+        let variants = get_value_array(node, "SubGeometry")?;
+        let variant = variants.iter().find(|variant| {
+            get_value_string(variant, "Tags").is_some_and(|value| value.eq_ignore_ascii_case(tag))
+        })?;
+        extract_subgeometry_palette(get_value_field(variant, "Geometry")?, Some(source_name.clone()))
+    })
+}
+
 /// Strategy:
 /// 1. Try querying through the entity's Reference path (follows the Reference to the
 ///    correct TintPaletteTree record, works when RootRecord is populated).
@@ -1056,6 +1078,18 @@ fn load_layer_specular_texture_mean(p4k: &MappedP4k, material: &mtl::SubMaterial
 mod tests {
     use super::*;
     use starbreaker_datacore::query::value::Value;
+
+    #[test]
+    fn metadata_material_paths_preserve_extension_and_archive_root() {
+        let geometry = "Data\\Objects\\test\\body.skin";
+        for name in ["body", "body.mtl", "body.MTL"] {
+            let expected = if name == "body" { "body.mtl" } else { name };
+            assert_eq!(resolve_mtl_p4k_path(name, geometry), format!("Data\\Objects\\test\\{expected}"));
+        }
+        for name in ["Objects/test/body.mtl", "Data/Objects/test/body.mtl", "data\\Objects\\test\\body.mtl"] {
+            assert_eq!(resolve_mtl_p4k_path(name, geometry), "Data\\Objects\\test\\body.mtl");
+        }
+    }
 
     fn object(
         type_name: &'static str,

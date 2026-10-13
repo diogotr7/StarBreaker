@@ -706,6 +706,10 @@ fn export_blend(
             "{export_name}_LOD{}_TEX{}",
             export_opts.lod_level, export_opts.texture_mip
         );
+        let package_name = match &export_opts.decomposed_package_subdir {
+            Some(subdir) => format!("{subdir}/{package_name}"),
+            None => package_name,
+        };
 
         let existing_asset_paths = if opts.skip_existing_assets {
             Some(collect_existing_decomposed_assets(&output_dir, &p4k)?)
