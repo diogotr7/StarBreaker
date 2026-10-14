@@ -523,8 +523,8 @@ export async function audioResolveTrigger(triggerName: string): Promise<AudioSou
 }
 
 /** Resolve an ATL external source to its WEM path. */
-export async function audioResolveExternalSource(sourceName: string): Promise<AudioSoundResult[]> {
-  return invoke<AudioSoundResult[]>("audio_resolve_external_source", { sourceName });
+export async function audioResolveExternalSource(sourceName: string, language: string): Promise<AudioSoundResult[]> {
+  return invoke<AudioSoundResult[]>("audio_resolve_external_source", { sourceName, language });
 }
 
 /** Decode a WEM to Ogg bytes for browser playback. */

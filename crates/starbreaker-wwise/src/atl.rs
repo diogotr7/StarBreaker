@@ -3,19 +3,21 @@
 //! Parses `Data\Libs\GameAudio\*.xml` from the P4k archive to build a lookup
 //! index from trigger names to their associated Wwise events and bank files.
 //!
-//! The GameAudio XML files are stored as **CryXmlB** (binary XML) inside the P4k.
-//! We parse them with `starbreaker_cryxml`, falling back to plain XML via `quick-xml`
-//! for any files that happen to be text XML.
+//! The documents are read by [`crate::game_audio`] (CryXmlB or text XML);
+//! [`AtlIndex::add_document`] indexes one, [`AtlIndex::from_p4k`] all of them
+//! ([`crate::game_audio::load`] builds this and the external-source index in
+//! one scan).
 
 use std::collections::HashMap;
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use serde::Serialize;
-use starbreaker_cryxml::{CryXml, CryXmlNode, from_bytes, is_cryxmlb};
+use starbreaker_cryxml::{CryXml, CryXmlNode};
 use starbreaker_p4k::MappedP4k;
 
 use crate::error::BnkError;
+use crate::game_audio::{GameAudioDoc, cryxml_attr, for_each_document, xml_attr as get_attr};
 
 /// A single ATL trigger entry, linking a trigger name to its Wwise event and bank file.
 #[derive(Debug, Clone, Serialize)]
@@ -33,6 +35,7 @@ pub struct AtlTrigger {
 }
 
 /// Index of ATL triggers built from all GameAudio XML files in the P4k.
+#[derive(Default)]
 pub struct AtlIndex {
     /// trigger_name -> AtlTrigger
     triggers: HashMap<String, AtlTrigger>,
@@ -43,69 +46,29 @@ pub struct AtlIndex {
 impl AtlIndex {
     /// Build the ATL index by scanning all `Data\Libs\GameAudio\*.xml` files in the P4k.
     pub fn from_p4k(p4k: &MappedP4k) -> Result<Self, BnkError> {
-        let mut triggers = HashMap::new();
-        let mut bank_triggers: HashMap<String, Vec<String>> = HashMap::new();
-
-        let prefix = r"Data\Libs\GameAudio\";
-
-        for entry in p4k.entries() {
-            if !entry.name.starts_with(prefix) {
-                continue;
+        let mut index = Self::default();
+        for_each_document(p4k, |name, doc| {
+            if let Err(e) = index.add_document(doc) {
+                eprintln!("warning: failed to parse ATL XML {name}: {e}");
             }
-            if !entry.name.to_ascii_lowercase().ends_with(".xml") {
-                continue;
-            }
+        });
+        Ok(index)
+    }
 
-            let data = match p4k.read(entry) {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("warning: failed to read {}: {e}", entry.name);
-                    continue;
-                }
-            };
-
-            // Try CryXmlB first (most GameAudio files are binary XML), then plain XML.
-            let file_triggers = if is_cryxmlb(&data) {
-                match from_bytes(&data) {
-                    Ok(xml) => parse_atl_cryxml(&xml),
-                    Err(e) => {
-                        eprintln!("warning: failed to parse CryXmlB {}: {e}", entry.name);
-                        continue;
-                    }
-                }
-            } else if starts_with_xml(&data) {
-                let xml_str = match std::str::from_utf8(strip_bom(&data)) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        eprintln!("warning: non-UTF8 XML in {}: {e}", entry.name);
-                        continue;
-                    }
-                };
-                match parse_atl_xml(xml_str) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        eprintln!("warning: failed to parse ATL XML {}: {e}", entry.name);
-                        continue;
-                    }
-                }
-            } else {
-                // Neither CryXmlB nor text XML — skip.
-                continue;
-            };
-
-            for trigger in file_triggers {
-                bank_triggers
-                    .entry(trigger.bank_name.clone())
-                    .or_default()
-                    .push(trigger.trigger_name.clone());
-                triggers.insert(trigger.trigger_name.clone(), trigger);
-            }
+    /// Index the triggers of one GameAudio document.
+    pub fn add_document(&mut self, doc: &GameAudioDoc<'_>) -> Result<(), BnkError> {
+        let file_triggers = match doc {
+            GameAudioDoc::Binary(xml) => parse_atl_cryxml(xml),
+            GameAudioDoc::Text(xml) => parse_atl_xml(xml)?,
+        };
+        for trigger in file_triggers {
+            self.bank_triggers
+                .entry(trigger.bank_name.clone())
+                .or_default()
+                .push(trigger.trigger_name.clone());
+            self.triggers.insert(trigger.trigger_name.clone(), trigger);
         }
-
-        Ok(AtlIndex {
-            triggers,
-            bank_triggers,
-        })
+        Ok(())
     }
 
     /// Look up a trigger by exact name.
@@ -152,13 +115,6 @@ impl AtlIndex {
 }
 
 // ── CryXmlB parser ──────────────────────────────────────────────────────────
-
-/// Get the value of a named attribute from a CryXmlB node.
-fn cryxml_attr<'a>(xml: &'a CryXml<'_>, node: &CryXmlNode, name: &str) -> Option<&'a str> {
-    xml.node_attributes(node)
-        .find(|(k, _)| *k == name)
-        .map(|(_, v)| v)
-}
 
 /// Recursively search for a WwiseFile node under a given parent.
 fn find_wwise_file_recursive(xml: &CryXml<'_>, node: &CryXmlNode) -> Option<String> {
@@ -274,27 +230,6 @@ fn parse_atl_cryxml(xml: &CryXml<'_>) -> Vec<AtlTrigger> {
 }
 
 // ── Plain XML fallback (quick-xml) ──────────────────────────────────────────
-
-/// Strip a UTF-8 BOM if present.
-fn strip_bom(data: &[u8]) -> &[u8] {
-    if data.starts_with(b"\xEF\xBB\xBF") {
-        &data[3..]
-    } else {
-        data
-    }
-}
-
-/// Check if data starts with XML text (possibly after a UTF-8 BOM).
-fn starts_with_xml(data: &[u8]) -> bool {
-    let data = strip_bom(data);
-    // Skip leading whitespace
-    let trimmed = data
-        .iter()
-        .position(|&b| !b.is_ascii_whitespace())
-        .map(|i| &data[i..])
-        .unwrap_or(data);
-    trimmed.starts_with(b"<")
-}
 
 /// Parse a single plain-text ATL XML file and return all triggers found.
 fn parse_atl_xml(xml: &str) -> Result<Vec<AtlTrigger>, BnkError> {
@@ -453,14 +388,4 @@ fn handle_open_tag(
         }
         _ => {}
     }
-}
-
-/// Extract a UTF-8 attribute value from an XML element by attribute name.
-fn get_attr(e: &quick_xml::events::BytesStart<'_>, attr_name: &[u8]) -> Option<String> {
-    for attr in e.attributes().flatten() {
-        if attr.key.as_ref() == attr_name {
-            return String::from_utf8(attr.value.to_vec()).ok();
-        }
-    }
-    None
 }

@@ -42,6 +42,8 @@ interface AudioState {
   selectedBank: string | null;
   triggers: AudioTriggerDetail[];
   selectedTrigger: string | null;
+  /** The selected row's bank (an external source's language). */
+  selectedTriggerBank: string | null;
   sounds: AudioSoundResult[];
 
   // Playback
@@ -60,7 +62,7 @@ interface AudioState {
   search: (query: string) => Promise<void>;
   selectEntity: (name: string) => Promise<void>;
   selectBank: (name: string) => Promise<void>;
-  selectTrigger: (triggerName: string) => Promise<void>;
+  selectTrigger: (triggerName: string, bankName: string) => Promise<void>;
   playSound: (sound: AudioSoundResult) => Promise<void>;
   stopSound: () => void;
   setProgress: (progress: number, duration: number) => void;
@@ -85,6 +87,7 @@ export const useAudioStore = create<AudioState>((set, get) => ({
   selectedBank: null,
   triggers: [],
   selectedTrigger: null,
+  selectedTriggerBank: null,
   sounds: [],
 
   currentSound: null,
@@ -232,12 +235,13 @@ export const useAudioStore = create<AudioState>((set, get) => ({
     }
   },
 
-  selectTrigger: async (triggerName) => {
+  selectTrigger: async (triggerName, bankName) => {
     const prevSounds = get().sounds;
-    set({ selectedTrigger: triggerName, sounds: [], error: null });
+    set({ selectedTrigger: triggerName, selectedTriggerBank: bankName, sounds: [], error: null });
     try {
       if (get().searchMode === "external") {
-        const sounds = await audioResolveExternalSource(triggerName);
+        // External-source rows carry their language as the bank name.
+        const sounds = await audioResolveExternalSource(triggerName, bankName);
         set({ sounds });
         return;
       }

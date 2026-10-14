@@ -1,17 +1,21 @@
 //! ATL external-source parser for Wwise media assets.
 //!
 //! This module indexes `AudioExternalSources` entries from GameAudio XML files
-//! and resolves each ATL external-source name to its WEM path.
+//! (read by [`crate::game_audio`]) and resolves each ATL external-source name,
+//! per language, to its WEM path. [`ExternalSourceIndex::add_document`] indexes
+//! one document; [`crate::game_audio::load`] builds this and the ATL trigger
+//! index in one scan.
 
 use std::collections::HashMap;
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use serde::Serialize;
-use starbreaker_cryxml::{CryXml, CryXmlNode, from_bytes, is_cryxmlb};
+use starbreaker_cryxml::CryXml;
 use starbreaker_p4k::MappedP4k;
 
 use crate::error::BnkError;
+use crate::game_audio::{GameAudioDoc, cryxml_attr, for_each_document, xml_attr as get_attr};
 
 /// A Wwise file referenced by an ATL external source.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -28,6 +32,7 @@ pub struct ExternalSourceEntry {
 }
 
 /// Index of ATL external sources built from GameAudio XML files in the P4k.
+#[derive(Default)]
 pub struct ExternalSourceIndex {
     sources: HashMap<String, Vec<ExternalSourceEntry>>,
 }
@@ -35,58 +40,25 @@ pub struct ExternalSourceIndex {
 impl ExternalSourceIndex {
     /// Build the external-source index by scanning `Data\Libs\GameAudio\*.xml`.
     pub fn from_p4k(p4k: &MappedP4k) -> Result<Self, BnkError> {
-        let mut sources: HashMap<String, Vec<ExternalSourceEntry>> = HashMap::new();
-        let prefix = r"Data\Libs\GameAudio\";
-
-        for entry in p4k.entries() {
-            if !entry.name.starts_with(prefix) {
-                continue;
+        let mut index = Self::default();
+        for_each_document(p4k, |name, doc| {
+            if let Err(e) = index.add_document(doc) {
+                eprintln!("warning: failed to parse external-source XML {name}: {e}");
             }
-            if !entry.name.to_ascii_lowercase().ends_with(".xml") {
-                continue;
-            }
+        });
+        Ok(index)
+    }
 
-            let data = match p4k.read(entry) {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("warning: failed to read {}: {e}", entry.name);
-                    continue;
-                }
-            };
-
-            let entries = if is_cryxmlb(&data) {
-                match from_bytes(&data) {
-                    Ok(xml) => parse_external_sources_cryxml(&xml),
-                    Err(e) => {
-                        eprintln!("warning: failed to parse CryXmlB {}: {e}", entry.name);
-                        continue;
-                    }
-                }
-            } else if starts_with_xml(&data) {
-                let xml_str = match std::str::from_utf8(strip_bom(&data)) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        eprintln!("warning: non-UTF8 XML in {}: {e}", entry.name);
-                        continue;
-                    }
-                };
-                match parse_external_sources_xml(xml_str) {
-                    Ok(entries) => entries,
-                    Err(e) => {
-                        eprintln!("warning: failed to parse external-source XML {}: {e}", entry.name);
-                        continue;
-                    }
-                }
-            } else {
-                continue;
-            };
-
-            for source in entries {
-                sources.entry(source.name.clone()).or_default().push(source);
-            }
+    /// Index the external sources of one GameAudio document.
+    pub fn add_document(&mut self, doc: &GameAudioDoc<'_>) -> Result<(), BnkError> {
+        let entries = match doc {
+            GameAudioDoc::Binary(xml) => parse_external_sources_cryxml(xml),
+            GameAudioDoc::Text(xml) => parse_external_sources_xml(xml)?,
+        };
+        for source in entries {
+            self.sources.entry(source.name.clone()).or_default().push(source);
         }
-
-        Ok(Self { sources })
+        Ok(())
     }
 
     /// Total number of external-source entries.
@@ -118,13 +90,10 @@ impl ExternalSourceIndex {
         results
     }
 
-    /// Get a localized source by name, preferring English(US) when present.
-    pub fn get_preferred(&self, name: &str) -> Option<&ExternalSourceEntry> {
-        let entries = self.sources.get(name)?;
-        entries
-            .iter()
-            .find(|entry| entry.language.eq_ignore_ascii_case("English(US)"))
-            .or_else(|| entries.first())
+    /// The entry for source `name` in `language` (as the ATL entry names it,
+    /// e.g. `English(US)`).
+    pub fn get(&self, name: &str, language: &str) -> Option<&ExternalSourceEntry> {
+        self.sources.get(name)?.iter().find(|entry| entry.language == language)
     }
 }
 
@@ -143,30 +112,6 @@ fn parse_bool(value: Option<&str>) -> bool {
 
 fn parse_f32(value: Option<&str>) -> Option<f32> {
     value.and_then(|v| v.parse::<f32>().ok())
-}
-
-fn strip_bom(data: &[u8]) -> &[u8] {
-    if data.starts_with(b"\xEF\xBB\xBF") {
-        &data[3..]
-    } else {
-        data
-    }
-}
-
-fn starts_with_xml(data: &[u8]) -> bool {
-    let data = strip_bom(data);
-    let trimmed = data
-        .iter()
-        .position(|&b| !b.is_ascii_whitespace())
-        .map(|i| &data[i..])
-        .unwrap_or(data);
-    trimmed.starts_with(b"<")
-}
-
-fn cryxml_attr<'a>(xml: &'a CryXml<'_>, node: &CryXmlNode, name: &str) -> Option<&'a str> {
-    xml.node_attributes(node)
-        .find(|(k, _)| *k == name)
-        .map(|(_, v)| v)
 }
 
 fn parse_external_sources_cryxml(xml: &CryXml<'_>) -> Vec<ExternalSourceEntry> {
@@ -290,15 +235,6 @@ fn parse_external_sources_xml(xml: &str) -> Result<Vec<ExternalSourceEntry>, Bnk
     }
 
     Ok(entries)
-}
-
-fn get_attr(e: &quick_xml::events::BytesStart<'_>, attr_name: &[u8]) -> Option<String> {
-    for attr in e.attributes().flatten() {
-        if attr.key.as_ref() == attr_name {
-            return String::from_utf8(attr.value.to_vec()).ok();
-        }
-    }
-    None
 }
 
 #[cfg(test)]
