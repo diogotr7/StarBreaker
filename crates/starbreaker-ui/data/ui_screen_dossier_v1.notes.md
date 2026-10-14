@@ -4,8 +4,9 @@
 "Comparison & screen dossier" (the markdown table, one row per known screen).
 
 **Transcribed:** 2026-07-06, from the table as of commit `38863e78f`
-(plan `docs/superpowers/plans/2026-07-04-ui-parity-process-and-crate-plan.md`,
-Task A1). 18 screens.
+(plan task A1, which implemented
+`docs/superpowers/specs/2026-07-04-ui-parity-process-and-crate-design.md` §"A1. Tooling"
+item 1; the plan was later removed and ledger item 108 records the landing). 18 screens.
 
 ## The no-drift rule (registry pattern)
 

@@ -14,9 +14,13 @@ There is also a legacy C# version on the [`master`](../../tree/master) branch.
 | `starbreaker-datacore` | Parse the DataCore binary database (`.dcb`), query records, export to JSON/XML                                |
 | `starbreaker-cryxml`   | Decode CryEngine binary XML                                                                                   |
 | `starbreaker-chunks`   | Parse CryEngine chunk files (`.cgf`, `.cga`, `.skin`, `.chr`)                                                 |
-| `starbreaker-gltf`     | Export CryEngine meshes to glTF/GLB, including materials and textures                                         |
+| `starbreaker-3d`       | Assemble entities, characters and interiors; export to GLB or decomposed `.blend` packages                    |
+| `starbreaker-blend`    | Write Blender `.blend` library files (meshes, empties, lights, hierarchies)                                   |
 | `starbreaker-dds`      | Read DDS textures and decode block-compressed formats                                                         |
 | `starbreaker-chf`      | Read/write character head files (`.chf`) — the format behind [starchar](https://github.com/diogotr7/starchar) |
+| `starbreaker-dna`      | Parse facial-rig DNA (`.dna`) files                                                                           |
+| `starbreaker-gfx`      | Inspect GFx/SWF UI assets                                                                                     |
+| `starbreaker-ui`       | Extract UI atoms from SWF and compose ship-screen canvases to images                                          |
 | `starbreaker-wwise`    | Parse Wwise soundbank (`.bnk`) files and resolve audio event chains                                           |
 | `starbreaker-wem`      | Decode Wwise audio (`.wem`) to Ogg Vorbis                                                                     |
 | `starbreaker-common`   | Shared types, binary reader, game install discovery                                                           |
@@ -27,7 +31,7 @@ There is also a legacy C# version on the [`master`](../../tree/master) branch.
 starbreaker <command> [options]
 ```
 
-Commands: `p4k`, `dcb`, `entity`, `skin`, `socpak`, `cryxml`, `dds`, `glb`, `chf`, `armour`, `wwise`.
+Commands: `p4k`, `dcb`, `entity`, `skin`, `socpak`, `cryxml`, `dds`, `glb`, `chf`, `armour`, `wwise`, `nmc`, `ui`, `animation`, `riglogic`.
 
 Run `starbreaker <command> --help` for details.
 
@@ -102,21 +106,28 @@ Pre-creating directories... 31 directories created.
 
 ### Entity export
 
-Export a ship or vehicle as a GLB file with full loadout assembly — geometry, skeleton, materials, and textures:
+Export a ship or vehicle as a GLB file with full loadout assembly — geometry, skeleton, materials, and textures.
+The name is a case-insensitive substring of the entity class name; the shortest match wins.
+Defaults are `--lod 1`, `--mip 2` (textures at 1/4 resolution) and `--materials textures`:
 
 ```sh
-# Export a Gladius with textures at 1/4 resolution
+# Export a Gladius
 starbreaker entity export Gladius gladius.glb
 
-# Lightweight export — no textures, lower LOD
-starbreaker entity export Gladius gladius.glb --no-textures --no-normals --lod 2
+# Lightweight export — flat material colours, no textures, lower LOD
+starbreaker entity export Gladius gladius.glb --materials colors --lod 2
 
-# Just inspect the loadout tree
-starbreaker entity export Gladius --dump-hierarchy
+# Decomposed package (Packages/<name>/scene.json + shared Data/) for the Blender addon
+starbreaker entity export Gladius ./export --kind decomposed
+
+# Just print the loadout tree
+starbreaker entity loadout Gladius
 
 # Export an armour piece as worn (its female mesh, skinned to its bones)
 starbreaker entity export cds_armor_heavy_arms_01_01_01 arms.glb --geometry-tag Female
 ```
+
+Output of the first command:
 
 ```
 Found 67 candidates, using shortest match: EntityClassDefinition.AEGS_Gladius
@@ -129,7 +140,7 @@ Loadout tree for EntityClassDefinition.AEGS_Gladius:
   G hardpoint_shield_generator_left -> SHLD_GODI_S01_AllStop_SCItem
   ...
 
-GLB size: 37498672 bytes
+Bundled export size: 37498672 bytes
 Written to gladius.glb
 ```
 
@@ -280,7 +291,7 @@ Mip         Width     Height         Size
 
 ```sh
 # Decode a DDS from P4k directly to PNG
-starbreaker dds decode Objects/path/to/texture.dds -o texture.png
+starbreaker dds decode Objects/path/to/texture.dds texture.png
 
 # Convert an extracted DDS to PNG
 starbreaker dds to-png texture.dds
@@ -322,15 +333,15 @@ Extract and decode audio from Wwise soundbanks:
 # List events in a soundbank
 starbreaker wwise events ship_sounds.bnk
 
-# Decode a .wem file to .ogg
-starbreaker wwise decode-wem audio.wem -o audio.ogg
+# Extract a soundbank's WEM files, decoded to Ogg
+starbreaker wwise extract ship_sounds.bnk -o ./audio --decode
 ```
 
 </details>
 
 ## App
 
-A Tauri desktop app lives in `app/`. React + TypeScript frontend, Rust backend. Provides a GUI for browsing P4k contents, DataCore records, exporting 3D models, and playing audio.
+A Tauri desktop app lives in `app/`. React + TypeScript frontend, Rust backend. Provides a GUI for browsing P4k contents and DataCore records, exporting ships and socpak interiors, building and exporting characters, and playing audio.
 
 ## Building
 

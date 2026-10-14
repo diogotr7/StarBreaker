@@ -6,7 +6,8 @@ record. Proven blockers kept dissolving the moment someone searched the right
 data family: compass live ticks (the projection was decoded
 `SVehicleHudParams.compassTape`), master-mode font size and colour (an
 UNAPPLIED variant `defaultStyles` entry), velocity-num size (a SCREEN variant's
-FontSize 500 that wasn't reaching the node). See [[feedback-find-indata-sources-before-inventing]].
+FontSize 500 that wasn't reaching the node). The same lesson for assets is
+ledger item 78 (exhaust in-data sources before reproducing anything procedurally).
 
 **Rule:** a blocker claim presented at the **major-item gate** MUST attach an
 evidence file that `scripts/ui_blocker_evidence.py` accepts. The file forces you

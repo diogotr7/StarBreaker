@@ -23,7 +23,7 @@
       "lod": 0,
       "canvas": "MC_S_Target_Master",
       "preset": "target",
-      "tier": "GOLD",
+      "tier": "PLATINUM",
       "target_id": "clipper_target_master",
       "open_issues": "A7 backdrop stack remainder (handoff)"
     },
@@ -129,7 +129,7 @@
       "preset": null,
       "tier": "GOLD",
       "target_id": "clipper_countermeasures_master",
-      "open_issues": "all 4 catalog issues landed 2026-06-18 (firing 0 hidden, decoy 4 not 48, dot + alignment); not onboarded as frozen target; minor residual: dot at authored ~16%"
+      "open_issues": "all 4 catalog issues landed 2026-06-18 (firing 0 hidden, decoy 4 not 48, dot + alignment); frozen GOLD target; minor residual: dot at authored ~16%"
     },
     {
       "screen_id": "Screen_Central_Compass",
@@ -155,7 +155,7 @@
       "preset": null,
       "tier": null,
       "target_id": null,
-      "open_issues": "PARITY PASS 2026-06-17 (whole-image, not onboarded); deferred: live contact chevrons + heading/range readouts; residual: spoke prominence. Handoff: ui-radar-parity-handoff.md"
+      "open_issues": "PARITY PASS 2026-06-17 (whole-image, not onboarded); heading/range readout at rest 0 deg / 0.7km; open: live contact chevrons (residual budget C5), readout kerning #12 (U2); residual: spoke prominence (U1)"
     },
     {
       "screen_id": "Screen_Left_Upper_RTT",

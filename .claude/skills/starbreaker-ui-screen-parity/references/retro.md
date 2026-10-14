@@ -2,17 +2,20 @@
 
 **The arc is not done when the catalog is — it is done AFTER the retrospective.** Run
 it in the SAME session (lived context), in BOTH modes, before declaring complete. It is
-the TodoWrite item added at arc start; do not close the arc with it open.
+the task-list item (TodoWrite where available) added at arc start; do not close the arc
+with it open.
 
 **The sweep and destinations are the shared arc-closeout skill — invoke it.** Its
-sweep (repeated work → tooling; silent failures → loud; doc drift → verify-on-write;
-bootstrap cost → owning doc) plus these UI-specific categories:
+sweep categories 1-5 (repeated work → tooling; silent failures → loud; doc drift →
+verify-on-write; dead-ends/levers → recorded; bootstrap cost → owning doc) plus these
+UI-specific categories, numbered on from arc-closeout's list:
 
-5. **Guard/freeze friction.** Detoured adjudications, hand-audited deltas, late-registered
+6. **Guard/freeze friction.** Detoured adjudications, hand-audited deltas, late-registered
    outliers → improve the flow or the doc that teaches it.
-6. **Memory/handoff quality.** Would the handoff resume cold? Fix the §9 expectations, not
-   just this arc's file.
-7. **Slow tooling → profiled speedup.** A tool you waited on repeatedly: MEASURE first
+7. **Handoff quality.** Would the in-repo handoff doc resume cold? Fix the `ui-workflow.md`
+   §9 expectations, not just this arc's file. (Durable facts go in the ledger, never
+   user-folder memory.)
+8. **Slow tooling → profiled speedup.** A tool you waited on repeatedly: MEASURE first
    (usually harness load, not a loop), prefer an existing faster path, then cut the
    dominant cost; VERIFY the output is unchanged.
 
@@ -41,18 +44,19 @@ Exact shape (one line, all fields):
   the arc** (the launch cost). `mode` = the automation mode this arc actually ran in
   (semi-auto stop-and-ask vs fully-auto keep-fixing). `gates_fired` = which guard/freeze
   gates tripped.
-- **Comparison bar** (targets from `docs/superpowers/plans/2026-07-04-ui-parity-process-and-crate-plan.md`,
-  Task A10 Step 2): `bootstrap_lines_read` ~**600**, `tool_calls_per_cycle_median` **1–2**.
+- **Comparison bar** (targets from `docs/superpowers/specs/2026-07-04-ui-parity-process-and-crate-design.md`,
+  "A success criteria"): `bootstrap_lines_read` ~**600**, `tool_calls_per_cycle_median` **1–2**.
   A line above the bar is a signal to feed the next process retro, not a failure.
 
 Append it, then confirm the file still parses (empty file is valid):
 
 ```bash
-python3 -c "import json;[json.loads(l) for l in open('crates/starbreaker-ui/data/arc_cost_log_v1.jsonl')]"
+uv run --no-project python -c "import json;[json.loads(l) for l in open('crates/starbreaker-ui/data/arc_cost_log_v1.jsonl')]"
 ```
 
 Do not close the arc with this line unwritten (it is part of the same mandatory retro
-TodoWrite item).
+task-list item). The log was still empty at the 2026-10-14 docs audit — if no earlier
+line exists, yours is the first; that is not a reason to skip it.
 
 Acceptance (bootstrap test): a fresh agent could run the next arc from `ui-workflow.md` +
 `ui-reference.md` + the dossier alone. Any excursion you needed is a doc bug — fix it
@@ -62,4 +66,4 @@ before closing.
 
 | Thought | Reality |
 |---|---|
-| "Catalog's resolved / found more issues — run the retro" | The retro is the LAST step, never a substitute for fixing. Fix fixable diffs in the loop first, then the Closing re-review (re-render + re-compare like the start; fully-auto keeps fixing until clean or proven-blocked), THEN the retro. Not complete until the re-review is clean/proven-deferred AND the retro runs (track as a TodoWrite item from arc start). |
+| "Catalog's resolved / found more issues — run the retro" | The retro is the LAST step, never a substitute for fixing. Fix fixable diffs in the loop first, then the Closing re-review (re-render + re-compare like the start; fully-auto keeps fixing until clean or proven-blocked), THEN the retro. Not complete until the re-review is clean/proven-deferred AND the retro runs (track as a task-list item from arc start). |

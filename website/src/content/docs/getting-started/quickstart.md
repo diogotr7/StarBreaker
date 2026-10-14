@@ -1,15 +1,17 @@
 ---
 title: Quick Start
-description: Export your first ship to glTF.
+description: Export your first ship.
 ---
 
-Point StarBreaker at your Star Citizen `Data.p4k` and export an entity:
+Export an entity as a decomposed package (StarBreaker finds your `Data.p4k`
+automatically):
 
 ```bash
-SC_DATA_P4K="C:/Program Files/Roberts Space Industries/StarCitizen/LIVE/Data.p4k" \
-  starbreaker entity export AEGS_Avenger ./out --kind decomposed
+starbreaker entity export AEGS_Gladius ./out --kind decomposed
 ```
 
-This produces a `scene.json` plus a `Packages/` directory with reusable
-geometry and material sidecars. See [Exporting ships](/wiki/exporting-ships/)
-for the full workflow.
+This writes `out/Packages/<ship>_LOD1_TEX2/` (`scene.json`, `scene.blend`,
+palettes and liveries) plus a shared `out/Data/` tree of meshes, material
+sidecars and textures. Drop `--kind decomposed` and give a `.glb` path to get a
+single glTF binary instead. See [Exporting ships](/wiki/exporting-ships/) for
+the full workflow.

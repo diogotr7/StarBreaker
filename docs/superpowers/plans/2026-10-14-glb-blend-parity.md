@@ -27,7 +27,7 @@ One export pipeline for every entity kind (ships, items, characters), with
 **both** outputs (GLB and `.blend`) for all of them; each has its own
 advantages. No kind-specific writer: characters become one more producer of
 the shared model, and `character/glb.rs` stops being a separate writer.
-(The 2026-10-13 "canonical character GLB" plan, `726ec482`, is not pursued.)
+(The 2026-10-13 "canonical character GLB" plan is not pursued.)
 
 Why the shared model must grow anyway: the entity pipeline already parses
 skinning (`IVOBONEMAP` 4 influences, `IVOBONEMAP32` 8) but only uses it to
@@ -47,7 +47,7 @@ Armour, clothing and characters all need real skins.
 
 ## Phases (sequential; each ends green + committed)
 
-- **A. Guards.** ✅ `78506c56`. Exhaustive destructuring at every `Mesh`/`SubMesh` copy and
+- **A. Guards.** ✅ PR #39. Exhaustive destructuring at every `Mesh`/`SubMesh` copy and
   serialization site. Move per-vertex copying (`subset_mesh_for_submeshes`)
   onto `Mesh`. Fix the `merge_from` padding bug (TDD). Name existing gaps:
   `.blend` custom normals and tangents.
@@ -76,8 +76,7 @@ Armour, clothing and characters all need real skins.
   Verified in Blender on `m_kap_combat_heavy_arms_01`: `.blend` and GLB have
   the same 20,510 vertices, the same joint groups and identical per-group
   weight mass. Armature + modifier remain a named gap (phase D).
-- **C. Character through the shared model.** ✅ `b4d1ad24`, `04aa5b56`,
-  `3fe08eeb`, `483bd00d`. `character::package` and
+- **C. Character through the shared model.** ✅ PR #39. `character::package` and
   `chf to-glb` both build `DecomposedInput` (skeleton, skinned head/items,
   blendshapes); `character/glb.rs` stops being a separate writer.
   C notes: (C1) the shared writer emits the skeleton as a joint hierarchy
@@ -97,7 +96,7 @@ Armour, clothing and characters all need real skins.
   Side effect: a flat-root GLB names its root node and mesh after
   `metadata.entity_name` (not for decomposed GLBs) and children can attach to
   it by `parent_entity_name`.
-- **D. Blender rig.** ✅ `852da22f`, `e231c7b9`. Armature object and bones, shape keys, and custom split
+- **D. Blender rig.** ✅ PR #39. Armature object and bones, shape keys, and custom split
   normals in `starbreaker_blend`, or built by the addon from package data.
   Decide per feature when we get here; the parity test treats both as "present
   in the Blender output".
@@ -126,14 +125,14 @@ Armour, clothing and characters all need real skins.
 - **E. Animation tracks** in the shared model: bone TRS, morph weights and
   material scalars (the 24 wrinkle weights) → glTF animations and the package's
   existing clip JSON → addon actions.
-  E1 ✅ `2131ff04`: `crate::clip::Clip` (local bone TRS keys by bone name,
+  E1 ✅ PR #39: `crate::clip::Clip` (local bone TRS keys by bone name,
   morph-weight tracks by target name, material-parameter tracks) →
   `gltf::animation` (one glTF animation per clip; bone nodes switch to TRS;
   morph weights per mesh at the union of key times; material parameters in
   the animation's extras). The character expression GLB is a `CharacterRig`
   with an "expression" clip; `character/glb.rs` is deleted, and eyes/teeth
   now move with the clip through their skins.
-  E3 ✅ `eeb13de1` (decided: Rust writes the actions, as in D):
+  E3 ✅ PR #39 (decided: Rust writes the actions, as in D):
   `starbreaker_blend::action` (Blender 5.1 layered actions, matched against
   a Blender-written file); bone tracks → pose-bone curves `R⁻¹·L` on the
   armature object, morph tracks → shape-key curves on the mesh's Key (in the
@@ -158,23 +157,25 @@ Armour, clothing and characters all need real skins.
   names, animation channels) and compare. Fixtures: synthetic (no p4k) +
   one character + one ship (p4k-gated). Known gaps in
   `crates/starbreaker-3d/tests/parity_allowlist.txt`.
-  ✅ `c66cdb36`. `starbreaker_blend::reader` + `starbreaker_3d::parity`
+  ✅ PR #39. `starbreaker_blend::reader` + `starbreaker_3d::parity`
   (`from_glb`, `from_blend` following linked libraries, `diff`,
   `Allowlist`): per mesh counts, position-multiset hash, normals, UV sets,
   colours, material slots, joint weight mass, morph names; weighted joints'
   bind heads; clip channels, key times, morph values. Fixtures: synthetic
-  (`parity::tests`), KAP armour and the masculinedefault character (body,
-  face + body clip since full-character G2)
-  (`tests/parity.rs`). Unexpected differences AND stale allowlist patterns
-  fail. Sabotage check: dropping the .blend shape-key curves fails with 223
+  (`parity::tests`) and, in `tests/parity.rs`: `armour` (the KAP arms
+  `.skin`), `character` (masculinedefault: body, face + body clip since
+  full-character G2), `armoured` (masculinedefault in the marine heavy armour
+  loadout, body clip) and `piece` (one armour item,
+  `cds_armor_heavy_arms_01_01_01`, through the entity pipeline). Unexpected
+  differences AND stale allowlist patterns fail. Sabotage check: dropping the .blend shape-key curves fails with 223
   differences. Found and fixed: the character skeleton lacked the items'
   own bones (hair braids, beard) — now merged into the rig by name.
   Allowlisted gap (reason in the file): .blend material-parameter tracks.
-  Closed since: (`c5ce8941`) the character GLB builds its parts with the
+  Closed since: (PR #39) the character GLB builds its parts with the
   package's loader (`character::part_source`: colours, both UV sets,
   per-submesh `.mtl` materials), and a submesh without a `.mtl` gets its own
   default material per material id in the GLB (it was merged), which also
-  closed the armour material-slot gap; (`6d85d136`) `.blend` custom split
+  closed the armour material-slot gap; (PR #39) `.blend` custom split
   normals — `Mesh.normals` as Blender's fan-relative `custom_normal` corner
   attribute (`starbreaker_blend::custom_normals`, bit-exact vs Blender's
   encoder; follows the Armature modifier), and meshes with authored normals

@@ -139,7 +139,7 @@ contain their own inner sub-magic and length prefixes.
 ### 3.1 Recognised chunk types
 
 Verified in
-[`crates/starbreaker-3d/src/animation.rs:117-122`](../crates/starbreaker-3d/src/animation.rs)
+[`crates/starbreaker-3d/src/animation/mod.rs`](../crates/starbreaker-3d/src/animation/mod.rs) (`chunk_types`)
 and [`crates/starbreaker-chunks/src/known_types.rs`](../crates/starbreaker-chunks/src/known_types.rs):
 
 | Const                  | Value         | Used by                               |
@@ -538,7 +538,7 @@ pub fn bone_name_hash(name: &str) -> u32 {
 ```
 
 (Source:
-[`crates/starbreaker-3d/src/animation.rs:1092-1097`](../crates/starbreaker-3d/src/animation.rs).)
+[`crates/starbreaker-3d/src/animation/pose.rs`](../crates/starbreaker-3d/src/animation/pose.rs), `bone_name_hash`.)
 
 Earlier public hypotheses about CryEngine bone hashing assume
 lowercase normalisation, which does not match Star Citizen's data.
@@ -574,7 +574,7 @@ struct ControllerEntry {
 ```
 
 (Source:
-[`crates/starbreaker-3d/src/animation.rs:169-189`](../crates/starbreaker-3d/src/animation.rs).)
+[`crates/starbreaker-3d/src/animation/caf.rs`](../crates/starbreaker-3d/src/animation/caf.rs), `ControllerEntry`.)
 
 **Critical detail:** all four offsets are **relative to the start of
 the controller entry itself**, not to the block, the chunk, or the
@@ -655,7 +655,7 @@ practice all production data we have validated has matched bit-counts.
 ### 10.2 Verbatim parser
 
 The reference implementation
-([`crates/starbreaker-3d/src/animation.rs::read_time_keys`](../crates/starbreaker-3d/src/animation.rs)):
+([`crates/starbreaker-3d/src/animation/codec.rs::read_time_keys`](../crates/starbreaker-3d/src/animation/codec.rs)):
 
 ```rust
 0x02 | 0x42 => {
@@ -709,7 +709,7 @@ header bits selecting which component was dropped. The exact decoder
 required Ghidra-confirmation of CryEngine's binary because the bit
 fields straddle u16 boundaries with sign-bit borrow. The verified
 layout
-([`crates/starbreaker-3d/src/animation.rs::decode_small_tree_quat_48`](../crates/starbreaker-3d/src/animation.rs)):
+([`crates/starbreaker-3d/src/animation/codec.rs::decode_small_tree_quat_48`](../crates/starbreaker-3d/src/animation/codec.rs)):
 
 ```text
 Read three little-endian u16 words:  s0, s1, s2
@@ -1154,8 +1154,9 @@ Every byte-level claim in this document is grounded in one of:
 
 - The production Rust parser at
   [`crates/starbreaker-3d/src/`](../crates/starbreaker-3d/src/)
-  (animation.rs, types.rs, skeleton.rs, nmc.rs, gltf/mod.rs,
-  pipeline.rs, chrparams.rs).
+  (the `animation/` modules — `caf.rs`, `dba.rs`, `codec.rs`, `pose.rs`,
+  `serialise.rs`, `mannequin.rs` — plus types.rs, skeleton.rs, nmc.rs,
+  gltf/mod.rs, the `pipeline/` modules, and chrparams.rs).
 - The production Blender importer at
   [`blender_addon/starbreaker_addon/`](../blender_addon/starbreaker_addon/)
   (runtime/package_ops.py, runtime/constants.py).
@@ -1171,7 +1172,7 @@ Every byte-level claim in this document is grounded in one of:
   time-key encoding, hemisphere alignment, single-joint rigid-mesh
   reassignment) were derived empirically.
 
-The Rust parser ships with 129 lib tests including:
+The Rust parser's lib tests include:
 
 - `time_format_0x42_decodes_per_frame_keyframe_bitmap` — pins the §10.1
   bitmap encoding.

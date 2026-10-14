@@ -15,11 +15,12 @@ When fixing a UI defect category, add or update at least one regression guard in
 
 ## Mandatory CI Checks
 
-The following checks are required in CI for UI changes:
-
-- `cargo test -p starbreaker-ui`
-- `bash .github/scripts/check_ui_hardcoding.sh`
-- `cargo run -p starbreaker-ui --example phase5_certification_dashboard`
+The CI checks for UI changes are defined in
+`.github/workflows/starbreaker-ui-tests.yml` (and the hardcoding-guard step in
+`.github/workflows/ci.yml`); that file is the authority, so this doc does not copy
+the list. Locally, `bash scripts/ui_check.sh` runs a superset (the whole UI test
+suite, not just `--lib`), and the hardcoding guard is
+`bash scripts/check_ui_hardcoding.sh`.
 
 ## Pixel Regression: generic, not targeted
 

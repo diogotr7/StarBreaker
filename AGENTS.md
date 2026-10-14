@@ -8,24 +8,30 @@ server, export pipeline). Blender-addon-specific guidance lives in
 
 - `Cargo.toml` — workspace root. Crates live under `crates/`.
 - `crates/starbreaker-3d/` — scene graph, `.soc` / light / interior
-  parsing, decomposed-export JSON writer
-  (`src/decomposed.rs`, `src/socpak.rs`, `src/types.rs`).
+  parsing, entity / character / armour assembly, GLB and decomposed
+  export (`src/decomposed.rs`, `src/socpak.rs`, `src/types.rs`).
+- `crates/starbreaker-blend/` — `.blend` library writer used by the
+  decomposed export.
+- `crates/starbreaker-ui/` — SWF atom extractor and BuildingBlocks canvas
+  composer for ship screens (its own `AGENTS.md` and `docs/`).
 - `crates/starbreaker-p4k/`, `-chunks/`, `-cryxml/`, `-datacore/`,
-  `-dds/`, `-wem/`, `-wwise/`, `-chf/`, `-common/` — format decoders.
+  `-dds/`, `-wem/`, `-wwise/`, `-chf/`, `-dna/`, `-gfx/`, `-common/` —
+  format decoders.
 - `cli/` — package name is `starbreaker` (binary `starbreaker`), NOT
   `starbreaker-cli`.
 - `mcp/` — MCP server (see §MCP).
 - `blender_addon/` — Python addon + tests. See its own AGENTS.md.
-- `app/` — Tauri + React app (see `tasks.json` for build tasks).
+- `app/` — Tauri + React app (scripts in `app/package.json`).
 - `docs/` — in-repo reference: export contract, material authoring,
-  shader family inventory.
+  research notes, ledgers.
 
 ## Building
 
 Use `cargo build` (debug) for iteration, NOT `cargo build --release`.
-Debug profile is `[optimized + debuginfo]` in this workspace — fast
-enough for testing. Release builds take much longer and are only
-needed for deployment (MCP server, final binaries, CLI re-exports).
+The dev profile is optimized in this workspace (`opt-level = 1`,
+dependencies at 3) with debuginfo — fast enough for testing. Release
+builds take much longer and are only needed for deployment (MCP
+server, final binaries, CLI re-exports).
 
 ### Disk retention policy
 
@@ -37,8 +43,9 @@ are the time-travel-bisect ladder — see `docs/optimisation-ledger.md` item 4):
   from the repo root (install `cargo-sweep` first). Never blind-`clean`.
 - **`release/deps` bisect ladder (~1.2 G):** leave it — it is the bisect
   mechanism recorded in the optimisation ledger.
-- **`graphify-out/`:** keep the live `graph.json` (plus `cache/`, `cost.json`,
-  `manifest.json`) and the 3 newest dated snapshot dirs; delete older ones:
+- **`graphify-out/`** (only if graphify is in use): keep the live
+  `graph.json` (plus `cache/`, `cost.json`, `manifest.json`) and the 3
+  newest dated snapshot dirs; delete older ones:
   `ls -d 20*/ | sort | head -n -3 | xargs -r rm -rf`.
 - **`ships/dcb_canvas`:** do NOT delete — the starbreaker-ui live-IR harness
   reads it (`crates/starbreaker-ui/tests/live_ir_harness/mod.rs`), skipping
@@ -61,16 +68,21 @@ Shared across every language in the repo:
     `builders.py`, `groups.py`, `orchestration.py`) rather than one
     giant `importer.py`.
 - **Fix the root cause, not the symptom.** Do not add `.max(small
-  number)` style floors, fallback defaults, or try/except-pass around
-  broken data. If the exporter is wrong, fix the exporter.
+  number)` style floors, clamp floors, fallback defaults, `.unwrap_or(0)`
+  silencers, or try/except-pass around broken data. If the data is
+  wrong, trace back to where it is written or parsed and fix it there;
+  if the exporter is wrong, fix the exporter.
 - **Never hard-code workarounds for specific assets.** Do not gate
   logic on a particular object name, mesh name, material name, ship
-  name, texture path, socpak, item ID, or exact instance suffix. If one
-  asset misbehaves, find the generic property of its category (NMC node
-  metadata, transform basis, geometry flags, shader family, blend mode
-  flag, alpha usage, etc.) and fix the rule for the whole category.
-  Named-asset branches rot the moment upstream renames or adds
-  siblings, and they are not acceptable production fixes.
+  name, texture path, socpak, item ID, exact instance suffix, or magic
+  number. If one asset misbehaves, find the generic property of its
+  category (NMC node metadata, transform basis, geometry flags, shader
+  family, blend mode flag, alpha usage, chrparams event type, etc.) and
+  fix the rule for the whole category. If the structural rule is not
+  known yet, stop and investigate it; do not commit a name-matched
+  workaround as a "temporary" fix. Named-asset branches rot the moment
+  upstream renames or adds siblings, and they are not acceptable
+  production fixes.
 - **Hard-coded game DATA VALUES are hard-coding too.** Copying a value
   that exists in (or should come from) game data — a palette colour
   (`RgbaColor { r: 240, g: 168, b: 104, .. }`), a font size, a layout
@@ -162,20 +174,9 @@ When splitting work across sub-agents:
 
 ## Troubleshooting
 
-When a bug is found or something behaves unexpectedly:
+When a bug is found or something behaves unexpectedly, apply the
+root-cause and no-hard-coding rules in §Coding Practices, and:
 
-- **Find the root cause, fix that.** Do not paper over symptoms with
-  clamp floors, fallback defaults, `.unwrap_or(0)` silencers, or
-  try/except-pass. If the data is wrong, trace back to where it is
-  written or parsed and fix it there.
-- **No hard-coding, no heuristics.** Do not gate logic on a
-  specific object name, mesh name, asset name, ship name, material
-  path, exact instance suffix, or magic number. Discover the structural
-  property (NMC node metadata, transform basis, geometry flags, shader
-  family, blend mode flag, alpha channel usage, chrparams event type,
-  ...) and fix the rule for the whole category. If the structural rule
-  is not known yet, stop and investigate it; do not commit a
-  name-matched workaround as a "temporary" fix.
 - **Ask: how does the game engine handle this?** Star Citizen runs on
   Star Engine, Cloud Imperium's fork of CryEngine / Lumberyard. It
   shares most CryEngine conventions but diverges in places. When the
@@ -221,9 +222,11 @@ the variable only forces a non-default archive (a PTU/EPTU build or a
 copy elsewhere), and setting it by hand risks pointing at the wrong
 build. The wrapper refuses to run a stale binary (older than the newest cli/crates commit)
 so timings and artifact comparisons aren't poisoned by an old build.
-`--kind decomposed` (the wrapper's default) emits the reusable
-`scene.json` + `Packages/<name>/` layout documented in
-`docs/decomposed-export-contract.md`.
+`--kind decomposed` (the wrapper's default) emits the reusable layout
+documented in `docs/decomposed-export-contract.md`:
+`Packages/<name>/scene.json` (plus `palettes.json` / `liveries.json`)
+and a shared `Data/` tree of mesh, material and texture assets that
+later exports to the same root reuse.
 
 ## Naming & paths in repo content
 
@@ -255,8 +258,9 @@ whatever placeholder you happen to use into the repo history.
 
 ## MCP Server
 
-The StarBreaker MCP server provides DataCore, P4k, and chunk
-inspection tools for Claude Code. To deploy after making changes:
+The StarBreaker MCP server provides DataCore, P4k, geometry,
+animation, `.blend` and UI inspection tools for Claude Code. To deploy
+after making changes:
 
 ```bash
 # Windows
@@ -269,8 +273,11 @@ cargo build --release -p starbreaker-mcp && cp target/release/starbreaker-mcp mc
 
 You must kill the running MCP process before copying, or the file
 will be locked / busy. Then restart the client to pick up the new
-binary. The `.mcp.json` points to the deployed copy, not the build
-artifact, so the running server isn't locked by workspace builds.
+binary. Your local `.mcp.json` (gitignored, so each checkout writes
+its own) should point at the deployed copy, not the build artifact, so
+the running server isn't locked by workspace builds. The deployed copy
+only exposes the tools it was built with: redeploy after tools are
+added to `mcp/src/tools.rs`, or they will be missing from the client.
 
 ### When to Add MCP Tools
 
@@ -282,18 +289,36 @@ MCP server or note it as a task for later.
 ### Available MCP Tools
 
 Use these tools (via ToolSearch for `starbreaker`) to research game
-data without shelling out to the CLI:
+data without shelling out to the CLI. The registered set is the
+`#[tool(...)]` functions in `mcp/src/tools.rs`:
 
-- **`search_entities`** — find EntityClassDefinition records by name substring
-- **`search_records`** — search ALL DataCore record types (tint palettes, ammo, attachables, etc.)
-- **`entity_loadout`** — dump resolved loadout tree (processed — resolves entity references and geometry paths)
-- **`datacore_record`** — dump full record as JSON (by GUID or name substring)
-- **`datacore_query`** — query a specific property path (e.g. `Components[VehicleComponentParams].vehicleDefinition`)
-- **`p4k_list`** — browse P4k directories (shows size, compression, encryption)
-- **`p4k_read`** — read P4k files (auto-decodes CryXML to XML text)
-- **`image_preview`** — decode and view DDS/PNG/JPG textures from P4k (multimodal — you can see the image)
-- **`chunk_list`** — list IVO/CrCh chunks in geometry files (type, version, size, NMC node summary)
-- **`chunk_read`** — hex dump of specific chunks
+- **DataCore / P4k:**
+  - `search_entities` — EntityClassDefinition records by name substring
+  - `search_records` — ALL DataCore record types, optionally filtered by struct type
+  - `entity_loadout` — resolved loadout tree (processed — resolves entity references and geometry paths)
+  - `datacore_record` — full record as JSON (by GUID or name substring)
+  - `datacore_query` — one property path (e.g. `Components[VehicleComponentParams].vehicleDefinition`)
+  - `datacore_struct_def`, `datacore_enum_def`, `datacore_type_search` — DataCore schema: struct fields, enum values, type-name search
+  - `p4k_list`, `p4k_search`, `p4k_read` — browse, search and read P4k files (CryXML auto-decoded)
+  - `p4k_data_status`, `p4k_set_data_path` — show or switch the active `Data.p4k`
+  - `image_preview` — decode and view DDS/PNG/JPG textures (multimodal — you can see the image)
+  - `socpak_inspect`, `socpak_read_entry` — `.socpak` entries and chunk summaries; read one entry
+  - `mtl_summary` — compact `.mtl` sub-material / shader / texture-slot summary
+- **Geometry / animation:**
+  - `chunk_list`, `chunk_read` — IVO/CrCh chunk table (with NMC node summary) and chunk hex dumps
+  - `dba_dump` — `.dba` / `.caf` clips and channels, optionally resolved against a skeleton
+  - `animation_binding_report` — why exported clips fail to bind in Blender (report-only)
+  - `mannequin_dump` — an entity's Mannequin ADB + ControllerDef fragments
+  - `riglogic_dump` — a `.RigLogic` file or a `.skin` RigLogic chunk as JSON
+- **Blender `.blend`:**
+  - `blend_sdna`, `blend_block_inspect` — SDNA struct layouts and block hex dumps
+  - `blend_python_diff` — binary diff of the `.blend` files a before/after script pair saves
+  - `blend_run_script` — run a Python script against a `.blend` in headless Blender
+- **UI:**
+  - `ui_variant_styles` — authored-vs-applied style entries for a node; run it first when a font/size/colour looks wrong
+  - `ui_canvas_style_inventory`, `ui_scene_style_probe`, `ui_kit_sheet_entries`, `ui_tag_lookup` — style containers, matched styles, kit-sheet entries, style tags
+  - `ui_ir_query` — canonical IR nodes with layout/draw rects and resolved colours
+  - `ui_regression_registry`, `ui_regression_validate` — regression target registry and baseline validation
 
 ### When to Use MCP vs CLI
 
@@ -309,14 +334,15 @@ data without shelling out to the CLI:
   `entity_loadout` tool returns StarBreaker's processed/resolved tree
   instead.
 
-## Code Knowledge Graph (graphify)
+## Code Knowledge Graph (graphify, optional)
 
-The repo has a [graphify](https://github.com/safishamsi/graphify) knowledge
-graph — an AST + semantic map of the codebase (functions, types, calls,
-cross-file relationships, plus concepts mined from the docs and the UI render
-screenshots). Use it to answer "where does X connect / what calls Y / trace
-the data flow through Z" instead of grepping blind. The built graph lives in
-`graphify-out/` at the repo root:
+If [graphify](https://github.com/safishamsi/graphify) is installed, it
+builds a knowledge graph of the repo — an AST + semantic map of the
+codebase (functions, types, calls, cross-file relationships, plus
+concepts mined from the docs and the UI render screenshots). Use it to answer "where does X connect / what calls Y / trace
+the data flow through Z" instead of grepping blind. It is not part of
+the build and a checkout may not have it; build it with `/graphify .`
+first. The graph lives in `graphify-out/` at the repo root:
 
 - `graph.json` — the graph data (queried by the CLI and MCP server below)
 - `GRAPH_REPORT.md` — god nodes, communities, surprising connections,
@@ -331,8 +357,8 @@ to verify, not ground truth — the report flags which edges need checking.
 
 In Claude Code (and other assistants) the `/graphify` skill drives the graph:
 
-- `/graphify <question>` — ask a natural-language question; because
-  `graphify-out/graph.json` already exists it answers as a graph query (fast
+- `/graphify <question>` — ask a natural-language question; once
+  `graphify-out/graph.json` exists it answers as a graph query (fast
   path, no rebuild)
 - `/graphify .` — (re)build the whole-repo graph from scratch
 - `/graphify . --update` — incremental rebuild (only new/changed files; this
@@ -356,7 +382,7 @@ graphify export html                                             # regenerate gr
 graphify tree                                                    # collapsible-tree HTML view
 ```
 
-A **post-commit git hook** (installed via `graphify hook install`) keeps the
+A **post-commit git hook**, if installed with `graphify hook install`, keeps the
 graph fresh automatically: after every commit it re-extracts the changed CODE
 files and rebuilds `graph.json` — AST-only, no API cost. So the code graph
 tracks source as you commit, with nothing to remember. To refresh mid-arc before
@@ -379,17 +405,6 @@ graphify-mcp --graph graphify-out/graph.json     # stdio (default per-dev transp
 graphify-mcp --transport http --port 8080        # or Streamable HTTP
 ```
 
-## Large Source Files — Decomposition Plans
-
-The two previously-monolithic source files have been fully decomposed:
-
-- **`crates/starbreaker-3d/src/pipeline/`** (Phase 51 ✅ commit `389880a`) — 10 sub-modules
-- **`crates/starbreaker-3d/src/animation/`** (Phase 59 ✅ commit `efcca33`) — 9 sub-modules
-
-Every sub-module has a `//!` header. To find where a function lives, use
-`grep_search` for the function name, or `file_search` + `read_file` on
-the `//!` first line of each file in the module directory.
-
 ## Reference Docs
 
 - `docs/decomposed-export-contract.md` — scene.json / palettes.json /
@@ -406,8 +421,10 @@ the `//!` first line of each file in the module directory.
   `Scale`/`Bias`/`Layers` parameters, and the failure modes (REPEAT vs
   CLIP, background-referenced reference plane, mirrored-UV bitangent
   sign). Read before changing POM.
-- `docs/blender-shader-family-inventory.json` — the canonical list of
-  CryEngine shader families we know about.
+- `docs/blender-shader-family-inventory.json` — a generated snapshot of
+  shader-family usage across one export root's material sidecars,
+  written by `blender_addon/starbreaker_addon/shader_inventory.py`. Not
+  an exhaustive family list; regenerate it rather than editing by hand.
 - `crates/starbreaker-ui/docs/ui-workflow.md` — THE UI parity process (TDD loop, review
   phase, guard adjudication, freezes); read before any UI matching work.
 - `crates/starbreaker-ui/docs/ui-reference.md` — UI commands, MCP usage, probes, data

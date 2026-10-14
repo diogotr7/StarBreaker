@@ -88,7 +88,7 @@ Pipeline stages and the bug classes they own (deep dive:
 
 | Stage | Files | Owns |
 |---|---|---|
-| Source resolution | `bb_resolve/` (Pass-1 canvas-ref entries, Pass-2 WidgetCanvas urls, widget-standard expansion, list/array materialisation, namespaces), `bb_state_filter.rs`, `bb_style_engine` (the single style-cascade application engine, P4) + `bb_brand_apply/` (its condition/modifier kernel), `bb_scene/` (parse, WidgetClone expansion) | which nodes exist, their authored fields, applied styles |
+| Source resolution | `bb_resolve/` (Pass-1 canvas-ref entries, Pass-2 WidgetCanvas urls, widget-standard expansion, list/array materialisation, namespaces), `bb_state_filter/`, `bb_style_engine` (the single style-cascade application engine, P4) + `bb_brand_apply/` (its condition/modifier kernel), `bb_scene/` (parse, WidgetClone expansion) | which nodes exist, their authored fields, applied styles |
 | Bindings | `bb_bindings/` (op-graph eval vs `DefaultValueRegistry`, bound geometry/state-tags/text) | values: text, numbers, booleans, bound SizeX/Y + AnchorX/Y, state tags |
 | Layout | `bb_layout/` | rects: flex (order, grow/no-grow, shrink, intrinsic text), overlay anchors/pivots |
 | IR compile | `ui_ir/` | the canonical `UiIrDocument`: which authored metadata survives, effective font sizes, clip rects, payload classification |
@@ -101,7 +101,9 @@ last in every pass; an inline `FontSize` is marked `__InlineFontSize` and
 outranks the brand-table standard in font resolution). Each tier is a
 `bb_style_engine::StyleSheet` with a `Tier`; the full pass list (incl.
 widget-standard module sheets, deferred late-state subtree passes, and the
-text-format route gated on `Tier::Brand`) is `crates/starbreaker-ui/docs/ui-cascade-passes.md`.
+text-format route, which runs at `Tier::Brand` and, for an unconditional bare
+`Type(Text)` only, at `Tier::Embedded` (ledger 96)) is
+`crates/starbreaker-ui/docs/ui-cascade-passes.md`.
 
 Per-ship values: derived at export in
 `starbreaker-3d/src/ui_pipeline/ship_values.rs` → `PipelineInputs::derived_values`;
@@ -134,12 +136,12 @@ provenance entry in `default_value_registry_v1.notes.md`.
    `SB_SKIP_UI_GATE=1` bypasses for rebase/emergency). Install it once with
    `bash scripts/install_ui_precommit.sh`.
 4. **Update the catalog** (fixed / still open / new finding) and the arc's
-   memory/handoff notes for any non-trivial diagnosis — at discovery time,
-   not at session end.
+   handoff doc or dossier row for any non-trivial diagnosis — at discovery
+   time, not at session end.
 5. **Commit** per coherent fix; message cites the catalog item. Before each
-   commit, the arc's memory/handoff state is current.
+   commit, the arc's handoff/dossier state is current.
 6. At a workstream boundary: `bash scripts/ui_check.sh --full`, re-export,
-   full reference comparison, handoff/memory update.
+   full reference comparison, handoff/dossier update.
 
 **Waiting on a long-running command — its marker, never a sleep-loop.**
 `ui_check.sh --full`, a full `entity export`, and `ui_arc_status.sh` / `ui_render.sh`
@@ -214,7 +216,7 @@ but don't lean on it: re-export (~50s) before judging "zero drift";
 (2) consult ALL THREE suites — lib tests, the live-IR guard, AND the
 visual/snapshot suites — a rule can be invisible to two and pinned by the
 third. Scope caveat: a clean pass proves "**no frozen pin references
-this**" (five screens, one ship today), NOT "correct everywhere" — record
+this**" (15 frozen targets, all on one ship, as of 2026-10), NOT "correct everywhere" — record
 the deletion in the fallback register's retired table with that bound.
 
 ## 6. Known-outlier overrides (reference-anchored)
@@ -274,16 +276,20 @@ Flows (commands in the reference doc §2/§7):
 - New fallback logic of any kind requires an entry in
   `crates/starbreaker-ui/docs/ui-fallback-register.md` (trigger signal + retirement target).
 
-## 9. Memory, handoffs, prompts
+## 9. Notes, handoffs, prompts
 
-- Non-trivial diagnoses go into the arc's memory file **when made**.
-- Every commit is preceded by a memory/handoff status update.
+- Non-trivial diagnoses go into the repo **when made**: the arc's handoff doc
+  while the arc is live, the dossier row (reference doc §3) once it settles,
+  the ledger for process lessons. Knowledge stays in-repo, not in an
+  assistant's private memory.
+- Every commit is preceded by a handoff/dossier status update.
 - An arc that pauses (or at any major milestone) maintains a repo handoff
-  doc — pattern `docs/ui-<arc>-handoff.md` — with: landed commits, catalog
+  doc — pattern `crates/starbreaker-ui/docs/ui-<arc>-handoff.md` — with: landed commits, catalog
   status, next-step spec (ideally an `#[ignore]`d failing test), parked
   work with full diagnosis, approval-gated items. **Delete the handoff when
-  the work lands** (grep its name repo-wide + the docs_reference_guard list
-  in the same commit).
+  the work lands**: first fold any still-open items into the dossier row or
+  `crates/starbreaker-ui/docs/ui-residual-budget.md`, then grep its name
+  repo-wide (and the docs_reference_guard list) in the same commit.
 - **A handoff that claims binding-kind / canvas / aspect facts MUST verify
   them against the actual exported `scene.json` `ui_bindings`, not just
   DataCore records.** The step-3 hand-off was researched from records and

@@ -96,7 +96,7 @@ workflow:
 | Checkpoint | Action |
 |---|---|
 | Inputs (source, mode, target) at launch | ask via `AskUserQuestion` |
-| Git commit | gate — show diff, ask before committing |
+| Git commit | gate — show diff, ask before committing; on the arc branch, never `main` |
 | Re-painting a frozen/blessed baseline export | gate — ask before overwriting |
 
 Never proceed on a presumed "yes."
@@ -108,8 +108,7 @@ Never proceed on a presumed "yes."
 - **No name/asset/offset gating** — find the structural property, fix the
   category.
 - **Colour role slots are not positional** — resolve a role by its
-  `BB_ColorStyle` enum index, never by order (memory
-  [[bb-colorstyle-enum-slot-mapping]]).
+  `BB_ColorStyle` enum index, never by order (ledger 3).
 - **The decal stencil is part of the palette identity** — a wrong logo is a wrong
   palette, not a decal bug.
 - Fix the decode/assign stage, not a draw-time tint.
@@ -124,10 +123,12 @@ Never proceed on a presumed "yes."
 ## Close-out (MANDATORY closing step)
 
 **The arc is not done when the colours are right — it is done after the
-close-out.** Invoke the **arc-closeout** skill (a todo from arc start): it runs
-the sweep, the ledger append (`docs/tint-palette-process-improvements.md`, via
-`scripts/ledger_append.py`), the `recommendations.md` split, the memory update,
-and the bootstrap-test acceptance. Ledger entries use Observed/Improvement/Action.
+close-out.** Invoke the **arc-closeout** skill (a task-list item from arc start):
+it runs the sweep, the ledger append (`docs/tint-palette-process-improvements.md`,
+via `scripts/ledger_append.py` — durable facts go there, never user-folder memory),
+the `recommendations.md` split, and the bootstrap-test acceptance. Ledger entries
+use Observed/Improvement/Action. Commits stay gated (ask first) and land on the
+arc branch, never `main` (squash PR).
 
 The parse-don't-eyeball battery is scripted: `uv run python scripts/tint_audit.py
 <export_dir>` dumps per-palette object counts, out-of-range/all-same index signals
@@ -145,5 +146,5 @@ index parses.
 | "Stray logo → fix the decal path" | The decal stencil is part of the palette identity; suspect the palette assignment (ledger 4). |
 | "Re-export looks unchanged — my fix did nothing" | A stale Blender scene shows the OLD palette. Fresh `read_homefile`+import first (ledger 5). |
 | "Index 0 everywhere is a bug" | 0/`0xFFFF`/out-of-range = no override → scene default. Mode A (default) vs Mode B (override) are separate questions (ledger 2). |
-| "Colours look right, I'm done" | The arc ends after the retrospective (append to the ledger + implement). Track it as a todo from the start. |
+| "Colours look right, I'm done" | The arc ends after the retrospective (append to the ledger + implement). Track it in the task list from the start. |
 | "I'll presume the source/mode/target" | Every run starts cold — ask via `AskUserQuestion`. |

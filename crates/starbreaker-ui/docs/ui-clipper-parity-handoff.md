@@ -63,7 +63,7 @@ Four reported symptoms, mapped to root cause (one landed, three already-open):
      vs ref y≈806; cause: `base_ValuesContainer` (`0.9 Auto`) FILLED 0.9/(0.9+0.5)
      of the 220.8px column = 141.9px on one "0/0" line, leaving ~71px empty that
      pushed the OFFLINE box down. Fix: a column child authored non-zero `Auto`
-     content-fits its TEXT (`engine_01.part` ~L1052), exactly like the 0.0 case —
+     content-fits its TEXT (`bb_layout/`), exactly like the 0.0 case —
      "Auto" = fit-to-content, the value is only the no-content fallback. ValuesContainer
      →93px; OFFLINE re-measured Δ−5.9 (uniform with 0/0 Δ−3.8, BATTERY Δ−4.3 = faithful).
      Full detail + why the paper analysis wrongly read it as blocked: **P14**.
@@ -123,14 +123,14 @@ nine-slice). A working implementation was built and REVERTED for two blockers
 1. **bb_scene**: add `BbNodeType::WidgetSeparator` (+3 exhaustive matches:
    bb_layout `type_name_str`, ui_ir `node_type_name` "widget_separator",
    compose `draw_node` no-op host arm) and convert the 3 existing
-   `Other("BuildingBlocks_WidgetSeparator")` matches in ui_ir engine_02.part;
+   `Other("BuildingBlocks_WidgetSeparator")` matches in `ui_ir/engine_02.rs`;
    add `"Separator"` to `node_type_matches`.
 2. **Expansion** (bb_resolve engine_04 `expand_widget_standards`): include
    WidgetSeparator hosts, template by direction/style, no params. **BLOCKER A
    → runbook "per-host-type ID-band lanes":** instances consume the shared
    `0xF000_0000` band counter and SHIFT frozen platinum instance ids (the
    medical close-button X 4026531855 became a separator).
-3. **Brand application** (`apply_separator_standard_styles`, engine_01.part,
+3. **Brand application** (`apply_separator_standard_styles`, `ui_ir/engine_01.rs`,
    subtree-scoped via `apply_scene_style_entries_in_subtree`): **BLOCKER B →
    runbook "one brand-context resolver" (RESOLVED — B1):** exact canvas-selected
    id + hud↔env sibling works for power (`s_drak_hud`→`s_drak_env`) and the
@@ -163,7 +163,7 @@ without the resolver.
 ### P14 — non-zero-Auto column model (4a OFFLINE) — RESOLVED (`be1859d59`)
 
 A column child authored non-zero `Auto` (value v∈(0,1)) now **content-fits its
-text** (`engine_01.part` ~L1052), exactly like the 0.0 pure-hint case: "Auto" =
+text** (`bb_layout/`), exactly like the 0.0 pure-hint case: "Auto" =
 fit-to-content, the value is only the no-content fallback fraction (`else` fill).
 `base_ValuesContainer` 141.9→93px; OFFLINE Δ+34.7→−5.9 (uniform with 0/0 −3.8,
 BATTERY −4.3 = all faithful). `ui_check --full` green, all 5 frozen baselines

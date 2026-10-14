@@ -447,7 +447,7 @@ class LiveryRecord:
 class LightState:
     """A single CryEngine `<defaultState|auxiliaryState|...>` snapshot.
 
-    See ``docs/StarBreaker/lights-research.md``. Values are copied verbatim
+    See ``docs/star-citizen-lighting-research.md``. Values are copied verbatim
     from the exporter's ``states`` map and are used both to populate the
     light datablock at import time and to switch between states at runtime.
     """

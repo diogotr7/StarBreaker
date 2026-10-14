@@ -2328,7 +2328,7 @@ class GroupsMixin:
         caller (``create_light``) feeds the image via a
         ``ShaderNodeTexImage`` that samples ``Texture Coordinate > UV``.
 
-        See ``docs/StarBreaker/lights-research.md``.
+        See ``docs/star-citizen-lighting-research.md``.
         """
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime Gobo",

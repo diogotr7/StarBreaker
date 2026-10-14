@@ -1,5 +1,9 @@
 # UI parity process + crate convergence — design (2026-07-04)
 
+**Status:** the owner's go was given and the gate below is lifted.
+A1–A8 and B1–B4 have landed; only A10 (the Carrack arc) is open. Open
+items are now tracked in `crates/starbreaker-ui/docs/ui-process-improvements.md`.
+
 Two approved workstreams:
 
 - **A — the matching process:** cut the token and wall-clock cost of a

@@ -9,7 +9,7 @@ Do this once at arc start, after the required reads, whether the screen is fresh
 worked before.
 
 **Inherited verdicts are hints, not conclusions.** A prior arc's open issues, or a
-dossier/memory/handoff label of "faithful / owner-confirmed / not flagged", SEEDS
+dossier/ledger/handoff label of "faithful / owner-confirmed / not flagged", SEEDS
 this pass but never replaces it — such a label is a prior judgment that may have
 under-scrutinized, or that the owner's view has since outgrown. Re-derive each
 region's verdict from the reference at HIGH ZOOM (small features — circle vs
@@ -101,7 +101,7 @@ first (gates), never self-accepted; once confirmed, a fully-automated run STOPS 
 | Thought | Reality |
 |---|---|
 | "First glance: a square / shifted left / only the foreground's off" | Look AGAIN before cataloguing (shape/count/offset misreads are the wrong ones — measure if unsure) AND check the background/backplate layer (stretch/scale/aspect/align/crop — the commonly-missed layer that skews everything on top). |
-| "Memory says this region is faithful/owner-confirmed — skip it" | Inherited verdicts are hints, not conclusions. Re-derive each region from the reference at high zoom; the owner's view evolves and earlier passes under-scrutinize. Frozen/outlier regions route through §5/§6/§7. |
+| "The dossier/handoff says this region is faithful/owner-confirmed — skip it" | Inherited verdicts are hints, not conclusions. Re-derive each region from the reference at high zoom; the owner's view evolves and earlier passes under-scrutinize. Frozen/outlier regions route through §5/§6/§7. |
 | "The findings look right, start fixing" | First self-verify (look again + background), then confirm the catalog with the user via `AskUserQuestion`. Both modes, every arc. |
 | "When the owner repeats a visual complaint I'll re-defend my prior call" | Treat an owner's repeated visual complaint as ground truth and re-derive from scratch with DATA — do NOT re-defend the prior call (visual/spatial judgment from renders is a known weakness). |
 | "This render looks identical to the last — my change did nothing" | `ui_arc_status.sh`/`ui_render.sh` write a UNIQUE dir per run (so successive renders don't collide), but if you copy one to a STABLE name to show the user, the viewer caches by name and shows the OLD image — confirm an on-disk change via the printed `png md5:` line before concluding no-op (ledger 69). |

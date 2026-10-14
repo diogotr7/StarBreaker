@@ -141,7 +141,7 @@ LUMENS_PER_WATT_WHITE = 120.0
 # luminous flux = intensity * 4π, which divided by 683 lm/W gives Watts.
 # Updated to 1500.0 for brighter interior lighting
 # (Phase 36+: aligned with Max script's PowerModifier and user-verified brightness).
-# See ``docs/StarBreaker/lights-research.md``.
+# See ``docs/star-citizen-lighting-research.md``.
 import math as _math
 
 SC_LIGHT_CANDELA_SCALE = 1500.0

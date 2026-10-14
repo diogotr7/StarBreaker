@@ -15,11 +15,13 @@ Evidence used here:
 
 - LIVE `starbreaker-mcp` P4K lookups against exact archive paths.
 - Fresh extraction under `%TEMP%\starbreaker-socpak-analysis`.
-- Local examples from `D:\SCTOOLS\dev`.
+- Locally extracted socpak examples (outside the repo).
 - Current StarBreaker parser code in `crates/starbreaker-3d/src/socpak.rs`,
   `included_objects.rs`, and `pipeline/interiors.rs`.
 
-Older temp extraction artifacts and older memory notes were not used.
+Older temp extraction artifacts were not used. Code references below name
+functions rather than line numbers; the "Current StarBreaker Gaps" section
+records what the code does today.
 
 ## Sample Set
 
@@ -102,13 +104,13 @@ The `.soc` file is a CrCh (chunked) container. The known chunk type IDs are:
 | `0x0004` | CryXMLB | Entity data — lights, decals, screens, canvas text, props, and game-logic entities. Parsed as XML with `<Entities>` or `<SCOC_Entities>` root containers. |
 | `0x0010` | IncludedObjects | Pre-baked static mesh placements: CGF paths, material paths, tint palette paths, and per-object 3×4 f64 transform matrices. |
 
-The existing parser (`socpak.rs` line 220–239) iterates all chunks and dispatches
-on these three types. Any other chunk type is silently skipped.
+The existing parser (`socpak.rs` `parse_soc`) iterates all chunks and handles
+`IncludedObjects` and `CryXMLB`. Any other chunk type is silently skipped.
 
 ### Multiple `.soc` files
 
 A socpak can contain more than one `.soc` file. The existing code
-(`socpak.rs` line 137–141) iterates **all** `.soc` entries, which is intentional:
+(`socpak.rs` `load_interior_from_socpak`) iterates **all** `.soc` entries, which is intentional:
 the main `.soc` carries `IncludedObjects` geometry, while child `.soc` files
 carry lights, VFX, and entity data. All are parsed and merged into a single
 `InteriorPayload`.
@@ -175,7 +177,7 @@ Common entity-level attributes:
 | `Radius` | f32 | Some entity types use this (e.g., lights as fallback radius) |
 
 The code looks for `<Entities>` or `<SCOC_Entities>` containers
-(`socpak.rs` line 372–375), then iterates child `<Entity>` elements.
+(`socpak.rs` `extract_cryxml_entities`), then iterates child `<Entity>` elements.
 
 ### `entdata/*.entxml` structure
 
@@ -270,14 +272,22 @@ These are two different coordinate representations for two different transform
 paths. Do not mix them. The socpak pipeline must use quaternion composition
 throughout.
 
-### Cycle detection strategy
+This is implemented: `socpak.rs` `read_child_socpak_refs` parses the root
+`<name>.xml` `<ChildObjectContainers>` (children with `external="1"`, any
+`class`, scale fixed at 1) and `collect_interior_tree_from_socpak` recurses
+into each child with `parent × local` composition.
 
-A cycle occurs when the same socpak path appears in the ancestor stack. The
-pipeline should:
+### Cycle detection
 
-1. Maintain a stack of visited socpak paths during recursive descent.
-2. Before loading a child socpak, check if its path is already in the stack.
-3. If found, log a warning and skip that child (do not error or infinite-loop).
+A cycle occurs when the same socpak path appears in the ancestor stack.
+`collect_interior_tree_from_socpak` (and the inspection walk
+`inspect_interior_tree_from_socpak_inner`) implement the check:
+
+1. They keep a set of ancestor socpak paths during recursive descent, removing
+   each path again after its subtree is done (so repeated siblings still load).
+2. Before loading a socpak, they check whether its path is already an ancestor.
+3. If so, they log `skipping cyclic socpak child reference` and skip that child
+   (no error, no infinite loop).
 4. The comparison is by normalized socpak path (case-insensitive, slash-normalized).
 
 There is no evidence of intentional cycles in the sampled set. If one is found,
@@ -407,27 +417,31 @@ Each object starts with a `u32` type marker:
 
 | Type | Size | Known fields |
 | --- | --- | --- |
-| `0x0001` (Type 1) | 168 or 184 bytes | `vector1[3]` (3×f64), `vector2[3]` (3×f64), `unknown1` (u64), `cgf_index` (u16), `unknown2` (u16), `transform` (3×4 row-major f64), `unknown3` (u64). If `unknown3==0`, 16 extra trailing bytes. |
+| `0x0001` (Type 1) | 168 or 184 bytes | `vector1[3]` (3×f64), `vector2[3]` (3×f64), `unknown1` (u64), `cgf_index` (u16), `unknown2` (u16), `transform` (3×4 column-major f64: three rotation columns, then the translation), `unknown3` (u64). If `unknown3==0`, 16 extra trailing bytes; the u16 at object offset +172 in that block is the per-object tint-palette index (`0xFFFF` = no override). |
 | `0x0007` (Type 7) | 152 bytes | Currently skipped entirely. Not decoded. |
 | `0x0010` (Type 10) | 136 bytes | Currently skipped entirely. Not decoded. |
 
-### Material-per-object mapping (open question)
+### Per-object tint palette
 
-The current code assigns the **first** material path to every object placement
-(`socpak.rs` line 254: `io.material_paths.first()`). This is known to be too
-coarse for multi-material containers.
+`IncludedObject::tint_palette_index` is decoded from the u16 at object offset
++172 (present only in the `unknown3 == 0` trailing block; the u16 at +170 is a
+separate flags field whose values exceed the palette count). It indexes
+`tint_palette_paths`; `0xFFFF` means the object keeps its CGF materials.
+`socpak.rs` `included_objects_to_meshes` stores the resolved path as the
+mesh's `tint_palette_name`, which the decomposed export emits as the
+placement's `palette_id` override.
 
-The `IncludedObject` struct has an `unknown2` field (`u16` at offset +62 from
-object start). This field is a candidate for a material index — if it indexes
-into `material_paths`, it would give per-object material resolution. This has
-**not been confirmed**. The pipeline should investigate this by correlating
-`unknown2` values against `material_paths` indices across multiple sampled
-socpaks.
+### Material-per-object mapping
 
-If `unknown2` is not a material index, the fallback strategy is to use the
-CGF/CGFM file's own embedded material library (which already works for entity
-geometry), treating `IncludedObjects.material_paths` as a container-level hint
-or override list.
+IncludedObjects placements carry **no** material override:
+`included_objects_to_meshes` sets `material_path: None`, so each placement
+uses its CGF/CGFM file's own material library (the same path entity geometry
+uses). `IncludedObjects.material_paths` is parsed but not assigned per
+object.
+
+The `IncludedObject` struct's `unknown2` field (`u16` at offset +62 from
+object start) was once a candidate material index into `material_paths`;
+that has **not been confirmed**, and the code does not use it.
 
 ### Type 7 and Type 10 objects (open question)
 
@@ -583,40 +597,26 @@ Libs/Foundry/Records/TintPalettes/Generic/gen_lightgrey_grey_darkblue
 Libs/Foundry/Records/TintPalettes/Generic/gen_lightgrey_grey_darkgrey
 ```
 
-Current code resolves the first palette name by stripping the last path
-component and finding a matching `TintPaletteTree` DataCore record. That is a
-reasonable starting point, but socpak recursion needs palette scope:
+Palettes are resolved per object, which gives each container (and each child
+container) its own palette scope without a parent overwriting a child:
 
-- Resolve a palette per container.
-- Let child containers keep their own palette.
-- Do not let a parent palette overwrite a child's explicit palette.
+- Each palette path resolves to a DataCore tint-palette record
+  (`pipeline/interiors.rs` `resolve_interior_palette`, cached per path).
 - Preserve tint-palette decal inputs such as `$TintPaletteDecal` in material
   sidecars; those are decal/livery inputs, not just base paint inputs.
 
 ### Palette-to-mesh binding
 
-In the `IncludedObjects` chunk, tint palette paths are a **flat list** — one
-or more palette paths, with no per-object index. The existing code takes only
-the first palette (`tint_palette_names.first()`) and applies it to the entire
-container.
+In the `IncludedObjects` chunk, tint palette paths are a flat list, and each
+Type 1 object selects one through its per-object `tint_palette_index` (see
+[Per-object tint palette](#per-object-tint-palette); `0xFFFF` = none).
+`pipeline/interiors.rs` resolves that path into the placement's `palette`,
+emitted as the placement `palette_id` in `scene.json`.
 
-Observations from the sampled data:
-
-- Most containers have exactly one palette path.
-- Some containers have two or more palette paths in the flat list.
-- There is no known per-object palette index field in the `IncludedObject`
-  struct.
-
-The current behavior (one palette per container) is correct for single-palette
-containers. For multi-palette containers, the pipeline should investigate
-whether the second palette is an override, a secondary paint layer, or a
-decal-specific palette. Until this is understood, using the first palette for
-all objects in the container is the safest default.
-
-The `InteriorContainerData` struct in `interiors.rs` already models this as a
-container-level `palette: Option<TintPalette>` with optional per-placement
-`TintPalette` overrides on individual placements, so the infrastructure for
-finer-grained binding exists.
+Interior containers carry **no** container-wide palette (`palette: None`): the
+earlier `tint_palette_names.first()` fallback applied the generic `default`
+palette (a placeholder with a weapon decal and near-black tints) to whole
+interiors and was removed.
 
 ## Decals
 
@@ -1325,55 +1325,53 @@ The key mapping: **one socpak = one `InteriorPayload`** (with recursive children
 
 ## Current StarBreaker Gaps
 
-The current socpak implementation is useful, but incomplete for the desired
-decomposed pipeline.
+The current socpak implementation covers the core composition path; the
+remaining gaps are mostly decals, text, and undecoded data.
 
-### Blocking (must resolve before plumbing work starts)
+### Implemented
 
-Known gaps from code inspection and sample evidence:
+- Root XML `ChildObjectContainers` are followed recursively
+  (`read_child_socpak_refs` + `collect_interior_tree_from_socpak`), with the
+  ancestor-set cycle check described above.
+- Repeated child instances of the same socpak path each load with their own
+  composed transform.
+- Socpak container data maps into the `scene.json` `interiors[]` schema of
+  `decomposed-export-contract.md` (socpak → `InteriorPayload` →
+  `InteriorContainerData` → interior container, placements, and lights).
+- IncludedObjects placements use the CGF/CGFM's own material library
+  (`material_path: None`); there is no first-material assignment.
+- Tint palettes are per object (`IncludedObject::tint_palette_index` →
+  placement `palette_id`); interior containers carry no container-wide palette.
+- Pak-mounted geometry baked inside a socpak is read from the inner archive
+  (`read_socpak_internal_geometry`).
+- Entity UI canvases authored inline on `.soc` entities are captured
+  (`extract_entity_ui_canvas`) and, with class-default canvases, become
+  placement `ui_bindings` rendered by the UI pipeline; transit-console floor
+  names come from the socpak's `metadata/sctransitdestination.xml`.
 
-- It loads explicit socpaks but does not follow root XML `ChildObjectContainers`
-  recursively.
-- It does not model repeated child instances of the same socpak path.
+### Open
+
 - It does not reconstruct Decal projectors from `.soc` entity data — the decal
   entity CryXMLB structure has not been characterized yet.
-- It does not map socpak container data into the existing `scene.json` schema
-  from `decomposed-export-contract.md`. The mapping (socpak →
-  `InteriorPayload` → `InteriorContainerData` → scene graph nodes) needs to be
-  explicit.
-
-### Important (resolve during plumbing implementation)
-
-- It assigns the first IncludedObjects material path to every object placement;
-  this is too coarse for real submaterial handling. The `unknown2` field on
-  Type 1 objects needs investigation as a potential material index.
 - It skips IncludedObjects Type 7 and Type 10 objects, which may represent
-  visual or placement categories not yet decoded.
-- It does not parse canvas/text decal entities, `UserVariablesComponentParams`,
+  visual or placement categories not yet decoded. The Type 1 `unknown2` field
+  is still undecoded.
+- It does not parse text decal entities, `UserVariablesComponentParams`,
   `locStrings`, literal strings, color/size/alignment variables, or font/style
   references from `.soc` CryXMLB payloads.
-- It does not resolve DataCore screen defaults, Building Blocks canvas records,
-  localized binding operations, DigitalSignage records, media paths, provider
-  links, or UI texture preview assets.
-- It does not resolve localization keys from `.soc` or DataCore payloads into
-  language-specific text values.
-- It does not distinguish `ObjectContainerModifier` as a visual-or-nonvisual
-  overlay that must be inspected.
-
-### Nice-to-have (can investigate later)
-
+- It does not resolve DigitalSignage media paths, provider links, or UI
+  texture preview assets beyond what the canvas render covers.
+- It follows `ObjectContainerModifier` children like any other external child;
+  it does not classify a modifier as a visual or non-visual overlay.
 - It does not understand `.brmp` or `.altg` — likely non-visual metadata, but
   flagged for future reverse-engineering if culling/grouping data is needed.
-- It parses `.soc` IncludedObjects and CryXMLB, but not root manifest visual
-  placement as the scene graph authority.
-- It does not resolve local inner-archive geometry or embedded DDS textures as
-  first-class sources.
+- It does not resolve embedded DDS textures inside a socpak as first-class
+  texture sources.
 - It does not classify `.ale` area files; monitored zones can be skipped for
   visual export, but should not be mistaken for missing mesh data.
-- It resolves only the first container tint palette; recursion needs
-  per-container palette scope.
-- It should treat entdata child transforms as cross-check data until the
-  coordinate-space difference from root manifest placement is understood.
+- It does not read `entdata/*.entxml`; entdata child transforms remain
+  cross-check data until the coordinate-space difference from root manifest
+  placement is understood.
 
 ## Practical Rules
 

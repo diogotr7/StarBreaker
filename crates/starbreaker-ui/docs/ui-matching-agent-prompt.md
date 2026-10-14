@@ -9,8 +9,9 @@ live under `crates/starbreaker-ui/docs/`.)
 ## Template
 
 ```text
-You are working in ~/projects/scorg_tools/StarBreaker (branch
-feature/ui), crate starbreaker-ui.
+You are working in the StarBreaker repo, crate starbreaker-ui. Changes
+land on main through pull requests (squash merge): work on a branch cut
+from main, never commit to main directly.
 
 Read, in order:
 1. @StarBreaker/AGENTS.md
@@ -34,7 +35,7 @@ READ the crops; build/extend the numbered diff catalog (workflow §4); then
 the TDD loop
 from @StarBreaker/crates/starbreaker-ui/docs/ui-workflow.md §3 — failing test first, one structural fix at the
 owning stage, scripts/ui_check.sh every cycle, re-render + compare, update
-the catalog and the arc memory/handoff. Guard trips → §5 adjudication
+the catalog and the arc's handoff doc / dossier row. Guard trips → §5 adjudication
 (structural discriminators, never names). Baselines/outliers only via §6/§7
 with explicit approval. Do not stop until the catalog items are fixed,
 explicitly deferred with reasons, or a concrete blocker is proven.
