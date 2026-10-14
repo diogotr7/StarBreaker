@@ -246,9 +246,10 @@ unset, configure them via `git config` rather than inlining `-c
 user.name=... -c user.email=...` on every commit — doing that leaks
 whatever placeholder you happen to use into the repo history.
 
-- **Work happens directly on `feature/ui`.** Never create branches or
-  worktrees for StarBreaker work unless the owner explicitly asks —
-  commit onto the existing `feature/ui` branch.
+- **Changes land on `main` through pull requests** (squash merge only).
+  Branch from `main` in the main checkout; avoid worktrees — a fresh
+  worktree has its own `target/` and rebuilds everything, which makes
+  Rust iteration slow.
 - **No trailers.** Do not append `Co-Authored-By` or any other
   generated trailer to commit messages.
 
