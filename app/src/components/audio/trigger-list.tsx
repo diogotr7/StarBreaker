@@ -3,6 +3,7 @@ import { useAudioStore } from "../../stores/audio-store";
 export function TriggerList() {
   const triggers = useAudioStore((s) => s.triggers);
   const selectedTrigger = useAudioStore((s) => s.selectedTrigger);
+  const selectedTriggerBank = useAudioStore((s) => s.selectedTriggerBank);
   const selectTrigger = useAudioStore((s) => s.selectTrigger);
   const searchMode = useAudioStore((s) => s.searchMode);
   const selectedEntity = useAudioStore((s) => s.selectedEntity);
@@ -21,9 +22,9 @@ export function TriggerList() {
           <button
             key={`${trigger.trigger_name}-${trigger.bank_name}`}
             type="button"
-            onClick={() => selectTrigger(trigger.trigger_name)}
+            onClick={() => selectTrigger(trigger.trigger_name, trigger.bank_name)}
             className={`w-full text-left px-3 py-1.5 text-sm transition-colors ${
-              selectedTrigger === trigger.trigger_name
+              selectedTrigger === trigger.trigger_name && selectedTriggerBank === trigger.bank_name
                 ? "bg-primary/15 text-text"
                 : "text-text-sub hover:bg-surface/50 hover:text-text"
             }`}
@@ -38,7 +39,7 @@ export function TriggerList() {
         {triggers.length === 0 && (
           <div className="px-3 py-4 text-xs text-text-faint text-center">
             {searchMode === "external"
-              ? "Search for external sources"
+              ? "No external sources found"
               : showEmpty
                 ? "Select an item to see triggers"
                 : "No triggers found"}

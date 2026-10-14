@@ -5,7 +5,7 @@ use serde::Serialize;
 use tauri::State;
 
 use starbreaker_p4k::MappedP4k;
-use starbreaker_wwise::{AtlIndex, BnkFile, ExternalSourceEntry, ExternalSourceIndex, Hierarchy, SoundSource};
+use starbreaker_wwise::{BnkFile, ExternalSourceEntry, Hierarchy, SoundSource};
 
 use crate::error::AppError;
 use crate::state::AppState;
@@ -66,28 +66,20 @@ pub struct AudioExportInfo {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-fn ensure_atl(state: &AppState) -> Result<(), AppError> {
+/// Build the ATL trigger and external-source indexes, once, from one scan of
+/// the GameAudio documents.
+fn ensure_game_audio(state: &AppState) -> Result<(), AppError> {
     // Fast path: already built
-    if state.atl_index.lock().is_some() {
+    if state.atl_index.lock().is_some() && state.external_source_index.lock().is_some() {
         return Ok(());
     }
 
     // Build outside any lock (expensive I/O)
     let p4k = get_p4k(state)?;
-    let atl = AtlIndex::from_p4k(&p4k)?;
+    let (atl, external_sources) = starbreaker_wwise::load_game_audio(&p4k)?;
 
     // Store (another thread may have beaten us — that's fine, just overwrite)
     *state.atl_index.lock() = Some(atl);
-    Ok(())
-}
-
-fn ensure_external_sources(state: &AppState) -> Result<(), AppError> {
-    if state.external_source_index.lock().is_some() {
-        return Ok(());
-    }
-
-    let p4k = get_p4k(state)?;
-    let external_sources = ExternalSourceIndex::from_p4k(&p4k)?;
     *state.external_source_index.lock() = Some(external_sources);
     Ok(())
 }
@@ -100,12 +92,21 @@ fn get_p4k(state: &AppState) -> Result<Arc<MappedP4k>, AppError> {
         .ok_or_else(|| AppError::Internal("P4k not loaded".into()))
 }
 
-fn load_hierarchy(
+/// A bank as the commands use it, parsed once and cached by name: its event
+/// hierarchy and the media it embeds (DIDX).
+pub struct LoadedBank {
+    pub hierarchy: Hierarchy,
+    pub embedded_ids: HashSet<u32>,
+}
+
+/// The bank `bank_name` (cached); `None` when it cannot be read or parsed,
+/// or has no hierarchy.
+fn load_bank(
     p4k: &MappedP4k,
     bank_name: &str,
-    cache: &mut HashMap<String, Option<Arc<Hierarchy>>>,
+    cache: &mut HashMap<String, Option<Arc<LoadedBank>>>,
     wwise_paths: &HashMap<String, String>,
-) -> Option<Arc<Hierarchy>> {
+) -> Option<Arc<LoadedBank>> {
     if let Some(cached) = cache.get(bank_name) {
         return cached.clone();
     }
@@ -130,7 +131,7 @@ fn load_hierarchy(
             }
         };
         let hirc = bnk.hirc.as_ref()?;
-        Some(Arc::new(Hierarchy::from_section(hirc)))
+        Some(Arc::new(LoadedBank { hierarchy: Hierarchy::from_section(hirc), embedded_ids: embedded_media_ids(&bnk) }))
     })();
     cache.insert(bank_name.to_string(), result.clone());
     result
@@ -338,8 +339,7 @@ fn load_media_bytes(
 
 #[tauri::command]
 pub fn audio_init(state: State<'_, AppState>) -> Result<AudioInitResult, AppError> {
-    ensure_atl(&state)?;
-    ensure_external_sources(&state)?;
+    ensure_game_audio(&state)?;
 
     // Build bank path index if not already done
     {
@@ -396,7 +396,7 @@ pub fn audio_search_triggers(
     state: State<'_, AppState>,
     query: String,
 ) -> Result<Vec<TriggerResult>, AppError> {
-    ensure_atl(&state)?;
+    ensure_game_audio(&state)?;
     let atl_guard = state.atl_index.lock();
     let atl = atl_guard
         .as_ref()
@@ -420,10 +420,7 @@ pub fn audio_search_external_sources(
     state: State<'_, AppState>,
     query: String,
 ) -> Result<Vec<TriggerDetail>, AppError> {
-    ensure_external_sources(&state)?;
-    if query.trim().is_empty() {
-        return Ok(Vec::new());
-    }
+    ensure_game_audio(&state)?;
 
     let external_guard = state.external_source_index.lock();
     let external_sources = external_guard
@@ -445,7 +442,7 @@ pub fn audio_search_external_sources(
 
 #[tauri::command]
 pub fn audio_list_banks(state: State<'_, AppState>) -> Result<Vec<BankResult>, AppError> {
-    ensure_atl(&state)?;
+    ensure_game_audio(&state)?;
     let atl_guard = state.atl_index.lock();
     let atl = atl_guard
         .as_ref()
@@ -468,7 +465,7 @@ pub fn audio_bank_triggers(
     state: State<'_, AppState>,
     bank_name: String,
 ) -> Result<Vec<TriggerDetail>, AppError> {
-    ensure_atl(&state)?;
+    ensure_game_audio(&state)?;
     let atl_guard = state.atl_index.lock();
     let atl = atl_guard
         .as_ref()
@@ -483,8 +480,8 @@ pub fn audio_bank_triggers(
     for name in trigger_names {
         let (duration_type, sound_count) = match atl.get_trigger(name) {
             Some(trigger) => {
-                let count = load_hierarchy(&p4k, &trigger.bank_name, &mut cache_guard, &wp)
-                    .map(|h| h.resolve_event_by_name(&trigger.wwise_event_name).len())
+                let count = load_bank(&p4k, &trigger.bank_name, &mut cache_guard, &wp)
+                    .map(|bank| bank.hierarchy.resolve_event_by_name(&trigger.wwise_event_name).len())
                     .unwrap_or(0);
                 (trigger.duration_type.clone(), count)
             }
@@ -635,7 +632,7 @@ pub fn audio_entity_triggers(
         .find(|e| e.entity_name == entity_name)
         .ok_or_else(|| AppError::Internal(format!("entity '{}' not found", entity_name)))?;
 
-    ensure_atl(&state)?;
+    ensure_game_audio(&state)?;
     let atl_guard = state.atl_index.lock();
     let atl = atl_guard
         .as_ref()
@@ -649,8 +646,8 @@ pub fn audio_entity_triggers(
     for tref in &entity.triggers {
         let (bank_name, sound_count) = match atl.get_trigger(&tref.trigger_name) {
             Some(trigger) => {
-                let count = load_hierarchy(&p4k, &trigger.bank_name, &mut cache_guard, &wp)
-                    .map(|h| h.resolve_event_by_name(&trigger.wwise_event_name).len())
+                let count = load_bank(&p4k, &trigger.bank_name, &mut cache_guard, &wp)
+                    .map(|bank| bank.hierarchy.resolve_event_by_name(&trigger.wwise_event_name).len())
                     .unwrap_or(0);
                 (trigger.bank_name.clone(), count)
             }
@@ -678,7 +675,7 @@ pub fn audio_resolve_trigger(
     state: State<'_, AppState>,
     trigger_name: String,
 ) -> Result<Vec<SoundResult>, AppError> {
-    ensure_atl(&state)?;
+    ensure_game_audio(&state)?;
     let atl_guard = state.atl_index.lock();
     let atl = atl_guard
         .as_ref()
@@ -695,18 +692,10 @@ pub fn audio_resolve_trigger(
     let p4k = get_p4k(&state)?;
     let mut cache_guard = state.bank_cache.lock();
     let wp = state.wwise_paths.lock().clone();
-    let bank_path = wp
-        .get(&bank_name)
-        .cloned()
-        .unwrap_or_else(|| format!("Data\\Sounds\\wwise\\{}", bank_name));
-    let bank_data = p4k.read_file(&bank_path)?;
-    let bnk = BnkFile::parse(&bank_data)?;
-    let embedded_ids = embedded_media_ids(&bnk);
-
-    let hierarchy = load_hierarchy(&p4k, &bank_name, &mut cache_guard, &wp)
+    let bank = load_bank(&p4k, &bank_name, &mut cache_guard, &wp)
         .ok_or_else(|| AppError::Internal(format!("failed to load bank '{}'", bank_name)))?;
 
-    let sounds = hierarchy.resolve_event_by_name(&event_name);
+    let sounds = bank.hierarchy.resolve_event_by_name(&event_name);
 
     let mut seen = HashSet::new();
     Ok(sounds
@@ -724,7 +713,7 @@ pub fn audio_resolve_trigger(
                 Some(s.source),
                 &bank_name,
                 path_desc,
-                &embedded_ids,
+                &bank.embedded_ids,
                 &wp,
             )
         })
@@ -735,8 +724,9 @@ pub fn audio_resolve_trigger(
 pub fn audio_resolve_external_source(
     state: State<'_, AppState>,
     source_name: String,
+    language: String,
 ) -> Result<Vec<SoundResult>, AppError> {
-    ensure_external_sources(&state)?;
+    ensure_game_audio(&state)?;
     let p4k = get_p4k(&state)?;
 
     let external_guard = state.external_source_index.lock();
@@ -744,9 +734,9 @@ pub fn audio_resolve_external_source(
         .as_ref()
         .ok_or_else(|| AppError::Internal("audio external sources not initialized".into()))?;
 
-    let source = external_sources
-        .get_preferred(&source_name)
-        .ok_or_else(|| AppError::Internal(format!("external source '{}' not found", source_name)))?;
+    let source = external_sources.get(&source_name, &language).ok_or_else(|| {
+        AppError::Internal(format!("external source '{source_name}' ({language}) not found"))
+    })?;
 
     Ok(vec![make_external_source_result(source, &p4k)])
 }

@@ -5,7 +5,9 @@ use parking_lot::Mutex;
 
 use starbreaker_3d::character::HeadIdentityContext;
 use starbreaker_p4k::MappedP4k;
-use starbreaker_wwise::{AtlIndex, ExternalSourceIndex, Hierarchy};
+use starbreaker_wwise::{AtlIndex, ExternalSourceIndex};
+
+use crate::audio_commands::LoadedBank;
 
 use crate::datacore_commands::RecordEntry;
 
@@ -22,8 +24,8 @@ pub struct AppState {
     pub atl_index: Mutex<Option<AtlIndex>>,
     /// ATL external-source index, built once by audio_init.
     pub external_source_index: Mutex<Option<ExternalSourceIndex>>,
-    /// Lazily-loaded bank hierarchies, keyed by bank filename.
-    pub bank_cache: Mutex<HashMap<String, Option<Arc<Hierarchy>>>>,
+    /// Lazily-loaded banks (hierarchy + embedded media), keyed by bank filename.
+    pub bank_cache: Mutex<HashMap<String, Option<Arc<LoadedBank>>>>,
     /// Maps wwise filename (bnk/wem) to full P4k path (e.g. "Data\\Sounds\\wwise\\English(US)\\Foo.bnk").
     pub wwise_paths: Mutex<HashMap<String, String>>,
     /// Per-gender cached head rig context for the Character Builder.
