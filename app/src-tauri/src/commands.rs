@@ -1142,7 +1142,7 @@ pub struct SocpakExportProgress {
 struct ExportProgressSlot {
     entity_name: String,
     entity_id: String,
-    progress: Arc<Progress>,
+    progress: Arc<Progress<'static>>,
     done: Arc<AtomicBool>,
 }
 

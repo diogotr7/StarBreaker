@@ -1,24 +1,35 @@
 //! Shared progress reporting for long-running operations.
+//!
+//! The UI creates a root [`Progress`] and polls it with [`Progress::get`];
+//! heavy functions take `Option<&Progress>` and report through it.
+//! [`Progress::sub`] returns a child that borrows its parent and maps its own
+//! 0..1 range onto a slice of the parent's. The borrow is the `'a` lifetime
+//! parameter, so the compiler rejects a child that would outlive its parent:
+//!
+//! ```compile_fail,E0597
+//! use starbreaker_common::Progress;
+//!
+//! let child = {
+//!     let parent = Progress::new();
+//!     parent.sub(0.0, 1.0)
+//! };
+//! child.report(0.5, "parent already dropped");
+//! ```
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use parking_lot::Mutex;
 
 /// Thread-safe progress state. Pass `Option<&Progress>` to heavy functions.
 /// `None` means no reporting (zero cost). The UI creates one and polls it.
-pub struct Progress {
+pub struct Progress<'a> {
     /// 0–10000 for 0.00%–100.00%
     value: AtomicU32,
     stage: Mutex<String>,
     /// If set, this progress writes scaled values into a parent.
-    parent: Option<(*const Progress, f32, f32)>,  // (parent_ptr, base, range)
+    parent: Option<(&'a Progress<'a>, f32, f32)>,  // (parent, base, range)
 }
 
-// SAFETY: parent is only read, never written after construction, and points to
-// data that outlives this Progress (enforced by SubProgress lifetime).
-unsafe impl Send for Progress {}
-unsafe impl Sync for Progress {}
-
-impl Progress {
+impl<'a> Progress<'a> {
     pub fn new() -> Self {
         Self {
             value: AtomicU32::new(0),
@@ -31,11 +42,8 @@ impl Progress {
     pub fn report(&self, fraction: f32, message: &str) {
         let clamped = fraction.clamp(0.0, 1.0);
 
-        if let Some((parent_ptr, base, range)) = self.parent {
-            let scaled = base + clamped * range;
-            // SAFETY: parent outlives self (enforced by SubProgress).
-            let parent = unsafe { &*parent_ptr };
-            parent.report(scaled, message);
+        if let Some((parent, base, range)) = self.parent {
+            parent.report(base + clamped * range, message);
         } else {
             let units = (clamped * 10000.0) as u32;
             let previous = self.value.fetch_max(units, Ordering::Relaxed);
@@ -57,17 +65,18 @@ impl Progress {
     }
 
     /// Create a sub-progress that maps 0.0–1.0 to `from..to` on this progress.
-    /// The returned `Progress` can be passed anywhere `&Progress` is accepted.
-    pub fn sub(&self, from: f32, to: f32) -> Progress {
+    /// The returned `Progress` can be passed anywhere `&Progress` is accepted,
+    /// but borrows `self`, so it cannot outlive this progress.
+    pub fn sub(&self, from: f32, to: f32) -> Progress<'_> {
         Progress {
             value: AtomicU32::new(0),
             stage: Mutex::new(String::new()),
-            parent: Some((self as *const Progress, from, to - from)),
+            parent: Some((self, from, to - from)),
         }
     }
 }
 
-impl Default for Progress {
+impl Default for Progress<'_> {
     fn default() -> Self { Self::new() }
 }
 
@@ -128,5 +137,19 @@ mod tests {
         let (fraction, stage) = progress.get();
         assert!((fraction - 0.438).abs() < 0.0001);
         assert_eq!(stage, "Writing child assets");
+    }
+
+    #[test]
+    fn subprogress_reports_from_scoped_threads() {
+        let progress = Progress::new();
+        let sub = progress.sub(0.5, 1.0);
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| sub.report(0.5, "worker thread"));
+        });
+
+        let (fraction, stage) = progress.get();
+        assert!((fraction - 0.75).abs() < 0.0001);
+        assert_eq!(stage, "worker thread");
     }
 }
