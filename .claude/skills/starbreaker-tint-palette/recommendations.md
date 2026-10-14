@@ -1,56 +1,36 @@
-# starbreaker-tint-palette — review & recommendations
+# starbreaker-tint-palette — recommendations
 
-Companion to `SKILL.md`. Following the `starbreaker-ui-screen-parity` precedent, this skill
-is **not** pressure-tested by re-writing it in a RED→GREEN subagent loop;
-instead, findings land here in two states, with a lifecycle:
-
-- **Open recommendations** — ideas not yet applied. End-of-arc retrospectives
-  (the skill's closing step) and reviews append here rather than editing
-  `SKILL.md` mid-arc.
-- **Change log** — applied changes. When a `writing-skills` session implements an
-  open recommendation (or an owner-requested edit), it records the applied change
-  here and clears the open item.
+Companion to `SKILL.md`. End-of-arc retrospectives (via the arc-closeout skill) and
+reviews append skill improvements under **Open** rather than editing `SKILL.md`
+mid-arc; when a `writing-skills` session applies one, it moves to the **Change
+log** as a one-line entry. Process/tool findings go to the ledger
+(`docs/tint-palette-process-improvements.md`), not here.
 
 ## Validation status
 
-- **Grounded in a real arc, not subagent-tested.** Modeled on `starbreaker-ui-screen-parity`
-  (which is validated by real use, not a formal baseline/green run). `starbreaker-tint-palette`
-  was authored from the lived New Babbage XL hangar socpak palette arc
-  (2026-06-20), whose real failure modes are seeded as ledger items 1–5
-  (`docs/tint-palette-process-improvements.md`) and as the **Operating posture** +
-  **Red flags** in `SKILL.md`. The recurring class was "agent assumes instead of
-  parsing / re-imports stale" — addressed by the ASK/PARSE/JUST-DO/GATE posture
-  and the mandatory fresh re-import.
-- **Next real invocation is the test.** The first time the skill drives a fresh
-  palette arc (ideally a SHIP, to exercise Mode A paint/livery, since the seed arc
-  was a socpak Mode B), capture any shortfall here and in the ledger.
+Grounded in one real arc (the New Babbage XL hangar socpak palette arc,
+2026-06-20; its failure modes are ledger items 1–5 and the SKILL's Operating
+posture + Red flags), not subagent-tested. The next real invocation is the test —
+ideally a SHIP, to exercise Mode A paint/livery.
 
-## Open recommendations
+## Open
 
 1. **Ship Mode-A coverage is under-exercised.** The seed arc was a socpak (Mode B,
-   per-object). Confirm on a ship paint/livery arc that the `Apply Paint` /
+   per-object). On the first ship paint/livery arc, confirm the `Apply Paint` /
    `Apply Livery` operators + `liveries.json` are documented accurately in
-   workflow §4; tighten if the first ship run needs anything re-derived.
-2. **Palette-dump tooling.** If parsing `palettes.json` + per-object `palette_id`
-   + the `TintPaletteTree` record gets typed >2× across arcs, add a
-   `scripts/`/`examples/` palette-dump helper (per the retrospective's category 1)
-   and cite it in workflow §6.
+   workflow §4; tighten if anything had to be re-derived.
 
 ## Change log
 
-- **2026-06-20 — created.** Authored from the New Babbage hangar palette arc.
-  Workflow (`docs/tint-palette-workflow.md`) + ledger
-  (`docs/tint-palette-process-improvements.md`, items 1–5) + `SKILL.md` +
-  this file.
-
-- **2026-07-08 (alignment plan T15 — persona reconciliation; applied via
-  `superpowers:writing-skills` review).** `SKILL.md` strict rules gained the two always-on-persona
-  reconciliation lines (identical wording to the `starbreaker-ui-screen-parity` skill): (a) a
-  **ponytail note** — laziest-that-works = smallest change still engine-faithful + data-derived;
-  a hard-coded value / invented geometry / name-gate / heuristic is never "lazy" here, it trips
-  the guards; and (b) **this skill IS the process skill for its arc** — its own gates stand in
-  for superpowers:brainstorming's design gate; superpowers planning/TDD/debugging are sub-tools
-  WITHIN the loop. `writing-skills` pass: reframe-not-prohibition form, skill-name cross-refs
-  (no `@`), bold leads. NOTE for owner review: line (b) uses the shared verbatim "launch/catalog
-  gates" wording; this skill's gates are input-gather + mode-decision (no numbered "catalog"
-  phase), so the phrase is illustrative-of-parity rather than literal here.
+- **2026-06-20 — created** from the New Babbage hangar palette arc (workflow +
+  ledger items 1–5 + `SKILL.md` + this file).
+- **2026-07-08 — persona reconciliation** (alignment plan T15, `writing-skills`
+  review): strict rules gained the ponytail note and the "this skill IS the process
+  skill for its arc" line, verbatim with ui-screen-parity. Owner note: the shared
+  "launch/catalog gates" wording is illustrative here (this skill's gates are
+  input-gather + mode-decision).
+- **Palette-dump tooling — DONE** (`9fbf3ded`): `scripts/tint_audit.py` is the
+  parse-don't-eyeball battery, cited in `SKILL.md` Close-out.
+- **2026-10-14 — docs audit:** dead memory wiki-link replaced by ledger 3;
+  close-out records durable facts in the ledger (no user-folder memory); commits
+  land on the arc branch, never `main`.

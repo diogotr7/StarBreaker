@@ -2,7 +2,7 @@
 
 ## Goal
 
-These rules convert the verified slot evidence in `StarBreaker/docs/blender-material-slot-evidence.md` into stable contract input names for the generated seed contract.
+These rules convert the verified slot evidence in `docs/blender-material-slot-evidence.md` into stable contract input names for the generated seed contract.
 
 The intent is to make the naming predictable for both the Blender node-group authoring work and the future runtime wiring.
 

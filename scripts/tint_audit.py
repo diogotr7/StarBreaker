@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Parse-don't-eyeball audit of tint-palette assignment in a decomposed export.
 
-The tint-palette workflow (docs/tint-palette-workflow.md §5.1) says: PARSE the
+The tint-palette workflow (docs/tint-palette-workflow.md §5 step 1 and §6) says: PARSE the
 exported `palettes.json` plus every object's `palette_id` — never eyeball one
 object and conclude the field is right. This is that parse.
 

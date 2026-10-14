@@ -1,8 +1,10 @@
-# IR Freeze Schema Proposal
+# IR Freeze Schema
 
-Date: 2026-05-31
-Status: Phase M2 implemented, migration still in progress
-Scope: replace image-artifact-hash freezing with IR-only, git-portable freeze data.
+Proposed: 2026-05-31. Status (2026-10): IR freeze implemented and in daily use
+(M1–M3 landed). M4 was deliberately not taken: the image-artifact freeze stays as
+the whole-image guard, which sees compose-only effects the IR snapshot cannot
+(see §"Current Migration Status").
+Scope: an IR-only, git-portable structural freeze alongside the image-artifact freeze.
 
 ## Goal
 
@@ -19,9 +21,9 @@ Define a freeze format that:
 - Using artifact image hash as the primary regression oracle.
 - Hiding semantic drift behind broad hash mismatch errors.
 
-## Current State (To Replace)
+## The image-artifact freeze (kept, now secondary)
 
-Current freeze lock (`ui_regression_freeze.json`) stores image-oriented metadata:
+The artifact freeze lock (`ui_regression_freeze.json`) stores image-oriented metadata:
 
 - artifact path
 - artifact hash
@@ -150,7 +152,7 @@ Required failure ordering for all required regression runs:
 
 This ensures first failure is descriptive and actionable.
 
-## Migration Plan (Artifact Freeze -> IR Freeze)
+## Migration Plan (historical; M4 not taken)
 
 Phase M1:
 
@@ -216,8 +218,8 @@ If any optional hash/image diagnostics run, they must execute after semantic che
   schema is now **v2** (adds `primary_text_top` / `secondary_text_top` for the
   reference-anchored text-top known-outliers).
 - `scripts/freeze_ui_snapshot_ir.sh` generates the file from manifest targets and local records.
-- `scripts/validate_ui_snapshot_freeze.sh` enforces manifest/freeze parity and bans artifact-path/hash fields from the IR freeze payload.
-- Image-hash backstop validation still exists separately and has not yet been removed from required gating.
+- `scripts/validate_ui_snapshot_freeze.sh` enforces manifest/freeze parity and bans artifact-path/hash fields from the IR freeze payload (M3); it runs in `scripts/ui_check.sh --full` and `scripts/ui_freeze_cycle.sh`.
+- M4 is NOT planned. The image artifact freeze (`ui_regression_freeze.json`) backs the whole-image guard `manifest_targets_whole_image_colour_regression_guard`, which catches compose-only and runtime-text drift the IR snapshot cannot see (`crates/starbreaker-ui/docs/ui-regression-policy.md` §"Pixel Regression: generic, not targeted"). Both freezes are required; the IR freeze gives the descriptive first failure.
 
 ## Acceptance Criteria
 

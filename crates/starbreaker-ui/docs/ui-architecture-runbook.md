@@ -2,27 +2,20 @@
 
 > Satellite doc — the authoritative process is `crates/starbreaker-ui/docs/ui-workflow.md`; commands/tools/data live in `crates/starbreaker-ui/docs/ui-reference.md`.
 
+This runbook holds the settled engine models and architecture facts that the
+workflow and reference docs point at. The stage table (which module owns
+which bug class) is `crates/starbreaker-ui/docs/ui-workflow.md` §2; commands,
+the replay loop, probes and validation are `crates/starbreaker-ui/docs/ui-reference.md`
+§1, §2, §6 and §7.
+
 ## Architecture Summary
 
-The UI pipeline is split into four stages:
-
-1. Source resolution
-- Resolve BuildingBlocks canvases, styles, bindings, and localization.
-- Files: `bb_resolve/`, `bb_state_filter.rs`, `bb_bindings/`, `bb_style_engine.rs`
-  (the single style-cascade application engine, P4) + `bb_brand_apply/`
-  (its condition/modifier kernel).
-
-2. Canonical IR compilation
-- Compile deterministic `UiIrDocument` output with fidelity fields and provenance.
-- File: `ui_ir.rs`.
-
-3. Renderer consumption
-- Render from IR only (no source-data probing in renderer).
-- Files: `ir_compose.rs`, `hybrid_compose.rs`, `compose.rs` compatibility wrapper.
-
-4. Regression/certification
-- Structural snapshot extraction and comparison for representative families.
-- File: `ui_snapshot.rs` and example `phase5_certification_dashboard.rs`.
+Source resolution (`bb_resolve/`, `bb_state_filter/`, `bb_bindings/`, the
+`bb_style_engine` cascade + its `bb_brand_apply/` kernel) → layout (`bb_layout/`)
+→ canonical IR (`ui_ir/`, the `UiIrDocument`) → rendering from IR only
+(`ir_compose/`, `text/`, `hybrid_compose.rs`; `compose/` holds the canvas-compositor entry
+points) → regression (`ui_snapshot/`, the manifest tests, and the
+`phase5_certification_dashboard` example). The full stage table is workflow §2.
 
 ## Why Ruffle/Flash playback is a dead end here (attempted twice, removed twice)
 
@@ -129,48 +122,6 @@ Key facts:
   case is `Accent1`: foreground → light slot 0, surface → darker slot 4 (the
   medical fingerprint). When extending the mapping, verify against an in-game
   reference per role; do not assume `slot == enum index`.
-
-## Standard Validation Commands
-
-- Full UI crate checks:
-  - `cargo test -p starbreaker-ui`
-- Hardcoding guard:
-  - `bash .github/scripts/check_ui_hardcoding.sh`
-- Family certification drift check:
-  - `cargo run -p starbreaker-ui --example phase5_certification_dashboard`
-
-## Fast Render Iteration: `ui render` replay
-
-Do NOT run a full entity export to iterate on UI rendering. Once a
-decomposed export exists, replay every UI binding through the SAME live
-DataCore + P4K fetchers in about a minute:
-
-```bash
-target/release/starbreaker ui render \
-  --scene "<workspace>/ships/Packages/DRAK Clipper_LOD0_TEX0/scene.json" \
-  --out-dir /tmp/ui_replay
-```
-
-This renders all bindings (43 on the Clipper) as
-`<helper_name>_TEX0.png` / `<canvas_guid>_TEX0.png`. A full export is only
-needed when the binding set itself changed or to refresh the canonical
-`ships/Data/UI/Generated/...` PNGs for the regression artifact freeze.
-
-Prefer the wrapper `bash scripts/ui_render.sh --helper <name>` (or `--screen
-<screen_id>`) for single-screen iteration: it rebuilds first and prints the
-binary mtime (stale-binary guard), resolves the scene from the screen dossier
-(`crates/starbreaker-ui/data/ui_screen_dossier_v1.json` — so non-Clipper ships
-resolve their own scene), and writes each run to a unique
-`/tmp/ui_render/<helper>/<UTC-stamp>/` with a `latest` symlink.
-
-**Trap:** the full export writes its Generated PNGs near the END of the
-run. Diffing a PNG right after its mtime first changes can read the
-PREVIOUS export's bytes. Wait for export completion before diffing.
-
-For IR-structure questions (node rects, tags, text payloads) use the MCP
-`ui_ir_query` tool — but remember the deployed MCP binary may predate
-your working-tree changes; treat its layout numbers as stale and only
-trust its structure/names, or rebuild+redeploy the MCP first.
 
 ## Reference: MFD frame geometry model
 
@@ -327,7 +278,7 @@ added the engine note at the end):
   proxy/group: the engine draws no background/svg/fill for it even when
   `background.enable=true` with a colour. Only nodes with a primitive renderer
   (`rendererType:"Flash"` — solid-fill rects, text fields, images) draw their
-  authored background. `node_background_enabled` (ui_ir `engine_01.part`) returns
+  authored background. `node_background_enabled` (`ui_ir/engine_01.rs`) returns
   false for an EXPLICIT `"None"`; an absent rendererType keeps the normal rules.
   Motivating case: the compass `CanvasProxyRoot` (None) authored an enabled white
   background that painted an opaque sheet over the dark `DRAK_Background_compass`
@@ -353,35 +304,20 @@ added the engine note at the end):
 
 ## Troubleshooting Flow
 
-1. Confirm source provenance first
-- Check selected style/SWF source and unresolved references in diagnostics output.
+The per-fix loop and the guard-trip method are workflow §3 and §5. When the
+owning stage isn't obvious, classify the fault domain first:
 
-2. Reproduce with deterministic fixture path
-- Use representative fixture canvases under `crates/starbreaker-ui/tests/fixtures/canvas/`.
+- **Source resolution:** the node, its authored fields or applied styles are
+  wrong → `bb_resolve` / bindings / style application (MCP style trio,
+  reference §4).
+- **IR:** the authored value is right but didn't survive → `ui_ir` compilation
+  fields (`ui_ir_query`, `ui render --dump-ir-dir`).
+- **Rendering:** the IR is right but the pixels aren't → `ir_compose` use of
+  existing IR fields.
 
-3. Compare structural snapshots
-- Run the certification dashboard and read its stdout table:
-  - `cargo run -p starbreaker-ui --example phase5_certification_dashboard`
-- For per-target structural drift, run the live IR guard / snapshot suite
-  (`cargo test -p starbreaker-ui --test manifest_live_ir_guard` /
-  `--test manifest_snapshot_regression`).
-
-4. Classify fault domain
-- Source resolution mismatch: investigate `bb_resolve`/bindings/style application.
-- IR mismatch: investigate `ui_ir` compilation fields.
-- Rendering mismatch: investigate `ir_compose` use of existing IR fields.
-
-5. Add a regression test with the fix
-- Add/update a focused unit/integration test in the touched subsystem.
-- Re-run `cargo test -p starbreaker-ui`.
-
-## Incident Checklist
-
-- Is this a source-data issue or renderer misuse?
-- Is the behavior represented in IR (`UiIrDocument`) correctly?
-- Did certification snapshots drift for previously certified screens?
-- Is there an undocumented fallback involved?
-- Did the fix add a focused regression test?
+Every fix lands with a regression test in the touched subsystem
+(`crates/starbreaker-ui/docs/ui-regression-policy.md`) and any fallback it adds is registered in
+`crates/starbreaker-ui/docs/ui-fallback-register.md`.
 
 ## Open architecture debt (deferred; evidence recorded)
 
@@ -391,15 +327,19 @@ were items 16/17/18 of the retrospective ledger
 `crates/starbreaker-ui/docs/ui-process-improvements.md`; they live here now
 because they are architecture, not history. Screen-level parity residuals
 that depend on these are in `crates/starbreaker-ui/docs/ui-clipper-parity-handoff.md`.)
+As of 2026-10 all three recorded items have landed (kept below as the record);
+add new cross-arc debt here.
 
-- **Per-host-type expansion ID-band lanes.** Adding a new expanding host
-  type shifts the shared `EXPANSION_ID_BASE` allocation order in
-  `merge_child_scene` and can STEAL a frozen platinum identity (adding
-  `WidgetSeparator` turned the medical close-button X into a separator
-  instance — the guards caught it pre-land). The design couples baseline
-  identity to expansion ORDER. Fix: a band lane per host type (or a second
-  band, e.g. `0xF800_0000`, for new types) in `merge_child_scene`. Blocks the
-  parked separator-dots work (handoff "Open items").
+- **Per-host-type expansion ID-band lanes (LANDED — B2, `7982e885`).**
+  Adding a new expanding host type used to shift the shared `EXPANSION_ID_BASE`
+  allocation order in `merge_child_scene` and could STEAL a frozen platinum
+  identity (adding `WidgetSeparator` turned the medical close-button X into a
+  separator instance — the guards caught it pre-land). `merge_child_scene`
+  (`bb_resolve/engine_01.rs`) now reserves a SECOND band,
+  `EXPANSION_ID_BASE_SECOND = 0xF800_0000`, for host types added after today's
+  set, so a new type can't renumber the primary-band allocations. No production
+  host type maps there yet; the parked separator-dots work (handoff "Open
+  items") is now unblocked on this front.
 - **One brand-context resolver (RESOLVED — B1, 2026-07-07).** Formerly four
   independent brand-container selection paths existed — `resolve_brand_style`'s
   manufacturer-prefix scan, `collect_standard_text_styles`' `selected_style_name`

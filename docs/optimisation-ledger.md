@@ -11,8 +11,7 @@ Format per item:
 - **Finding** — the root cause / lever / dead-end, with evidence.
 - **Action** — what landed (commit) or was reverted.
 
-Cumulative export numbers and the longer narrative live in the `idris-export-perf`
-project memory; this ledger is the per-pass profiling record.
+This ledger is the per-pass profiling record.
 
 ---
 
@@ -122,7 +121,7 @@ texture + UI stages. `RUST_LOG=info` emits the `[timing][decomposed]` /
   bindings, serial UI wall 26.957s. Per-stage totals: `render` 14.151s (52.5%),
   `ir_compile` 4.976s (18.5%), `graph2` 1.763s (6.5%), `swf_load` 1.654s (6.1%),
   `swf_load_measure` 1.648s (6.1%), `encode` 0.249s. Full table in
-  `docs/StarBreaker/starbreaker-ui-perf-baseline.md` (Post-zlib-rs re-profile).
+  `crates/starbreaker-ui/docs/ui-perf-baseline.md` (Post-zlib-rs re-profile).
   The binding count fell 43 (B0, 2026-06-08) → 27 because the `UiRenderKey`
   render-dedup (commit `476a9503e`, 2026-06-21, after B0) renders one
   representative per distinct render key, collapsing duplicate screens.

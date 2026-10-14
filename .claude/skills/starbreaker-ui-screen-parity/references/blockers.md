@@ -21,7 +21,7 @@ De-risk a wide change EMPIRICALLY: run the disable→adjudicate audit (workflow 
 `bash scripts/ui_check.sh --full` (re-export FIRST — `--full` does not re-export;
 ledger 56) so the frozen pins MEASURE the real blast radius instead of you estimating
 it; find the one structural discriminator; for a genuinely large change, write a short
-plan in the arc memory/handoff (affected identities, sequence, the single rule) and
+plan in the arc's handoff doc (in-repo; affected identities, sequence, the single rule) and
 execute it. **Making the change is autonomous — only the resulting baseline FREEZE is
 gated** (a wide change that moves many frozen baselines TOWARD the reference is the §5
 "baseline is wrong → re-freeze" path; present that delta at the freeze gate).
@@ -50,7 +50,7 @@ suffix from the engine's enum→localization table).
   `search_records("compass")` returned only UI canvases; ledger 66).
 - **A blocker claim MUST carry a VERIFIABLE EVIDENCE TRAIL** — the exact record names and
   grep/probe patterns you ran and the empty results, not a summary assertion. Record it in
-  an evidence file and validate it: `python3 scripts/ui_blocker_evidence.py <file.json>`
+  an evidence file and validate it: `uv run python scripts/ui_blocker_evidence.py <file.json>`
   must print `ui_blocker_evidence: OK` (all four surfaces — datacore_families, p4k_assets,
   localization, derivable_mechanisms — each carry a real {query, result}). Schema + a worked
   example: `crates/starbreaker-ui/docs/blocker-evidence-schema.md`. If you can't produce a
@@ -129,8 +129,9 @@ authored op graph.
 
 "The export got slow" is the `starbreaker-optimisation` skill's job — invoke it rather than
 ad-hoc timing. Its first move: pin BOTH baselines' binary provenance
-(`target/release/deps/starbreaker-<hash>` mtimes are a no-rebuild bisect ladder) before
-attributing anything to this arc's changes.
+(`target/release/deps/starbreaker-<hash>` — `.exe` on Windows — mtimes are a no-rebuild
+bisect ladder) before attributing anything to this arc's changes. Its scripted bench/provenance
+tools currently need Linux (see that skill's Platform note).
 
 ## Colour compositing — linear-light LANDED (interim leniency RETIRED)
 
@@ -159,8 +160,8 @@ method (`references/catalog.md`; ledger 107).
 | "It's engine C++ only / I exhausted the data — blocked" | Show the trail via `ui_blocker_evidence.py` or it isn't proven: exact records/greps/probes + their empty results. Search the record FAMILIES (`*Params`/`*HudParams`), not the feature keyword (compass ticks were in `SVehicleHudParams`). "Engine C++ only" is unfalsifiable. A MAJOR-item blocker is user-confirmed, never self-certified. |
 | "Each narrower scope regresses the next frozen sibling — no-discriminator blocker proven" | NO — that's the signal you're at the WRONG STAGE, symptom-scoping render-side a fix that belongs UPSTREAM. Four arcs "blocked" on size/colour, all dissolved on `ui_variant_styles` reading the INSTANTIATED variant's authored entries (value authored but NOT applied). |
 | "Font's too small but there's no authored FontSize — undecoded engine scaling, defer" | TWO non-blocker causes first. (1) Unapplied authored size — run `ui_variant_styles`; re-read the INSTANTIATED brand sub-canvas (`drak_*_cutlass_*`) incl. canvas-root `embeddedStyles` `Type(Text)` (LR-indicator's FontSize 100 lived ONLY there). (2) Per-screen RENDER scale — a portrait screen needs a `ui_ir` font scale; the `bb_layout` `canvas_scale` knob is INERT (byte-identical render proves a dead stage). Apply BOTH, trace the lever, THEN judge (ledger 94/96/97). |
-| "I'll grep the line range to check that data claim" | A `sed`/`grep` line-window of a big nested record lands on the wrong entry (serialization order, same-named/conditional entries). Parse the JSON + iterate, or run `ui_variant_styles`/`BB_A3_STYLE_PROBE`/`FONTPROBE`. |
-| "I'll grep the source to find which stage/function owns this" | Query graphify first (`graphify query`/`explain`, `/graphify`, `graphify-mcp`) — relationship-aware, `file:line`, no API cost (ui-reference §4b). Code structure only — not a data-value source. |
+| "I'll grep the line range to check that data claim" | A `sed`/`grep` line-window of a big nested record lands on the wrong entry (serialization order, same-named/conditional entries). Parse the JSON + iterate, or run `ui_variant_styles`/`BB_A3_STYLE_PROBE`/`BB_TEXT_FORMAT_PROBE`/`SB_UI_FONT_DUMP`. |
+| "I'll grep the source to find which stage/function owns this" | Query graphify first when installed (`graphify query`/`explain`, `/graphify`, `graphify-mcp`) — relationship-aware, `file:line`, no API cost (ui-reference §4b). It is optional: without `graphify-out/`, Grep/Read from the crate's `//!` module headers. Code structure only — not a data-value source. |
 | "graphify shows nothing / `No path` — so that code doesn't exist" | An empty graphify result is never proof of absence — grep to confirm (`.map(foo)` won't match `foo(`). The old `engine_*.part` blind spot is CLOSED (ledger 105): real `engine_NN.rs` submodules, fully indexed. |
 | "My quick check refutes the subagent — move on" | Refuting a careful subagent finding needs the SAME rigour as the claim. If your refutation is the weaker read, IT'S the unreliable one — verify with parse/probe before acting (ledger 68). |
 | "Root cause's obvious — land the fix before the catalog gate" | Pre-gate you investigate and write the characterizing failing test, but DON'T land a source fix until the catalog is confirmed. After the gate the loop fixes directly. |

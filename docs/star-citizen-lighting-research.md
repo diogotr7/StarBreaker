@@ -1,5 +1,11 @@
 # Star Citizen Lighting Research (Game-File Source of Truth)
 
+**Status: implemented.** The light-export rewrite this research called for
+(semantic classification, a separate ambient-proxy path, per-state type-aware
+conversion) is in the exporter and the Blender addon; see
+[Implementation](#implementation) for where. The evidence below is kept as the
+rationale.
+
 This document is based only on game assets in `Data.p4k`, not on exporter JSON
 or generated `.blend` files.
 
@@ -125,24 +131,31 @@ High confidence hypothesis from game files:
 3. Treating `Ambient` as regular punctual emitters in Blender causes major over-brightness in Aurora interiors.
 4. A single global scalar on `intensity` cannot satisfy both ships because raw authoring domains differ by type and role.
 
-## Rewrite direction for exporter/addon (derived from source data)
+## Implementation
 
-To match in-game lighting more closely for both ships, the light export system should be reworked as follows:
+The rewrite direction this research derived is implemented as follows:
 
-1. **Preserve full raw light payloads** per light and per state in the contract:
-   - component attrs
-   - `sizeParams`, `projectorParams`, `fadeParams`, `miscParams`, `styleParams`, `shadowParams`, `groupParams`
-2. **Semantic classification before unit conversion**:
-   - classify `lightType = Ambient` as `ambient_proxy` (separate mapping path)
-   - keep punctual mapping path for non-ambient types
-3. **Dedicated ambient-proxy mapping path**:
-   - do not map ambient proxies with the same punctual conversion used for projectors/omni
-   - derive Blender representation from proxy semantics (GI/fill behavior), not direct spot/point power
-4. **State-aware conversion remains per-state**, but conversion policy must be type-aware:
-   - same state names, different mapping rules by semantic class
-5. **Validation target**:
-   - compare Aurora Mk2 and Clipper from raw SOC data through the same conversion pipeline
-   - ensure Aurora no longer blows out while Clipper remains in-family
+1. **Semantic classification before unit conversion** — `socpak.rs`
+   `semantic_light_kind_for_light` classifies `lightType = Ambient` as
+   `ambient_proxy` (punctual types map to `point` / `spot`, `Planar` to
+   `area`). The kind is emitted as `semantic_light_kind` beside the raw
+   `light_type` (`docs/decomposed-export-contract.md`, Light Records).
+2. **Dedicated ambient-proxy path** — `socpak.rs`
+   `authored_light_intensity_to_candela_semantic` scales ambient proxies by
+   the authored `miscParams.glowMultiplier` and `AMBIENT_PROXY_DIRECT_FACTOR`;
+   the addon's `_light_energy_to_blender`
+   (`runtime/importer/utils.py`) skips `LIGHT_VISUAL_GAIN` for them.
+3. **Per-state, type-aware conversion** — every authored state is exported in
+   the light's `states` map with `intensity_raw`, the semantic candela proxy,
+   `light_style`, and `preset_tag`; the addon's light-state switcher reapplies
+   the per-state values.
+4. **Raw payloads** — only partly done: the export keeps `intensity_raw`,
+   `lightRadius` (`radius`), projector `FOV` (as half-angles) and texture,
+   `glowMultiplier` (folded into the ambient conversion), and per-state
+   `lightStyle` / `presetTag`. The other param blocks (`fadeParams`,
+   `shadowParams`, `groupParams`, the emitter-size fields `bulbRadius` /
+   `planeWidth` / `planeHeight`) are not exported, so the addon still derives
+   shadow soft size from the attenuation radius (Evidence §6).
 
 ## What this rules out
 

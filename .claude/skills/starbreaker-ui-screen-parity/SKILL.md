@@ -17,11 +17,14 @@ artifacts, resolution) — match STRUCTURALLY, not pixel-naively. The target is
 Run autonomously through the loop; how many gates interrupt is chosen at launch
 (SCOPE & MODE): **semi-automated** gates commits + freezes; **fully automated**
 auto-commits and gates only freezes. **Freezing a baseline is ALWAYS gated.**
+Commits (either mode) go on the arc branch, never `main` — work lands on `main`
+via a squash-merged PR.
 
 Worked example: SHIP `Drake Clipper`, SCREEN `Screen_Right_Upper_RTT` → folder
 `Clipper`, reference `reference/in-game/Clipper/Screen_Right_Upper_RTT.png`;
-dossier row → LOD0 scene, canvas `MC_S_Target_Master`, preset `target`, GOLD
-`clipper_target_master`.
+dossier row → LOD0 scene, canvas `MC_S_Target_Master`, preset `target`, PLATINUM
+`clipper_target_master` (tier per
+`crates/starbreaker-ui/tests/fixtures/ui_regression_freeze.json`).
 
 ## Operating posture (the four defaults)
 
@@ -75,8 +78,8 @@ Asking and measuring are always safe; presuming and estimating are the failure m
 3. **LOOP (priority order, autonomous — structural/layout before styling):**
    a. `bash scripts/ui_arc_status.sh --screen <id>` → vision-read the FLAGGED
       crops only (not the whole screen every cycle).
-   b. Owning stage: the MCP style trio / graphify (code — never blind grep) /
-      the stage table below.
+   b. Owning stage: the MCP style trio / graphify if installed, else Grep/Read
+      on the stage's `//!` headers / the stage table below.
    c. font/size/colour wrong? → run the **`ui_variant_styles`** MCP tool FIRST
       (the authored-but-unapplied drill), THEN `references/blockers.md`.
    d. TDD failing test → ONE structural fix at the owning stage →
@@ -96,7 +99,7 @@ Asking and measuring are always safe; presuming and estimating are the failure m
    until clean or proven-blocked. Semi: this IS the final-parity gate.
 5. **FREEZE / COMMIT — STOP before ANY freeze: read `references/freeze.md`**
    (dry-freeze no-op check FIRST; freezes are ALWAYS user-gated, both modes).
-6. **RETRO (MANDATORY — a TodoWrite item from arc start) — STOP: read
+6. **RETRO (MANDATORY — a task-list item from arc start) — STOP: read
    `references/retro.md`, which delegates the shared sweep to the arc-closeout
    skill.** The arc is done AFTER the retro, never before.
 
@@ -119,10 +122,12 @@ cargo target single-threaded.
   + MCP trio → owning stage + discriminator), guard-trip archaeology, measurement/
   catalog from an EXISTING render+ref pair, doc / DataCore / P4K lookups. Model = **Opus**.
   Tell each explicitly: do NOT build/test/render/export/edit — query, measure, report.
-- **Code discovery: graphify before blind grep** (`graphify query`/`explain`,
-  `/graphify`, `graphify-mcp` — relationship-aware, `file:line`, no API cost;
-  ui-reference §4b). It maps CODE structure only — never a game-data VALUE source
-  (MCP trio / parse-JSON rule). An empty graphify result ≠ absence (grep to confirm).
+- **Code discovery: graphify before blind grep, when installed** (`graphify
+  query`/`explain`, `/graphify`, `graphify-mcp` — relationship-aware, `file:line`,
+  no API cost; ui-reference §4b). graphify is optional: without `graphify-out/`,
+  use Grep/Read starting from the crate's `//!` module headers. It maps CODE
+  structure only — never a game-data VALUE source (MCP trio / parse-JSON rule). An
+  empty graphify result ≠ absence (grep to confirm).
 - **Never delegate:** anything running cargo/`ui_check.sh`/`ui_render.sh`/
   `entity export`/a freeze (shared target races); the fix + its TDD test; gated
   actions. Don't override a subagent's data claim with a WEAKER check than it used (ledger 68).
@@ -137,7 +142,7 @@ presumed "yes," never act before the answer.
 | Reference selection / catalog confirm | ask | ask |
 | **Baseline freeze / re-freeze** | **GATE** | **GATE** |
 | **Major-item blocker** | **GATE** | **GATE** |
-| Git commit | gate | auto, no gate |
+| Git commit (arc branch, never `main`) | gate | auto, no gate |
 | Final parity | gate | re-review → fix until clean |
 
 ## Strict rules (workflow §1 — non-negotiable)
@@ -155,7 +160,9 @@ presumed "yes," never act before the answer.
   only its camera was tuned). Detail: `references/blockers.md`.
 - IR is the sole styling authority; fix the owning upstream stage, not the draw-time symptom.
 - Frozen platinum/gold baselines move ONLY via the audited freeze flow / §6 known-outlier.
-- 3000-line cap; revert no-effect experiments immediately; verify-on-write every doc command.
+- File size: ~500 lines is the split signal (AGENTS.md, repo-wide); 3000 is the
+  starbreaker-ui hard cap. Revert no-effect experiments immediately; verify-on-write
+  every doc command.
 - **Linear-light compositing LANDED** (plan B4; all baselines re-frozen): colour
   residuals are now judged NORMALLY, not leniently — a genuine blend-shaped drift at
   a composited edge is a latent bug to root-cause and adjudicate (§5), not a
@@ -174,8 +181,8 @@ presumed "yes," never act before the answer.
 |---|---|
 | "The skill summary is enough" | Read ui-workflow.md + ui-reference.md; this skill only orchestrates. |
 | "Found the root cause / know the next item — ask first?" | Just do it. Applying a fix and pulling the next-priority item are the loop's work, not checkpoints. |
-| "That fix landed — a natural checkpoint to ask whether to continue" | A landed sub-fix is NOT an arc boundary. Take the next open item (fully-auto never asks). Short on context? SAY so + hand state to memory/handoff — don't convert budget anxiety into a permission question. |
-| "Catalog's resolved / found more issues — run the retro" | The retro is the LAST step, never a substitute for fixing. Fix fixable diffs first, then the closing re-review, THEN the retro (TodoWrite item from arc start). |
+| "That fix landed — a natural checkpoint to ask whether to continue" | A landed sub-fix is NOT an arc boundary. Take the next open item (fully-auto never asks). Short on context? SAY so + hand state over via the ledger/handoff doc (in-repo, never user-folder memory) — don't convert budget anxiety into a permission question. |
+| "Catalog's resolved / found more issues — run the retro" | The retro is the LAST step, never a substitute for fixing. Fix fixable diffs first, then the closing re-review, THEN the retro (task-list item from arc start). |
 | "Spin up parallel agents to build/render faster" | Builds share the cargo target and race. Only READ-ONLY research parallelizes; builds/renders/tests/fixes/freezes stay sequential in the main agent. |
 | "Freeze it to pass / fully-auto so auto-freeze / it surely drifts so re-freeze" | Freezing is ALWAYS gated, both modes — STOP: read references/freeze.md (dry-freeze no-op check first). |
 | "Large blast radius / undecoded this arc — defer it" | Size/risk/"undecoded" is not a blocker — STOP: read references/blockers.md. Defer only on an exhausted-search PROVEN blocker (evidence file validated by ui_blocker_evidence.py). |

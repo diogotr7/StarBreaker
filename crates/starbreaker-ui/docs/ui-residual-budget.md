@@ -96,6 +96,7 @@ class from its opposite-cause twin.
 | # | Candidate | Status (owner 2026-07-08) |
 |---|---|---|
 | U1 | **Radar disc spoke prominence** — the spokes read softened. The disc is the REAL engine texture (`r_radarmapscreen_radial_gradients.dds`); the spokes are soft **in that source `.dds`**, so this is either capture-faithful (we render the softened source truthfully) or a renderer over-softening bug. | **pending-investigation** — the next radar arc measures the source `.dds` vs the render and classifies it properly. Until then it is neither accepted nor a defect. |
+| U2 | **Radar readout kerning (#12)** — the bottom heading/range readout (`Text_Radar*` WidgetTextFields, Electrolize SWF font) reads too tightly spaced. No authored LetterSpacing exists on the field, so the spacing is the SWF font's intrinsic advance: either the capture is faithful to a runtime text-format we don't decode, or our SWF text-metrics model under-advances this font. Same class as the power screen's P8 letter pitch. | **pending-investigation** (folded from the removed radar handoff, 2026-10). Needs a global SWF text-metrics check, not a per-screen spacing constant. Radar dossier row (ui-reference §3). |
 
 ## The retired interim class
 

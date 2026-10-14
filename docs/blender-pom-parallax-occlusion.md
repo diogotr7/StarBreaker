@@ -7,13 +7,15 @@ pipeline is subtle and several "obvious" levers are the wrong ones.
 
 ## Source of truth
 
-The whole POM system is a port of the **old StarFab `scorg_tools` addon**, kept
-in this repo at:
+The whole POM system is a port of the **old StarFab `scorg_tools` addon**. It
+is not vendored in this repo; the upstream source is
+[scorg-tools/Blender-Tools](https://github.com/scorg-tools/Blender-Tools)
+(clone it locally to diff against):
 
-- `reference/Blender-Tools/scorg_tools/pom.blend` — the authored node groups
+- `scorg_tools/pom.blend` — the authored node groups
   (`POM_Vector`, `POM_10x_Layer_Steps`, `POM_parallax`, `POM_disp`,
   `tangent_space`) and a working `scorg_pom` material.
-- `reference/Blender-Tools/scorg_tools/blender_utils.py` — `replace_pom_materials`
+- `scorg_tools/blender_utils.py` — `replace_pom_materials`
   (copies `scorg_pom`, swaps textures) and `find_and_set_displacement_image`
   (sets the height image **and** the `POM_Vector` `Bias` from the height map's
   top-left pixel, or the material's `HeightBias` property).

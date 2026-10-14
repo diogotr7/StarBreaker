@@ -36,8 +36,8 @@ every scene instance / object references one by **`palette_id`**.
 
 - **Colour ROLE slots are not positional 1:1** — `BB_ColorStyle` role indices
   diverge (Bright=6 grey ≠ Base=0). When a role looks wrong, confirm the slot
-  index against the enum, don't assume order. See memory
-  [[bb-colorstyle-enum-slot-mapping]].
+  index against the enum, don't assume order (resolve a role by its enum
+  index, never by position — ledger item 3).
 - The **decal stencil is part of the palette identity** — a wrong logo (the
   Gemini incident) means the wrong *palette*, not a separate decal bug.
 
@@ -100,11 +100,17 @@ whole imported scene.
 
 ## §6 Verification commands
 
+The parse step of §5 (steps 1 and 5) is `scripts/tint_audit.py`: it reads
+every package's `palettes.json` + `scene.json` and reports per-palette object
+counts, unresolvable `palette_id`s, the ALL_SAME signature (ledger item 1), and
+NO_OVERRIDE ids (ledger item 2). Exit status 1 means unresolvable ids or an
+ALL_SAME signal.
+
 ```bash
 # Parse exported palettes + per-object palette_id (Mode B sanity)
-uv run python -c "import json; d=json.load(open('<pkg>/palettes.json')); print(len(d['palettes']))"
-# Re-export (socpak example)
-SC_DATA_P4K=<Data.p4k> ./target/debug/starbreaker socpak export <name> <root> --kind decomposed --lod 0 --mip 0
+uv run python scripts/tint_audit.py <export_root_or_package_dir>
+# Re-export (socpak example; Data.p4k is auto-detected)
+./target/debug/starbreaker socpak export <name> <root> --kind decomposed --lod 0 --mip 0
 # DataCore: find the tint palette tree / records
 #   MCP: search_records("tint")  / datacore_record(<guid|name>)
 ```

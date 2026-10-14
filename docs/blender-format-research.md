@@ -624,13 +624,13 @@ Library blocks represent references to external .blend files. This is essential 
 
 **Location**: `DNA_ID.h:210 - struct Library`
 
-**Total Serialized Size**: **1426 bytes** (408 ID + 1024 filepath + 2 flag + 2 undo_tag + 4 pad + 24 pointers)
+**Total Serialized Size**: **1472 bytes** (408 ID + 1024 filepath + 2 flag + 2 undo_tag + 4 pad + 24 pointers + 8 pad; see the serialization order below)
 
 | Field | Offset | Size | Type | Description |
 |-------|--------|------|------|-------------|
 | `id` | 0 | 408 | `ID` | Base ID struct (name, flags, tags, etc.) |
 | `filepath` | 408 | 1024 | `char[1024]` | Path to external .blend file (UTF-8, null-terminated) |
-| `flag` | 1432 | 4 | `int32` | Library flags (mostly unused in 5.1) |
+| `flag` | 1432 | 2 | `uint16_t` | Library flags (mostly unused in 5.1) |
 
 ### Filepath Encoding
 
@@ -646,7 +646,7 @@ Library blocks represent references to external .blend files. This is essential 
 |-------|-------|
 | `code` | `ID_LI` |
 | `sdna_idx` | Points to Library struct SDNA index |
-| `len` | 1426 (serialized Library struct size) |
+| `len` | 1472 (serialized Library struct size) |
 | `count` | 1 (one struct per block) |
 
 ### Multiple Library Blocks
@@ -659,7 +659,7 @@ Library blocks represent references to external .blend files. This is essential 
 
 1. Create `BHead` with:
    - `code = ID_LI`
-   - `len = 1426`
+   - `len = 1472`
    - `sdna_idx = <SDNA index of Library struct>`
 2. Serialize Library struct:
    - Set `id.name` to unique identifier
@@ -859,7 +859,7 @@ Library blocks are written with exact field ordering by `library_blend_write_dat
 2. **Scan for ID_LI blocks** — Find all Library references
 3. **READ LIBRARY BLOCKS FIRST** (mandatory):
    - For each Library BHead:
-   - Deserialize 1426-byte Library struct
+   - Deserialize 1472-byte Library struct
    - Call `direct_link_library()`:
      - Compute absolute paths via `BLI_path_abs()`
      - Create new Main context for library

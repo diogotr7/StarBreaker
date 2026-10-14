@@ -22,8 +22,13 @@ whenever `reference/in-game/` holds only ONE ship folder, a naive "one option pe
 folder" call is invalid — PAD to ≥2. Never skip the question to dodge this.
 
 1. **SHIP** — list the *folders* (not files — `ASOP.png` is a stray, skip it)
-   under `~/projects/scorg_tools/reference/in-game/` (each folder = one ship's
-   reference set, e.g. `Clipper` = Drake Clipper) as the options; pad to ≥2. Ask
+   under the reference root (each folder = one ship's reference set, e.g.
+   `Clipper` = Drake Clipper) as the options; pad to ≥2. The UI scripts hard-code
+   the root as `$HOME/projects/scorg_tools/reference/in-game/` (`REF_ROOT` in
+   `scripts/ui_dossier_lookup.sh` / `ui_arc_status.sh`) — the old Linux workspace
+   layout. On a machine without that path (e.g. the owner's Windows box), ask the
+   owner where `reference/in-game/` lives rather than guessing; making the scripts
+   take the root as a parameter is a separate code task. Ask
    **even when only one folder exists** — a single populated folder is NOT a licence
    to auto-select, no matter what the session was previously working on. Resolves to
    `reference/in-game/<folder>/`.
@@ -55,7 +60,8 @@ folder" call is invalid — PAD to ≥2. Never skip the question to dodge this.
      → recommend **fully-automated**; first-of-a-kind (new manufacturer, new widget
      family, or no dossier row) → recommend **semi-automated** (owner direction
      2026-07: auto arcs for KNOWN ships, hands-on for first-of-a-kind). Compute it
-     from the dossier (`SCREEN` = the chosen stem):
+     from the dossier (`SCREEN` = the chosen stem; run from the repo root with
+     `uv run --no-project python`, never bare `python3`):
 
      ```python
      import json

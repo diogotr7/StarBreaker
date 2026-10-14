@@ -1,5 +1,8 @@
 # Blender Import / Export Performance Analysis
 
+**Status:** Phase 2 (direct-first path resolution) is done;
+Phases 3-6 are open.
+
 ## Context
 
 The current branch implements a native `.blend` socpak export path on top
@@ -108,35 +111,24 @@ editable materials are still built or validated at open/import time.
 
 ### 1. Export Root Path Indexing
 
-`PackageBundle.resolve_path()` currently builds the recursive export-root
-path index before trying direct candidate paths.
+**Resolved (Phase 2).** `PackageBundle.resolve_path()` used to build the
+recursive export-root path index (`export_root.rglob("*")`) before trying
+direct candidate paths, so on a shared export root like `ships/` it could scan
+every exported file before resolving the first sidecar or texture.
 
 File:
 
 - `blender_addon/starbreaker_addon/manifest.py`
 
-Current shape:
-
-1. build or fetch `_path_index` with `export_root.rglob("*")`;
-2. check direct path;
-3. check indexed fallback.
-
-On a shared export root like `ships/`, this can scan every exported file
-before resolving the first sidecar or texture. Most StarBreaker manifests
-already contain normalized paths that should work via direct lookup.
-
-This should be changed to direct-first resolution:
+It now resolves direct-first:
 
 1. normalize candidates;
 2. try `export_root / candidate` directly;
-3. build the recursive fallback index only if direct lookup fails.
+3. build the recursive fallback index (`_build_path_index`, cached on the
+   bundle) only when a direct lookup fails.
 
-Potential extension: make the path index global per export-root mtime or
-root path, so multiple packages do not rebuild it.
-
-Expected impact: high on first open for large shared export roots.
-
-Risk: low.
+Still open: making the path index global per export-root mtime or root path,
+so multiple packages do not rebuild it.
 
 ### 2. Full Material Cooking on File Open
 
@@ -311,12 +303,10 @@ Add timing around:
 Goal: get a per-import timing table for a small ship, medium ship, and a
 large slow package.
 
-### Phase 2: Direct-First Path Resolution
+### Phase 2: Direct-First Path Resolution (done)
 
-Change `PackageBundle.resolve_path()` so the recursive export-root index is
-only built after direct candidate paths fail.
-
-This is the lowest-risk likely win.
+`PackageBundle.resolve_path()` builds the recursive export-root index only
+after direct candidate paths fail.
 
 ### Phase 3: Fast-Open Native Scene Mode
 

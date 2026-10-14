@@ -393,7 +393,7 @@ def _light_energy_to_blender(
     for the engine's much brighter in-game response so dim interior fixtures
     still illuminate correctly. Sun retains the legacy lux→W/m^2 ratio.
 
-    See ``docs/StarBreaker/lights-research.md``.
+    See ``docs/star-citizen-lighting-research.md``.
     """
     intensity_candela_proxy = max(float(intensity_candela_proxy), 0.0)
     semantic = str(semantic_light_kind or "").strip().lower()

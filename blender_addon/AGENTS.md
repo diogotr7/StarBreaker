@@ -12,8 +12,8 @@ Blender API pitfall — **document the fix here before committing**. Keep
 entries short and factual. This file must stay concise to limit token use;
 prefer a one-liner or a compact code block over prose.
 
-- Headless validation (`blender -b --factory-startup --python x.py`): the import
-  operator is modal (timer) and never runs. `sys.path.insert(0, blender_addon)`,
+- Headless validation (`blender -b --factory-startup --python x.py`): the load-post
+  material refresh is timer-driven and never runs. `sys.path.insert(0, blender_addon)`,
   `bpy.ops.wm.open_mainfile(<package>/scene.blend)`, *then* `starbreaker_addon.register()`
   (opening a file drops it), then `package_ops.refresh_materials_for_package_root`.
 - Run the stub suite with `PYTHONUTF8=1` on Windows (fixtures are UTF-8).
@@ -29,10 +29,14 @@ prefer a one-liner or a compact code block over prose.
   Cycles is the priority renderer; EEVEE parity should be considered
   where it's cheap, but do not compromise Cycles output for it.
 - Python 3.13 (bundled with Blender 5.1).
-- The addon loads as an extension under
-  `~/.config/blender/5.1/scripts/addons/starbreaker_addon/` on Linux.
+- The addon is a legacy `bl_info` addon (not a Blender extension — there
+  is no `blender_manifest.toml`). It installs into the user addons folder:
+  - Windows: `%APPDATA%\Blender Foundation\Blender\5.1\scripts\addons\starbreaker_addon\`
+  - Linux: `~/.config/blender/5.1/scripts/addons/starbreaker_addon/`
+  - macOS: `~/Library/Application Support/Blender/5.1/scripts/addons/starbreaker_addon/`
+
   Point-version bumps (5.2, 5.3, …) change the path; update the deploy
-  command below if the user moves to a newer Blender.
+  commands below if the user moves to a newer Blender.
 
 ## Repository Layout
 
@@ -44,17 +48,20 @@ blender_addon/
 │   ├── material_contract.py    # shader family / slot reconstruction
 │   ├── templates.py            # reusable node-group templates
 │   ├── palette.py              # palette / livery record handling
+│   ├── shader_inventory.py     # CLI: shader-family usage summary of an export root
 │   ├── ui.py                   # N-panel + operators
 │   └── runtime/
 │       ├── constants.py        # tuning knobs (light gain, cd→W, …)
 │       ├── package_ops.py      # apply_paint / apply_palette / apply_light_state
+│       ├── animation_tools.py  # MCP-friendly animation wrappers
 │       ├── node_utils.py       # shared node-graph helpers
 │       ├── palette_utils.py
 │       ├── record_utils.py
+│       ├── skin_utils.py / hair_utils.py   # bpy-free character material params
 │       ├── validators.py
 │       └── importer/           # package import pipeline (mixins)
 ├── tests/                      # unittest suite (stubs bpy)
-└── scripts/
+└── scripts/                    # material-template library tooling
 ```
 
 ### PackageImporter composition (runtime/importer/)
@@ -76,8 +83,9 @@ as its own mixin rather than bloating orchestration.
 
 ## Coding Practices
 
-See the project-wide `Coding Practices` section in
-[../AGENTS.md](../AGENTS.md). Addon-specific reinforcements:
+See the project-wide `Coding Practices` and `Troubleshooting` sections in
+[../AGENTS.md](../AGENTS.md) (root cause, no hard-coding, ask how Star
+Engine handles it). Addon-specific reinforcements:
 
 - **Keep module files small.** The addon already splits imports into
   mixins and runtime helpers; when a file passes ~500 lines, extract
@@ -92,44 +100,52 @@ See the project-wide `Coding Practices` section in
   floors, custom-property names) live there. Never hard-code a
   magic number inside a mixin.
 - **Never leave the scene dirty for the next test.** If an operator
-  mutates `bpy.data` in a way that another test might observe,
-  unwind it or use `bpy.ops.wm.read_homefile(app_template="")`
-  between fixtures.
+  mutates `bpy.data` in a way that another test might observe, unwind
+  it or reset between fixtures (see "Reset the scene" below).
 
-## Deploy (rsync)
+## Deploy
 
 The installed copy must stay in lockstep with the source tree or the
-MCP bridge will execute stale code. After every change:
-
-- **Always sync the live Blender install before asking the user to test.**
-  Repo-only edits are not enough; Blender will keep running the installed
-  copy until the add-on directory below is updated.
+MCP bridge will execute stale code. **Always sync the live Blender
+install before asking the user to test** — Blender keeps running the
+installed copy until its addon directory is updated. From the repo root:
 
 ```bash
-rsync -a --delete StarBreaker/blender_addon/starbreaker_addon/ \
-  ~/.config/blender/5.1/scripts/addons/starbreaker_addon/
+# Linux
+rsync -a --delete blender_addon/starbreaker_addon/ \
+  "$HOME/.config/blender/5.1/scripts/addons/starbreaker_addon/"
 ```
 
-`--delete` is important: it removes stray stale `.py` files (deleted
-modules, renamed files) that would otherwise shadow the new code.
+```powershell
+# Windows
+robocopy blender_addon\starbreaker_addon "$env:APPDATA\Blender Foundation\Blender\5.1\scripts\addons\starbreaker_addon" /MIR
+```
 
-After `rsync`, force-reload the addon in Blender before validating
-behavior. Even with synced files, Python module caching can keep stale
-function objects alive until the reload sequence in
-"Reload the addon after deploy" is run.
+Mirroring (`--delete` / `/MIR`) is important: it removes stray stale
+`.py` files (deleted modules, renamed files) that would otherwise
+shadow the new code.
+
+After syncing, force-reload the addon in Blender before validating
+behaviour (see "Reload the addon after deploy"); Python module caching
+keeps stale function objects alive otherwise.
 
 ## Running the Tests
 
 The suite stubs `bpy` so it runs on system Python, not inside Blender:
 
 ```bash
-cd StarBreaker/blender_addon
+cd blender_addon
 python3 -m unittest discover -s tests -q
 ```
 
 The suite must pass with **zero failures** after every change; the
 skips are bpy-only tests that require a real `bpy` and run only under
-Blender — do not try to make them pass headless.
+Blender — do not try to make them pass headless. Three tests
+(`test_layer_manifest_preserves_texture_slots`,
+`test_representative_textures_pick_exportable_maps`,
+`test_smoothness_texture_reference_falls_back_to_layer_texture_slots`)
+read `component_master_01_TEX0.materials.json` from a decomposed export at
+`../../ships/Data` and error when that export is absent.
 
 **TDD rule:** When a bug is found, write a failing test that reproduces
 it *before* changing any code. Verify the test fails. Then fix the code.
@@ -138,21 +154,17 @@ Verify the test passes. Pure-Python tests (no `bpy` calls) live in
 are decorated with `@unittest.skipUnless(HAVE_BPY, "requires bpy")`.
 Do not mark a test as skip-unless-bpy if it can be tested with stubs.
 
-**Troubleshooting mindset:** Fix the root cause, not the symptom.
-No hard-coding around specific asset names, material paths, or magic
-numbers. When the correct behaviour is ambiguous (channel ordering,
-material slot mapping, UV transform), ask: *how does Star Engine
-handle this?* (Star Engine is CIG's fork of CryEngine / Lumberyard.)
-The answer is usually derivable from the `.mtl`, `.chrparams`, or
-shader data in `Data.p4k` — match that logic rather than inventing
-a heuristic.
-
 ## Driving Blender from an Agent (MCP)
 
-The `mcp_blendermcp_execute_blender_code` tool runs Python inside a
+The Blender MCP's `execute_blender_code` tool runs Python inside a
 connected Blender instance. A few rules that have burned us:
 
-### ALWAYS reset the scene this way
+### Reset the scene
+
+Always reset between experiments in a live session — even if the scene
+looks empty.
+Leftover `SB_*` / `POM_*` / `StarBreaker*` node groups and `__host_*`
+materials silently poison the new import.
 
 ```python
 import bpy
@@ -186,56 +198,33 @@ bpy.ops.preferences.addon_enable(module="starbreaker_addon")
 Without the `sys.modules` purge, `importlib.reload` is not enough —
 sub-modules keep serving stale code.
 
-### Purge orphaned data between imports
+### Export and open a ship
 
-Always reset the scene before importing a ship — even if it looks
-empty. Leftover `SB_*` / `POM_*` / `StarBreaker*` node groups and
-`__host_*` materials silently poison the new import. Reset with
-`read_homefile(app_template="")` (see "ALWAYS reset the scene this way"
-above) — never with by-hand cleanup loops.
-
-### Import a ship
-
-```python
-bpy.ops.starbreaker.import_decomposed_package(
-    filepath="<path to a decomposed scene.json>",
-)
-```
-
-Decomposed exports put the ship `scene.json` under a
-`<output>/Packages/<name>/scene.json` layout. The CLI's `<output>`
-argument is the **shared export root** (the parent that holds
-`Packages/` and the deduplicated `Data/` tree), **not** the package
-folder itself.
-
-Canonical target for this workspace: pass `ships` as the output so
-Aurora lands at `ships/Packages/RSI Aurora Mk2/scene.json` and all
-shared meshes/textures/materials land in `ships/Data/...` for reuse
-across ships. Do **not** pass `ships/Packages/RSI Aurora Mk2` — that
-produces a double-nested `ships/Packages/RSI Aurora Mk2/Packages/RSI
-Aurora Mk2/scene.json`.
+Export with the wrapper from the root [AGENTS.md](../AGENTS.md#cli-re-export)
+(decomposed, `--lod 0 --mip 0 --materials all` by default; `Data.p4k`
+is auto-detected — do not set `SC_DATA_P4K`):
 
 ```bash
-SC_DATA_P4K="…/Data.p4k" \
-  StarBreaker/target/release/starbreaker entity export "aurora_mk2" \
-  "ships" --kind decomposed --lod 0 --mip 0 --materials all
+scripts/export_ship.sh aurora_mk2 ships
 ```
 
-Point the Blender import operator at the resulting `scene.json`, not
-the outer folder.
+The output argument is the **shared export root** (the parent that
+holds `Packages/` and the deduplicated `Data/` tree), **not** the
+package folder. The package folder is named `<entity>_LOD<n>_TEX<n>`,
+so Aurora lands at `ships/Packages/RSI Aurora Mk2_LOD0_TEX0/scene.json`
+and shared meshes/textures/materials land in `ships/Data/...` for reuse
+across ships. Passing a package folder as the root produces a
+double-nested `Packages/.../Packages/...` layout.
 
-**P4K path auto-detection.** The CLI auto-detects `Data.p4k` from
-standard Star Citizen install paths. You do **not** need `SC_DATA_P4K`
-unless you want a non-default install (e.g. PTU instead of LIVE). Omit
-the env-var for routine work.
+The exporter also assembles `scene.blend` next to `scene.json`. There is
+no import operator: open that file (`bpy.ops.wm.open_mainfile`), and with
+the addon enabled its load-post handler rebuilds the package materials
+(preference "Refresh unloaded materials after file load", on by default;
+the N-panel's **Refresh Materials** does the same on demand).
 
-**Default test target: LOD 0, TEX0.** Always use `--lod 0` and the
-`<entity>_LOD0_TEX0` package for validation. Do not target TEX2
-packages; TEX0 is the canonical test baseline.
-
-**Fresh import — always reset the scene first** with
-`read_homefile(app_template="")`; see "ALWAYS reset the scene this way"
-above for the full rationale.
+**Default test target: LOD 0, TEX0.** Validate against the
+`<entity>_LOD0_TEX0` package; TEX0 is the canonical test baseline, not
+TEX2.
 
 ### MCP animation tools
 
@@ -286,7 +275,7 @@ apply_animation_mode_to_package_root(bpy.context, obj, "fragment:4:canopy_close"
 big. Keep probes targeted; filter with list comprehensions before
 printing.
 
-## Light Pipeline (current, post-Phase 28)
+## Light Pipeline
 
 - Exporter emits `color`, `intensity` (cd), `temperature` (K),
   `use_temperature`, `radius`, `inner_angle`, `outer_angle`,
@@ -294,9 +283,11 @@ printing.
 - Addon stashes the full state map as JSON on the `bpy.types.Light`
   datablock: `starbreaker_light_states`,
   `starbreaker_light_active_state`.
-- Energy conversion (runtime/constants.py):
-  - Point / Spot / Area: `energy_W = intensity_cd * (4π/683) * LIGHT_VISUAL_GAIN`
-    with `LIGHT_VISUAL_GAIN = 20.0`.
+- Energy conversion (`runtime/importer/utils.py`, constants in
+  `runtime/constants.py`):
+  - Point / Spot: `energy_W = intensity_cd * (4π/683) * LIGHT_VISUAL_GAIN`
+    with `LIGHT_VISUAL_GAIN = 20.0` (ambient proxies skip the gain).
+  - Area: `energy_W = lumens / LUMENS_PER_WATT_WHITE`.
   - Sun: `energy_W_per_m2 = intensity / 683`.
   - Tune `LIGHT_VISUAL_GAIN` in `constants.py` if scenes are dim/bright.
 - Runtime state switcher: `STARBREAKER_OT_switch_light_state` (N-panel
@@ -304,25 +295,25 @@ printing.
   reapplies colour, temperature, and energy per light from the
   chosen state. Lights that lack that state keep their current values.
 
-See the workspace-root `AGENTS.md` for the full light-schema notes and
-per-phase history (stored outside this repo).
+The light schema is in `../docs/decomposed-export-contract.md` (Light
+Records); engine research is in `../docs/star-citizen-lighting-research.md`.
 
 ## Material Pipeline Notes
 
 - **Glass** is rendered double-sided and uses a Light Path trick to
-  stay visible through stacked interior+exterior panes (Phase 20, 26).
+  stay visible through stacked interior+exterior panes.
 - **POM decals** gate host-material tinting: decals with POM height
-  inherit the host palette; flat MeshDecals do not (Phases 10, 11, 16).
+  inherit the host palette; flat MeshDecals do not.
 - **Shimmerscale paint** green channel is documented as engine-authored
-  teal (Phase 12). Primary channel handling uses palette tint as the
-  dominant colour (Phase 13).
+  teal. Primary channel handling uses palette tint as the dominant colour.
 - **Interior palette** routes through the exterior palette for
   specific ship parts (chairs) that DataCore marks as interior-paint
-  targets (Phases 14, 21).
+  targets.
 - POM node groups collapse to a small fixed set instead of one per
-  texture (Phase 17).
-- **POM (parallax-occlusion) relief** is a port of the old StarFab
-  `scorg_tools` addon (`reference/Blender-Tools/scorg_tools/`). Before
+  texture.
+- **POM (parallax-occlusion) relief** is a port of the upstream
+  [scorg-tools/Blender-Tools](https://github.com/scorg-tools/Blender-Tools)
+  addon (not vendored in this repo). Before
   touching it read `../docs/blender-pom-parallax-occlusion.md` — it
   documents the `POM_Vector` chain, the `Scale`/`Bias`/`Layers`
   parameters, and the failure modes that cost real time. The non-obvious
@@ -339,19 +330,11 @@ per-phase history (stored outside this repo).
   stills.
 - Imported meshes without authored normals get a **Weld** + **Weighted
   Normal modifier** (Face Area, Weight=50, Threshold=0.01) to smooth
-  shading across flat faces (Phase 19). Meshes with authored normals carry
+  shading across flat faces. Meshes with authored normals carry
   them as the `custom_normal` corner attribute instead and get neither
   (both would override or misdecode them).
 
 See `../docs/blender-material-contract-naming-rules.md` for the
-in-repo material contract and `../docs/blender-pom-parallax-occlusion.md`
-for the POM runbook. Higher-level material research lives in the
-workspace-root `AGENTS.md`.
-
-## Phased Plan
-
-The live plan lives in the workspace (outside this repo) — see the
-workspace-root `AGENTS.md` for the path. Each phase has Context /
-Acceptance / Steps sections and is marked `✅` when landed with a
-commit hash. When starting a new phase, re-read the most recent
-completed phase for conventions, then update the todo file as you go.
+in-repo material contract, `../docs/blender-material-template-authoring.md`
+for node templates, and `../docs/blender-pom-parallax-occlusion.md`
+for the POM runbook.

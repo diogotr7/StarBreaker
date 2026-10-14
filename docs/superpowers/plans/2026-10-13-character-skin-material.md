@@ -27,17 +27,17 @@ glTF-native materials are out of scope for now (user decision 2026-10-13).
 
 ## Phases (sequential; each ends green + committed)
 
-1. ✅ (`b38e631b`) **Customization resolve (Rust, `character::customization`)** — CHF
+1. ✅ (PR #39) **Customization resolve (Rust, `character::customization`)** — CHF
    materials → resolved `.mtl` / texture paths via the lookup table, plus
    named params/colours. Tests: default CHFs resolve the head `.mtl`
    (`male17_t1_head_material.mtl` for masculinedefault) and blemish textures.
-2. ✅ (`aa79b8bf`, `7a3473e3`) **Character package export (Rust, `character::package`)** — build a
+2. ✅ (PR #39) **Character package export (Rust, `character::package`)** — build a
    `DecomposedInput` from the DNA-shaped head (+ eyes/teeth/eyedetails, CHF
    items) with their `.mtl`s, write through `write_decomposed_export_blend`;
    add `character` metadata (resolved CHF overrides, wrinkle weights) to the
    root scene instance. Tests: package files exist, sidecar for the head is
    HumanSkin_V2 with TexSlot1/2/3/4/6/7/8/11/12 exported.
-3. ✅ (`40fcb3b3`) **Addon HumanSkin_V2 builder** (`runtime/importer/skin.py` mixin) —
+3. ✅ (PR #39) **Addon HumanSkin_V2 builder** (`runtime/importer/skin.py` mixin) —
    dispatched for `shader_family == "HumanSkin_V2"`; implements the ground
    truth above with CHF overrides from the instance metadata. Tests: bpy-stub
    dispatch test + socket probe; a live-Blender render check.

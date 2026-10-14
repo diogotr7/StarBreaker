@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This note records the current slot evidence for every shader family found in `StarBreaker/docs/blender-shader-family-inventory.json`.
+This note records the current slot evidence for every shader family found in `docs/blender-shader-family-inventory.json`.
 
 The goal is to keep future node-group socket naming tied to verified `.mtl` usage plus exported sidecar role labels, instead of inferring semantics from the current fallback graph alone.
 

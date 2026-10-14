@@ -37,7 +37,8 @@ behaviour by category:
   time; never presume the target or that "now" is a fine time to load the CPU.
 - **Technical judgments → MEASURE.** Where the time goes, whether a stage is
   CPU- or memory-bound, whether a change helped: prove it with the `[timing]`
-  breakdown, `/usr/bin/time -v`, and a re-profile — never estimate-then-assume.
+  breakdown, a wall/CPU%/max-RSS measurement (`/usr/bin/time -v` on Linux; see
+  Platform note), and a re-profile — never estimate-then-assume.
   Apples-to-apples means the SAME machine, back-to-back, multiple runs; a number
   from a prior session or a doc is a hint, not a baseline.
 - **The work itself → USE THE SUB-SKILLS.** Planning and implementation are
@@ -51,6 +52,17 @@ behaviour by category:
 
 Asking and measuring are always safe; presuming and reusing a stale timing are the
 failure mode.
+
+## Platform note
+
+The owner develops on **Windows** (Git Bash / PowerShell). Several tools this skill
+names are **Linux-only**: `/usr/bin/time -v`, `/proc/...`, `nproc`, GNU `stat -c`,
+`perf`, `ptrace_scope`, `LD_PRELOAD`, and a tmpfs `/tmp`. `scripts/perf_bench.sh`
+and `scripts/perf_provenance.sh` depend on them and **currently need Linux** (WSL or
+a Linux box); porting them is a separate code task. On Windows, hashed release
+binaries are `target/release/deps/starbreaker-<hash>.exe`. Where a step below has no
+Windows equivalent yet, say so in the pass notes rather than skipping the
+measurement silently.
 
 ## Required reads (before any change)
 
@@ -69,8 +81,9 @@ those first.
 
 ## The optimisation loop
 
-**Track the pass with TodoWrite from the start — include the mandatory closing
-retrospective (below) as a todo so it is never dropped.** One pass = pick a
+**Track the pass with the task list (TodoWrite where available) from the start —
+include the mandatory closing retrospective (below) as an item so it is never
+dropped.** One pass = pick a
 workload, baseline it, optimise one-or-more chosen items, re-baseline, retro, then
 ask whether to repeat.
 
@@ -93,27 +106,29 @@ not a scattered `eprintln`. Instrumentation must not change output.
 
 Ask the user via `AskUserQuestion` whether now is a good time to run benchmarks
 (quiet machine). Then capture the baseline with the scripted battery (3 runs,
-load preflight, provenance check, per-run + median table of wall/CPU%/RSS/`[timing]`):
+load preflight, provenance check, per-run + median table of wall/CPU%/RSS/`[timing]`;
+**Linux-only for now** — see Platform note):
 
 ```bash
 scripts/build-release-cli.sh                       # release only for perf/deploy
-bash scripts/perf_bench.sh "<entity>" base         # --runs N to override
+bash scripts/perf_bench.sh "<entity>" base         # --runs N to override (Linux)
 ```
 
 The byte-identity oracle and the twice-run determinism check are
 `bash scripts/perf_oracle.sh <baseline_dir> <new_dir> [--determinism <entity>]`;
 cross-commit A/B timing is `bash scripts/perf_bisect.sh <sha> <entity> <label>`
 (builds at the sha, benches, always restores HEAD). Keep one baseline export dir
-for the oracle. Record the numbers in the TodoWrite/scratch so later deltas
-compare against a written baseline, not a memory.
+for the oracle. Record the numbers in the task list / scratchpad so later deltas
+compare against a written baseline, not a recollection.
 
 ### 3. Analyse
 
 Read the stage breakdown. Find the DOMINANT stage(s) — optimise the biggest
 contributor, not the most interesting one. A 9s stage that parallelises to 8s is a
 worse target than a 30s stage with an O(n²) inside it. Note what each stage's cost
-actually IS (decode? JSON build? mesh clone? file inserts?) — the memory says the
-labels (e.g. "this stage = JSON build, NOT texture decode").
+actually IS (decode? JSON build? mesh clone? file inserts?) — the ledger's
+`AEGS_Idris_P` workload section records what the labels mean (e.g. the interior
+stage = sidecar JSON build + inserts, NOT texture decode; Dead-ends item 2).
 
 ### 4. Research candidates (fan read-only work to subagents)
 
@@ -129,8 +144,10 @@ For each candidate bottleneck, research WHY it is slow and what bounds a fix:
   byte-identity (path canonicalisation first-seen casing, collision naming order,
   a closure side-effect that another stage consumes).
 
-Use `graphify` (`graphify query`/`explain`, `/graphify`) to find the owning code
-relationship-aware, not blind grep. Delegate independent read-only research to
+If graphify is installed (`graphify-out/graph.json` exists), use it
+(`graphify query`/`explain`, `/graphify`) to find the owning code
+relationship-aware; it is optional — otherwise use Grep/Read on the crate's `//!`
+headers. Delegate independent read-only research to
 subagents (one per candidate); **never delegate builds/benchmarks** — they share
 the cargo target and race, and benchmarks must be serial on a quiet machine.
 
@@ -145,7 +162,9 @@ recommended option first. The user picks one or more to pursue this pass.
 
 For the chosen item(s), **use `superpowers:writing-plans`** to write the plan to
 `docs/superpowers/plans/<date>-<topic>.md`, then review it (re-read against the
-research; sanity-check the expected gain and the byte-identity story). Decompose
+research; sanity-check the expected gain and the byte-identity story). Once the
+plan's work lands, its result goes in the ledger and the plan is deleted (carry any
+still-open task into the ledger as an open item). Decompose
 into the smallest independently-profilable changes.
 
 ### 7. Implement → re-profile → keep-or-revert (per change)
@@ -190,8 +209,8 @@ Via `AskUserQuestion`, ask whether to run another pass against the NEW baseline
 
 1. **Read the `[timing]` markers, not wall time alone.** Wall time hides which
    stage moved and is corrupted by machine contention. The stage breakdown + CPU% +
-   max RSS are the real signal. `/usr/bin/time -v` gives wall, CPU%, and Maximum
-   resident set size.
+   max RSS are the real signal. On Linux, `/usr/bin/time -v` gives wall, CPU%, and
+   Maximum resident set size.
 2. **Profile parallelism efficiency on a slice BEFORE building a full parallel
    path.** If a `par_iter` over the real work gives ~1× speedup and CPU stays well
    below `cores × 100%`, the work is memory-bandwidth-bound and threads won't help —
@@ -206,25 +225,27 @@ Via `AskUserQuestion`, ask whether to run another pass against the NEW baseline
    correctness runs with it, but do TIMING runs without it.
 5. **Determinism is part of correctness.** Parallelism + shared maps + completion
    order can make output vary run-to-run. Run the workload twice and diff.
-6. **The allocator is rarely the answer.** jemalloc via `LD_PRELOAD` was measured
+6. **The allocator is rarely the answer.** jemalloc via `LD_PRELOAD` (Linux) was measured
    SLOWER here — the pipeline is not allocator-bound. Don't reach for it.
 7. **Validate the baseline's PROVENANCE — GATE.** A "fast prior run" may be a
    STALE BINARY from before the change under test (the 42s-baseline incident) or
    the very SAME binary timed twice (a 0.21s no-op "build"). Before ANY
    before/after timing claim, run `scripts/perf_provenance.sh <binary>` on BOTH
    endpoints and include both outputs; a matching sha256, or an mtime/HEAD that
-   predates the change, INVALIDATES the comparison. Old hashed executables under
-   `target/release/deps/starbreaker-<hash>` are a free no-rebuild bisect ladder.
+   predates the change, INVALIDATES the comparison (the script uses GNU `stat -c`
+   — Linux-only for now). Old hashed executables under
+   `target/release/deps/starbreaker-<hash>` (`.exe` on Windows) are a free
+   no-rebuild bisect ladder.
 8. **A silent probe means the WRONG LAYER, not "no cost".** Instrument the
    phase boundary first (per-item heartbeats), then descend — the DDNA
    regression bypassed `cached_load_keyed`, so a `[tex-miss]` probe there
    stayed silent through a 280s phase.
-9. **Profilers may be locked down** (`ptrace_scope`, `perf_event_paranoid=4`):
-   `/proc/<pid>/task/*/stat` run-state counts (1 R + N S = a serial
-   main-thread phase) distinguish serial vs parallel phases for free.
-10. **Budget /tmp (tmpfs) for bench outputs** — multi-GB export dirs fill it;
-    a later run then dies mid-write ("Disk quota exceeded") and poisons the
-    comparison. Clean bench dirs between runs.
+9. **Profilers may be locked down** (Linux: `ptrace_scope`,
+   `perf_event_paranoid=4`): `/proc/<pid>/task/*/stat` run-state counts (1 R + N S
+   = a serial main-thread phase) distinguish serial vs parallel phases for free.
+10. **Budget scratch disk for bench outputs** — multi-GB export dirs fill a tmpfs
+    `/tmp` (Linux) or a small temp volume; a later run then dies mid-write ("Disk
+    quota exceeded") and poisons the comparison. Clean bench dirs between runs.
 
 ## Strict rules
 
@@ -236,10 +257,12 @@ Via `AskUserQuestion`, ask whether to run another pass against the NEW baseline
   optimisation that special-cases one asset is banned, even in a fast path.
 - **Revert no-gain and worsening changes immediately;** record what was falsified.
   Don't add a cache, a parallel pass, or an index that the profile doesn't reward.
-- **Don't commit or push unless the user asks.** Commit per coherent landed win;
-  message follows repo convention (NO `Co-authored-by` trailer, no maintainer name —
-  AGENTS.md). Branch first if on the default branch.
-- **3000-line / small-file discipline; update `//!` headers** when a file's
+- **Don't commit or push unless the user asks.** Commit per coherent landed win
+  on the pass's branch, never on `main` — work lands on `main` via a squash-merged
+  PR; message follows repo convention (NO `Co-authored-by` trailer, no maintainer
+  name — AGENTS.md).
+- **Small-file discipline (AGENTS.md: ~500 lines is the split signal, repo-wide;
+  3000 is only the starbreaker-ui hard cap); update `//!` headers** when a file's
   responsibility changes; verify-on-write any command you cite in a doc.
 - **Ponytail note:** in this repo the laziest solution that works = the smallest
   change that is still engine-faithful and data-derived. A hard-coded value, invented
@@ -263,13 +286,13 @@ concrete approve/decline). Never proceed on a presumed "yes".
 ## Close-out (MANDATORY closing step)
 
 **The pass is not done when the speedup lands — it is done after the close-out.**
-Invoke the **arc-closeout** skill (the TodoWrite item added at the start): it runs
+Invoke the **arc-closeout** skill (the task-list item added at the start): it runs
 the sweep (repeated work → tooling; missing/inflated instrumentation → real
 boundary timers; dead-ends and levers → recorded), the ledger append
 (`docs/optimisation-ledger.md`, Observed/Finding/Action, via
-`scripts/ledger_append.py`), the `recommendations.md` split, the memory update
-(e.g. `idris-export-perf` with cumulative numbers and new dead-ends), and the
-bootstrap-test acceptance.
+`scripts/ledger_append.py`) — cumulative numbers and new dead-ends go in that
+ledger entry and the `AEGS_Idris_P` workload section, not user-folder memory —
+the `recommendations.md` split, and the bootstrap-test acceptance.
 
 ## Red flags — STOP, you're rationalizing
 
@@ -286,4 +309,4 @@ bootstrap-test acceptance.
 | "Try jemalloc / a fancier allocator" | Measured slower here; the pipeline isn't allocator-bound. The ledger records dead-ends — read it first. |
 | "I'll plan and implement this inline" | Use `superpowers:writing-plans` then `superpowers:executing-plans`/`subagent-driven-development`; `systematic-debugging` when a change misbehaves. Don't hand-roll the phases. |
 | "Output changed but it's arguably more correct" | That's a behaviour change, not an optimisation — GATE it with the user, capture a new baseline; never silently ship a non-identical output. |
-| "Commit the win, push it" | Commit/push only when the user asks; show the diff + measured delta; repo commit convention (no `Co-authored-by`, no maintainer name). |
+| "Commit the win, push it" | Commit/push only when the user asks, on the pass's branch (never `main`; lands via squash PR); show the diff + measured delta; repo commit convention (no `Co-authored-by`, no maintainer name). |

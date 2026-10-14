@@ -1502,7 +1502,7 @@ which no frozen screen has), leaving the text-draw rule untouched.
 the medical title/desc share the anchor pattern and stay left. Centre stacked
 readouts via center-column card cross-fit instead.
 **Action:** doc bullet [done — this retro]; the trap is also in the dossier
-velocity-num row and [[velocity-num-hud-parity]].
+velocity-num row (`ui-reference.md` §3).
 
 ### Phase L — implementation (2026-06-15, this retro)
 1. `scripts/ui_measure.py --text-bands` (item 58) — added + verify-on-write run;
@@ -1532,8 +1532,8 @@ INSTANTIATED variant's authored FontSize FIRST (find it via the rendered node na
 entries matched). A "no derivable scale" conclusion is valid only after confirming the
 authored size is reaching the node. Generalises the skill's "undecoded = under-research,
 not a proven blocker" rule to the font path.
-**Action:** workflow §10 bullet [done — this retro]; dossier velocity-num row +
-[[velocity-num-hud-parity]] updated to overturn the wrong diagnosis. Code fixes
+**Action:** workflow §10 bullet [done — this retro]; dossier velocity-num row
+updated to overturn the wrong diagnosis. Code fixes
 `6c1343abf`/`c7931fb4b` landed during the arc.
 
 ### 61. `check_ui_hardcoding.sh` silently stopped guarding — targets renamed to directories
@@ -1667,7 +1667,7 @@ blocker). Retro docs:
 (b) **Height-driven text sizes its font to the field.** Labels with no FontSize fell to the Heading1 default (60, ~6% cap vs ref 19%). A text field whose box is height-driven (width `PercentOfY`, height `Percent`) has the engine size the glyph to fill the field; `resolve_effective_font_size` now does this before the named-style default (`ca5ec0b25`).
 (c) **A "Percent height → field-fit" gate is TOO BROAD — it hit medical PLATINUM.** The first cut keyed only on a Percent height and regressed `ui_target_a` titles (25/30/60 → field heights); the live-IR guard caught it. The discriminator is the `PercentOfY` WIDTH (a height-DRIVEN box) — medical's titles have Percent heights but normal widths (width-laid-out), so they keep their named size. Lesson: when a font-model gate trips a frozen text screen, the disable→adjudicate delta names the exact baseline; find the structural property that separates the motivating case (here: width derived FROM height) rather than widening the gate.
 (d) **Colour = proven blocker.** The labels need the `heading-cardinal-dir` tag for `CardinalLabel→Base`, applied at runtime via `BindingsTagFromBoolean(maintick→tag)`. The generic `hud_generic_headingtapecomponent` has 4 such ops; the rendered DRAK compass variant has 0 (master refs only it). The rendered canvas data has the STYLE but not the tag-application, so faithfully the labels are the Heading1 default (Bright) — reproducing orange needs the absent binding or name-gating. Recorded as a deferral, not hacked.
-**Improvement/Action:** all landed in the loop (`4f352b429`, `ca5ec0b25`); dossier + [[compass-hud-parity]] updated. Owner-gated checkpoints honoured (asked before the frozen-shared cover_fit change; user chose "investigate more" → found the cleaner `coordinateMethod` discriminator). [done — this round]
+**Improvement/Action:** all landed in the loop (`4f352b429`, `ca5ec0b25`); dossier compass row updated. Owner-gated checkpoints honoured (asked before the frozen-shared cover_fit change; user chose "investigate more" → found the cleaner `coordinateMethod` discriminator). [done — this round]
 
 ### 68. Compass round 3: the "colour blocker" (67d) was WRONG — HUD brand-class misclassification; + line-grep vs JSON-structure trap, orange-on-orange measurement contamination, height-driven verbatim em
 **Observed (compass arc round 3, 2026-06-16, owner: "font weight far too high", "font colour wrong", "font size wrong, compare to reference", "note the clipping"):** item 67(d) deferred the label colour as a proven blocker (absent `heading-cardinal-dir` BindingsTag). **That was wrong.** The cardinal tag colours only cardinal/intercardinal directions (0/45/90…), so it can NEVER be the source of the all-orange NON-cardinal labels (100/120/140/160). The real root cause (the research subagent had it right): the compass is a cockpit HUD ship-component but `collect_standard_text_styles` classified it as `env` (only `MC_*`/`M_*` → `hud`), so it resolved `s_drak_env` H1 = audimatmono-**bold** / **Bright** instead of `s_drak_hud` H1 = audimatmono-**regular** / **Accent2**. One root-cause fix (`is_cockpit_hud_canvas` family → `hud` class) corrected BOTH the weight (bold→regular) and the colour (white→deep-orange Accent2). g-force (also `HC_HUD_*`) took the same correction on its off-screen at-rest readouts (re-frozen, visually unchanged). Compass onboarded GOLD `clipper_compass_master`.
@@ -1676,7 +1676,7 @@ blocker). Retro docs:
 (b) **Inherited "proven blocker" verdicts MUST be re-derived (skill rule), and it paid off twice on this same screen.** Round 1's tick-projection blocker and round 2's colour blocker were BOTH overturned. A `*Params` family search / the JSON structure was always one step past where the prior pass stopped.
 (c) **Orange-on-orange band measurements contaminate silently.** Measuring the label cap height with a fixed `--box` repeatedly merged the digit band with the (same-orange) tick band below it, reporting a "25% cap, clipping" panic when the digit was actually 18.9% with a 27px gap to the tick — nearly reverting the CORRECT size fix. The reliable read is contiguous-band detection (digit band, gap, tick band) reporting the gap, not a single bbox. → tooling (below).
 (d) **A height-driven font's field height IS the glyph EM — use it VERBATIM (no imageSizePercent boost).** The round-2 height-driven rule returned the field size as *plain* (`is_styled=false`), so the caller divided it by the font's `imageSizePercent` (0.75) — the boost for a plain authored size, which is a slug-IMAGE height, not an em. That over-sized the labels (188→250, ~22% cap, clipping) vs the reference's ~19%. Returning the branch as STYLED (verbatim em) gives ~19% with a clear gap. Lesson: the imageSizePercent boost applies to slug-image-height authored sizes, NOT to a rect-derived em target.
-**Improvement/Action:** root-cause fix + g-force re-freeze + compass GOLD onboard landed (`5ba8f4b7e`); two tests (HUD→s_drak_hud H1 with env control; strengthened height-driven test with an imageSizePercent font as a verbatim-em guard). Tooling: `ui_compare.py` gains a `compass` preset; `ui_measure.py --box` gains contiguous-band reporting (`bands`/`band_gaps`) so orange-on-orange digit-vs-tick no longer reads as one bbox. Dossier compass row + [[compass-hud-parity]] corrected (67d retracted). [done — this round]
+**Improvement/Action:** root-cause fix + g-force re-freeze + compass GOLD onboard landed (`5ba8f4b7e`); two tests (HUD→s_drak_hud H1 with env control; strengthened height-driven test with an imageSizePercent font as a verbatim-em guard). Tooling: `ui_compare.py` gains a `compass` preset; `ui_measure.py --box` gains contiguous-band reporting (`bands`/`band_gaps`) so orange-on-orange digit-vs-tick no longer reads as one bbox. Dossier compass row corrected (67d retracted). [done — this round]
 
 ### 69. Sending iterative renders under the SAME filename → the user's viewer CACHES it → "no change" illusion (cost several wasted cycles)
 **Observed (self-status hologram arc, 2026-06-16):** while tuning the hologram
@@ -1950,7 +1950,7 @@ from the texture's bright bbox (`gfx::sweep_wedge_geometry`), the cardinal-marke
 heading scale's degree-cell width (the atlas's 4×9=36 grid = `HeadingDegreeReadout` W=1/36),
 the ring/marker alpha from the node's authored fill × the one emissive.
 **Action:** consolidated to one camera (`721034083`); sweep apex + ring alpha + marker size
-tied to data (`31e99a222`, `d5797f2a3`); memory `radar-hostplane-composite-spokes`.
+tied to data (`31e99a222`, `d5797f2a3`); the radar dossier row (`ui-reference.md` §3) records the result.
 
 ### 82. "Deactivated / gated in the IR" ≠ "absent from the data" — find the gate and activate the REAL nodes, never generate
 **Observed:** the radar spokes (`Circle_Line_*`) and the heading-tape chrome were NOT in the
@@ -1968,7 +1968,7 @@ for a mutually-exclusive toggle — scoped structurally so siblings like the med
 untouched). Then the renderer reads the now-loaded authored nodes. Inventing geometry to stand
 in for gated-off real nodes is the anti-pattern.
 **Action:** generic unset-`X`/`NOT X` compose rule + bare-`IsRadar` pin; real `Circle_Line` /
-`HeadingTape` nodes rendered (`f980a7189`, `6f1f23520`); memory `radar-hostplane-composite-spokes`.
+`HeadingTape` nodes rendered (`f980a7189`, `6f1f23520`); the radar dossier row (`ui-reference.md` §3) records the result.
 
 ### 83. Verify per-manufacturer-ness (and runtime-absence) from the DATA, not by assumption — then it's defensible
 **Observed:** I'd been calling the radar tilt/zoom "owner-tuned" without proving they aren't
@@ -2274,7 +2274,7 @@ md5-identical on all drifted frozen screens). OPEN: border CHAMFER draw support 
 
 ### 104 — Full-crate review 2026-07-02: landed cleanups + the engine_parts question (OWNER-GATED)
 **Observed:** a structured review of `crates/starbreaker-ui` (findings + plan:
-`docs/superpowers/plans/2026-07-02-ui-crate-review.md`). LANDED (behaviour-identical, each
+`2026-07-02-ui-crate-review.md`, plan removed; this entry is the record). LANDED (behaviour-identical, each
 test-verified): F3 shared expansion-instance traversal (`35b0298aa`), F4 one modular-kit sheet
 path builder (`cdb217738`), F5 literal-colour token-drop for ALL colour fields (`e32d6962f`,
 TDD), F6 shared `png_cache_key` builder (`3f92c3f9c`), F7 style-engine header drift (`300af3b4f`).
@@ -2470,7 +2470,7 @@ read-only per-task review), scope A1–A9 → B1–B3, STOP at owner-gated B4.
 - **A4** — the `ui_variant_styles` MCP tool: the authored-but-unapplied drill as a first-class probe
   (lists each matched node's per-tier authored entries — defaultStyles / brand / canvas-root
   `embeddedStyles` — with an `applied` verdict from `__AppliedStyleEntries` membership).
-- **A5** — `scripts/ui_blocker_evidence.py` + `docs/blocker-evidence-schema.md`: a blocker claim at
+- **A5** — `scripts/ui_blocker_evidence.py` + `crates/starbreaker-ui/docs/blocker-evidence-schema.md`: a blocker claim at
   the major-item gate MUST attach an evidence file proving all four in-data surfaces
   (datacore_families / p4k_assets / localization / derivable_mechanisms) were searched.
 - **A6** — SKILL 552 → 168-line navigation core + `references/{launch,catalog,blockers,freeze,retro}.md`,
@@ -2488,8 +2488,10 @@ read-only per-task review), scope A1–A9 → B1–B3, STOP at owner-gated B4.
 **Action:** landed on `feature/ui`, one commit per task, each `ui_check.sh` green, each Opus-reviewed:
 `836c86641` (A1), `34153697d` (A2), `0b3d0532f`+`2cdc43b09` (A3), `8fe2aa320` (A4), `c5add0823` (A5),
 `dcc2709db`+`b233bf7e0` (A6), `c2e3438b0` (A7), `369feeaba` (A8). Plan
-`docs/superpowers/plans/2026-07-04-ui-parity-process-and-crate-plan.md`, spec
-`docs/superpowers/specs/2026-07-04-ui-parity-process-and-crate-design.md`. Phase B (ui-crate
+`2026-07-04-ui-parity-process-and-crate-plan.md` (since removed; its open A10 is carried in
+item 110), spec
+`docs/superpowers/specs/2026-07-04-ui-parity-process-and-crate-design.md` (success criteria
+lines ~127–133). Phase B (ui-crate
 convergence, B1–B3) follows; B4 (renderer linear-light re-freeze) is owner-gated and out of scope.
 
 ### 109 — System alignment review (2026-07-07): the still-prose recurring traps converted to enforced gates + the knowledge store reconciled with reality (plan P0–P2)
@@ -2582,6 +2584,72 @@ Opus-reviewed. P0 (T1–T3) touched only user-level config outside the repo. In-
 `e81f7f9af`+`4ba06efec` (T4), `cfbf617d4`+`f78e3b12a` (T5), `a2d72e932` (T6),
 `62100ba46`+`7458b35d9` (T7), `a18219681` (T8), `4f9ffc091` (T9), `0e4d530e4` (T10),
 `1d7bd8dee` (T11), `6ae77b3f4` (T12), `4ef91b549` (T13), `2c1ad883a` (T14), `72d67379e` (T15).
-Plan `docs/superpowers/plans/2026-07-07-system-alignment-plan.md`, review/spec
-`docs/superpowers/specs/2026-07-07-system-alignment-review.md` (both archived in-repo by this
-task). P3 (measurement & validation) follows.
+Plan `2026-07-07-system-alignment-plan.md` (archived in-repo by this task, removed in the
+2026-10 docs audit; its open P3 tasks are carried in item 110), review/spec
+`docs/superpowers/specs/2026-07-07-system-alignment-review.md`. P3 (measurement & validation) follows.
+
+### 110 — Still-open UI process items carried forward from the removed parity and alignment plans (A10 Carrack arc, T18 drift audit)
+
+_2026-10-14_
+
+**Context:** the 2026-10 docs audit removed the two executed plans,
+`2026-07-04-ui-parity-process-and-crate-plan` and `2026-07-07-system-alignment-plan`.
+Their landed work is recorded in items 108 and 109. Two tasks from them never ran, and
+this entry is now their only record. Both stay open until they run; close each one by
+appending a new entry, not by editing this one.
+
+**Open: A10, the Carrack execution-test arc** (parity plan A10, alignment plan T19).
+- **What:** the first real arc run under the restructured parity skill. It is the
+  behavioural test of the item-108 process overhaul and of the multi-ship dossier
+  path (a new ship folder and new scene packages).
+- **How:** start a NEW session on Opus and invoke the
+  `starbreaker-ui-screen-parity` skill. Expect SHIP = Carrack and SCREEN = the
+  unworked Carrack screen, but ASK per the skill and don't pre-answer. When the plan
+  was written, `reference/in-game/Carrack/` held `Screen_Annunciator.png` and the
+  lift-call console capture, and the unworked one was `Screen_Annunciator`. Adding
+  that screen's dossier row (JSON and `ui-reference.md` Â§3, with
+  `scripts/validate_ui_dossier.py` green) is part of the arc. Run it from the skill,
+  not from a plan.
+- **Prerequisites:** all met. The gates it exercises landed with item 109 (T4â€“T9),
+  and the arc-cost log landed in `7365618f` (T17).
+- **Measurement:** the arc's mandatory retro is the measurement. It appends the
+  FIRST line to `crates/starbreaker-ui/data/arc_cost_log_v1.jsonl` (still empty as of
+  this entry). Compare it with the Workstream-A success criteria in
+  `docs/superpowers/specs/2026-07-04-ui-parity-process-and-crate-design.md`
+  (Â§"A success criteria", lines ~127â€“133):
+  - bootstrap reading before the first render drops from ~2,100 to **~600 lines**
+    (`bootstrap_lines_read`);
+  - a loop cycle drops from 4â€“6 tool calls plus vision reads of every crop to
+    **1â€“2 tool calls** plus reads of changed regions only
+    (`tool_calls_per_cycle_median`);
+  - **zero guardrail regressions**: the hardcoding guards, freeze gates and blocker
+    gates must all still fire.
+
+  A number above target is a signal, not a failure. Findings go to this ledger and
+  to the skill's `recommendations.md` as usual.
+
+**Open: T18, the frozen-target drift audit** (alignment plan T18; one-time and
+report-only).
+- **Question:** are the certified screens still faithful to their REFERENCES today?
+  The freeze guards only compare renders with their frozen baselines.
+- **Steps:**
+  1. Run a fresh LOD0/MIP0 export of every ship that has frozen targets. Derive the
+     list from the dossier rows with a non-null `tier` in
+     `crates/starbreaker-ui/data/ui_screen_dossier_v1.json`; today that is Clipper
+     only, 15 targets.
+  2. Run `bash scripts/ui_check.sh --full` unpiped and record the marker. If it isn't
+     green, STOP and report to the owner before going on.
+  3. For each tiered row, run `bash scripts/ui_arc_status.sh --screen <screen_id>`
+     and capture the per-region table (means, ratios, measurement-bank targets).
+     This is the render-to-reference comparison that the freeze guards don't do.
+  4. Write the report. For each screen, record whether its regions are within the
+     bank targets, whether any region has drifted, and classify every residual
+     against `crates/starbreaker-ui/docs/ui-residual-budget.md`.
+  5. Deliver the report to the owner. Add each must-fix drift the owner confirms to
+     that screen's open-issues entry in the dossier (JSON and Â§3 together).
+- **Constraints:** NO freezes and NO fixes in this task, only findings, and the
+  owner adjudicates. Seven of the 15 tiered rows have no preset (`preset: null`: the
+  two medical screens, countermeasures, self MFD, LR-indicator, velocity num and
+  master mode). `ui_arc_status.sh` fails loudly on those. For each one, either add a
+  `ui_compare.py` preset first, as its own reviewed change, or compare it by hand with
+  `ui_compare.py --box` regions and say so in the report.

@@ -43,9 +43,11 @@ One line per arc:
 
 ## The comparison bar
 
-The Workstream-A targets to compare each line against (from
-`docs/superpowers/plans/2026-07-04-ui-parity-process-and-crate-plan.md`,
-Task A10 Step 2):
+The Workstream-A targets to compare each line against (from the design spec
+`docs/superpowers/specs/2026-07-04-ui-parity-process-and-crate-design.md`,
+§"A success criteria", lines ~127–133; the still-open first arc that should
+append a line is recorded in `crates/starbreaker-ui/docs/ui-process-improvements.md`
+item 110):
 
 - `bootstrap_lines_read` — target **~600** lines before first render.
 - `tool_calls_per_cycle_median` — target **1–2** calls per loop cycle.

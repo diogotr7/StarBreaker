@@ -50,7 +50,7 @@ expected — `BB_ColorStyle` role indices diverge (Bright=6 grey ≠ Base=0).
 
 **Improvement:** resolve a role by its enum index, never by order.
 
-**Action:** workflow §2 + memory [[bb-colorstyle-enum-slot-mapping]].
+**Action:** workflow §2.
 
 ## 4. The decal stencil is part of the palette identity
 

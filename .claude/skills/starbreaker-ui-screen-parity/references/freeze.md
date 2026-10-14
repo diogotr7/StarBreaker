@@ -32,6 +32,10 @@ deferred with proof don't need this gate.)
 
 ## Git commit
 
+Every commit (both modes) goes on the **arc branch, never `main`**; the arc lands on
+`main` as a squash-merged PR from that branch in the main checkout. The arc-closeout
+skill commits under this same gate.
+
 - **Semi-automated:** show the diff/summary, ask "Commit this?" → "Commit" / "Not yet",
   commit only on yes.
 - **Fully automated:** commit autonomously per coherent fix (message cites the catalog

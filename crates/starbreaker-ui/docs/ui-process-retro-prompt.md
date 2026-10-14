@@ -20,7 +20,7 @@ to it, matching its Observed/Improvement/Action format as a self-contained retro
 entry) and skim crates/starbreaker-ui/docs/ui-workflow.md + crates/starbreaker-ui/docs/ui-reference.md so proposals
 amend the current process rather than reinvent it. Use this session's own
 experience as the primary evidence; use the arc's git log, handoff, and
-memory file to recall anything context compaction has blurred.
+dossier row to recall anything context compaction has blurred.
 
 Sweep these categories against what actually happened:
 1. Repeated manual work -> tooling. Anything you typed more than twice
@@ -85,8 +85,8 @@ Then:
   through the normal TDD/guard flow of crates/starbreaker-ui/docs/ui-workflow.md instead.
 - Baseline-affecting actions (TSV/freeze re-captures) are APPROVAL-GATED:
   present the deltas and stop unless approval was given up front.
-- Mark executed steps [done <date> <commit>] in the ledger; update the
-  session memory pointers.
+- Mark executed steps [done <date> <commit>] in the ledger; bring the
+  dossier row / handoff up to date (knowledge stays in-repo).
 
 Acceptance (the bootstrap test): after implementing, dry-run the
 per-screen prompt (ui-matching-agent-prompt.md) from the docs alone —

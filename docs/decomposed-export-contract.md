@@ -1,143 +1,188 @@
 # Decomposed Export Contract
 
-Phase 3 Mode 2 export now writes a reusable shared-root package at a caller-selected export directory.
+The decomposed export (`--kind decomposed`) writes a reusable shared-root
+package at a caller-selected export directory. The writer is
+`crates/starbreaker-3d/src/decomposed.rs`; the Blender addon reads it through
+`blender_addon/starbreaker_addon/manifest.py`.
 
 Within that export root:
 
-- `Packages/<package name>/scene.json` describes the root entity, child attachments, interior placements, light definitions, and shared asset references.
+- `Packages/<package name>/scene.json` describes the root entity, child attachments, interior placements, light definitions, and shared asset references. The package name is the cleaned entity label plus `_LOD<n>_TEX<m>` (e.g. `RSI Aurora Mk2_LOD0_TEX0`).
 - `Packages/<package name>/palettes.json` contains shared palette identities that scene instances reference by `palette_id`.
 - `Packages/<package name>/liveries.json` groups scene and material usage by shared palette identity.
-- `Data/...` contains reusable mesh `.glb` assets, material sidecars, and exported textures using canonical P4k-style paths rooted at `Data/`.
+- `Packages/<package name>/paints.json` (only when the entity has paint variants) lists each variant's `subgeometry_tag`, `palette_id`, `display_name`, and `exterior_material_sidecar`. The addon treats it as optional.
+- `Packages/<package name>/animations/<clip>.json` holds per-clip animation bodies (see [Animation Records](#animation-records)).
+- `Packages/<package name>/weapon_assembly_diagnostics.json` is written only for FPS weapon assemblies that produced diagnostics.
+- `Data/...` contains reusable mesh assets, material sidecars, and exported textures using canonical P4k-style paths rooted at `Data/`. Mesh assets are `.glb` with the Glb format and `.blend` with the Blend format (`mesh_asset_extension`); the Blend format also writes `Packages/<package name>/scene.blend`, which links the mesh `.blend` files.
 - exporting another ship to the same root reuses matching `Data/...` assets instead of duplicating category-specific copies.
 
 ## Scene Manifest
 
-`scene.json` includes:
+`scene.json` (`build_scene_manifest_value`) carries these top-level keys:
 
-- the root package rule: all asset paths are relative to the selected export root
-- the package directory path under `Packages/<package name>`
-- root entity metadata and asset references
-- child attachment relationships via `parent_entity_name`, `parent_node_name`, `offset_position`, `offset_rotation`, `no_rotation`, and `port_flags`
-- interior container transforms, optional child-attachment parents
-  (`parent_entity_name`, `parent_node_name`), placement records, and exported
-  light data
-- material sidecar and palette references for every scene instance
-- optional decal-host hints for scene instances that carry projected decal
-  geometry:
-  - `decal_host_channel` is a palette channel hint such as `primary`,
-    `secondary`, `tertiary`, or `glass`
-  - `decal_host_rgb` is a fixed linear RGB host-colour fallback when no
-    palette channel is available
-  - these fields are advisory. Non-FPS importers may use them to rebind
-    MeshDecal `Host Tint` directly. FPS weapon importers may additionally fall
-    back to local spatial host-material matching for control-only POM overlays
-    when these hints are absent.
-- optional additive `controls.engine_glow` metadata for engine-emission tuning in importers:
-  - absolute emission-strength range metadata (`min_strength`, `max_strength`, `default_strength`)
-  - `targets[]` keyed by `mesh_asset` + `material_sidecar` + `source_material_index`
-  - `geometry_path` is retained as source evidence for the target entity
-  - target records are emitted only from DataCore `Category = Thruster` child entities
-  - informative target labels (`submaterial_name`, `blender_material_name`)
+- `version` (`1`) and `export_kind` (`"Decomposed"`)
+- `package_rule`: `root`, `package_dir` (`Packages/<package name>`),
+  `paths_are_relative_to_export_root` (always `true`), `shared_asset_root`
+  (`Data`), `normalized_p4k_relative_paths`. All asset paths in the package are
+  relative to the selected export root.
+- `root_entity`: `entity_name`, `geometry_path`, `material_path`,
+  `mesh_asset`, `material_sidecar`, `palette_id`, and optionally `animations`
+  (only the root entity carries animations) and, in character packages,
+  `character` (the resolved CHF material customization and HumanSkin_V2
+  wrinkle-slot layout; written by `character/package.rs`)
+- `export_options`: `kind`, `format`, `material_mode`, `lod_level`,
+  `texture_mip`, `include_attachments`, `include_interior`, `include_lights`
+- `children[]`: one scene instance per attached child entity (below)
+- `interiors[]`: interior containers (below)
+- `assembly_kind` and `weapon_assembly`, only for FPS weapon packages
+  (`assembly_kind = "fps_weapon"`)
+- `controls.engine_glow`, only when at least one engine-glow target exists
+  (below)
+
+### Child scene instances
+
+Each `children[]` entry (`scene_instance_json`) carries:
+
+- `entity_name`, `geometry_path`, `material_path`, `mesh_asset`,
+  `material_sidecar`, `palette_id`
+- the attachment relationship: `parent_node_name`, `parent_entity_name`,
+  `offset_position`, `offset_rotation`, `no_rotation`, `detach_direction`
+  (the port's detach direction in port-local source axes), and `port_flags`
+- the exporter-resolved transform: `source_transform_basis`,
+  `local_transform_sc`, `resolved_no_rotation` (see
+  [Transform Fields](#transform-fields))
+- `ui_bindings[]` (see [UI Bindings](#ui-bindings))
 
 `port_flags` is the raw source `SItemPortDef.Flags` string for the item port that attached a child. Importers can use this to preserve source visibility semantics; for example, Blender hides attachments by default when the source port includes `invisible` while keeping the objects present for inspection.
 
+### Interior containers
+
+Each `interiors[]` entry (`interior_container_json`) carries `name`, optional
+child-attachment parents (`parent_entity_name`, `parent_node_name`),
+`palette_id`, `container_transform`, `placements[]`, and `lights[]` (see
+[Light Records](#light-records)). Each placement carries `cgf_path`,
+`material_path`, `mesh_asset`, `material_sidecar`, `entity_class_guid`,
+`transform`, `palette_id` (a per-placement palette that overrides the
+container's: the socpak object's own per-object tint palette, or a
+loadout-attached child's palette), and `ui_bindings[]`.
+
+### Engine-glow controls
+
+`controls.engine_glow` is additive metadata for engine-emission tuning in
+importers:
+
+- `label` (`"Engine Glow"`) and `units` (`"emission_strength"`)
+- absolute emission-strength range metadata (`min_strength`, `max_strength`, `default_strength`)
+- `targets[]` keyed by `mesh_asset` + `material_sidecar` + `source_material_index`
+  (deduplicated on those plus `geometry_path`)
+- each target also carries `entity_name` and `geometry_path` (source evidence
+  for the target entity) and the informative labels `submaterial_name` and
+  `blender_material_name`
+- target records come only from child entities whose DataCore
+  `Category` is `Thruster` **and** whose `SAttachableComponentParams.AttachDef.Type`
+  is `MainThruster` (`should_export_engine_glow_targets`), and only from
+  Illum/HardSurface submaterials with emissive energy or a glow/emissive
+  texture (`is_engine_glow_material`)
+
+### Importer-only decal-host fields
+
+`decal_host_channel` (a palette channel hint such as `primary`, `secondary`,
+`tertiary`, or `glass`) and `decal_host_rgb` (a fixed linear RGB host colour)
+are read from scene instances by `manifest.py` (`SceneInstanceRecord`), but the
+exporter **never emits them**. They are reserved: the addon resolves MeshDecal
+`Host Tint` routing itself (and, for FPS weapons, by local spatial
+host-material matching) when they are absent, which is always today.
+
 ## Light Records
 
-Each entry in a scene's `lights` list carries:
+Lights are exported per interior container, in `interiors[].lights`. Each
+light record (built in `decomposed.rs` from the `LightInfo` parsed in
+`socpak.rs`) carries:
 
-- `name`, `light_type` (`Omni`, `SoftOmni`, `Projector`, `Ambient`),
-  `position`, `rotation` (CryEngine-space; the Blender addon applies
-  the axis conversion and the spot-axis basis correction)
-- `color` (linear RGB), `intensity` (candela), `radius`,
-  `inner_angle` / `outer_angle` for projectors
-- `temperature` (Kelvin) + `use_temperature` flag so Cycles can match
-  the in-engine blackbody colour
-- `projector_texture` (package-root-relative DDS path) for light
-  cookies / gobos
-- `active_state` and a `states` map capturing every authored
-  CryEngine state (`offState`, `defaultState`, `auxiliaryState`,
-  `emergencyState`, `cinematicState`). The flat `color` / `intensity`
-  / `temperature` fields are copied from the first non-zero state in
-  priority order `default → auxiliary → emergency → cinematic`; the
-  full map lets the Blender addon switch between states at runtime
-  without re-exporting. See `docs/StarBreaker/lights-research.md` for
-  the full schema.
+- `name`, `light_type` (the raw source type: `Omni`, `SoftOmni`, `Projector`,
+  `Ambient`, …), and `semantic_light_kind` (a normalized reusable kind:
+  `point`, `spot`, `area`, `sun`, or `ambient_proxy`)
+- `position`, `rotation` (quaternion `[w, x, y, z]`), and `direction_sc` (the
+  normalized SC-space forward direction, so consumers need not derive a
+  spotlight axis from the quaternion), all in the basis named by
+  `transform_basis` (`"cryengine_z_up"`). The Blender addon applies the axis
+  conversion and the spot-axis basis correction.
+- `color` (linear RGB; derived from the active state's temperature when the
+  component sets `useTemperature`)
+- `intensity_raw` (the authored CryEngine intensity of the active state),
+  `intensity_unit` (`"cryengine_authored_intensity"`), and
+  `intensity_candela_proxy` (the exporter's candela-style scaled value);
+  `intensity` is a legacy alias of `intensity_candela_proxy`
+- `radius` and its explicit metric duplicate `radius_m` (attenuation radius in
+  metres)
+- `inner_angle` / `outer_angle` for projectors: **half-angles** in degrees
+  (`outer = FOV / 2`, `inner = 0.8 × outer`); `null` for other types
+- `projector_texture` for projector gobos: the export-root-relative path of
+  the exported texture, `.exr` when the source is HDR (BC6H), otherwise `.png`
+  (a white PNG fallback if both fail); `null` for non-projector lights
+- `active_state` and a `states` map capturing every authored CryEngine state
+  (`offState`, `defaultState`, `auxiliaryState`, `emergencyState`,
+  `cinematicState`; missing states are absent). The active state is the first
+  state with non-zero intensity in priority order
+  `default → auxiliary → emergency → cinematic`; the flat `color` / intensity
+  fields come from it. The full map lets the Blender addon switch between
+  states at runtime without re-exporting.
 
-### Planned Additive Cross-DCC Light Semantics
+Each `states` entry carries `intensity_raw`, `intensity_unit`, `intensity_cd`,
+`intensity_candela_proxy`, `temperature` (Kelvin), `use_temperature`, `color`,
+`light_style` (the authored CryEngine light-style id, e.g. strobe patterns),
+and `preset_tag` (an optional authored preset tag such as `fast` / `slow`).
+`temperature` and `use_temperature` exist only per state, not on the flat
+record. Background on the light data: `docs/star-citizen-lighting-research.md`.
 
-The current light contract is enough for the Blender addon, but it still
-requires importer-side Star Citizen interpretation. The planned Rust-sidecar
-migration adds semantic fields rather than replacing the raw ones above.
+### Cross-DCC Semantic Fields
 
-Recommended additive light fields:
+The semantic fields above (`semantic_light_kind`, `transform_basis`,
+`direction_sc`, `intensity_raw`, `intensity_unit`, `intensity_candela_proxy`,
+`radius_m`) were added beside the raw fields rather than replacing them. They
+are intentionally DCC-agnostic and must not encode Blender-only decisions such
+as final Watt conversion, Blender spotlight-axis corrections, or Blender gobo
+node-graph details.
 
-- `semantic_light_kind` — normalized reusable kind such as `point`, `spot`,
-  `area`, `sun`, or `ambient_proxy`, while preserving the raw source
-  `light_type` string.
-- `transform_basis` — explicit basis label for exported transform fields,
-  for example `cryengine_z_up`.
-- `direction_sc` — normalized SC-space forward direction for projector /
-  spotlight records so consumers do not have to reverse-engineer a spotlight
-  axis from the raw source quaternion.
-- `outer_angle_full_deg` / `inner_angle_full_deg` — explicit full-angle names
-  to remove half-angle ambiguity.
-- `intensity_raw` on the flattened active record and every exported state
-  snapshot, plus `intensity_unit` to state that the value is still the
-  authored CryEngine intensity scalar.
-- `intensity_candela_proxy` — explicit label for the exporter's current
-  candela-style scaled value, emitted on the flattened active record and on
-  each exported light state alongside the legacy `intensity_cd` alias.
-- `radius_m` — explicit metric label for attenuation distance.
-- `projector_texture_format_hint` — document that projector textures may be
-  DDS / block-compressed / HDR assets and should not be assumed to have a PNG
-  fallback.
+Proposed but **not emitted**: `outer_angle_full_deg` / `inner_angle_full_deg`
+(explicit full-angle names) and `projector_texture_format_hint`. Consumers
+must treat `inner_angle` / `outer_angle` as half-angles.
 
-These semantic fields are intentionally DCC-agnostic. They must not encode
-Blender-only decisions such as final Watt conversion, Blender spotlight-axis
-corrections, or Blender gobo node-graph details.
+### Transform Fields
 
-### Planned Additive Cross-DCC Transform Semantics
+Every child scene instance carries an exporter-resolved local transform
+(`resolve_child_instance_transforms`):
 
-The current contract preserves the raw transform inputs, but downstream
-importers still have to repeat Star Citizen-specific attachment resolution.
-The planned additive transform fields are:
-
-- `local_transform_sc` — fully resolved SC-space local matrix relative to the
-  exported parent.
-- `world_transform_sc` — optional fully resolved SC-space world matrix for
-  consumers that prefer direct placement over parent-relative reconstruction.
-- `source_transform_basis` — explicit basis label for those matrices.
-- `resolved_no_rotation` — note that `no_rotation` helper semantics have
-  already been baked into the emitted transform.
-
-Current incremental rollout note:
-
-- child scene instances now emit `source_transform_basis = cryengine_z_up`
-  plus `local_transform_sc` for the common child path and for `no_rotation`
-  records whose parent-relative local matrix has been resolved by the exporter.
-- `resolved_no_rotation = true` means the exporter has already baked the
-  legacy helper-suppression rule into `local_transform_sc`; importers should
+- `source_transform_basis` — basis label for `local_transform_sc`. Child
+  instances emit `"gltf_y_up"`: the matrix is the child's glTF node matrix from
+  the exporter's scene-graph builder. The addon also accepts
+  `"cryengine_z_up"` (and then applies its scene axis conversion); it applies a
+  `"gltf_y_up"` matrix directly as the Blender basis.
+- `local_transform_sc` — the 4×4 local matrix relative to the exported parent,
+  as four column arrays (column-major, as glTF stores it).
+- `resolved_no_rotation` — `true` when the child uses `no_rotation`, meaning
+  the exporter has already baked the helper-suppression rule (and
+  duplicate-offset suppression) into `local_transform_sc`; importers should
   consume that matrix directly rather than re-implementing the rule.
-- raw `offset_position`, `offset_rotation`, and `no_rotation` remain in the
-  sidecar for debugging and compatibility with older importers.
 
-The exporter should own Star Citizen-specific transform composition, helper
-resolution, and duplicate-offset suppression. Importers should own only the
-final mapping from SC basis into their host DCC's coordinate system.
+A world-space `world_transform_sc` was proposed but is **not emitted**.
+Interior containers and placements carry plain `container_transform` /
+`transform` matrices and no basis label.
+
+The exporter owns Star Citizen-specific transform composition, helper
+resolution, and duplicate-offset suppression. Importers own only the final
+mapping into their host DCC's coordinate system.
 
 ### Compatibility Rules
 
-The Rust migration is additive and must be backward-compatible while Blender
-and any external consumers migrate.
-
-- Older sidecars that lack the new semantic fields remain valid; importers
-  fall back to the existing raw `light_type`, `position`, `rotation`,
-  `intensity`, `radius`, and per-state payloads.
-- Newer sidecars should continue emitting the raw fields alongside the new
-  semantic fields until every known consumer has migrated.
+- Older sidecars that lack the semantic fields remain valid; the addon falls
+  back to the raw `light_type`, `position`, `rotation`, `intensity`, `radius`,
+  and per-state payloads (`manifest.py` reads `intensity_candela_proxy`
+  falling back to `intensity`, and `radius_m` falling back to `radius`).
+- The raw fields continue to be emitted alongside the semantic fields.
 - Blender-specific behavior such as final Watt conversion, gobo UV wiring,
   per-image gobo compensation, and shadow soft-size heuristics stays in the
-  importer even after the semantic fields exist.
+  importer.
 
 Current retained compatibility aliases and fallbacks:
 
@@ -163,13 +208,9 @@ Each `*.materials.json` sidecar preserves:
 - screen-family `screen_effects` metadata; `apply_crt = true` is emitted when
   authored DisplayScreen/UIPlane data exposes a `screen_pixel_layout` slot, with
   the source slot/path and authored `PixelGridTilingX/Y` values when present
-- DisplayScreen/UIPlane render-to-texture slots may carry additive `generated_ui`
-  metadata when the exporter can provide default visible content:
-  - `export_kind = "generated_ui_still"` when the slot is bound to a
-    deterministic source-derived PNG for runtime-only RTT content
-  - `generated_ui.source_path`, `generated_ui.identity`,
-    `generated_ui.frame_selection`, and `generated_ui.provenance` explain how
-    the exported `export_path` was selected
+- DisplayScreen/UIPlane render-to-texture slots carry no image of their own;
+  generated screen images are attached per scene instance through
+  `ui_bindings` (see [UI Bindings](#ui-bindings))
 - DDNA identity markers on exported normal-gloss source PNGs plus `alpha_semantic` / `alpha_channel` markers such as `smoothness` in alpha when the source texture carries shader-relevant data
 - derived DDNA roughness references that describe their source texture identity, source channel, value transform, packed output channel, and constant packed channels
 - structured `texture_transform` objects derived from authored `TexMod` blocks when texture UV animation or tiling metadata is present
@@ -241,21 +282,34 @@ The exporter-side contract gaps are now mostly closed. The remaining work is pri
 
 ## Animation Records
 
-Each exported scene entity carries an optional `animations` array containing all discoverable animations for that entity and its components. Animations are discovered by:
+Only the root entity carries animations: `root_entity.animations` is an
+optional array holding every discoverable clip for the root skeleton and the
+attached children's skeletons, merged by clip name (`decomposed.rs`).
+Animations are discovered by:
 
 1. Locating the skeleton's `.chrparams` CryXmlB file (derived by swapping extension from `.chr`)
 2. Parsing the animation map and `$TracksDatabase` reference (usually a `.dba` file)
 3. Loading the tracks database and exporting **all** animation clips
 
+When there is no root skeleton (socpak interior exports), child clips are
+keyed per entity type so identically-named clips on different entities (every
+door's `door_open`) stay separate, and each such clip gains a human-readable
+`display_name`.
+
 **Animation Clip Structure:**
 
-Each animation clip object contains:
+Each animation clip object (`animation/serialise.rs`, `clip_to_json`) contains:
 
 - `name` — animation identifier (e.g., `lg_deploy_l`, `lg_retract`, derived from .chrparams event name)
-- `fps` — playback frame rate (typically 30)
-- `frame_count` — total keyframe count
-- `bones` — map of bone identifiers (by name or CRC32 hash if available) to channel objects
-- `fragments` — optional Mannequin ADB fragment metadata for clips reached from the entity's `SAnimationControllerParams` (`fragment`, `tags`, `frag_tags`, `scopes`, `animations`, blend timings, speeds, flags, and procedural params)
+- `fps` — playback frame rate (integer, typically 30)
+- `frame_count` — the last keyframe time across all channels, rounded up (not a count of samples)
+- `bones` — map of bone keys to channel objects (see Bone Identification)
+- `start_rotation` / `start_position` — optional DBA-metadata clip start pose
+  (`[w, x, y, z]` and `[x, y, z]`, in the same Blender convention as the
+  samples). The addon uses it as the anchor for
+  `result = bind ⋅ (start⁻¹ ⋅ sample)`; CAF clips omit both and the addon
+  anchors on the first sample.
+- `fragments` — optional Mannequin ADB fragment metadata for clips reached from the root entity's `SAnimationControllerParams` (`animation/mannequin.rs`): `fragment`, `guid`, `tags`, `frag_tags`, `blend_out_duration`, `option_weight`, `scopes`, `animations` (each with `name`, `blend` timings, and optional `flags` / `speed`), and optional `procedurals`
 
 **Bone Channel Structure:**
 
@@ -266,28 +320,35 @@ Each bone channel contains:
 - `position` — array of `[x, y, z]` position vectors (Blender Z-up convention) per keyframe
 - `position_time` — array of source frame times parallel to `position`; if omitted, consumers should fall back to array indices
 - `has_rotation` / `has_position` — boolean flags indicating which channels are actually animated
+- `source_skeleton_path` and, when the hash resolves to a skeleton node,
+  `source_node_name` — the rig the channel was extracted from
+- `blend_mode` — optional `"additive"` or `"override"`, from
+  `classify_bone_blend_modes` (override when the bone's bind position lies
+  outside the bounding box of its position samples). Bones without it default
+  to additive.
 
 **Bone Identification:**
 
-Bone references use the following priority:
-
-1. If the source skeleton provides CRC32 hashes (preferred), use `"bone_hash"` as the key (u32 hex string, e.g., `"0xC1571A1A"`)
-2. Otherwise use bone name string (e.g., `"BONE_Back_Right_Foot_Main"`)
+Bone keys are always the bone's CRC32 hash as an uppercase hex string with a
+`0x` prefix and no zero padding (`format!("0x{:X}")`, e.g. `"0xC1571A1A"`).
+Names are never used as keys; `source_node_name` carries the resolved name.
+When two channels in one clip share a hash, the key's value is an **array** of
+channel objects instead of a single object; consumers must accept both shapes.
 
 **Serialization Format:**
 
-Animations are stored per-entity. The inline `animations` array in
-`scene.json` carries lightweight **index records** only (`name`, `fps`,
-`frame_count`, `fragments`, and a `sidecar` field giving the relative
-path to the heavy per-clip JSON file). The full clip body (`bones`,
-`rotation`, `rotation_time`, `position`, `position_time`) lives in a
-companion file at `Packages/<entity>/animations/<sanitized-clip-name>.json`.
+The inline `root_entity.animations` array in `scene.json` carries
+lightweight **index records**: each clip with its `bones` map removed and a
+`sidecar` field added (`split_clip_for_sidecar`). `sidecar` is a path
+relative to the package directory (e.g. `animations/lg_deploy_l.json`). The
+full clip, including `bones`, lives in that companion file at
+`Packages/<package name>/animations/<sanitized-clip-name>.json`.
 
-This split (introduced in Phase 35) keeps `scene.json` small and lets
-the Blender addon load animation keyframe data lazily — only when the
-user actually applies a clip. The sidecar filename is derived from the
-clip name with characters outside `[A-Za-z0-9_.-]` replaced by `_`;
-collisions are disambiguated with a numeric suffix.
+This split keeps `scene.json` small and lets the Blender addon load animation
+keyframe data lazily — only when the user actually applies a clip. The sidecar
+filename is derived from the clip name with characters outside
+`[A-Za-z0-9_.-]` replaced by `_`; collisions are disambiguated with a numeric
+suffix (`_2`, `_3`, …).
 
 For shared skeletons or components, all clips are listed and the
 Blender addon filters by context.
@@ -314,7 +375,7 @@ Blender addon filters by context.
 }
 ```
 
-`Packages/<entity>/animations/lg_deploy_l.json` (sidecar body):
+`Packages/<package name>/animations/lg_deploy_l.json` (sidecar body):
 
 ```json
 {
@@ -365,73 +426,119 @@ The Blender addon provides four playback modes per animation:
 
 ## UI Bindings
 
-Ship screen textures are generated at export time and written into the shared
-`Data/UI/Generated/` tree. Each `child` object in `scene.json` may contain a
-`ui_bindings` array that records the provenance and output location of every
-resolved screen for that child entity.
+Ship screen textures are rendered at export time by the `starbreaker-ui`
+crate and written into the shared `Data/UI/Generated/` tree. Each
+`children[]` entry and each interior placement (`interiors[].placements[]`)
+carries a `ui_bindings` array that records the provenance and output location
+of every resolved screen for that entity. The root entity carries none.
 
 ### `UiBinding` shape
 
-Defined in `crates/starbreaker-3d/src/types.rs`. Key fields:
+The struct is `UiBinding` in `crates/starbreaker-3d/src/types.rs`; the JSON is
+written by `ui_binding_json` in `decomposed.rs`. Every field below is always
+present (optional values serialize as `null`). The struct's
+`canvas_widget_canvas_path`, `canvas_widget_url_postfix`,
+`canvas_widget_url_optional`, and `canvas_variable_binding` are internal and
+not serialized.
 
 | Field | Type | Description |
 |---|---|---|
-| `binding_kind` | `String` | Screen category: `"mfd"`, `"radar"`, `"physical"` (annunciator/door/etc.) |
-| `helper_name` | `Option<String>` | Named child on the seat/dashboard that places this screen (e.g. `Screen_Annunciator_L`). Same name appears as the Blender mesh name. |
-| `canvas_guid` | `Option<String>` | DataCore GUID of the BuildingBlocks canvas root record. |
-| `content_canvas_guid` | `Option<String>` | DataCore GUID of the per-helper content canvas resolved from the parent vehicle's `SCItemUIView_DashboardCanvasDef`. Takes precedence over `canvas_guid` during rendering. |
-| `screen_name_loc_key` | `Option<String>` | Localization key for the MFD screen name from the resolved `SMFDView.name` (e.g. `@ui_MFD_View_TargetStatus`). Injected into the frame canvas's `text_ScreenName` footer node during rendering. `null` for non-MFD bindings. |
-| `generated_image_path` | `Option<String>` | Relative path from the export root to the generated PNG (e.g. `Data/UI/Generated/02ea771f3d96bf1e_TEX0.png`). `null` when rendering failed or was skipped (e.g. null canvas GUID). |
-| `generated_backend` | `Option<String>` | Rendering backend that produced the PNG (always `"starbreaker-ui/compose"`). |
-| `generated_provenance` | `Option<String>` | Freeform note explaining how the image was produced or why it was skipped. |
+| `binding_kind` | string | Screen category: `"mfd"`, `"radar"`, or `"physical"` (annunciators, doors, gauges, …). |
+| `source_entity_name` | string | Entity that contributed the binding. |
+| `helper_name` | string or null | Named helper on the seat/dashboard that places this screen (e.g. `Screen_Annunciator_L`). The same name appears as the Blender mesh name. |
+| `default_view` | string or null | The resolved default view name. |
+| `default_state_is_off` | bool | `true` when the authored default view had no concrete content (null/zero or shell canvas). The exporter still renders an "on" image from the first concrete view; consumers can use the flag to start the screen off (the addon stores it on the object). |
+| `default_state_name` | string or null | Authored default state name. |
+| `default_light_color` | `[u8; 4]` or null | Authored default light colour (RGBA). |
+| `default_light_intensity_milli` | u16 or null | Authored default light intensity × 1000. |
+| `canvas_guid` | string or null | DataCore GUID of the BuildingBlocks canvas record (for MFDs, the frame canvas). |
+| `canvas_record_name` / `canvas_record_path` | string or null | DataCore name / path of that canvas record. |
+| `content_canvas_guid` | string or null | GUID of the per-helper content canvas resolved from the parent vehicle's `SCItemUIView_DashboardCanvasDef`. Rendering prefers it over `canvas_guid`, except for MFDs with a distinct frame canvas, which render the frame. |
+| `content_canvas_record_name` | string or null | DataCore name of the content canvas record. |
+| `dashboard_view_index` / `dashboard_screen_slot` | u32 or null | `View[]` index and `screens[]` slot in the dashboard canvas def that supplied `content_canvas_guid`. |
+| `screen_name_loc_key` | string or null | Localization key for the MFD screen name from the resolved `SMFDView.name` (e.g. `@ui_MFD_View_TargetStatus`), injected into the frame canvas's `text_ScreenName` footer. `null` for non-MFD bindings. |
+| `transit_location_loc_key` | string or null | Localization key of the transit location a lift-call console serves (nearest `SCTransitDestination`). It sets the console's floor-name heading and is part of the render identity. |
+| `owner_source_file` | string or null | Host SWF path of the owning UI component. |
+| `runtime_image_source` | string or null | Runtime image source, when authored. |
+| `generated_image_path` | string or null | Export-root-relative path of the generated PNG (see below). `null` when rendering failed. |
+| `generated_context_manifest_path` | string or null | Path of the `scene.json` that owns the binding. |
+| `generated_resolved_source_path` | string or null | Source the render resolved: `runtime_image_source`, else the widget canvas path, else `canvas_record_path`, else `"unknown"`. |
+| `generated_backend` | string or null | Rendering backend; always `"starbreaker-ui"` when an image was produced. |
+| `generated_provenance` | string or null | A JSON object **encoded as a string**: `resolved_canvas_ids`, `resolved_canvas_names`, `selected_style_source`, `selected_swf_source`, `render_backend`, `fallback_counters`, `unresolved_references`, `confidence`. |
+| `generated_confidence` | u8 or null | 0–100 score of how completely the binding resolved (content canvas, image source, record name, helper name). |
+| `ui_screen_aspect_w_over_h` | f32 or null | Physical aspect (width / height) of the screen mesh's render-target faces (`ui_pipeline/screen_aspect.rs`). It drives the render proportions of physical and radar screens; `null` when the mesh can't be measured. |
 
-### Content-addressed PNG layout
+The `generated_*` fields are filled only when the render succeeds; a failed
+render logs a warning and leaves them `null`.
 
-Generated PNGs are stored at:
+### Generated PNG layout
+
+Generated PNGs are stored at (`generated_ui_binding_path`):
 
 ```
-Data/UI/Generated/{hash16}_TEX{mip}.png
+Data/UI/Generated/{ui_type}/{manufacturer}/{ship}/{asset}.png
 ```
 
-where `hash16` is the first 16 hex digits of the SHA-256 of the rendered RGBA
-buffer and `mip` is the texture mip level (`0` for full resolution). This path
-scheme is implemented in `crates/starbreaker-3d/src/ui_pipeline.rs`
-(`generate_image_path`).
+- `ui_type` is `vehicle` when the root geometry path contains `/vehicles/`,
+  otherwise `ship`.
+- `manufacturer` is the root entity's manufacturer code (lowercase, e.g.
+  `drak`), or `unknown`.
+- `ship` is the cleaned root entity label with a leading manufacturer token
+  removed (`DRAK_Clipper` → `Clipper`).
+- `asset` is the first non-empty of `content_canvas_record_name`,
+  `canvas_record_name`, `helper_name`, `default_view`, the widget URL postfix,
+  `source_entity_name`, and `binding_kind`, lowercased with characters outside
+  `[a-z0-9_-]` replaced by `_`. Transit screens append their floor
+  (`transit_location_loc_key` without `@`) so per-floor renders don't collide.
 
-Content addressing means that two screen bindings that resolve to identical
-rendered output (e.g. the same canvas at the same mip) share one PNG on disk.
+Example: `Data/UI/Generated/ship/drak/Clipper/mesh_end_screen_plane.png`.
 
-### Composer pipeline
+Paths are names, not content hashes. Each distinct render identity
+(`UiRenderKey`: canvas GUIDs, kind, helper, dashboard view/slot, loc keys,
+host SWF, screen aspect) is rendered once and reused across placements. When
+two bindings map to the same path, the first file written wins.
 
-For each `UiBinding` with a non-null canvas GUID:
+Every export that produced generated UI files also writes
+`Data/UI/Generated/.export_stamp.json` (write time and `git describe`), which
+the starbreaker-ui visual guard uses to reject stale PNGs.
 
-1. **Canvas record** — fetched from DataCore (`DatacoreCanvasFetcher`).
-   `content_canvas_guid` is preferred over `canvas_guid`.
-2. **Widget tree resolution** — `CanvasWidgetTreeResolver` recursively
-   resolves sub-canvas references to produce a flat `ResolvedCanvas`.
-3. **SWF static atoms** — any SWF paths referenced in the widget tree are
-   loaded from the P4K (`P4kSwfFetcher`). A minimal empty library is used
-   when no SWF path is present.
-4. **Manufacturer style** — `ManufacturerStyleFetcher` maps the binding's
-   manufacturer identifier to a `ManufacturerStyle` (tint colour, backlight,
-   CRT parameters). Falls back to Drake amber with a log warning for
-   unrecognised manufacturers.
-5. **Rasterisation** — `render_canvas_with_postprocess` from
-   `starbreaker_ui::compose` draws the widget tree with `tiny-skia`, then
-   applies the manufacturer CRT pass (tint, scanlines, vignette).
-6. **PNG encode + write** — the RGBA buffer is SHA-256 hashed to derive the
-   output path. The file is written only if not already present (deduplication).
-   The `generated_image_path` field is set on the binding.
+### Render pipeline
 
-Canvas record → widget tree → static atoms → tint/CRT post-process → PNG is
-the complete rendering path. No AVM1/ActionScript is executed at any stage.
+`crates/starbreaker-3d/src/ui_pipeline.rs` (`render_ui_binding_png`) bridges
+the exporter to `starbreaker_ui::pipeline`:
+
+1. **Inputs** — a `UiBindingView` built from the binding, DataCore fetchers
+   for canvases and styles (`ui_pipeline/canvas_fetcher.rs`,
+   `style_fetcher.rs`), P4K fetchers for SWFs, atlas assets and holograms, and
+   per-export shared data (the localization map, plus a default-value registry
+   built once per export from it and the ship-derived values in
+   `ship_values.rs`).
+2. **Target size** — `mfd` renders at 1600×900, `radar` at 1024×1024, and
+   other kinds at the canvas's authored size (2048×1024 if none).
+3. **Compile** — `compile_ir_for_binding_with` picks the canvas, resolves the
+   BuildingBlocks widget tree (`CanvasWidgetTreeResolver`), and builds the
+   canonical UI IR document (`ui_ir`): layout rects, resolved text and
+   colours, asset references, and the selected style and SWF sources.
+4. **Style** — `load_style_for_ir` resolves the manufacturer
+   `BuildingBlocks_Style` record from DataCore (`ManufacturerStyleFetcher`);
+   if none matches it falls back to the Drake amber defaults with a warning.
+5. **Render** — `render_ui_ir_document` (`ir_compose`) rasterises the IR with
+   `tiny-skia`; screens whose IR selects a SWF host render through
+   `render_ui_ir_with_swf_overlay` (`hybrid_compose.rs`), which composites the
+   SWF's static stage where a Flash host node has no BuildingBlocks content.
+6. **Encode** — the image is PNG-encoded and written at the path above.
+
+No CRT/tint post-process is applied to exported PNGs, and no AVM1/ActionScript
+is executed at any stage; SWFs are read for static atoms only.
 
 ### Consumer
 
-The Blender addon reads `scene.json` and, for each child entity with a
-`ui_bindings` array, maps each binding's `helper_name` to the corresponding
-Blender mesh object. When `generated_image_path` is non-null, the addon loads
-the PNG as a screen emission texture applied to the mesh's UI material slot.
+The Blender addon reads `scene.json` and, for each scene instance or interior
+placement with a `ui_bindings` array, picks the binding whose `helper_name`
+matches one of the object's source node names (falling back to the first
+binding with an image). When `generated_image_path` is non-null, the addon
+loads the PNG as the screen emission texture on the object's UI material
+slot, and marks the object when `default_state_is_off` is set.
 
 Bindings with a null `generated_image_path` are imported without a texture;
 the mesh retains its base material colour (typically near-black for a dark
