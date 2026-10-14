@@ -49,9 +49,17 @@ for check in "${checks[@]}"; do
       continue
     fi
   fi
-  if rg --fixed-strings --line-number -- "$marker" "$target" >/dev/null; then
+  # grep (not rg): always present, so a missing tool can't turn every check
+  # into a silent pass. Exit 0 = marker found, 1 = clean, anything else is a
+  # search error and fails the guard.
+  status=0
+  matches=$(grep -rnF -- "$marker" "$target") || status=$?
+  if [[ "$status" -eq 0 ]]; then
     echo "Hardcoding marker found: $marker in $target"
-    rg --fixed-strings --line-number -- "$marker" "$target" || true
+    echo "$matches"
+    failed=1
+  elif [[ "$status" -ne 1 ]]; then
+    echo "ERROR: hardcoding-guard search failed for '$marker' in '$target' (grep exit $status)." >&2
     failed=1
   fi
 done

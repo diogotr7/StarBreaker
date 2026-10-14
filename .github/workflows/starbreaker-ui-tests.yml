@@ -5,13 +5,11 @@ on:
     paths:
       - crates/starbreaker-ui/**
       - scripts/**
-      - crates/starbreaker-ui/docs/ui-matching-workflow.md
       - .github/workflows/starbreaker-ui-tests.yml
   pull_request:
     paths:
       - crates/starbreaker-ui/**
       - scripts/**
-      - crates/starbreaker-ui/docs/ui-matching-workflow.md
       - .github/workflows/starbreaker-ui-tests.yml
 
 # Same as ci.yml: a new push cancels the stale run, except on main.
@@ -39,7 +37,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: UI hardcoding guard
-        run: bash .github/scripts/check_ui_hardcoding.sh
+        run: bash scripts/check_ui_hardcoding.sh
       - name: Validate regression manifest and freeze lockfile (quick)
         run: bash scripts/validate_ui_regression_artifacts.sh --quick
       - name: Run repo-only UI regression contract

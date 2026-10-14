@@ -20,7 +20,8 @@ on:
       - "mcp/**"
       - "app/**"
       - ".github/workflows/ci.yml"
-      - ".github/scripts/**"
+      - "scripts/check_ui_hardcoding.sh"
+      - "scripts/lib/**"
   # Triggers for both same-repo and fork PRs targeting main. Fork PRs run
   # with a read-only GITHUB_TOKEN; `swatinem/rust-cache` will read but not
   # save the cache (GitHub restricts cache writes from forks).
@@ -34,7 +35,8 @@ on:
       - "mcp/**"
       - "app/**"
       - ".github/workflows/ci.yml"
-      - ".github/scripts/**"
+      - "scripts/check_ui_hardcoding.sh"
+      - "scripts/lib/**"
   workflow_dispatch:
 
 env:
@@ -89,7 +91,7 @@ jobs:
 
       - name: UI hardcoding guard
         shell: bash
-        run: bash .github/scripts/check_ui_hardcoding.sh
+        run: bash scripts/check_ui_hardcoding.sh
 
       - name: Test workspace
         run: cargo test --workspace --locked
