@@ -18,9 +18,12 @@ use crate::error::UiError;
 use super::decode::{decode_jpeg3, decode_lossless};
 use super::types::{EditTextRecord, FontGlyph, FontGlyphSet, ShapeRecord, SwfEditTextMetrics};
 
+// Per thread: each test runs on its own thread, so parallel tests parsing
+// SWFs don't move another test's count.
 #[cfg(test)]
-pub(crate) static SWF_PARSE_COUNT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+thread_local! {
+    pub(crate) static SWF_PARSE_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 
 /// Decompress a SWF exactly once. Returns the owned buffer; the caller calls
 /// `swf::parse_swf(&buf)` to borrow its tags (which cannot cross this fn
@@ -28,7 +31,7 @@ pub(crate) static SWF_PARSE_COUNT: std::sync::atomic::AtomicU64 =
 /// one decompress+parse per library construction.
 pub(crate) fn parse_tags(bytes: &[u8]) -> Result<swf::SwfBuf, UiError> {
     #[cfg(test)]
-    SWF_PARSE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    SWF_PARSE_COUNT.with(|c| c.set(c.get() + 1));
     Ok(swf::decompress_swf(std::io::Cursor::new(bytes))?)
 }
 
