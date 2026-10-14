@@ -85,6 +85,9 @@ pub struct AuthoredTexture {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MaterialSetAuthoredData {
+    /// The root has a `<SubMaterials>` node: a multi-material, which the
+    /// engine flags `MTL_FLAG_MULTI_SUBMTL` (`crate::material_slots`).
+    pub sub_materials: bool,
     pub attributes: Vec<AuthoredAttribute>,
     pub public_params: Vec<PublicParam>,
     pub child_blocks: Vec<AuthoredBlock>,
@@ -727,6 +730,7 @@ pub fn parse_mtl(data: &[u8]) -> Result<MtlFile, Error> {
             .map(|child| parse_authored_block(&xml, child))
             .collect::<Vec<_>>();
         MaterialSetAuthoredData {
+            sub_materials: true,
             attributes: collect_authored_attributes(&xml, root),
             public_params,
             child_blocks,

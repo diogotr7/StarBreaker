@@ -77,3 +77,20 @@ fn expected_types_i32() {
     let types = i32::expected_data_types();
     assert_eq!(types, &[DataType::Int32]);
 }
+
+/// An array of references read as `Value` (a query path ending in a
+/// reference array, e.g. an entity's `tags`) yields each referenced
+/// record's id, and `Null` only for a null reference.
+#[test]
+fn reference_array_values_carry_the_record_id() {
+    use starbreaker_datacore::query::value::Value;
+    use starbreaker_datacore::types::Reference;
+    let mut b = test_helpers::DcbBuilder::new();
+    let guid = CigGuid::from_bytes([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    b.reference_values.push(Reference { instance_index: 0, record_id: guid });
+    b.reference_values.push(Reference { instance_index: 0, record_id: CigGuid::from_bytes([0; 16]) });
+    let data = b.build();
+    let db = Database::from_bytes(&data).unwrap();
+    assert_eq!(Value::read_from_array(&db, 0, DataType::Reference).unwrap(), Value::Guid(guid));
+    assert_eq!(Value::read_from_array(&db, 1, DataType::Reference).unwrap(), Value::Null);
+}

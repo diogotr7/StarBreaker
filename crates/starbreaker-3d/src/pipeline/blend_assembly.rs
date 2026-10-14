@@ -3882,6 +3882,8 @@ fn create_scene_blend_package_with_instances_and_decal_offsets(
 
     // The package skeleton: one armature in the root mesh object's space
     // (same parent and local transform), bound by every skinned mesh object.
+    // A root without geometry (no mesh asset) has no mesh object: the
+    // armature then sits at the entity root, where that object would.
     let is_skinned = |entry_idx: usize| {
         let instance = &mesh_instances_input[local_mesh_object_entries[entry_idx].3];
         rig.is_some_and(|rig| rig.skinned_assets.contains(&instance.mesh_asset.to_ascii_lowercase()))
@@ -3890,19 +3892,17 @@ fn create_scene_blend_package_with_instances_and_decal_offsets(
         let instance = &mesh_instances_input[entry.3];
         instance.parent_entity_name.is_none() && !instance.is_interior
     });
-    let rig_object = match (rig, root_entry) {
-        (Some(rig), Some(root)) if (0..local_mesh_object_entries.len()).any(is_skinned) => {
+    let rig_space = match root_entry {
+        Some(root) => {
             let instance = &mesh_instances_input[local_mesh_object_entries[root].3];
-            rig::RigObject::new(
-                &format!("{root_entity_name}_armature"),
-                rig.bones,
-                rig.clips,
-                local_mesh_object_entries[root].5,
-                instance.source_loc,
-                instance.source_quat,
-                instance.source_scale,
-                &mut ptrs,
-            )?
+            (local_mesh_object_entries[root].5, instance.source_loc, instance.source_quat, instance.source_scale)
+        }
+        None => (entity_root_ptr, [0.0; 3], [1.0, 0.0, 0.0, 0.0], [1.0; 3]),
+    };
+    let rig_object = match rig {
+        Some(rig) if (0..local_mesh_object_entries.len()).any(is_skinned) => {
+            let (parent, loc, quat, scale) = rig_space;
+            rig::RigObject::new(&format!("{root_entity_name}_armature"), rig.bones, rig.clips, parent, loc, quat, scale, &mut ptrs)?
         }
         _ => None,
     };

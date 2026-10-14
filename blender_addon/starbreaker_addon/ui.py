@@ -7,11 +7,9 @@ import time
 import bpy
 import blf
 import gpu
-import mathutils
 from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 from bpy.types import Operator, Panel
-from bpy_extras.io_utils import ImportHelper
 from gpu_extras.batch import batch_for_shader
 
 from .manifest import PackageBundle
@@ -29,14 +27,12 @@ from .runtime import (
     PROP_PACKAGE_NAME,
     PROP_PACKAGE_ROOT,
     PROP_PALETTE_ID,
-    PROP_SCENE_PATH,
     PROP_SHADER_FAMILY,
     PROP_SURFACE_SHADER_MODE,
     PROP_TEMPLATE_KEY,
     SCENE_POM_DETAIL_PROP,
     SCENE_ENGINE_GLOW_PROP,
     SCENE_SHARED_GLOW_PROP,
-    TEMPLATE_COLLECTION_NAME,
     apply_pom_detail_mode,
     SCENE_WEAR_STRENGTH_PROP,
     animation_overlap_warnings,
@@ -60,7 +56,6 @@ from .runtime import (
     dump_selected_metadata,
     exterior_palette_ids,
     find_package_root,
-    import_package,
     delete_animation_instance,
     set_animation_instance_muted,
     solo_animation_instance,
@@ -121,26 +116,6 @@ def _tag_view3d_redraws(context: bpy.types.Context) -> None:
     for area in screen.areas:
         if area.type == "VIEW_3D":
             area.tag_redraw()
-
-
-def _force_view3d_perspective(context: bpy.types.Context) -> None:
-    window = getattr(context, "window", None)
-    screen = getattr(window, "screen", None)
-    if window is None or screen is None:
-        return
-    for area in screen.areas:
-        if area.type != "VIEW_3D":
-            continue
-        region = next((region for region in area.regions if region.type == "WINDOW"), None)
-        if region is None:
-            continue
-        space = getattr(area, "spaces", None)
-        active_space = space.active if space is not None else None
-        region_3d = getattr(active_space, "region_3d", None)
-        if region_3d is None:
-            continue
-        with context.temp_override(window=window, area=area, region=region):
-            region_3d.view_perspective = "PERSP"
 
 
 def _set_active_object(context: bpy.types.Context, obj: bpy.types.Object | None) -> None:
@@ -253,228 +228,6 @@ def _deferred_focus_loaded_package_root(
             except Exception:
                 pass
     return None
-
-
-def _collapse_template_cache_outliner(context: bpy.types.Context) -> None:
-    if bpy.data.collections.get(TEMPLATE_COLLECTION_NAME) is None:
-        return
-    window = getattr(context, "window", None)
-    screen = getattr(window, "screen", None)
-    if window is None or screen is None:
-        return
-    for area in screen.areas:
-        if area.type != "OUTLINER":
-            continue
-        region = next((region for region in area.regions if region.type == "WINDOW"), None)
-        if region is None:
-            continue
-        with context.temp_override(window=window, area=area, region=region):
-            for _ in range(8):
-                try:
-                    bpy.ops.outliner.show_one_level(open=False)
-                except RuntimeError:
-                    break
-
-
-def _frame_package_root_three_quarter(
-    context: bpy.types.Context,
-    package_root: bpy.types.Object,
-) -> None:
-    window = getattr(context, "window", None)
-    screen = getattr(window, "screen", None)
-    if window is None or screen is None:
-        return
-
-    mesh_candidates: list[tuple[bpy.types.Object, float]] = []
-    for obj in package_root.children_recursive:
-        if obj.type != "MESH":
-            continue
-        if not bool(getattr(getattr(obj, "data", None), "polygons", ())):
-            continue
-        if bool(getattr(obj, "hide_viewport", False)):
-            continue
-        if not obj.visible_get(view_layer=context.view_layer):
-            continue
-        corners = [obj.matrix_world @ mathutils.Vector(corner) for corner in obj.bound_box]
-        if not corners:
-            continue
-        min_corner = mathutils.Vector(
-            (
-                min(corner.x for corner in corners),
-                min(corner.y for corner in corners),
-                min(corner.z for corner in corners),
-            )
-        )
-        max_corner = mathutils.Vector(
-            (
-                max(corner.x for corner in corners),
-                max(corner.y for corner in corners),
-                max(corner.z for corner in corners),
-            )
-        )
-        diagonal = (max_corner - min_corner).length
-        if diagonal > 0.0:
-            mesh_candidates.append((obj, diagonal))
-
-    if not mesh_candidates:
-        return
-
-    largest_diagonal = max(diagonal for _, diagonal in mesh_candidates)
-    cutoff = largest_diagonal * 0.08
-    focus_objects = [obj for obj, diagonal in mesh_candidates if diagonal >= cutoff]
-    if not focus_objects:
-        focus_objects = [obj for obj, _ in mesh_candidates]
-
-    world_corners: list[mathutils.Vector] = []
-    for obj in focus_objects:
-        bound_box = getattr(obj, "bound_box", None)
-        if not bound_box:
-            continue
-        matrix_world = obj.matrix_world
-        for corner in bound_box:
-            world_corners.append(matrix_world @ mathutils.Vector(corner))
-    if not world_corners:
-        return
-
-    sorted_x = sorted(corner.x for corner in world_corners)
-    sorted_y = sorted(corner.y for corner in world_corners)
-    sorted_z = sorted(corner.z for corner in world_corners)
-    corner_count = len(world_corners)
-    low_index = max(0, int(corner_count * 0.02))
-    high_index = min(corner_count - 1, int(corner_count * 0.98))
-
-    min_corner = mathutils.Vector(
-        (
-            sorted_x[low_index],
-            sorted_y[low_index],
-            sorted_z[low_index],
-        )
-    )
-    max_corner = mathutils.Vector(
-        (
-            sorted_x[high_index],
-            sorted_y[high_index],
-            sorted_z[high_index],
-        )
-    )
-    focus_center = (min_corner + max_corner) * 0.5
-    diagonal = (max_corner - min_corner).length
-    if diagonal <= 1e-6:
-        diagonal = 1.0
-
-    # Baseline direction tuned from an approved manual viewport angle.
-    view_direction = mathutils.Vector((-0.735, -0.487, -0.650)).normalized()
-    target_rotation = view_direction.to_track_quat("-Z", "Y")
-
-    prioritized_areas: list[bpy.types.Area] = []
-    active_area = getattr(context, "area", None)
-    if active_area is not None and active_area.type == "VIEW_3D":
-        prioritized_areas.append(active_area)
-    prioritized_areas.extend(
-        area for area in screen.areas if area.type == "VIEW_3D" and area is not active_area
-    )
-
-    for area in prioritized_areas:
-        region = next((region for region in area.regions if region.type == "WINDOW"), None)
-        if region is None:
-            continue
-        with context.temp_override(window=window, area=area, region=region):
-            bpy.ops.object.select_all(action="DESELECT")
-            for obj in focus_objects:
-                obj.select_set(True)
-            _set_active_object(context, focus_objects[0])
-            space = getattr(area, "spaces", None)
-            active_space = space.active if space is not None else None
-            region_3d = getattr(active_space, "region_3d", None)
-            if region_3d is not None:
-                region_3d.view_perspective = "PERSP"
-                for _ in range(3):
-                    if region_3d.view_perspective == "PERSP":
-                        break
-                    try:
-                        bpy.ops.view3d.view_persportho()
-                    except RuntimeError:
-                        break
-                    region_3d.view_perspective = "PERSP"
-                region_3d.view_rotation = target_rotation
-                region_3d.view_location = focus_center
-
-                lens_mm = float(getattr(active_space, "lens", 50.0))
-                lens_scale = max(lens_mm, 1.0) / 50.0
-                # Deterministic fit: scales with lens so 100mm does not over-zoom.
-                region_3d.view_distance = max(diagonal * 0.95 * lens_scale, diagonal * 0.78)
-
-
-def _finalize_import_view(context: bpy.types.Context, package_root: bpy.types.Object) -> None:
-    _collapse_template_cache_outliner(context)
-    _frame_package_root_three_quarter(context, package_root)
-    _force_view3d_perspective(context)
-    bpy.ops.object.select_all(action="DESELECT")
-    package_root.select_set(True)
-    _set_active_object(context, package_root)
-
-
-def _auto_apply_landing_gear_snap_last(
-    context: bpy.types.Context,
-    package_root: bpy.types.Object,
-) -> None:
-    scene_path = package_root.get(PROP_SCENE_PATH)
-    if not isinstance(scene_path, str) or not scene_path:
-        return
-
-    try:
-        package = PackageBundle.load(scene_path)
-    except Exception:
-        return
-
-    try:
-        animation_items = available_package_animation_items(package)
-    except Exception:
-        return
-    if not animation_items:
-        return
-
-    def _animation_score(name: str, display_name: str) -> int:
-        text = f"{name} {display_name}".lower()
-        has_landing_gear = "landing" in text and "gear" in text
-        if not has_landing_gear:
-            return -1
-
-        score = 0
-        if "retract" in text:
-            score += 100
-        if "stow" in text or "stowed" in text:
-            score += 80
-        if "close" in text or "closed" in text:
-            score += 60
-        if "up" in text:
-            score += 40
-
-        if "deploy" in text or "deployed" in text:
-            score -= 60
-        if "extend" in text or "extended" in text:
-            score -= 60
-        if "open" in text or "opened" in text:
-            score -= 40
-        if "down" in text:
-            score -= 20
-        return score
-
-    best_name: str | None = None
-    best_score = -1
-    for animation_name, animation_display_name in animation_items:
-        score = _animation_score(animation_name, animation_display_name)
-        if score > best_score:
-            best_score = score
-            best_name = animation_name
-
-    if best_name is None or best_score < 0:
-        return
-
-    try:
-        apply_animation_mode_to_package_root(context, package_root, best_name, "snap_last")
-    except Exception:
-        return
 
 
 def _update_pom_detail(_: bpy.types.ID, context: bpy.types.Context) -> None:
@@ -1019,163 +772,6 @@ def _livery_items(_: bpy.types.Operator, context: bpy.types.Context) -> list[tup
     ]
     return _LIVERY_ITEMS_CACHE
 
-
-class STARBREAKER_OT_import_decomposed_package(Operator, ImportHelper):
-    bl_idname = "starbreaker.import_decomposed_package"
-    bl_label = "Import StarBreaker Package"
-    bl_options = {"REGISTER", "UNDO"}
-
-    _timer: bpy.types.Timer | None = None
-    _started: bool = False
-
-    filter_glob: StringProperty(default="scene.json;*.json", options={"HIDDEN"})
-    prefer_cycles: BoolProperty(
-        name="Prefer Cycles",
-        description="Switch the active scene to Cycles before import",
-        default=True,
-    )
-    palette_id_override: StringProperty(
-        name="Initial Palette ID",
-        description="Optional palette override applied during import to avoid rebuilding the package a second time",
-        default="",
-    )
-
-    def execute(self, context: bpy.types.Context) -> set[str]:
-        package_name = Path(self.filepath).parent.name
-        _begin_import_progress(context, f"Preparing {package_name}")
-        self._started = False
-        self._timer = context.window_manager.event_timer_add(0.01, window=context.window)
-        context.window_manager.modal_handler_add(self)
-        return {"RUNNING_MODAL"}
-
-    def modal(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
-        if event.type != "TIMER" or self._started:
-            return {"PASS_THROUGH"}
-        self._started = True
-        package_name = Path(self.filepath).parent.name
-        try:
-            package_root = import_package(
-                context,
-                self.filepath,
-                prefer_cycles=self.prefer_cycles,
-                palette_id=self.palette_id_override.strip() or None,
-                progress_callback=lambda fraction, description: _update_import_progress(
-                    context,
-                    fraction,
-                    description,
-                ),
-            )
-        except Exception as exc:
-            _end_import_progress(context, f"Import failed: {exc}")
-            self.cancel(context)
-            self.report({"ERROR"}, str(exc))
-            return {"CANCELLED"}
-        prefs = _get_prefs()
-        if _should_apply_landing_gear(prefs):
-            _auto_apply_landing_gear_snap_last(context, package_root)
-        if _should_change_viewport(prefs):
-            _finalize_import_view(context, package_root)
-        _end_import_progress(context, f"Imported {package_root.get(PROP_PACKAGE_NAME, package_name)}")
-        self.cancel(context)
-        self.report({"INFO"}, f"Imported {package_root.get(PROP_PACKAGE_NAME, package_name)}")
-        return {"FINISHED"}
-
-    def cancel(self, context: bpy.types.Context) -> None:
-        if self._timer is not None:
-            context.window_manager.event_timer_remove(self._timer)
-            self._timer = None
-
-
-class STARBREAKER_OT_import_progress_popup(Operator):
-    bl_idname = "starbreaker.import_progress_popup"
-    bl_label = "StarBreaker Import Progress"
-    bl_options = {"INTERNAL"}
-
-    _timer: bpy.types.Timer | None = None
-    _started: bool = False
-
-    filepath: StringProperty(options={"HIDDEN"})
-    package_name: StringProperty(options={"HIDDEN"})
-    prefer_cycles: BoolProperty(options={"HIDDEN"}, default=True)
-    palette_id_override: StringProperty(options={"HIDDEN"}, default="")
-
-    def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
-        _begin_import_progress(context, f"Preparing {self.package_name or Path(self.filepath).parent.name}")
-        self._started = False
-        self._timer = context.window_manager.event_timer_add(0.01, window=context.window)
-        context.window_manager.modal_handler_add(self)
-        return context.window_manager.invoke_popup(self, width=420)
-
-    def modal(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
-        if event.type == "TIMER":
-            if not self._started:
-                self._started = True
-                try:
-                    package_root = import_package(
-                        context,
-                        self.filepath,
-                        prefer_cycles=self.prefer_cycles,
-                        palette_id=self.palette_id_override.strip() or None,
-                        progress_callback=lambda fraction, description: _update_import_progress(
-                            context,
-                            fraction,
-                            description,
-                        ),
-                    )
-                except Exception as exc:
-                    _end_import_progress(context, f"Import failed: {exc}")
-                    self.cancel(context)
-                    self.report({"ERROR"}, str(exc))
-                    return {"CANCELLED"}
-                prefs = _get_prefs()
-                if _should_apply_landing_gear(prefs):
-                    _auto_apply_landing_gear_snap_last(context, package_root)
-                if _should_change_viewport(prefs):
-                    _finalize_import_view(context, package_root)
-                _end_import_progress(
-                    context,
-                    f"Imported {package_root.get(PROP_PACKAGE_NAME, self.package_name or Path(self.filepath).parent.name)}",
-                )
-                self.cancel(context)
-                self.report(
-                    {"INFO"},
-                    f"Imported {package_root.get(PROP_PACKAGE_NAME, self.package_name or Path(self.filepath).parent.name)}",
-                )
-                return {"FINISHED"}
-            if not getattr(context.window_manager, _IMPORT_PROGRESS_ACTIVE_PROP, False):
-                self.cancel(context)
-                return {"FINISHED"}
-            if context.window.screen is not None:
-                for area in context.window.screen.areas:
-                    area.tag_redraw()
-        return {"PASS_THROUGH"}
-
-    def cancel(self, context: bpy.types.Context) -> None:
-        if self._timer is not None:
-            context.window_manager.event_timer_remove(self._timer)
-            self._timer = None
-
-    def draw(self, context: bpy.types.Context) -> None:
-        layout = self.layout
-        window_manager = context.window_manager
-        fraction = _progress_fraction(getattr(window_manager, _IMPORT_PROGRESS_VALUE_PROP, 0.0))
-        description = getattr(window_manager, _IMPORT_PROGRESS_DESCRIPTION_PROP, "Preparing import")
-        text_only = bool(getattr(window_manager, _IMPORT_PROGRESS_TEXT_ONLY_PROP, False))
-
-        if text_only:
-            layout.label(text=description)
-            return
-
-        row = layout.row(align=True)
-        bar = row.row()
-        if hasattr(bar, "progress"):
-            bar.progress(factor=fraction, type="BAR", text="")
-        else:
-            bar.prop(window_manager, _IMPORT_PROGRESS_VALUE_PROP, text="", slider=True)
-        percent = row.row()
-        percent.alignment = "RIGHT"
-        percent.label(text=f"{int(round(fraction * 100.0))}%")
-        layout.label(text=description)
 
 class STARBREAKER_OT_refresh_materials(Operator):
     bl_idname = "starbreaker.refresh_materials"
@@ -1898,27 +1494,9 @@ class STARBREAKER_PT_tools(Panel):
 # ── Addon Preferences ────────────────────────────────────────────────────────
 
 class STARBREAKER_AP_preferences(bpy.types.AddonPreferences):
-    """User-configurable post-import behaviour for the StarBreaker addon."""
+    """User-configurable post-open behaviour for the StarBreaker addon."""
 
     bl_idname = "starbreaker_addon"
-
-    viewport_change_after_import: BoolProperty(  # type: ignore[assignment]
-        name="Adjust viewport after import",
-        description=(
-            "Frame the imported package in the 3D viewport and switch to "
-            "perspective view after a successful import."
-        ),
-        default=True,
-    )
-
-    landing_gear_retract_after_import: BoolProperty(  # type: ignore[assignment]
-        name="Retract landing gear after import",
-        description=(
-            "Automatically apply the best landing-gear retracted pose when a "
-            "package is imported, so ships appear ready-for-flight by default."
-        ),
-        default=True,
-    )
 
     auto_refresh_unloaded_materials_on_load: BoolProperty(  # type: ignore[assignment]
         name="Refresh unloaded materials after file load",
@@ -1931,10 +1509,6 @@ class STARBREAKER_AP_preferences(bpy.types.AddonPreferences):
 
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
-        layout.label(text="Post-import behaviour:")
-        layout.prop(self, "landing_gear_retract_after_import")
-        layout.prop(self, "viewport_change_after_import")
-        layout.separator()
         layout.label(text="Post-open behaviour:")
         layout.prop(self, "auto_refresh_unloaded_materials_on_load")
 
@@ -1945,20 +1519,6 @@ def _get_prefs() -> STARBREAKER_AP_preferences | None:
     if addon_entry is None:
         return None
     return getattr(addon_entry, "preferences", None)
-
-
-def _should_apply_landing_gear(prefs: object | None) -> bool:
-    """Pure gate — return True when landing-gear retract should run after import."""
-    if prefs is None:
-        return True
-    return bool(getattr(prefs, "landing_gear_retract_after_import", True))
-
-
-def _should_change_viewport(prefs: object | None) -> bool:
-    """Pure gate — return True when viewport framing should run after import."""
-    if prefs is None:
-        return True
-    return bool(getattr(prefs, "viewport_change_after_import", True))
 
 
 def _should_auto_refresh_unloaded_materials_on_load(prefs: object | None) -> bool:

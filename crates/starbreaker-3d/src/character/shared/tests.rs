@@ -127,6 +127,7 @@ fn rig(blendshapes: Option<BlendShapes>) -> CharacterRig {
         }],
         animations: Vec::new(),
         actor: Vec::new(),
+        head_hidden: false,
     }
 }
 

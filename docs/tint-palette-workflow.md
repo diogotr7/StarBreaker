@@ -117,8 +117,8 @@ uv run python scripts/tint_audit.py <export_root_or_package_dir>
 
 Blender (deploy addon first if it changed): `rsync -a --delete
 blender_addon/starbreaker_addon/ "$HOME/.config/blender/5.1/scripts/addons/starbreaker_addon/"`,
-then in Blender `bpy.ops.wm.read_homefile(app_template="")` →
-`bpy.ops.starbreaker.import_decomposed_package(filepath=".../scene.json")` →
+then in Blender `bpy.ops.wm.open_mainfile(filepath=".../scene.blend")` (the
+load-post handler rebuilds the package materials) →
 `bpy.ops.starbreaker.apply_palette(palette_id="...")` for Mode A.
 
 ## §7 Acceptance (bootstrap test)

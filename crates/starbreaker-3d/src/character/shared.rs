@@ -26,6 +26,9 @@
 //!   with the shared glTF writer (`MaterialMode::Colors`: the `.mtl`
 //!   materials without textures). It may carry animation clips
 //!   (`crate::clip::Clip`) over the same skeleton and morph targets.
+//!   [`CharacterRig::hide_head`]: a worn item hides the head's port (a full
+//!   helmet) — the head is written without geometry (the skeleton's root
+//!   stays), and its CDF sub-meshes and blendshapes go.
 //! - [`part_payload`]: a part as a child [`EntityPayload`] of the head;
 //!   [`stem`] names parts after their source file.
 
@@ -82,12 +85,17 @@ pub(crate) struct CharacterRig {
     /// The actor (body) skeleton at its bind, the rig's base when present
     /// ([`Self::bones`]); empty for a head-only rig.
     pub actor: Vec<Bone>,
+    /// The head's port is hidden ([`Self::hide_head`]).
+    pub head_hidden: bool,
 }
 
 impl CharacterRig {
     /// The head as a skinned shared mesh carrying the blendshapes: its
-    /// pipeline source reshaped to `head`.
+    /// pipeline source reshaped to `head`; no geometry when it is hidden.
     pub(crate) fn head_mesh(&self) -> Result<Mesh, CharacterError> {
+        if self.head_hidden {
+            return Ok(Mesh::empty());
+        }
         let mut mesh = self.head_source.reshaped(&self.head, &joint_names(&self.rest))?;
         if let Some(bs) = &self.blendshapes {
             if bs.num_vertices as usize != self.head.positions.len()
@@ -102,6 +110,22 @@ impl CharacterRig {
             mesh.morph_targets = morph_targets(bs);
         }
         Ok(mesh)
+    }
+
+    /// The head's materials (none when it is hidden).
+    pub(crate) fn head_materials(&self) -> Option<crate::mtl::MtlFile> {
+        if self.head_hidden { None } else { self.head_source.materials.clone() }
+    }
+
+    /// Hide the head (its port is hidden): no head geometry, no blendshapes
+    /// or morph tracks, and the `head_parts` (its CDF sub-meshes) go.
+    pub(crate) fn hide_head(&mut self, head_parts: impl Fn(&CharacterPart) -> bool) {
+        self.head_hidden = true;
+        self.blendshapes = None;
+        for clip in &mut self.animations {
+            clip.morphs.clear();
+        }
+        self.parts.retain(|p| !head_parts(p));
     }
 
     /// Dress the rig in `outfit`: the body's actor skeleton becomes the base
@@ -185,7 +209,7 @@ impl CharacterRig {
         }
         let input = GlbInput {
             root_mesh: Some(self.head_mesh()?),
-            root_materials: self.head_source.materials.clone(),
+            root_materials: self.head_materials(),
             root_textures: None,
             root_nmc: None,
             root_palette: None,
@@ -200,7 +224,7 @@ impl CharacterRig {
             metadata: GlbMetadata {
                 entity_name: Some(self.name.clone()),
                 geometry_path: None,
-                material_path: self.head_source.materials.as_ref().and_then(|m| m.source_path.clone()),
+                material_path: self.head_materials().and_then(|m| m.source_path),
                 export_options: ExportOptionsMetadata {
                     kind: "Bundled".to_string(),
                     material_mode: "Colors".to_string(),

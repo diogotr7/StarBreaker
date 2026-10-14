@@ -87,7 +87,7 @@ pub fn assemble_glb_with_loadout_with_progress(
 
     // Export root entity (mesh + textures).
     let (
-        root_mesh,
+        mut root_mesh,
         root_mtl,
         root_tex,
         exported_root_nmc,
@@ -115,8 +115,14 @@ pub fn assemble_glb_with_loadout_with_progress(
 
     // Check for equipped paint item and resolve its SubGeometry palette/material override.
     let phase_start = Instant::now();
-    let (mut root_palette, root_mtl) =
+    let (mut root_palette, mut root_mtl) =
         resolve_paint_override(db, p4k, record, &tree.root, root_palette, root_mtl);
+    // The paint's material set serves the mesh's slots the engine's way too.
+    if let Some(mtl) = root_mtl.as_mut() {
+        crate::material_slots::resolve_material_slots(&mut root_mesh, mtl, || {
+            crate::material_slots::load_default_material(p4k)
+        })?;
+    }
     log::info!(
         "[timing] resolve_paint_override: {:.2}s",
         phase_start.elapsed().as_secs_f32()

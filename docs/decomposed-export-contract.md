@@ -29,7 +29,11 @@ Within that export root:
   `mesh_asset`, `material_sidecar`, `palette_id`, and optionally `animations`
   (only the root entity carries animations) and, in character packages,
   `character` (the resolved CHF material customization and HumanSkin_V2
-  wrinkle-slot layout; written by `character/package.rs`)
+  wrinkle-slot layout; written by `character/package.rs`). `mesh_asset` is
+  `null` when the root has no geometry (no vertices, no NMC nodes — e.g. a
+  socpak scene root, or a character whose head a full helmet hides); the
+  `.blend` then has no root mesh object and the package armature sits at the
+  entity root.
 - `export_options`: `kind`, `format`, `material_mode`, `lod_level`,
   `texture_mip`, `include_attachments`, `include_interior`, `include_lights`
 - `children[]`: one scene instance per attached child entity (below)
@@ -198,6 +202,14 @@ Current retained compatibility aliases and fallbacks:
   `resolved_no_rotation`.
 
 ## Material Sidecars
+
+A sidecar is shared by every mesh of its source `.mtl`. Submesh slots
+follow the engine (`crates/starbreaker-3d/src/material_slots.rs`, CryEngine
+`GetSafeSubMtl`): a `.mtl` without `<SubMaterials>` serves every slot, and a
+slot past a multi-material's submaterials (a mesh compiled against an older
+`.mtl`) draws with the engine default `Materials/material_default.mtl`. Such
+a mesh's sidecar appends that material at the slot's `index`, so its content
+differs and it is written under a hashed variant of the shared path.
 
 Each `*.materials.json` sidecar preserves:
 

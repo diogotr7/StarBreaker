@@ -142,3 +142,79 @@ fn helmets_hide_the_chf_head_items() {
     }
     assert!(Outfit::with_body(None).wears(&items[0]), "nothing worn hides nothing");
 }
+
+/// A full helmet hides the head's port, and the DNA head is the CHF item on
+/// it: the head and its CDF eyes/teeth are not written (the skeleton
+/// stays). Without a helmet the head stays.
+#[test]
+fn full_helmets_hide_the_dna_head() {
+    use starbreaker_3d::character::outfit::Outfit;
+    use starbreaker_3d::character::{HeadIdentityContext, gender_tag, items};
+    let Some(p4k) = p4k() else { return };
+    let dcb = db_bytes(&p4k);
+    let db = Database::from_bytes(&dcb).unwrap();
+    let chf = chf(&p4k, "masculinedefault");
+    let items = items::load_head_items(&p4k, &items::resolve_head_items(&db, &chf.itemport, gender_tag(chf.dna.gender_hash)));
+    let context = HeadIdentityContext::load(&p4k, chf.dna.gender_hash).unwrap();
+    let head_parts = ["protos_human_male_face_t1_pu_head", "protos_human_male_face_t1_pu_eyes", "protos_human_male_face_t1_pu_eyedetails", "protos_human_male_face_t1_pu_teeth"];
+
+    let helmet = parse_loadout(&p4k.read_file(PIRATE_HEAVY).unwrap()).unwrap();
+    let outfit = Outfit::load(&p4k, &db, &chf, &helmet);
+    let glb = context.build_character_glb(&chf.dna, &items, &outfit, &Default::default()).unwrap();
+    let meshes = mesh_vertices(&glb);
+    for part in head_parts {
+        assert!(!meshes.contains_key(part), "{part} is under the helmet: {:?}", meshes.keys());
+    }
+    assert!(meshes.keys().any(|m| m.starts_with("m_slaver_heavy_armor_helmet")), "{:?}", meshes.keys());
+    let (doc, ..) = gltf::import_slice(&glb).unwrap();
+    let joints: std::collections::HashSet<String> = doc.skins().flat_map(|s| s.joints().filter_map(|j| j.name().map(str::to_owned)).collect::<Vec<_>>()).collect();
+    let facial = doc.nodes().filter(|n| n.name().is_some_and(|m| m.starts_with("FACIAL_"))).count();
+    assert!(joints.len() > 50 && facial > 100, "the character skeleton stays: {} skinned joints, {facial} facial bones", joints.len());
+
+    let bare = context.build_character_glb(&chf.dna, &items, &Outfit::load(&p4k, &db, &chf, &[]), &Default::default()).unwrap();
+    let meshes = mesh_vertices(&bare);
+    for part in head_parts {
+        assert!(meshes.contains_key(part), "{part} without a helmet: {:?}", meshes.keys());
+    }
+}
+
+/// `VisibleLayers` name the lower layers a chunk keeps: a short-sleeved
+/// shirt (layer 1) lists the body (0) on its forearm zones, so the body's
+/// forearms stay while its torso is covered.
+#[test]
+fn a_short_sleeved_shirt_keeps_the_body_forearms() {
+    use starbreaker_3d::character::clothing::{Worn, clothing_params, hidden_zones, zone_hash};
+    use starbreaker_datacore::loadout::EntityIndex;
+    let Some(p4k) = p4k() else { return };
+    let dcb = db_bytes(&p4k);
+    let db = Database::from_bytes(&dcb).unwrap();
+    let index = EntityIndex::new(&db);
+    let body = clothing_params(&db, index.find_record("body_01_noMagicPocket").unwrap());
+    let shirt = clothing_params(&db, index.find_record("ctl_shirt_06_01_01").unwrap());
+    let kept: Vec<&str> = shirt.chunks.iter().filter(|c| c.visible_layers.contains(&0)).map(|c| c.zone.as_str()).collect();
+    assert!(!kept.is_empty(), "the shirt keeps some body zone");
+    let hidden = hidden_zones(&[Worn { port: "body_itemport", clothing: &body }, Worn { port: "Clothing_Torso_0", clothing: &shirt }]);
+    for zone in kept {
+        assert!(!hidden[0].contains(&zone_hash(zone)), "{zone}: the body shows under the sleeve");
+    }
+    assert!(hidden[0].contains(&zone_hash("torso01_zone")), "the shirt covers the torso");
+}
+
+/// `VisibilityConditions` test what is worn on other ports: a medium armour
+/// core's backpack mount (`omega_core_zone`, disabled by a `Backpack`-tagged
+/// item on its `backpack` port) shows while no backpack is worn.
+#[test]
+fn an_armour_core_shows_its_backpack_mount_without_a_backpack() {
+    use starbreaker_3d::character::outfit::Outfit;
+    use starbreaker_3d::character::clothing::zone_hash;
+    let Some(p4k) = p4k() else { return };
+    let dcb = db_bytes(&p4k);
+    let db = Database::from_bytes(&dcb).unwrap();
+    let chf = chf(&p4k, "masculinedefault");
+    let loadout = parse_loadout(&p4k.read_file(r"Data\Scripts\Loadouts\Character\Human\Armor\NPC\Pirate\Shipjacker_Medium_01.xml").unwrap()).unwrap();
+    let outfit = Outfit::load(&p4k, &db, &chf, &loadout);
+    let core = outfit.garments.iter().find(|g| g.garment.port == "Armor_Torso").expect("an armour core");
+    let mount = core.garment.clothing.chunks.iter().find(|c| !c.conditions.is_empty()).expect("a conditional chunk");
+    assert_eq!(mount.zone, "omega_core_zone");
+    assert!(!core.hidden_zones.contains(&zone_hash(&mount.zone)), "no backpack: the mount shows");
+}

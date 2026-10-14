@@ -10,7 +10,8 @@
 //!   clip of a `.dba` picked by name.
 //! - `HeadAssets::character_rig`: the rest rig (or, with a face clip, the
 //!   expression rig) + the outfit (body on its actor skeleton, garments;
-//!   CHF items on hidden ports left off) + the body clip. The package and
+//!   CHF items on hidden ports left off, the head too when its port is
+//!   hidden) + the body clip. The package and
 //!   the character GLB both build from it.
 
 use starbreaker_chf::Dna;
@@ -95,6 +96,9 @@ impl HeadAssets {
             }
             None => self.rig_state(dna, true, true, items)?,
         };
+        if outfit.hides_geometry(self.head_skin_path()) {
+            rig.hide_head(|part| self.is_head_submesh(part));
+        }
         rig.dress(outfit);
         if let Some(clip) = animation.body {
             rig.add_body_clip(clip);

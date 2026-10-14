@@ -1138,19 +1138,26 @@ pub(crate) fn write_decomposed_export(
         opts.include_shields,
     );
 
-    let root_mesh_asset = write_mesh_asset(
-        &mut files,
-        p4k,
-        &input.entity_name,
-        &input.geometry_path,
-        &root_material_view.mesh,
-        root_material_view.glb_materials.as_ref(),
-        root_material_view.glb_nmc.as_ref(),
-        &input.root_bones,
-        opts.lod_level,
-        opts.format,
-        existing_asset_paths,
-    )?;
+    // A root without geometry (no vertices, no NMC nodes) has no mesh asset.
+    let root_has_geometry = !input.root_mesh.positions.is_empty()
+        || input.root_nmc.as_ref().is_some_and(|nmc| !nmc.nodes.is_empty());
+    let root_mesh_asset = root_has_geometry
+        .then(|| {
+            write_mesh_asset(
+                &mut files,
+                p4k,
+                &input.entity_name,
+                &input.geometry_path,
+                &root_material_view.mesh,
+                root_material_view.glb_materials.as_ref(),
+                root_material_view.glb_nmc.as_ref(),
+                &input.root_bones,
+                opts.lod_level,
+                opts.format,
+                existing_asset_paths,
+            )
+        })
+        .transpose()?;
     let root_material_sidecar = root_material_view.sidecar_materials.as_ref().map(|materials| {
         if opts.ui_only_files {
             projected_material_sidecar_path(
@@ -2117,7 +2124,7 @@ pub(crate) fn write_decomposed_export(
         &package_name,
         &normalize_source_path(p4k, &input.geometry_path),
         &normalize_source_path(p4k, &input.material_path),
-        &root_mesh_asset,
+        root_mesh_asset.as_deref(),
         root_material_sidecar.as_deref(),
         root_palette_id.as_deref(),
         root_animations.as_ref(),
@@ -2192,7 +2199,7 @@ fn build_scene_manifest_value(
     package_name: &str,
     geometry_path: &str,
     material_path: &str,
-    root_mesh_asset: &str,
+    root_mesh_asset: Option<&str>,
     root_material_sidecar: Option<&str>,
     root_palette_id: Option<&str>,
     root_animations: Option<&serde_json::Value>,
@@ -2501,9 +2508,6 @@ fn write_material_sidecar(
     );
     let relative_path =
         material_sidecar_relative_path(p4k, &source_material_path, fallback_name, texture_mip);
-    if files.contains_key(&relative_path) {
-        return relative_path;
-    }
     let (sidecar_materials, sidecar_original_indices) = canonical_sidecar_materials_from_source(
         p4k,
         &source_material_path,
@@ -2511,6 +2515,14 @@ fn write_material_sidecar(
         original_indices,
         mtl_cache,
     );
+    // Every mesh of a source .mtl shares its sidecar, unless the mesh has
+    // slots past it (engine default material): that content differs, and
+    // `insert_canonical` gives it its own path.
+    let past_source = load_mtl_cached(p4k, mtl_cache, &source_material_path)
+        .is_some_and(|source| sidecar_original_indices.iter().any(|&i| i as usize >= source.materials.len()));
+    if files.contains_key(&relative_path) && !past_source {
+        return relative_path;
+    }
     let extracted = sidecar_materials
         .materials
         .iter()
@@ -2551,12 +2563,21 @@ fn canonical_sidecar_materials_from_source(
     if let Some(parsed) = load_mtl_cached(p4k, mtl_cache, source_material_path) {
         let mut original_indices = Vec::new();
         let mut non_hidden = Vec::new();
+        let source_count = parsed.materials.len() as u32;
         for (idx, material) in parsed.materials.into_iter().enumerate() {
             if material.should_hide() {
                 continue;
             }
             original_indices.push(idx as u32);
             non_hidden.push(material);
+        }
+        // Slots past the source's submaterials draw with the engine default
+        // (`crate::material_slots`), appended to the loaded set after them.
+        for (material, &idx) in fallback_materials.materials.iter().zip(fallback_indices) {
+            if idx >= source_count {
+                original_indices.push(idx);
+                non_hidden.push(material.clone());
+            }
         }
         let canonical = MtlFile {
             materials: non_hidden,
@@ -6142,6 +6163,7 @@ mod tests {
                 material_path: Some("Data/Objects/Ships/Test/hull_variant.mtl".into()),
             }),
             material_set: crate::mtl::MaterialSetAuthoredData {
+                sub_materials: true,
                 attributes: vec![crate::mtl::AuthoredAttribute {
                     name: "DefaultPalette".into(),
                     value: "vehicle_palette_test".into(),
@@ -7610,7 +7632,7 @@ mod tests {
             "ARGO MOLE",
             "Data/Objects/Ships/Test/root.skin",
             "Data/Objects/Ships/Test/root.mtl",
-            "Data/Objects/Ships/Test/root.glb",
+            Some("Data/Objects/Ships/Test/root.glb"),
             Some("Data/Objects/Ships/Test/root.materials.json"),
             Some("palette/root"),
             None,
@@ -7685,7 +7707,7 @@ mod tests {
             "BEHR_P4AR_LOD0_MIP0",
             "Data/Objects/Weapons/FPS_Weapons/BEHR/P4AR/p4ar.cdf",
             "Data/Objects/Weapons/FPS_Weapons/BEHR/P4AR/p4ar.mtl",
-            "Data/Objects/Weapons/FPS_Weapons/BEHR/P4AR/p4ar.blend",
+            Some("Data/Objects/Weapons/FPS_Weapons/BEHR/P4AR/p4ar.blend"),
             None,
             None,
             None,
@@ -7711,7 +7733,7 @@ mod tests {
             "DRAK Clipper",
             "Data/Objects/Ships/Test/root.skin",
             "Data/Objects/Ships/Test/root.mtl",
-            "Data/Objects/Ships/Test/root.glb",
+            Some("Data/Objects/Ships/Test/root.glb"),
             Some("Data/Objects/Ships/Test/root.materials.json"),
             Some("palette/root"),
             None,
