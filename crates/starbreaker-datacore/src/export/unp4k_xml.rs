@@ -4,7 +4,9 @@
 //! - Scalar fields → XML attributes on the parent element
 //! - Arrays → child elements named by data type (`<Int32>`, `<Bool>`, etc.)
 //! - `__type` on struct elements; `__polymorphicType` on polymorphic pointers
-//! - Root element: record name, with `__type`, `__ref`, `__path` appended as attributes
+//! - Root element: record name (as unforge cleans it: every character outside
+//!   `[a-zA-Z0-9.]` becomes `_`), with `__type`, `__ref`, `__path` appended
+//!   as attributes
 //! - Strong pointers: inlined (cycle-protected)
 //! - References: inlined up to depth 1, then GUID attribute
 //! - Weak pointers: `"StructName[XXXX]"` format
@@ -43,7 +45,8 @@ pub fn write_unp4k_xml(
         struct_stack: FxHashSet::default(),
     };
 
-    let record_name = db.resolve_string2(record.name_offset);
+    let record_name = element_name(db.resolve_string2(record.name_offset));
+    let record_name = record_name.as_str();
     let struct_name = db.resolve_string2(db.struct_def(record.struct_index).name_offset);
     let file_name = db.resolve_string(record.file_name_offset);
 
@@ -73,6 +76,12 @@ pub fn write_unp4k_xml(
     }
 
     Ok(())
+}
+
+/// A record's element name as unforge writes it (`Regex("[^a-zA-Z0-9.]")`
+/// replaced by `_`): record names may hold spaces and brackets.
+fn element_name(record_name: &str) -> String {
+    record_name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '_' }).collect()
 }
 
 // ── Internal types ─────────────────────────────────────────────────────────
