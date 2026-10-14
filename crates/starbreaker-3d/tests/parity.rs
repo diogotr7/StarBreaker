@@ -107,6 +107,41 @@ fn armoured(p4k: &MappedP4k) -> Vec<String> {
     diff("armoured", &from_glb(&glb).unwrap(), &blend)
 }
 
+/// The CHF character in a loadout with a full helmet, playing a face and a
+/// body clip: the helmet hides the head's port, so the DNA head is written
+/// without geometry and its eyes/teeth and the CHF hair/brows/… go, in both.
+fn helmeted(p4k: &MappedP4k) -> Vec<String> {
+    use starbreaker_3d::character::chf_to_character_glb;
+    use starbreaker_3d::character::clips::{CharacterAnimation, FaceAnimation, load_body_clip};
+    use starbreaker_3d::character::loadout::parse_loadout;
+    use starbreaker_3d::character::package::export_character_package;
+    use starbreaker_3d::{ExportFormat, ExportKind, ExportOptions};
+    let chf = p4k.read_file(r"Data\Libs\CharacterCustomizer\masculinedefault.chf").unwrap();
+    let dcb = p4k.read_file(r"Data\Game2.dcb").or_else(|_| p4k.read_file(r"Data\Game.dcb")).unwrap();
+    let db = starbreaker_datacore::Database::from_bytes(&dcb).unwrap();
+    let loadout = parse_loadout(&p4k.read_file(r"Data\Scripts\Loadouts\Character\Human\Armor\NPC\Pirate\Pirate_Heavy_01.xml").unwrap()).unwrap();
+    let caf = p4k
+        .read_file(r"Data\Animations\Characters\Human\heads\male\ai\idlesets\happy\face\ai_civ_happy_idle_02_face.caf")
+        .unwrap();
+    let dba_path = r"Data\Animations\Characters\Human\male_v7\character_select_screen.dba";
+    let idle = load_body_clip(&p4k.read_file(dba_path).unwrap(), dba_path, Some("char_customizer_stand_idle_01")).unwrap();
+    let animation = CharacterAnimation { face: Some(FaceAnimation { caf: &caf, intensity: 1.0 }), body: Some(&idle) };
+    let glb = chf_to_character_glb(&chf, p4k, &db, &animation, &loadout).unwrap();
+
+    let opts = ExportOptions { kind: ExportKind::Decomposed, format: ExportFormat::Blend, ..ExportOptions::default() };
+    let export = export_character_package(p4k, &db, &chf, "masculinedefault", &opts, &animation, &loadout).unwrap();
+    let files: HashMap<String, Vec<u8>> = export.files.into_iter().map(|f| (f.relative_path, f.bytes)).collect();
+    let (scene_path, scene) = files.iter().find(|(p, _)| p.ends_with("/scene.blend")).expect("scene.blend");
+    let blend = from_blend(scene, scene_path, &|p| files.get(p).cloned()).unwrap();
+    // Not vacuous: the 6 garments (helmet included), no head or head items,
+    // the face clip's bones still playing.
+    assert!(!blend.meshes.keys().any(|m| m.starts_with("protos_human_male_face_t1_pu") || m.starts_with("m_hair")), "{:?}", blend.meshes.keys());
+    assert!(blend.meshes.keys().any(|m| m.starts_with("m_slaver_heavy_armor_helmet_01")), "{:?}", blend.meshes.keys());
+    let clip = &blend.clips["char_customizer_stand_idle_01"];
+    assert!(clip.channels.keys().any(|c| c.contains("FACIAL_")), "the face clip still moves the facial bones");
+    diff("helmeted", &from_glb(&glb).unwrap(), &blend)
+}
+
 /// A single armour piece through the entity pipeline: GLB vs package.
 fn piece(p4k: &MappedP4k) -> Vec<String> {
     use starbreaker_3d::{ExportFormat, ExportKind, ExportOptions};
@@ -140,7 +175,8 @@ fn glb_and_blend_exports_are_in_parity() {
     let mut diffs = armour(&p4k);
     diffs.extend(character(&p4k));
     diffs.extend(armoured(&p4k));
+    diffs.extend(helmeted(&p4k));
     diffs.extend(piece(&p4k));
     eprintln!("parity differences: {diffs:#?}");
-    Allowlist::parse(ALLOWLIST).check(&["armour", "character", "armoured", "piece"], &diffs, true).unwrap();
+    Allowlist::parse(ALLOWLIST).check(&["armour", "character", "armoured", "helmeted", "piece"], &diffs, true).unwrap();
 }

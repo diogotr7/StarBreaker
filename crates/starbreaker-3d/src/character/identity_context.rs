@@ -223,6 +223,7 @@ impl HeadAssets {
             parts,
             animations: Vec::new(),
             actor: Vec::new(),
+            head_hidden: false,
         })
     }
 
@@ -338,6 +339,7 @@ impl HeadAssets {
             parts,
             animations: vec![clip],
             actor: Vec::new(),
+            head_hidden: false,
         })
     }
 }
@@ -413,6 +415,11 @@ impl HeadAssets {
     /// P4k `.skin` path of the head.
     pub(crate) fn head_skin_path(&self) -> &str {
         &self.head_skin_path
+    }
+
+    /// Whether `part` is one of the head's CDF sub-meshes (eyes, teeth, …).
+    pub(crate) fn is_head_submesh(&self, part: &shared::CharacterPart) -> bool {
+        self.submeshes.iter().any(|s| Arc::ptr_eq(&s.source, &part.source))
     }
 }
 

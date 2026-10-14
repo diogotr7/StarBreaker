@@ -142,3 +142,38 @@ fn helmets_hide_the_chf_head_items() {
     }
     assert!(Outfit::with_body(None).wears(&items[0]), "nothing worn hides nothing");
 }
+
+/// A full helmet hides the head's port, and the DNA head is the CHF item on
+/// it: the head and its CDF eyes/teeth are not written (the skeleton
+/// stays). Without a helmet the head stays.
+#[test]
+fn full_helmets_hide_the_dna_head() {
+    use starbreaker_3d::character::outfit::Outfit;
+    use starbreaker_3d::character::{HeadIdentityContext, gender_tag, items};
+    let Some(p4k) = p4k() else { return };
+    let dcb = db_bytes(&p4k);
+    let db = Database::from_bytes(&dcb).unwrap();
+    let chf = chf(&p4k, "masculinedefault");
+    let items = items::load_head_items(&p4k, &items::resolve_head_items(&db, &chf.itemport, gender_tag(chf.dna.gender_hash)));
+    let context = HeadIdentityContext::load(&p4k, chf.dna.gender_hash).unwrap();
+    let head_parts = ["protos_human_male_face_t1_pu_head", "protos_human_male_face_t1_pu_eyes", "protos_human_male_face_t1_pu_eyedetails", "protos_human_male_face_t1_pu_teeth"];
+
+    let helmet = parse_loadout(&p4k.read_file(PIRATE_HEAVY).unwrap()).unwrap();
+    let outfit = Outfit::load(&p4k, &db, &chf, &helmet);
+    let glb = context.build_character_glb(&chf.dna, &items, &outfit, &Default::default()).unwrap();
+    let meshes = mesh_vertices(&glb);
+    for part in head_parts {
+        assert!(!meshes.contains_key(part), "{part} is under the helmet: {:?}", meshes.keys());
+    }
+    assert!(meshes.keys().any(|m| m.starts_with("m_slaver_heavy_armor_helmet")), "{:?}", meshes.keys());
+    let (doc, ..) = gltf::import_slice(&glb).unwrap();
+    let joints: std::collections::HashSet<String> = doc.skins().flat_map(|s| s.joints().filter_map(|j| j.name().map(str::to_owned)).collect::<Vec<_>>()).collect();
+    let facial = doc.nodes().filter(|n| n.name().is_some_and(|m| m.starts_with("FACIAL_"))).count();
+    assert!(joints.len() > 50 && facial > 100, "the character skeleton stays: {} skinned joints, {facial} facial bones", joints.len());
+
+    let bare = context.build_character_glb(&chf.dna, &items, &Outfit::load(&p4k, &db, &chf, &[]), &Default::default()).unwrap();
+    let meshes = mesh_vertices(&bare);
+    for part in head_parts {
+        assert!(meshes.contains_key(part), "{part} without a helmet: {:?}", meshes.keys());
+    }
+}

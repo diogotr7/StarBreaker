@@ -4,3 +4,8 @@
 
 # .blend writes no shader-parameter tracks (the HumanSkin_V2 wrinkle weights).
 */clip/*/material:*/missing-in-blend
+
+# Submeshes whose material id is past their .mtl's submaterials: the GLB keeps
+# them, the .blend drops them (character plan G3, open item 3).
+helmeted/mesh/*/triangles
+helmeted/mesh/*/material_slots

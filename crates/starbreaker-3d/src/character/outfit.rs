@@ -7,14 +7,13 @@
 //!   every worn item's `SCItemClothingParams`, the zones each one has
 //!   covered ([`super::clothing::hidden_zones`]: an undersuit covers the
 //!   body) and the CHF ports hidden with everything under them (a full
-//!   helmet hides `Head_ItemPort`: hair, brows, …).
+//!   helmet hides `Head_ItemPort`: the head itself, its eyes, hair, brows, …).
 //! - [`Outfit::with_body`]: just a body, nothing covered.
 //! - [`Outfit::wears`]: whether a CHF head item is worn (not on a hidden
-//!   port); `Outfit::parts`: the body and garments as rig parts with
-//!   their covered zones (`CharacterRig::dress`).
-//!
-//! Gap: the DNA head itself is the rig's root and stays when its port is
-//! hidden (only the CHF items under it go).
+//!   port); [`Outfit::hides_geometry`]: whether a CHF item with that `.skin`
+//!   sits on a hidden port (the DNA head is the item on `Head_ItemPort`);
+//!   `Outfit::parts`: the body and garments as rig parts with their covered
+//!   zones (`CharacterRig::dress`).
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -27,8 +26,8 @@ use super::body::{Body, load_chf_body};
 use super::clothing::{Clothing, clothing_params, hidden_zones};
 use super::head_skin::{BindPoseSkeleton, HeadMesh};
 use super::items::{HeadItemMesh, load_skin_part};
-use super::loadout::{Garment, LoadoutEntry, resolve_garments};
-use super::part_source::PartSource;
+use super::loadout::{Garment, LoadoutEntry, pick_worn_variant, resolve_garments};
+use super::part_source::{PartSource, geometry_path};
 use super::shared::{CharacterPart, stem};
 use super::gender_tag;
 
@@ -52,6 +51,9 @@ pub struct Outfit {
     pub garments: Vec<GarmentMesh>,
     /// CHF ports (lowercase) hidden by a garment, with every port under them.
     hidden_chf_ports: HashSet<String>,
+    /// The worn `.skin`s (DataCore paths, lowercase) of the CHF items on
+    /// those ports.
+    hidden_chf_geometry: HashSet<String>,
 }
 
 impl Outfit {
@@ -100,13 +102,30 @@ impl Outfit {
                 hidden_zones,
             })
             .collect();
-        let hidden_chf_ports = hidden_ports_under(&chf.itemport, &worn.hidden_ports);
-        Self { body, body_hidden_zones, garments, hidden_chf_ports }
+        let hidden = hidden_ports_under(&chf.itemport, &worn.hidden_ports);
+        let hidden_chf_ports = hidden.iter().map(|p| p.name.to_string().to_lowercase()).collect();
+        let gender = gender_tag(chf.dna.gender_hash);
+        let hidden_chf_geometry = hidden
+            .iter()
+            .filter(|p| !p.id.is_empty())
+            .filter_map(|p| db.record_by_id(&p.id))
+            .filter_map(|record| {
+                let variants = starbreaker_datacore::loadout::sub_geometry_variants(db, record);
+                pick_worn_variant(&variants, gender).map(|v| geometry_path(&v.geometry_path).to_lowercase())
+            })
+            .collect();
+        Self { body, body_hidden_zones, garments, hidden_chf_ports, hidden_chf_geometry }
     }
 
     /// Whether the CHF item `item` is worn (its port is not hidden).
     pub fn wears(&self, item: &HeadItemMesh) -> bool {
         !self.hidden_chf_ports.contains(&item.item.port.to_lowercase())
+    }
+
+    /// Whether the CHF item worn as the `.skin` at `path` (P4k or DataCore
+    /// path) is on a hidden port.
+    pub fn hides_geometry(&self, path: &str) -> bool {
+        self.hidden_chf_geometry.contains(&geometry_path(path).to_lowercase())
     }
 
     /// The body and the garments as rig parts, each with its covered zones.
@@ -129,16 +148,16 @@ impl Outfit {
     }
 }
 
-/// The ports (lowercase) of the CHF tree under `root` that are in `hidden`
-/// or below one that is.
-fn hidden_ports_under(root: &ItemPort, hidden: &[String]) -> HashSet<String> {
-    let mut out = HashSet::new();
+/// The ports of the CHF tree under `root` that are in `hidden` or below
+/// one that is.
+fn hidden_ports_under<'p>(root: &'p ItemPort, hidden: &[String]) -> Vec<&'p ItemPort> {
+    let mut out = Vec::new();
     let mut stack = vec![(root, false)];
     while let Some((port, parent_hidden)) = stack.pop() {
-        let name = port.name.to_string().to_lowercase();
+        let name = port.name.to_string();
         let is_hidden = parent_hidden || hidden.iter().any(|h| h.eq_ignore_ascii_case(&name));
         if is_hidden {
-            out.insert(name);
+            out.push(port);
         }
         stack.extend(port.children.iter().map(|c| (c, is_hidden)));
     }

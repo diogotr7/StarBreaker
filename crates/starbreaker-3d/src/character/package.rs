@@ -97,7 +97,7 @@ pub fn export_character_package(
         rig.head_source = Arc::new(PartSource::load(p4k, assets.head_skin_path(), &head_mtl)?);
     }
     let root_mesh = rig.head_mesh()?;
-    let (root_mtl, root_nmc) = (rig.head_source.materials.clone(), rig.head_source.nmc.clone());
+    let (root_mtl, root_nmc) = (rig.head_materials(), rig.head_source.nmc.clone().filter(|_| !rig.head_hidden));
     let children = rig.part_payloads(name, |source| character_geometry_path(name, &source.skin_path))?;
 
     // (port, effective .mtl) per item and the body, for binding the CHF

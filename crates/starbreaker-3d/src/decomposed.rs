@@ -1138,19 +1138,26 @@ pub(crate) fn write_decomposed_export(
         opts.include_shields,
     );
 
-    let root_mesh_asset = write_mesh_asset(
-        &mut files,
-        p4k,
-        &input.entity_name,
-        &input.geometry_path,
-        &root_material_view.mesh,
-        root_material_view.glb_materials.as_ref(),
-        root_material_view.glb_nmc.as_ref(),
-        &input.root_bones,
-        opts.lod_level,
-        opts.format,
-        existing_asset_paths,
-    )?;
+    // A root without geometry (no vertices, no NMC nodes) has no mesh asset.
+    let root_has_geometry = !input.root_mesh.positions.is_empty()
+        || input.root_nmc.as_ref().is_some_and(|nmc| !nmc.nodes.is_empty());
+    let root_mesh_asset = root_has_geometry
+        .then(|| {
+            write_mesh_asset(
+                &mut files,
+                p4k,
+                &input.entity_name,
+                &input.geometry_path,
+                &root_material_view.mesh,
+                root_material_view.glb_materials.as_ref(),
+                root_material_view.glb_nmc.as_ref(),
+                &input.root_bones,
+                opts.lod_level,
+                opts.format,
+                existing_asset_paths,
+            )
+        })
+        .transpose()?;
     let root_material_sidecar = root_material_view.sidecar_materials.as_ref().map(|materials| {
         if opts.ui_only_files {
             projected_material_sidecar_path(
@@ -2117,7 +2124,7 @@ pub(crate) fn write_decomposed_export(
         &package_name,
         &normalize_source_path(p4k, &input.geometry_path),
         &normalize_source_path(p4k, &input.material_path),
-        &root_mesh_asset,
+        root_mesh_asset.as_deref(),
         root_material_sidecar.as_deref(),
         root_palette_id.as_deref(),
         root_animations.as_ref(),
@@ -2192,7 +2199,7 @@ fn build_scene_manifest_value(
     package_name: &str,
     geometry_path: &str,
     material_path: &str,
-    root_mesh_asset: &str,
+    root_mesh_asset: Option<&str>,
     root_material_sidecar: Option<&str>,
     root_palette_id: Option<&str>,
     root_animations: Option<&serde_json::Value>,
@@ -7610,7 +7617,7 @@ mod tests {
             "ARGO MOLE",
             "Data/Objects/Ships/Test/root.skin",
             "Data/Objects/Ships/Test/root.mtl",
-            "Data/Objects/Ships/Test/root.glb",
+            Some("Data/Objects/Ships/Test/root.glb"),
             Some("Data/Objects/Ships/Test/root.materials.json"),
             Some("palette/root"),
             None,
@@ -7685,7 +7692,7 @@ mod tests {
             "BEHR_P4AR_LOD0_MIP0",
             "Data/Objects/Weapons/FPS_Weapons/BEHR/P4AR/p4ar.cdf",
             "Data/Objects/Weapons/FPS_Weapons/BEHR/P4AR/p4ar.mtl",
-            "Data/Objects/Weapons/FPS_Weapons/BEHR/P4AR/p4ar.blend",
+            Some("Data/Objects/Weapons/FPS_Weapons/BEHR/P4AR/p4ar.blend"),
             None,
             None,
             None,
@@ -7711,7 +7718,7 @@ mod tests {
             "DRAK Clipper",
             "Data/Objects/Ships/Test/root.skin",
             "Data/Objects/Ships/Test/root.mtl",
-            "Data/Objects/Ships/Test/root.glb",
+            Some("Data/Objects/Ships/Test/root.glb"),
             Some("Data/Objects/Ships/Test/root.materials.json"),
             Some("palette/root"),
             None,

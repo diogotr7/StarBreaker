@@ -149,12 +149,22 @@ every step.
   undersuit's gloves (40,314 of 44,488 vertices written), mobiGlas worn;
   `Pirate_Heavy_01`'s helmet hides hair/brows/lashes/beard/scalp; parity
   fixture `armoured` (marine + body clip) green; Blender renders both
-  outfits animated. Open: (1) a helmet hiding `Head_ItemPort` should hide
-  the DNA head and its eyes/teeth too — the head is the rig's root mesh in
-  both writers, so it stays (visible through open helmets); (2)
-  `VisibilityConditions` are not evaluated; (3) the two writers disagree on
-  submeshes whose material id is past their `.mtl` (helmet: GLB keeps,
-  package drops) — separate task.
+  outfits animated. Open: (1) ✅ (below); (2) `VisibilityConditions` are
+  not evaluated; (3) the two writers disagree on submeshes whose material id
+  is past their `.mtl` (helmet: GLB keeps, package drops) — parity fixture
+  `helmeted` allowlists it.
+  (1) ✅ Full helmets hide the DNA head. Rule from data: the DNA head is the
+  CHF item on `Head_ItemPort` (`PU_Protos_Head`, the head rig's own `.skin`;
+  eyes on `eyes_itemport` under it), and a full helmet's
+  `SCItemClothingParams.HiddenParts` lists that port. Zones are not the
+  mechanism: the head `.skin` has no zone table, and the helmet claims only
+  `theta_head_zone`. `Outfit::hides_geometry` (the worn `.skin` of every CHF
+  item on a hidden port) → `CharacterRig::hide_head`: no head geometry, no
+  CDF sub-meshes (eyes, teeth, eye details), no blendshapes / morph tracks;
+  the skeleton and facial bone tracks stay. Writers: a root without
+  geometry is a mesh-less GLB node, and in the package `mesh_asset: null`
+  with the armature at the entity root. Verified: `full_helmets_hide_the_dna_head`;
+  parity fixture `helmeted` (Pirate_Heavy_01, face + body clip).
 - **Armour export** (spec `docs/superpowers/specs/2026-10-13-armour-export-design.md`):
   a single wearable piece exports as worn with
   `entity export <item> --geometry-tag Male|Female` (the record's

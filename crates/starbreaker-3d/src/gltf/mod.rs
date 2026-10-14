@@ -182,7 +182,13 @@ pub fn write_glb_with_progress(
     log::info!("[mem-phase] start write_glb");
     report_progress(progress, 0.05, "Packing root mesh");
     // ---- Pack root entity (drop textures after packing) ----
-    let mut scene_nodes = if let Some(root_mesh) = input.root_mesh {
+    let root_without_geometry = input.root_mesh.as_ref().is_some_and(|m| m.positions.is_empty())
+        && input.root_nmc.as_ref().is_none_or(|n| n.nodes.is_empty());
+    let mut scene_nodes = if root_without_geometry {
+        // No geometry (as for a child): a node without a mesh.
+        builder.nodes_json.push(json::Node { name: root_name.clone(), ..Default::default() });
+        vec![json::Index::new(0)]
+    } else if let Some(root_mesh) = input.root_mesh {
         let root_packed = builder.pack_mesh(
             &root_mesh,
             input.root_materials.as_ref(),
@@ -1149,6 +1155,35 @@ mod tests {
             attributes.get("TEXCOORD_1").is_some(),
             "second UVs should export as TEXCOORD_1"
         );
+    }
+
+    /// A root without geometry (a character whose head a helmet hides) is
+    /// a node without a mesh, as a child without geometry is; its children
+    /// still hang under it.
+    #[test]
+    fn write_glb_root_without_geometry_has_no_mesh() {
+        let glb = write_glb(
+            GlbInput {
+                root_mesh: Some(Mesh::empty()),
+                root_materials: None,
+                root_textures: None,
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children: vec![child_entity("child_a", shared_material_file())],
+                interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
+            },
+            &mut GlbLoaders { load_textures: &mut |_, _| None, load_interior_mesh: &mut |_| None },
+            &default_opts(),
+        )
+        .expect("write_glb failed");
+
+        let json = glb_json(&glb);
+        let root = &json["nodes"][json["scenes"][0]["nodes"][0].as_u64().unwrap() as usize];
+        assert!(root.get("mesh").is_none(), "{root}");
+        assert_eq!(json["meshes"].as_array().map_or(0, |a| a.len()), 1, "only the child's mesh");
+        assert!(root["children"].as_array().is_some_and(|c| !c.is_empty()), "the child hangs under the root");
     }
 
     #[test]
