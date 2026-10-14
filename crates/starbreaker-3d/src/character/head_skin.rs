@@ -273,8 +273,8 @@ pub fn parse_head_skin(skin_bytes: &[u8], skinm_bytes: &[u8]) -> Result<HeadSkin
             CHUNK_RIG_LOGIC => riglogic_bytes = Some(data),
             CHUNK_PROTOS_INFO => protos_bytes = Some(data),
             _ => {
-                // Other SKIN chunk types (ExportFlags, MtlNameIvo320, etc.)
-                // are not consumed by this milestone.
+                // Other SKIN chunk types (ExportFlags, MtlNameIvo320, …):
+                // the head's material and streams come from `PartSource`.
             }
         }
     }
