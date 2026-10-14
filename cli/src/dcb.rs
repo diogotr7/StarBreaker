@@ -35,6 +35,10 @@ pub enum DcbCommand {
         /// Filter record names by glob
         #[arg(long)]
         filter: Option<String>,
+        /// Also export non-main records (types like ResourceType only exist as
+        /// non-main records); written as <stem>.<record-name>.<guid>.<ext>
+        #[arg(long)]
+        all: bool,
     },
     /// Query DataCore records by property path
     Query {
@@ -75,7 +79,8 @@ impl DcbCommand {
                 output,
                 format,
                 filter,
-            } => extract(p4k, dcb, output, format, filter),
+                all,
+            } => extract(p4k, dcb, output, format, filter, all),
             Self::Query {
                 p4k,
                 dcb,
@@ -92,6 +97,7 @@ fn extract(
     output: PathBuf,
     format: DcbFormat,
     filter: Option<String>,
+    all: bool,
 ) -> Result<()> {
     let (_p4k, dcb_bytes) = load_dcb_bytes(p4k_path.as_deref(), dcb_path.as_deref())?;
     let db = Database::from_bytes(&dcb_bytes)?;
@@ -103,13 +109,15 @@ fn extract(
         DcbFormat::Xml | DcbFormat::Unp4k => "xml",
     };
 
-    // Only export main records (matching C#'s behavior), using the file path
-    // from the DataCore as the output directory structure.
+    // By default only export main records (matching C#'s behavior), using the
+    // file path from the DataCore as the output directory structure. With
+    // --all, non-main records (earlier records sharing a file name) are
+    // exported too under de-duplicated names.
     let records: Vec<_> = db
         .records()
         .iter()
         .filter(|r| {
-            if !db.is_main_record(r) {
+            if !all && !db.is_main_record(r) {
                 return false;
             }
             let file_name = db.resolve_string(r.file_name_offset);
@@ -130,9 +138,21 @@ fn extract(
     records.par_iter().for_each(|record| {
         let file_name = db.resolve_string(record.file_name_offset);
         // Change extension to match output format (C# uses Path.ChangeExtension)
-        let out_name = match file_name.rfind('.') {
-            Some(dot) => format!("{}.{ext}", &file_name[..dot]),
-            None => format!("{file_name}.{ext}"),
+        let stem = match file_name.rfind('.') {
+            Some(dot) => &file_name[..dot],
+            None => file_name,
+        };
+        // Non-main records share their file name with the main record, so
+        // suffix record name + guid to keep every output file unique.
+        let out_name = if db.is_main_record(record) {
+            format!("{stem}.{ext}")
+        } else {
+            let rec_name: String = db
+                .resolve_string2(record.name_offset)
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+                .collect();
+            format!("{stem}.{rec_name}.{}.{ext}", record.id)
         };
         let out_path = output.join(&out_name);
 
