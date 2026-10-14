@@ -4,35 +4,33 @@ version.workspace = true
 edition = "2024"
 
 [dependencies]
-starbreaker-common = { path = "../starbreaker-common" }
-starbreaker-chunks = { path = "../starbreaker-chunks" }
-starbreaker-dna = { path = "../starbreaker-dna" }
-starbreaker-chf = { path = "../starbreaker-chf" }
-starbreaker-datacore = { path = "../starbreaker-datacore" }
-starbreaker-p4k = { path = "../starbreaker-p4k" }
-starbreaker-cryxml = { path = "../starbreaker-cryxml" }
-starbreaker-dds = { path = "../starbreaker-dds" }
-starbreaker-gfx = { path = "../starbreaker-gfx" }
-starbreaker-blend = { path = "../starbreaker-blend" }
-starbreaker-ui = { path = "../starbreaker-ui" }
+starbreaker-common = { workspace = true }
+starbreaker-chunks = { workspace = true }
+starbreaker-dna = { workspace = true }
+starbreaker-chf = { workspace = true }
+starbreaker-datacore = { workspace = true }
+starbreaker-p4k = { workspace = true }
+starbreaker-cryxml = { workspace = true }
+starbreaker-dds = { workspace = true }
+starbreaker-gfx = { workspace = true }
+starbreaker-blend = { workspace = true }
+starbreaker-ui = { workspace = true }
 # glTF reader for `parity` (GLB → summary).
 gltf = "1"
 gltf-json = { version = "1", features = ["names", "extras", "KHR_lights_punctual", "KHR_materials_transmission", "KHR_materials_ior", "KHR_materials_emissive_strength", "KHR_materials_volume", "KHR_texture_transform"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { workspace = true, features = ["png"] }
 exr = "1.74"
-smallvec = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 half = "2"
-zerocopy = { version = "0.8", features = ["derive"] }
-thiserror = "2"
-rayon = "1.11.0"
-log = "0.4"
-glam = "0.29"
-crc32fast = "1.4"
-quick-xml = "0.37"
-sha2 = "0.10"
+zerocopy = { workspace = true }
+thiserror = { workspace = true }
+rayon = { workspace = true }
+log = { workspace = true }
+glam = "0.34"
+crc32fast = "1.5"
+quick-xml = { workspace = true }
 
 [dev-dependencies]
-env_logger = "0.11"
+env_logger = { workspace = true }
 memmap2 = "0.9"

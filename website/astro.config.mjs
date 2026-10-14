@@ -29,11 +29,11 @@ export default defineConfig({
 				},
 				{
 					label: 'Wiki',
-					autogenerate: { directory: 'wiki' },
+					items: [{ autogenerate: { directory: 'wiki' } }],
 				},
 				{
 					label: 'Reference',
-					autogenerate: { directory: 'reference' },
+					items: [{ autogenerate: { directory: 'reference' } }],
 				},
 			],
 			customCss: ['./src/styles/custom.css'],

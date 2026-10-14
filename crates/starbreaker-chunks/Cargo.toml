@@ -4,6 +4,6 @@ version.workspace = true
 edition = "2024"
 
 [dependencies]
-starbreaker-common = { path = "../starbreaker-common" }
-zerocopy = { version = "0.8", features = ["derive"] }
-thiserror = "2"
+starbreaker-common = { workspace = true }
+zerocopy = { workspace = true }
+thiserror = { workspace = true }

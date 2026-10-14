@@ -28,8 +28,11 @@ pub fn decompress_blend(data: &[u8]) -> Result<Vec<u8>, String> {
 
     // Standard zstd magic: 0xFD2FB528 in little-endian = bytes [0x28, 0xB5, 0x2F, 0xFD]
     if data.len() >= 4 && data[..4] == [0x28, 0xB5, 0x2F, 0xFD] {
-        return zstd::bulk::decompress(data, 512 * 1024 * 1024)
-            .map_err(|e| format!("zstd decompression failed: {e}"));
+        let mut decoder = structured_zstd::decoding::StreamingDecoder::new(data);
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut decoder, &mut out)
+            .map_err(|e| format!("zstd decompression failed: {e}"))?;
+        return Ok(out);
     }
 
     // Uncompressed .blend starts with 'BLENDER'

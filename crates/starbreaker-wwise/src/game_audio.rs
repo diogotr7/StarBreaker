@@ -96,11 +96,11 @@ pub(crate) fn cryxml_attr<'a>(xml: &'a CryXml<'_>, node: &CryXmlNode, name: &str
 }
 
 /// A text XML element's attribute (UTF-8).
-pub(crate) fn xml_attr(e: &BytesStart<'_>, name: &[u8]) -> Option<String> {
+pub(crate) fn xml_attr(e: &BytesStart<'_>, name: &str) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|attr| attr.key.as_ref() == name)
-        .and_then(|attr| String::from_utf8(attr.value.to_vec()).ok())
+        .map(|attr| attr.value.into_owned())
 }
 
 #[cfg(test)]

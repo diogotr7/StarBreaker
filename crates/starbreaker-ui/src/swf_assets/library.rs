@@ -50,7 +50,7 @@ impl SwfAssetLibrary {
         let content_hash = {
             let mut hasher = Sha256::new();
             hasher.update(&swf_bytes);
-            format!("{:x}", hasher.finalize())
+            hex::encode(hasher.finalize())
         };
 
         let buf = parse_tags(&swf_bytes)?;

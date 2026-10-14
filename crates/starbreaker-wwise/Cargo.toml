@@ -4,14 +4,14 @@ version.workspace = true
 edition = "2024"
 
 [dependencies]
-starbreaker-common = { path = "../starbreaker-common" }
-starbreaker-datacore = { path = "../starbreaker-datacore" }
-starbreaker-cryxml = { path = "../starbreaker-cryxml" }
-starbreaker-p4k = { path = "../starbreaker-p4k" }
-starbreaker-wem = { path = "../starbreaker-wem" }
-quick-xml = "0.37"
-zerocopy = { version = "0.8", features = ["derive"] }
-thiserror = "2"
-serde = { version = "1", features = ["derive"] }
+starbreaker-common = { workspace = true }
+starbreaker-datacore = { workspace = true }
+starbreaker-cryxml = { workspace = true }
+starbreaker-p4k = { workspace = true }
+starbreaker-wem = { workspace = true }
+quick-xml = { workspace = true }
+zerocopy = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]

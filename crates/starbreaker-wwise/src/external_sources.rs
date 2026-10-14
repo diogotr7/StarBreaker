@@ -188,25 +188,25 @@ fn parse_external_sources_xml(xml: &str) -> Result<Vec<ExternalSourceEntry>, Bnk
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref e)) => match e.local_name().as_ref() {
-                b"AudioExternalSources" => inside_external_sources = true,
-                b"ATLExternalSource" if inside_external_sources => {
-                    if let Some(name) = get_attr(e, b"atl_name") {
+                "AudioExternalSources" => inside_external_sources = true,
+                "ATLExternalSource" if inside_external_sources => {
+                    if let Some(name) = get_attr(e, "atl_name") {
                         current_source = Some(CurrentSource {
                             name,
-                            source_path: get_attr(e, b"path").unwrap_or_default(),
-                            localized: parse_bool(get_attr(e, b"is_localised").as_deref()),
+                            source_path: get_attr(e, "path").unwrap_or_default(),
+                            localized: parse_bool(get_attr(e, "is_localised").as_deref()),
                         });
                     }
                 }
-                b"ATLExternalSourceEntry" => {
-                    current_language = get_attr(e, b"language");
+                "ATLExternalSourceEntry" => {
+                    current_language = get_attr(e, "language");
                 }
                 _ => {}
             },
             Ok(Event::Empty(ref e)) => {
-                if e.local_name().as_ref() == b"WwiseExternalSource" {
+                if e.local_name().as_ref() == "WwiseExternalSource" {
                     if let Some(source) = &current_source {
-                        if let Some(wwise_filename) = get_attr(e, b"wwise_filename") {
+                        if let Some(wwise_filename) = get_attr(e, "wwise_filename") {
                             entries.push(ExternalSourceEntry {
                                 name: source.name.clone(),
                                 source_path: source.source_path.clone(),
@@ -214,18 +214,18 @@ fn parse_external_sources_xml(xml: &str) -> Result<Vec<ExternalSourceEntry>, Bnk
                                 language: current_language.clone().unwrap_or_default(),
                                 p4k_path: p4k_path_from_wwise_filename(&wwise_filename),
                                 wwise_filename,
-                                duration_type: get_attr(e, b"wwise_duration_type").unwrap_or_default(),
-                                duration_min: parse_f32(get_attr(e, b"wwise_duration_min").as_deref()),
-                                duration_max: parse_f32(get_attr(e, b"wwise_duration_max").as_deref()),
+                                duration_type: get_attr(e, "wwise_duration_type").unwrap_or_default(),
+                                duration_min: parse_f32(get_attr(e, "wwise_duration_min").as_deref()),
+                                duration_max: parse_f32(get_attr(e, "wwise_duration_max").as_deref()),
                             });
                         }
                     }
                 }
             }
             Ok(Event::End(ref e)) => match e.local_name().as_ref() {
-                b"AudioExternalSources" => inside_external_sources = false,
-                b"ATLExternalSource" => current_source = None,
-                b"ATLExternalSourceEntry" => current_language = None,
+                "AudioExternalSources" => inside_external_sources = false,
+                "ATLExternalSource" => current_source = None,
+                "ATLExternalSourceEntry" => current_language = None,
                 _ => {}
             },
             Ok(Event::Eof) => break,

@@ -231,7 +231,7 @@ fn make_exported_rect_swf() -> Vec<u8> {
         name: SwfStr::from_utf8_str("synthetic_rect"),
     }];
 
-    let tags = [Tag::DefineShape(shape), Tag::ExportAssets(export), Tag::ShowFrame];
+    let tags = [Tag::DefineShape(Box::new(shape)), Tag::ExportAssets(export), Tag::ShowFrame];
     let mut buf = Vec::new();
     swf::write_swf(&header, &tags, &mut buf).expect("write_swf failed");
     buf

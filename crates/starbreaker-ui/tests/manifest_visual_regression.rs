@@ -26,7 +26,7 @@ fn freeze_file() -> UiFreezeFile {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn artifact_paths(target_id: &str) -> (PathBuf, PathBuf) {

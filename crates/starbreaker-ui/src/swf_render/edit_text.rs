@@ -63,7 +63,8 @@ impl FlashTextRun {
 /// input or if the fragment contains no `<font>` text.
 pub fn parse_swf_html(html: &str) -> Vec<FlashTextRun> {
     use quick_xml::events::Event;
-    use quick_xml::Reader;
+    use quick_xml::escape::resolve_predefined_entity;
+    use quick_xml::{Reader, XmlVersion};
 
     if html.trim().is_empty() {
         return vec![];
@@ -80,15 +81,30 @@ pub fn parse_swf_html(html: &str) -> Vec<FlashTextRun> {
     let mut current_letter_spacing = 0.0f32;
     let mut in_font = false;
 
+    // Text arrives as `Text` pieces split by `GeneralRef` (entity / character
+    // reference) events; gather them until the next markup event, then emit
+    // one run.
+    let mut pending = String::new();
     let mut buf = Vec::new();
     loop {
-        match reader.read_event_into(&mut buf) {
+        let event = reader.read_event_into(&mut buf);
+        if !matches!(event, Ok(Event::Text(_) | Event::GeneralRef(_))) && !pending.is_empty() {
+            runs.push(FlashTextRun {
+                font_face: current_face.clone(),
+                size_swf: current_size,
+                color: current_color,
+                letter_spacing: current_letter_spacing,
+                align: current_align,
+                text: std::mem::take(&mut pending),
+            });
+        }
+        match event {
             Ok(Event::Start(ref e)) => match e.name().as_ref() {
-                b"p" | b"P" => {
+                "p" | "P" => {
                     for attr in e.attributes().flatten() {
-                        if attr.key.as_ref() == b"align" {
+                        if attr.key.as_ref() == "align" {
                             let val = attr
-                                .decode_and_unescape_value(reader.decoder())
+                                .normalized_value(XmlVersion::Implicit1_0)
                                 .map(|c| c.into_owned())
                                 .unwrap_or_default();
                             current_align = match val.to_lowercase().as_str() {
@@ -99,17 +115,17 @@ pub fn parse_swf_html(html: &str) -> Vec<FlashTextRun> {
                         }
                     }
                 }
-                b"font" | b"FONT" => {
+                "font" | "FONT" => {
                     for attr in e.attributes().flatten() {
                         let val = attr
-                            .decode_and_unescape_value(reader.decoder())
+                            .normalized_value(XmlVersion::Implicit1_0)
                             .map(|c| c.into_owned())
                             .unwrap_or_default();
                         match attr.key.as_ref() {
-                            b"face" => current_face = val,
-                            b"size" => current_size = val.parse().unwrap_or(12.0),
-                            b"color" => current_color = parse_color_hex(&val),
-                            b"letterSpacing" => {
+                            "face" => current_face = val,
+                            "size" => current_size = val.parse().unwrap_or(12.0),
+                            "color" => current_color = parse_color_hex(&val),
+                            "letterSpacing" => {
                                 current_letter_spacing = val.parse().unwrap_or(0.0);
                             }
                             _ => {}
@@ -119,21 +135,21 @@ pub fn parse_swf_html(html: &str) -> Vec<FlashTextRun> {
                 }
                 _ => {}
             },
-            Ok(Event::Text(ref e)) if in_font => {
-                let text = e.unescape().map(|c| c.into_owned()).unwrap_or_default();
-                if !text.is_empty() {
-                    runs.push(FlashTextRun {
-                        font_face: current_face.clone(),
-                        size_swf: current_size,
-                        color: current_color,
-                        letter_spacing: current_letter_spacing,
-                        align: current_align,
-                        text,
-                    });
-                }
-            }
+            Ok(Event::Text(ref e)) if in_font => pending.push_str(&e.xml10_content()),
+            Ok(Event::GeneralRef(ref e)) if in_font => match e.resolve_char_ref() {
+                Ok(Some(c)) => pending.push(c),
+                _ => match resolve_predefined_entity(e) {
+                    Some(s) => pending.push_str(s),
+                    // Unknown entity: keep it verbatim rather than lose the text.
+                    None => {
+                        pending.push('&');
+                        pending.push_str(e);
+                        pending.push(';');
+                    }
+                },
+            },
             Ok(Event::End(ref e)) => {
-                if matches!(e.name().as_ref(), b"font" | b"FONT") {
+                if matches!(e.name().as_ref(), "font" | "FONT") {
                     in_font = false;
                 }
             }

@@ -4,21 +4,21 @@ version.workspace = true
 edition = "2024"
 
 [dependencies]
-starbreaker-common = { path = "../starbreaker-common" }
-zerocopy = { version = "0.8", features = ["derive"] }
-thiserror = "2"
-zstd = "0.13"
+starbreaker-common = { workspace = true }
+zerocopy = { workspace = true }
+thiserror = { workspace = true }
+structured-zstd = { workspace = true }
 flate2 = { workspace = true }
-aes = "0.8"
-cbc = "0.1"
-rustc-hash = "2"
-hashbrown = "0.15"
+aes = "0.9"
+cbc = "0.2"
+rustc-hash = { workspace = true }
+hashbrown = "0.17"
 parking_lot = { workspace = true }
-rayon = "1"
+rayon = { workspace = true }
 smallvec = "1"
 
 [dev-dependencies]
-criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
+criterion = { workspace = true, features = ["plotters", "cargo_bench_support"] }
 
 [[bench]]
 name = "search"

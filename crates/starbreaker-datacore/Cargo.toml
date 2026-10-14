@@ -4,20 +4,18 @@ version.workspace = true
 edition = "2024"
 
 [dependencies]
-starbreaker-common = { path = "../starbreaker-common" }
-zerocopy = { version = "0.8", features = ["derive"] }
-thiserror = "2"
-serde = { version = "1", features = ["derive"] }
-rustc-hash = "2"
-serde_json = "1"
-quick-xml = { version = "0.37", features = ["serialize"] }
-rayon = "1.10"
-log = "0.4"
-memmap2 = "0.9"
+starbreaker-common = { workspace = true }
+zerocopy = { workspace = true }
+thiserror = { workspace = true }
+rustc-hash = { workspace = true }
+serde_json = { workspace = true }
+quick-xml = { workspace = true, features = ["serialize"] }
+rayon = { workspace = true }
+log = { workspace = true }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-starbreaker-p4k = { path = "../starbreaker-p4k" }
+criterion = { workspace = true, features = ["html_reports", "cargo_bench_support", "plotters", "rayon"] }
+starbreaker-p4k = { workspace = true }
 
 [[bench]]
 name = "datacore"

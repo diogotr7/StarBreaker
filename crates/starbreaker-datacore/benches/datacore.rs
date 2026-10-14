@@ -15,7 +15,7 @@ fn benchmarks(c: &mut Criterion) {
     let data = std::fs::read(&path).expect("failed to read DCB");
 
     c.bench_function("parse", |b| {
-        b.iter(|| starbreaker_datacore::Database::from_bytes(criterion::black_box(&data)).unwrap())
+        b.iter(|| starbreaker_datacore::Database::from_bytes(std::hint::black_box(&data)).unwrap())
     });
 
     let db = starbreaker_datacore::Database::from_bytes(&data).unwrap();
@@ -36,8 +36,8 @@ fn benchmarks(c: &mut Criterion) {
         c.bench_function("export_json", |b| {
             b.iter(|| {
                 starbreaker_datacore::export::to_json(
-                    criterion::black_box(&db),
-                    criterion::black_box(record),
+                    std::hint::black_box(&db),
+                    std::hint::black_box(record),
                 )
                 .unwrap()
             })
@@ -46,8 +46,8 @@ fn benchmarks(c: &mut Criterion) {
         c.bench_function("export_xml", |b| {
             b.iter(|| {
                 starbreaker_datacore::export::to_xml(
-                    criterion::black_box(&db),
-                    criterion::black_box(record),
+                    std::hint::black_box(&db),
+                    std::hint::black_box(record),
                 )
                 .unwrap()
             })
@@ -56,8 +56,8 @@ fn benchmarks(c: &mut Criterion) {
         c.bench_function("export_unp4k_xml", |b| {
             b.iter(|| {
                 starbreaker_datacore::export::to_unp4k_xml(
-                    criterion::black_box(&db),
-                    criterion::black_box(record),
+                    std::hint::black_box(&db),
+                    std::hint::black_box(record),
                 )
                 .unwrap()
             })
@@ -89,8 +89,8 @@ fn benchmarks(c: &mut Criterion) {
         c.bench_function("compile_path_geometry", |b| {
             b.iter(|| {
                 db.compile_path::<String>(
-                    criterion::black_box(si),
-                    criterion::black_box(
+                    std::hint::black_box(si),
+                    std::hint::black_box(
                         "Components[SGeometryResourceParams].Geometry.Geometry.Geometry.path",
                     ),
                 )
@@ -109,8 +109,8 @@ fn benchmarks(c: &mut Criterion) {
         c.bench_function("query_geometry_path", |b| {
             b.iter(|| {
                 db.query::<String>(
-                    criterion::black_box(&geom_path),
-                    criterion::black_box(entity),
+                    std::hint::black_box(&geom_path),
+                    std::hint::black_box(entity),
                 )
                 .unwrap()
             })
@@ -127,8 +127,8 @@ fn benchmarks(c: &mut Criterion) {
         c.bench_function("query_value_subtree", |b| {
             b.iter(|| {
                 db.query::<starbreaker_datacore::query::value::Value>(
-                    criterion::black_box(&value_path),
-                    criterion::black_box(entity),
+                    std::hint::black_box(&value_path),
+                    std::hint::black_box(entity),
                 )
                 .unwrap()
             })
@@ -138,8 +138,8 @@ fn benchmarks(c: &mut Criterion) {
         c.bench_function("resolve_loadout", |b| {
             b.iter(|| {
                 starbreaker_datacore::loadout::resolve_loadout(
-                    criterion::black_box(&db),
-                    criterion::black_box(entity),
+                    std::hint::black_box(&db),
+                    std::hint::black_box(entity),
                 )
             })
         });
