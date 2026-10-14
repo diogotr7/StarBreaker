@@ -157,36 +157,17 @@ mod tests {
         ));
     }
 
-    /// Reads `masculinedefault.chf` from the local Data.p4k and prints the
-    /// `gender_hash` and `variant_hash` stored in its DNA block.
-    ///
-    /// Skipped when `SC_DATA_P4K` is unset or the file doesn't exist.
-    /// Run manually:
-    ///
-    /// ```text
-    /// $env:SC_DATA_P4K = "C:\Program Files\Roberts Space Industries\StarCitizen\LIVE\Data.p4k"
-    /// cargo test -p starbreaker-3d --lib character::identity::tests::print_real_chf_hashes -- --nocapture
-    /// ```
+    /// The default characters' CHFs carry the pinned rig hashes. Skipped
+    /// without a Data.p4k.
     #[test]
-    fn print_real_chf_hashes() {
-        let p4k_path = match std::env::var("SC_DATA_P4K") {
-            Ok(p) if std::path::Path::new(&p).exists() => p,
-            _ => {
-                eprintln!("Skipping print_real_chf_hashes: set SC_DATA_P4K to Data.p4k path");
-                return;
-            }
-        };
-        let p4k = starbreaker_p4k::MappedP4k::open(&p4k_path).expect("open p4k");
-        let entry = p4k
-            .entry(r"Data\Libs\CharacterCustomizer\masculinedefault.chf")
-            .expect("find masculinedefault.chf entry");
-        let chf_bytes = p4k.read(entry).expect("read chf bytes");
-        let chf = starbreaker_chf::chf_to_json(&chf_bytes)
-            .map(|j| serde_json::from_str::<serde_json::Value>(&j).unwrap())
-            .expect("parse chf");
-        let gender_hex = chf["dna"]["gender_hash"].as_str().unwrap_or("?");
-        let variant_hex = chf["dna"]["variant_hash"].as_str().unwrap_or("?");
-        eprintln!("gender_hash  = {gender_hex}");
-        eprintln!("variant_hash = {variant_hex}");
+    fn default_chfs_carry_the_pinned_hashes() {
+        for (chf, gender, variant) in [
+            ("masculinedefault", MALE_T1_PU_GENDER_HASH, MALE_T1_PU_VARIANT_HASH),
+            ("femininedefault", FEMALE_T1_PU_GENDER_HASH, FEMALE_T1_PU_VARIANT_HASH),
+        ] {
+            let Some(bytes) = crate::test_p4k::read(&format!(r"Data\Libs\CharacterCustomizer\{chf}.chf")) else { return };
+            let dna = starbreaker_chf::ChfFile::from_chf(&bytes).unwrap().parse().unwrap().dna;
+            assert_eq!((dna.gender_hash, dna.variant_hash), (gender, variant), "{chf}");
+        }
     }
 }

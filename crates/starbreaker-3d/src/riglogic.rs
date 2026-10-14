@@ -2731,24 +2731,11 @@ mod tests {
     }
 
     /// Real-fixture parse: read the extracted standalone file and assert
-    /// its header parses to the verified-byte values. Gated on the
-    /// `RIGLOGIC_FIXTURE_PATH` environment variable pointing to the file.
-    /// When the variable is unset or the file is absent the test is skipped
-    /// (prints a message and returns) so CI does not fail without the asset.
+    /// its header parses to the verified-byte values. Reads the male t1_pu
+    /// `.RigLogic` from Data.p4k; skipped without one (CI).
     #[test]
     fn fixture_parses() {
-        let path = match std::env::var("RIGLOGIC_FIXTURE_PATH") {
-            Ok(p) if std::path::Path::new(&p).exists() => p,
-            Ok(p) => {
-                eprintln!("Skipping fixture_parses: file not found at {p}");
-                return;
-            }
-            Err(_) => {
-                eprintln!("Skipping fixture_parses: RIGLOGIC_FIXTURE_PATH not set");
-                return;
-            }
-        };
-        let bytes = std::fs::read(&path).expect("read fixture file");
+        let Some(bytes) = crate::test_p4k::read(crate::test_p4k::MALE_RIGLOGIC) else { return };
         assert_eq!(bytes.len(), 328_056, "expected fixture size 328,056");
         let rig = RigLogic::read(&bytes).expect("real fixture parses");
         assert_eq!(rig.name, "protos_human_male_face_t1_pu");
@@ -3311,20 +3298,9 @@ mod tests {
     #[test]
     fn fixture_parses_trailing_sections() {
         // Real-fixture sub-test for Task 4: assert Section C / F / G / H
-        // counts and a couple of byte-level spot-checks. Gated on
-        // RIGLOGIC_FIXTURE_PATH (same gating as `fixture_parses`).
-        let path = match std::env::var("RIGLOGIC_FIXTURE_PATH") {
-            Ok(p) if std::path::Path::new(&p).exists() => p,
-            Ok(p) => {
-                eprintln!("Skipping fixture_parses_trailing_sections: file not found at {p}");
-                return;
-            }
-            Err(_) => {
-                eprintln!("Skipping fixture_parses_trailing_sections: RIGLOGIC_FIXTURE_PATH not set");
-                return;
-            }
-        };
-        let bytes = std::fs::read(&path).expect("read fixture file");
+        // counts and a couple of byte-level spot-checks (same fixture as
+        // `fixture_parses`).
+        let Some(bytes) = crate::test_p4k::read(crate::test_p4k::MALE_RIGLOGIC) else { return };
         let rig = RigLogic::read(&bytes).expect("real fixture parses");
 
         // Section C — 290 corrective rows (= num_corrective_blendshapes).
@@ -3386,8 +3362,8 @@ mod tests {
     /// Compares the RigLogic chunk embedded in the `.skin` IVO container
     /// against the standalone `.RigLogic` file for all fields except Section H.
     ///
-    /// Gated on both `RIGLOGIC_FIXTURE_PATH` (standalone `.RigLogic` file) and
-    /// `SKIN_PATH` (head `.skin` file). Skips gracefully if either is absent.
+    /// Reads both from Data.p4k (the standalone male t1_pu `.RigLogic` and
+    /// head `.skin`); skipped without one.
     ///
     /// ## Layout of the embedded chunk
     ///
@@ -3409,38 +3385,14 @@ mod tests {
         use starbreaker_chunks::{known_types::ivo::RIG_LOGIC, ChunkFile};
 
         // ── gate on env vars ──────────────────────────────────────────────────
-        let rl_path = match std::env::var("RIGLOGIC_FIXTURE_PATH") {
-            Ok(p) if std::path::Path::new(&p).exists() => p,
-            Ok(p) => {
-                eprintln!("Skipping embedded_chunk_matches_standalone: file not found at {p}");
-                return;
-            }
-            Err(_) => {
-                eprintln!(
-                    "Skipping embedded_chunk_matches_standalone: RIGLOGIC_FIXTURE_PATH not set"
-                );
-                return;
-            }
-        };
-        let skin_path = match std::env::var("SKIN_PATH") {
-            Ok(p) if std::path::Path::new(&p).exists() => p,
-            Ok(p) => {
-                eprintln!("Skipping embedded_chunk_matches_standalone: file not found at {p}");
-                return;
-            }
-            Err(_) => {
-                eprintln!("Skipping embedded_chunk_matches_standalone: SKIN_PATH not set");
-                return;
-            }
-        };
+        let Some(standalone_bytes) = crate::test_p4k::read(crate::test_p4k::MALE_RIGLOGIC) else { return };
+        let Some(skin_bytes) = crate::test_p4k::read(&format!("{}.skin", crate::test_p4k::MALE_HEAD)) else { return };
 
         // ── parse standalone ──────────────────────────────────────────────────
-        let standalone_bytes = std::fs::read(&rl_path).expect("read standalone fixture");
         let standalone =
             RigLogic::read(&standalone_bytes).expect("standalone fixture parses without error");
 
         // ── extract embedded chunk from .skin ─────────────────────────────────
-        let skin_bytes = std::fs::read(&skin_path).expect("read .skin fixture");
         let cf = ChunkFile::from_bytes(&skin_bytes).expect("parse IVO chunk file");
         let ivo = match cf {
             ChunkFile::Ivo(ref i) => i,
@@ -3607,7 +3559,7 @@ mod tests {
     /// Verifies that Section F's `skeleton_bone_name_crcs` includes the CRC32
     /// IEEE hash of known bone names from the companion skeleton.
     ///
-    /// Gated on `RIGLOGIC_FIXTURE_PATH`. Skips gracefully if absent.
+    /// Reads the male t1_pu `.RigLogic` from Data.p4k; skipped without one.
     ///
     /// ## CRC algorithm — confirmed CRC32 IEEE
     ///
@@ -3623,22 +3575,7 @@ mod tests {
     /// face rig — NOT generic anatomical names like "head" or "jaw".
     #[test]
     fn fixture_skeleton_bone_crcs_include_known() {
-        let path = match std::env::var("RIGLOGIC_FIXTURE_PATH") {
-            Ok(p) if std::path::Path::new(&p).exists() => p,
-            Ok(p) => {
-                eprintln!(
-                    "Skipping fixture_skeleton_bone_crcs_include_known: file not found at {p}"
-                );
-                return;
-            }
-            Err(_) => {
-                eprintln!(
-                    "Skipping fixture_skeleton_bone_crcs_include_known: RIGLOGIC_FIXTURE_PATH not set"
-                );
-                return;
-            }
-        };
-        let bytes = std::fs::read(&path).expect("read fixture file");
+        let Some(bytes) = crate::test_p4k::read(crate::test_p4k::MALE_RIGLOGIC) else { return };
         let rig = RigLogic::read(&bytes).expect("real fixture parses");
 
         // Confirmed bone names from the companion .skin fixture extracted via
@@ -3673,7 +3610,7 @@ mod tests {
     /// Verifies that all region weights in Section H are finite (no NaN or Inf)
     /// and checks their range.
     ///
-    /// Gated on `RIGLOGIC_FIXTURE_PATH`. Skips gracefully if absent.
+    /// Reads the male t1_pu `.RigLogic` from Data.p4k; skipped without one.
     ///
     /// V1.9 weights are NOT a probability simplex (i.e. they do NOT sum to 1.0
     /// per region). Observed values include negative weights (e.g. `-1.0` at
@@ -3681,20 +3618,7 @@ mod tests {
     /// they fall within the observed range of approximately [-1.0, 1.0].
     #[test]
     fn fixture_region_weights_finite_nonneg() {
-        let path = match std::env::var("RIGLOGIC_FIXTURE_PATH") {
-            Ok(p) if std::path::Path::new(&p).exists() => p,
-            Ok(p) => {
-                eprintln!("Skipping fixture_region_weights_finite_nonneg: file not found at {p}");
-                return;
-            }
-            Err(_) => {
-                eprintln!(
-                    "Skipping fixture_region_weights_finite_nonneg: RIGLOGIC_FIXTURE_PATH not set"
-                );
-                return;
-            }
-        };
-        let bytes = std::fs::read(&path).expect("read fixture file");
+        let Some(bytes) = crate::test_p4k::read(crate::test_p4k::MALE_RIGLOGIC) else { return };
         let rig = RigLogic::read(&bytes).expect("real fixture parses");
 
         assert!(
@@ -3870,28 +3794,14 @@ mod tests {
 
     /// ProtosInfo: parses the real fixture `.skin` file.
     ///
-    /// Gated on the `SKIN_PATH` environment variable pointing to:
-    /// `protos_human_male_face_t1_pu_head.skin`
-    ///
-    /// When unset or the file is absent the test is skipped so CI does not
-    /// fail without the asset.
+    /// Reads `protos_human_male_face_t1_pu_head.skin` from Data.p4k; skipped
+    /// without one (CI).
     #[test]
     fn protos_info_fixture_parses() {
         use starbreaker_chunks::{known_types::ivo::PROTOS_INFO, ChunkFile};
 
-        let path = match std::env::var("SKIN_PATH") {
-            Ok(p) if std::path::Path::new(&p).exists() => p,
-            Ok(p) => {
-                eprintln!("Skipping protos_info_fixture_parses: file not found at {p}");
-                return;
-            }
-            Err(_) => {
-                eprintln!("Skipping protos_info_fixture_parses: SKIN_PATH not set");
-                return;
-            }
-        };
+        let Some(bytes) = crate::test_p4k::read(&format!("{}.skin", crate::test_p4k::MALE_HEAD)) else { return };
 
-        let bytes = std::fs::read(&path).expect("read .skin fixture");
         let cf = ChunkFile::from_bytes(&bytes).expect("parse IVO chunk file");
         let ivo = match cf {
             ChunkFile::Ivo(ref i) => i,

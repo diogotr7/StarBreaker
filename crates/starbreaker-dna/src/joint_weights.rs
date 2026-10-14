@@ -150,14 +150,7 @@ mod tests {
     /// property holds for the first row.
     #[test]
     fn master_dna_joint_weights_row_stochastic() {
-        let path = match std::env::var("DNA_MASTER_PATH") {
-            Ok(p) if std::path::Path::new(&p).exists() => p,
-            _ => {
-                eprintln!("Skipping master_dna_joint_weights_row_stochastic: DNA_MASTER_PATH not set");
-                return;
-            }
-        };
-        let bytes = std::fs::read(&path).expect("master .dna readable");
+        let Some(bytes) = crate::test_p4k::read(crate::test_p4k::MALE_DNA) else { return };
         let dna = DnaFile::read(&bytes).expect("master .dna parses");
 
         let num_joints = 179usize;

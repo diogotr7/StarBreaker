@@ -19,6 +19,8 @@ pub mod chrparams;
 pub mod riglogic;
 pub mod validation;
 pub mod ui_pipeline;
+#[cfg(test)]
+pub(crate) mod test_p4k;
 
 pub use error::Error;
 pub use included_objects::{IncludedObject, IncludedObjects};

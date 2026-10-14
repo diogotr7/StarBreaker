@@ -81,6 +81,8 @@ pub mod region_weights;
 pub mod variant_deltas;
 pub mod variant_joints;
 pub mod variant_names;
+#[cfg(test)]
+mod test_p4k;
 
 pub use error::{DnaError, VariantDeltaSide};
 pub use expression_morphs::{

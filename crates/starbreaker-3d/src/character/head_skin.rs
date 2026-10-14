@@ -782,31 +782,16 @@ fn read_quat(bytes: &[u8], offset: usize) -> [f32; 4] {
 mod tests {
     use super::*;
 
-    /// Resolve both fixture paths, or return `None` if either is not set / missing.
-    /// Tests that need the fixture call this and skip (with an eprintln) if `None`.
-    fn fixture_paths() -> Option<(String, String)> {
-        let skin = match std::env::var("SKIN_PATH") {
-            Ok(p) if std::path::Path::new(&p).exists() => p,
-            _ => return None,
-        };
-        let skinm = match std::env::var("SKINM_PATH") {
-            Ok(p) if std::path::Path::new(&p).exists() => p,
-            _ => return None,
-        };
-        Some((skin, skinm))
+    /// The male t1_pu head `.skin` and `.skinm` from Data.p4k, or `None`
+    /// (the test skips) without one.
+    fn fixture() -> Option<(Vec<u8>, Vec<u8>)> {
+        let head = crate::test_p4k::MALE_HEAD;
+        Some((crate::test_p4k::read(&format!("{head}.skin"))?, crate::test_p4k::read(&format!("{head}.skinm"))?))
     }
 
     #[test]
     fn fixture_head_skin_parses() {
-        let Some((skin_path, skinm_path)) = fixture_paths() else {
-            eprintln!(
-                "Skipping fixture_head_skin_parses: SKIN_PATH and SKINM_PATH \
-                 must both be set to existing files"
-            );
-            return;
-        };
-        let skin_bytes = std::fs::read(&skin_path).expect("read .skin fixture");
-        let skinm_bytes = std::fs::read(&skinm_path).expect("read .skinm fixture");
+        let Some((skin_bytes, skinm_bytes)) = fixture() else { return };
         let head = parse_head_skin(&skin_bytes, &skinm_bytes).expect("parse_head_skin failed");
 
         // ── MeshIvo320 metadata (from .skin) ─────────────────────────

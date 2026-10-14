@@ -432,14 +432,7 @@ mod tests {
 
     #[test]
     fn parses_real_cdf_fixture() {
-        let path = match std::env::var("CDF_PATH") {
-            Ok(p) if std::path::Path::new(&p).exists() => p,
-            _ => {
-                eprintln!("Skipping parses_real_cdf_fixture: CDF_PATH not set or file missing");
-                return;
-            }
-        };
-        let bytes = std::fs::read(&path).expect("read cdf");
+        let Some(bytes) = crate::test_p4k::read(crate::test_p4k::MALE_CDF) else { return };
         let cdf = parse_cdf(&bytes).expect("real cdf should parse");
         assert!(cdf.head_attachment.binding_skin.contains("_head.skin"));
     }
