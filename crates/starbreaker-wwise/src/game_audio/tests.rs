@@ -59,3 +59,14 @@ fn documents_are_cryxmlb_or_text_xml() {
     assert!(matches!(parse_document(&with_bom), Ok(Some(GameAudioDoc::Text(_)))));
     assert!(matches!(parse_document(b"\x00\x01binary"), Ok(None)));
 }
+
+/// An empty search lists every external source (the app shows them before
+/// anything is typed), sorted by name then language.
+#[test]
+fn an_empty_external_source_search_lists_everything() {
+    let doc = parse_document(DOC.as_bytes()).unwrap().unwrap();
+    let (_, external) = index_documents([doc]).unwrap();
+    let all = external.search("");
+    let languages: Vec<&str> = all.iter().map(|e| e.language.as_str()).collect();
+    assert_eq!(languages, ["English(US)", "German(DE)"]);
+}

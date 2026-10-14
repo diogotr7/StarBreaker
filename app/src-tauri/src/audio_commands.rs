@@ -421,9 +421,6 @@ pub fn audio_search_external_sources(
     query: String,
 ) -> Result<Vec<TriggerDetail>, AppError> {
     ensure_game_audio(&state)?;
-    if query.trim().is_empty() {
-        return Ok(Vec::new());
-    }
 
     let external_guard = state.external_source_index.lock();
     let external_sources = external_guard

@@ -39,7 +39,7 @@ export function TriggerList() {
         {triggers.length === 0 && (
           <div className="px-3 py-4 text-xs text-text-faint text-center">
             {searchMode === "external"
-              ? "Search for external sources"
+              ? "No external sources found"
               : showEmpty
                 ? "Select an item to see triggers"
                 : "No triggers found"}

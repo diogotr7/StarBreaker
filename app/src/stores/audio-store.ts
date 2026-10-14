@@ -144,7 +144,7 @@ export const useAudioStore = create<AudioState>((set, get) => ({
         });
       });
     } else if (mode === "external") {
-      set({ triggers: [], sounds: [] });
+      audioSearchExternalSources("").then((triggers) => set({ triggers }));
     }
   },
 
@@ -178,10 +178,6 @@ export const useAudioStore = create<AudioState>((set, get) => ({
           sounds: [],
         });
       } else if (searchMode === "external") {
-        if (!query.trim()) {
-          set({ isSearching: false, triggers: [], selectedTrigger: null, sounds: [] });
-          return;
-        }
         const results = await audioSearchExternalSources(query);
         if (get().searchSeq !== seq) return;
         set({
