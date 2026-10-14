@@ -4,12 +4,12 @@ version.workspace = true
 edition = "2024"
 
 [dependencies]
-starbreaker-common = { path = "../starbreaker-common" }
-thiserror = "2"
-serde = { version = "1", features = ["derive"], optional = true }
+starbreaker-common = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
-starbreaker-p4k = { path = "../starbreaker-p4k" }
+starbreaker-p4k = { workspace = true }
 
 [features]
 default = []

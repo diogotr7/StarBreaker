@@ -5,9 +5,9 @@ version.workspace = true
 
 [dependencies]
 flate2 = { workspace = true }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"] }
-starbreaker-dds = { path = "../starbreaker-dds" }
-thiserror = "2"
+image = { workspace = true, features = ["png", "jpeg", "tiff"] }
+starbreaker-dds = { workspace = true }
+thiserror = { workspace = true }
 
 [lints]
 workspace = true

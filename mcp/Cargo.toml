@@ -9,24 +9,24 @@ path = "src/main.rs"
 
 [dependencies]
 rmcp = { version = "3.5", features = ["server", "transport-io", "macros"] }
-tokio = { version = "1", features = ["rt", "macros", "io-std"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+tokio = { workspace = true, features = ["rt", "macros", "io-std"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
 schemars = "1"
-clap = { version = "4", features = ["derive", "env"] }
-log = "0.4"
-env_logger = "0.11"
+clap = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
 base64 = "0.23"
-anyhow = "1"
+anyhow = { workspace = true }
 
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "gif", "bmp", "tga"] }
-zstd = "0.14"
+image = { workspace = true, features = ["png", "jpeg", "tiff", "gif", "bmp", "tga"] }
+zstd = { workspace = true }
 
-starbreaker-p4k = { path = "../crates/starbreaker-p4k" }
-starbreaker-datacore = { path = "../crates/starbreaker-datacore" }
-starbreaker-cryxml = { path = "../crates/starbreaker-cryxml" }
-starbreaker-common = { path = "../crates/starbreaker-common" }
-starbreaker-chunks = { path = "../crates/starbreaker-chunks" }
-starbreaker-dds = { path = "../crates/starbreaker-dds" }
-starbreaker-3d = { path = "../crates/starbreaker-3d" }
-starbreaker-ui = { path = "../crates/starbreaker-ui" }
+starbreaker-p4k = { workspace = true }
+starbreaker-datacore = { workspace = true }
+starbreaker-cryxml = { workspace = true }
+starbreaker-common = { workspace = true }
+starbreaker-chunks = { workspace = true }
+starbreaker-dds = { workspace = true }
+starbreaker-3d = { workspace = true }
+starbreaker-ui = { workspace = true }

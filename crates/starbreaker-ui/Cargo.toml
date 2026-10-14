@@ -6,27 +6,27 @@ description = "Static UI atom extractor and canvas composer for Star Citizen shi
 
 [dependencies]
 flate2 = { workspace = true }
-quick-xml = "0.42"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "gif", "bmp", "tga"] }
-log = "0.4"
+quick-xml = { workspace = true }
+image = { workspace = true, features = ["png", "jpeg", "tiff", "gif", "bmp", "tga"] }
+log = { workspace = true }
 resvg = { version = "0.48", default-features = false, features = ["raster-images"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 sha2 = "0.11"
-starbreaker-dds = { path = "../starbreaker-dds" }
+starbreaker-dds = { workspace = true }
 rusttype = "0.9"
 swf = "0.3"
-thiserror = "2"
+thiserror = { workspace = true }
 # Phase 6: vector rasterisation backend for the canvas compositor.
 # tiny-skia is pre-approved; must remain unmodified (read-only dep).
 tiny-skia = { version = "0.12", default-features = false, features = ["std"] }
 usvg = { version = "0.48", default-features = false }
-hex = "0.4"
+hex = { workspace = true }
 
 [dev-dependencies]
-anyhow = "1"
-rayon = "1.12.0"
-starbreaker-p4k = { path = "../starbreaker-p4k" }
+anyhow = { workspace = true }
+rayon = { workspace = true }
+starbreaker-p4k = { workspace = true }
 swf = "0.3"
 tiny-skia = { version = "0.12", default-features = false, features = ["std"] }
 

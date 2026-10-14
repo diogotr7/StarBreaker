@@ -4,7 +4,7 @@ version.workspace = true
 edition = "2024"
 
 [dependencies]
-rustc-hash = "2"
-zstd = "0.14"
+rustc-hash = { workspace = true }
+zstd = { workspace = true }
 
 [dev-dependencies]

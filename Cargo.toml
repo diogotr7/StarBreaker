@@ -35,3 +35,37 @@ perf = { level = "warn" }
 [workspace.dependencies]
 parking_lot = "0.12"
 flate2 = { version = "1", features = ["zlib-rs"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+crc32c = "0.6"
+criterion = { version = "0.8", default-features = false }
+env_logger = "0.11"
+filetime = "0.2"
+hex = "0.4"
+image = { version = "0.25", default-features = false }
+log = "0.4"
+quick-xml = "0.42"
+rayon = "1.12"
+rustc-hash = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = "1"
+zerocopy = { version = "0.8", features = ["derive"] }
+zstd = "0.14"
+
+# Workspace crates
+starbreaker-3d = { path = "crates/starbreaker-3d" }
+starbreaker-blend = { path = "crates/starbreaker-blend" }
+starbreaker-chf = { path = "crates/starbreaker-chf" }
+starbreaker-chunks = { path = "crates/starbreaker-chunks" }
+starbreaker-common = { path = "crates/starbreaker-common" }
+starbreaker-cryxml = { path = "crates/starbreaker-cryxml" }
+starbreaker-datacore = { path = "crates/starbreaker-datacore" }
+starbreaker-dds = { path = "crates/starbreaker-dds" }
+starbreaker-dna = { path = "crates/starbreaker-dna" }
+starbreaker-gfx = { path = "crates/starbreaker-gfx" }
+starbreaker-p4k = { path = "crates/starbreaker-p4k" }
+starbreaker-ui = { path = "crates/starbreaker-ui" }
+starbreaker-wem = { path = "crates/starbreaker-wem" }
+starbreaker-wwise = { path = "crates/starbreaker-wwise" }
