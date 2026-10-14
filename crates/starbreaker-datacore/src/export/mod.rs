@@ -1,3 +1,4 @@
+pub mod classic_xml;
 pub mod json;
 pub mod unp4k_xml;
 pub mod xml;
@@ -45,6 +46,20 @@ pub fn write_json_compact(
 /// Export a record to unp4k-compatible XML bytes.
 pub fn to_unp4k_xml(db: &Database, record: &Record) -> Result<Vec<u8>, ExportError> {
     unp4k_xml::to_unp4k_xml(db, record)
+}
+
+/// Export a record to classic legacy-compatible XML bytes.
+pub fn to_classic_xml(db: &Database, record: &Record) -> Result<Vec<u8>, ExportError> {
+    classic_xml::to_classic_xml(db, record)
+}
+
+/// Export a record as classic legacy-compatible XML to an arbitrary writer.
+pub fn write_classic_xml(
+    db: &Database,
+    record: &Record,
+    w: impl std::io::Write,
+) -> Result<(), ExportError> {
+    classic_xml::write_classic_xml(db, record, w)
 }
 
 /// Export a record to XML bytes (pretty-printed).

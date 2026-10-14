@@ -50,12 +50,11 @@ impl<W: Write> XmlSink<W> {
     /// Write `<name>text</name>`.
     fn write_text_element(&mut self, name: Option<&str>, text: &str) -> Result<(), std::io::Error> {
         let tag = Self::tag(name);
-        let tag_owned = tag.to_owned();
         self.writer
-            .write_event(Event::Start(BytesStart::new(tag_owned.as_str())))?;
+            .write_event(Event::Start(BytesStart::new(tag)))?;
         self.writer.write_event(Event::Text(BytesText::new(text)))?;
         self.writer
-            .write_event(Event::End(BytesEnd::new(tag_owned.as_str())))?;
+            .write_event(Event::End(BytesEnd::new(tag)))?;
         Ok(())
     }
 }
