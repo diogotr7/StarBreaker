@@ -7,7 +7,7 @@ description = "Static UI atom extractor and canvas composer for Star Citizen shi
 [dependencies]
 flate2 = { workspace = true }
 quick-xml = "0.37"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "gif", "bmp", "tga"] }
 log = "0.4"
 resvg = "0.42"
 serde = { version = "1", features = ["derive"] }

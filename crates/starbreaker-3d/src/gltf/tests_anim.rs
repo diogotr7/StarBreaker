@@ -106,7 +106,7 @@ fn jaw_clip() -> Clip {
 #[test]
 fn bone_tracks_drive_bone_nodes() {
     let glb = export(vec![jaw_clip()]).unwrap();
-    let (doc, buffers, _) = gltf::import_slice(&glb).expect("valid glTF");
+    let (doc, buffers) = crate::parity::import_glb(&glb).expect("valid glTF");
     let anim = doc.animations().next().expect("one animation");
     assert_eq!(anim.name(), Some("open"));
     let rotation = anim
@@ -131,7 +131,7 @@ fn bone_tracks_drive_bone_nodes() {
 #[test]
 fn morph_tracks_drive_mesh_weights() {
     let glb = export(vec![jaw_clip()]).unwrap();
-    let (doc, buffers, _) = gltf::import_slice(&glb).expect("valid glTF");
+    let (doc, buffers) = crate::parity::import_glb(&glb).expect("valid glTF");
     let anim = doc.animations().next().unwrap();
     let weights = anim
         .channels()

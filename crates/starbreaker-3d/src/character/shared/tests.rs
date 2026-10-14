@@ -311,7 +311,7 @@ fn json_chunk(glb: &[u8]) -> serde_json::Value {
 #[test]
 fn rig_glb_binds_head_and_parts_to_one_skeleton() {
     let glb = rig(None).to_glb().expect("glb");
-    let (doc, _, _) = gltf::import_slice(&glb).expect("valid glTF");
+    let (doc, _) = crate::parity::import_glb(&glb).expect("valid glTF");
     assert_eq!(doc.skins().count(), 2, "head + part");
     let bone_nodes = |name: &str| doc.nodes().filter(|n| n.name() == Some(name)).count();
     assert_eq!(bone_nodes("jaw"), 1, "one jaw node, no placeholder");
@@ -351,7 +351,7 @@ fn rig_glb_poses_parts_through_the_skin() {
     let mut posed = rig(None);
     posed.posed.bones[1].bind_translation = [1.0, 0.0, -0.5];
     let glb = posed.to_glb().expect("glb");
-    let (doc, _, _) = gltf::import_slice(&glb).expect("valid glTF");
+    let (doc, _) = crate::parity::import_glb(&glb).expect("valid glTF");
     let jaw = doc.nodes().find(|n| n.name() == Some("jaw")).unwrap();
     let [_, _, _, t] = jaw.transform().matrix();
     assert!((t[2] + 0.5).abs() < 1e-6, "jaw node carries the pose: {t:?}");
@@ -416,7 +416,7 @@ fn pipeline_rig() -> CharacterRig {
 fn rig_glb_writes_the_pipeline_streams_and_materials() {
     let rig = pipeline_rig();
     let glb = rig.to_glb().expect("glb");
-    let (doc, buffers, _) = gltf::import_slice(&glb).expect("valid glTF");
+    let (doc, buffers) = crate::parity::import_glb(&glb).expect("valid glTF");
     let teeth = doc.nodes().find(|n| n.name() == Some("teeth")).expect("part node");
     let mesh = teeth.mesh().expect("part mesh");
     let prims: Vec<_> = mesh.primitives().collect();

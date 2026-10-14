@@ -57,7 +57,7 @@ fn armour_skin_exports_a_bound_soft_skin() {
     assert!(blended * 4 > mesh.positions.len(), "blended vertices survive: {blended}/{}", mesh.positions.len());
 
     let glb = starbreaker_3d::skin_to_glb(&skinm, Some(&skin_file)).expect("glb");
-    let (doc, buffers, _) = gltf::import_slice(&glb).expect("valid glTF");
+    let (doc, buffers) = starbreaker_3d::parity::import_glb(&glb).expect("valid glTF");
     let node = doc.nodes().find(|n| n.skin().is_some()).expect("a skinned node");
     let gl_skin = node.skin().unwrap();
     // A joint without a skeleton node gets a placeholder named after it, so a
@@ -92,7 +92,7 @@ fn armour_blend_has_the_glb_skin_joints_as_vertex_groups() {
     let skinm = p4k.read_file(&format!("{base}.skinm")).unwrap();
 
     let glb = starbreaker_3d::skin_to_glb(&skinm, Some(&skin_file)).expect("glb");
-    let (doc, _, _) = gltf::import_slice(&glb).expect("valid glTF");
+    let (doc, _) = starbreaker_3d::parity::import_glb(&glb).expect("valid glTF");
     let gl_skin = doc.skins().next().expect("skin");
     let glb_joints: Vec<String> = gl_skin
         .joints()

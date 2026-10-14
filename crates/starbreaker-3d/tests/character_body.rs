@@ -85,7 +85,7 @@ fn character_glb_includes_the_body() {
         .build_character_glb(&chf.dna, &items, &Outfit::with_body(Some(body.clone())), &Default::default())
         .unwrap();
 
-    let (doc, buffers, _) = gltf::import_slice(&glb).unwrap();
+    let (doc, buffers) = starbreaker_3d::parity::import_glb(&glb).unwrap();
     let parent_of = |name: &str| -> Option<String> {
         let child = doc.nodes().find(|n| n.name() == Some(name))?.index();
         doc.nodes().find(|n| n.children().any(|c| c.index() == child)).and_then(|n| n.name().map(str::to_owned))
@@ -177,7 +177,7 @@ fn character_glb_plays_a_body_clip() {
         .unwrap()
         .build_character_glb(&chf.dna, &[], &Outfit::with_body(Some(body)), &CharacterAnimation { face: None, body: Some(&idle) })
         .unwrap();
-    let (doc, _, _) = gltf::import_slice(&glb).unwrap();
+    let (doc, _) = starbreaker_3d::parity::import_glb(&glb).unwrap();
     let animations: Vec<gltf::Animation> = doc.animations().collect();
     assert_eq!(animations.len(), 1);
     assert_eq!(animations[0].name(), Some("char_customizer_stand_idle_01"));
