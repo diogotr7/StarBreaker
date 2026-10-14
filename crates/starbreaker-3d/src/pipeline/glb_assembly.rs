@@ -468,6 +468,7 @@ pub fn assemble_glb_with_loadout_with_progress(
             children: child_payloads,
             interiors: loaded_interiors,
             paint_variants,
+            animations: Vec::new(),
         };
 
         let phase_start = Instant::now();
@@ -511,6 +512,7 @@ pub fn assemble_glb_with_loadout_with_progress(
             skeleton_bones: root_bones,
             children: child_payloads,
             interiors: loaded_interiors,
+            animations: Vec::new(),
         },
         &mut crate::gltf::GlbLoaders {
             load_textures: &mut tex_loader,

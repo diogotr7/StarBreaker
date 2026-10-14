@@ -113,6 +113,8 @@ def _load_orchestration() -> types.ModuleType:
         "layers": "LayersMixin",
         "materials": "MaterialsMixin",
         "palette": "PaletteMixin",
+        "skin": "SkinMixin",
+        "hair": "HairMixin",
     }.items():
         stub = types.ModuleType(f"sb_scene_test_runtime.importer.{submodule}")
         setattr(stub, class_name, type(class_name, (), {}))

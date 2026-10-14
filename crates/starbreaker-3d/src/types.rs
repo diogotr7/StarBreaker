@@ -19,6 +19,10 @@ pub struct Mesh {
     /// Scaling bounding box (second bbox from MeshInfo, used for dequantization).
     pub scaling_min: [f32; 3],
     pub scaling_max: [f32; 3],
+    /// Per-vertex skinning (see [`crate::mesh_rig::Skin`]).
+    pub skin: Option<crate::mesh_rig::Skin>,
+    /// Named per-vertex deltas (see [`crate::mesh_rig::MorphTarget`]).
+    pub morph_targets: Vec<crate::mesh_rig::MorphTarget>,
 }
 
 #[derive(Debug, Clone)]
@@ -35,67 +39,282 @@ pub struct SubMesh {
 
 impl Mesh {
     /// Merge another mesh into this one, appending vertex data and reindexing.
+    ///
+    /// Every per-vertex stream stays as long as `positions`: UVs and colours
+    /// are padded (zero UV, opaque white), a side without normals gets
+    /// geometry-derived smooth normals (as [`build_mesh`] does for a
+    /// stream-less mesh), and tangents are kept only when both sides have
+    /// them (consumers derive tangents from normals + UVs). Skins and morph
+    /// targets merge by joint / target name (see [`crate::mesh_rig`]).
     pub fn merge_from(&mut self, other: Mesh) {
+        // Parity guard: no `..` — a new Mesh field must be handled here.
+        let Mesh {
+            positions,
+            indices,
+            uvs,
+            secondary_uvs,
+            normals,
+            tangents,
+            colors,
+            submeshes,
+            model_min,
+            model_max,
+            scaling_min,
+            scaling_max,
+            skin,
+            morph_targets,
+        } = other;
         let vertex_offset = self.positions.len() as u32;
         let index_offset = self.indices.len() as u32;
+        let total = self.positions.len() + positions.len();
 
-        self.positions.extend(other.positions);
-        match (&mut self.uvs, other.uvs) {
-            (Some(a), Some(b)) => a.extend(b),
-            (Some(a), None) => a.resize(self.positions.len(), [0.0, 0.0]),
-            (None, Some(b)) => {
-                let mut padded = vec![[0.0, 0.0]; vertex_offset as usize];
-                padded.extend(b);
-                self.uvs = Some(padded);
-            }
-            (None, None) => {}
-        }
-        match (&mut self.secondary_uvs, other.secondary_uvs) {
-            (Some(a), Some(b)) => a.extend(b),
-            (Some(a), None) => a.resize(self.positions.len(), [0.0, 0.0]),
-            (None, Some(b)) => {
-                let mut padded = vec![[0.0, 0.0]; vertex_offset as usize];
-                padded.extend(b);
-                self.secondary_uvs = Some(padded);
-            }
-            (None, None) => {}
-        }
-        if let (Some(a), Some(b)) = (&mut self.normals, other.normals) {
-            a.extend(b);
-        }
-        if let (Some(a), Some(b)) = (&mut self.tangents, other.tangents) {
-            a.extend(b);
-        }
-        // Merge vertex colors: pad with opaque white if one side is missing.
-        match (&mut self.colors, other.colors) {
-            (Some(a), Some(b)) => a.extend(b),
-            (Some(a), None) => {
-                // Other mesh has no colors — pad with opaque white
-                a.resize(self.positions.len(), [255, 255, 255, 255]);
-            }
-            (None, Some(b)) => {
-                // Self had no colors — backfill with opaque white, then append other's
-                let mut padded = vec![[255u8, 255, 255, 255]; vertex_offset as usize];
-                padded.extend(b);
-                self.colors = Some(padded);
-            }
-            (None, None) => {}
-        }
+        self.skin = crate::mesh_rig::merge_skins(self.skin.take(), skin, self.positions.len(), positions.len());
+        crate::mesh_rig::merge_morph_targets(&mut self.morph_targets, morph_targets, self.positions.len(), positions.len());
 
-        self.indices
-            .extend(other.indices.iter().map(|i| i + vertex_offset));
+        self.normals = match (self.normals.take(), normals) {
+            (None, None) => None,
+            (mine, theirs) => {
+                let mut merged = mine.unwrap_or_else(|| compute_smooth_normals(&self.positions, &self.indices));
+                merged.extend(theirs.unwrap_or_else(|| compute_smooth_normals(&positions, &indices)));
+                Some(merged)
+            }
+        };
+        self.tangents = match (self.tangents.take(), tangents) {
+            (Some(mut mine), Some(theirs)) => {
+                mine.extend(theirs);
+                Some(mine)
+            }
+            _ => None,
+        };
+        merge_padded(&mut self.uvs, uvs, vertex_offset as usize, total, [0.0, 0.0]);
+        merge_padded(&mut self.secondary_uvs, secondary_uvs, vertex_offset as usize, total, [0.0, 0.0]);
+        merge_padded(&mut self.colors, colors, vertex_offset as usize, total, [255, 255, 255, 255]);
 
-        for mut sm in other.submeshes {
+        self.positions.extend(positions);
+        self.indices.extend(indices.iter().map(|i| i + vertex_offset));
+        for mut sm in submeshes {
             sm.first_index += index_offset;
             sm.first_vertex += vertex_offset;
             self.submeshes.push(sm);
         }
-
         for i in 0..3 {
-            self.model_min[i] = self.model_min[i].min(other.model_min[i]);
-            self.model_max[i] = self.model_max[i].max(other.model_max[i]);
-            self.scaling_min[i] = self.scaling_min[i].min(other.scaling_min[i]);
-            self.scaling_max[i] = self.scaling_max[i].max(other.scaling_max[i]);
+            self.model_min[i] = self.model_min[i].min(model_min[i]);
+            self.model_max[i] = self.model_max[i].max(model_max[i]);
+            self.scaling_min[i] = self.scaling_min[i].min(scaling_min[i]);
+            self.scaling_max[i] = self.scaling_max[i].max(scaling_max[i]);
+        }
+    }
+}
+
+impl Mesh {
+    /// A mesh with no geometry (scene-graph anchors, placeholder children).
+    pub fn empty() -> Mesh {
+        Mesh {
+            positions: Vec::new(),
+            indices: Vec::new(),
+            uvs: None,
+            secondary_uvs: None,
+            normals: None,
+            tangents: None,
+            colors: None,
+            submeshes: Vec::new(),
+            model_min: [0.0; 3],
+            model_max: [0.0; 3],
+            scaling_min: [0.0; 3],
+            scaling_max: [0.0; 3],
+            skin: None,
+            morph_targets: Vec::new(),
+        }
+    }
+
+    /// The vertices referenced by `submesh_indices`, reindexed from 0, with
+    /// every per-vertex stream carried and the model bbox recomputed. Returns
+    /// the old → new vertex index map (for remapping side data such as
+    /// vertex groups).
+    pub fn subset(&self, submesh_indices: &[usize]) -> (Mesh, std::collections::HashMap<u32, u32>) {
+        // Parity guard: no `..` — a new Mesh field must be handled here.
+        let Mesh {
+            positions,
+            indices,
+            uvs,
+            secondary_uvs,
+            normals,
+            tangents,
+            colors,
+            submeshes,
+            model_min: _,  // recomputed from the subset
+            model_max: _,  // recomputed from the subset
+            scaling_min,
+            scaling_max,
+            skin,
+            morph_targets,
+        } = self;
+        fn take<T: Copy>(src: &Option<Vec<T>>, order: &[u32]) -> Option<Vec<T>> {
+            src.as_ref().map(|s| order.iter().map(|&o| s[o as usize]).collect())
+        }
+
+        let mut old_to_new: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        let mut order: Vec<u32> = Vec::new();
+        let mut new_indices = Vec::new();
+        let mut new_submeshes = Vec::new();
+        for &submesh_index in submesh_indices {
+            let Some(source) = submeshes.get(submesh_index) else { continue };
+            let first_index = new_indices.len() as u32;
+            let start = (source.first_index as usize).min(indices.len());
+            let end = (start + source.num_indices as usize).min(indices.len());
+            for tri in indices[start..end].chunks_exact(3) {
+                // A triangle with an out-of-range index is dropped whole so the
+                // index stream stays triangle-aligned.
+                if tri.iter().any(|&i| (i as usize) >= positions.len()) {
+                    continue;
+                }
+                for &old in tri {
+                    let new = *old_to_new.entry(old).or_insert_with(|| {
+                        order.push(old);
+                        order.len() as u32 - 1
+                    });
+                    new_indices.push(new);
+                }
+            }
+            let num_indices = new_indices.len() as u32 - first_index;
+            if num_indices == 0 {
+                continue;
+            }
+            // Parity guard: no `..` — a new SubMesh field must be handled here.
+            let SubMesh {
+                material_name,
+                material_id,
+                source_material_id,
+                first_index: _,  // reindexed
+                num_indices: _,  // reindexed
+                first_vertex: _, // recomputed below
+                num_vertices: _, // recomputed below
+                node_parent_index,
+            } = source;
+            let (lo, hi) = new_indices[first_index as usize..]
+                .iter()
+                .fold((u32::MAX, 0), |(lo, hi), &i| (lo.min(i), hi.max(i)));
+            new_submeshes.push(SubMesh {
+                material_name: material_name.clone(),
+                material_id: *material_id,
+                source_material_id: *source_material_id,
+                first_index,
+                num_indices,
+                first_vertex: lo,
+                num_vertices: hi - lo + 1,
+                node_parent_index: *node_parent_index,
+            });
+        }
+
+        let new_positions: Vec<[f32; 3]> = order.iter().map(|&o| positions[o as usize]).collect();
+        let (model_min, model_max) = bounds(&new_positions);
+        let mesh = Mesh {
+            positions: new_positions,
+            indices: new_indices,
+            uvs: take(uvs, &order),
+            secondary_uvs: take(secondary_uvs, &order),
+            normals: take(normals, &order),
+            tangents: take(tangents, &order),
+            colors: take(colors, &order),
+            submeshes: new_submeshes,
+            model_min,
+            model_max,
+            scaling_min: *scaling_min,
+            scaling_max: *scaling_max,
+            skin: skin.as_ref().map(|s| s.gather(&order)),
+            morph_targets: morph_targets.iter().map(|m| m.gather(&order)).collect(),
+        };
+        (mesh, old_to_new)
+    }
+
+    /// Apply a rigid transform to every spatial stream: positions get the
+    /// full affine; normals (inverse-transpose), tangent xyz and morph deltas
+    /// only the linear part; tangent handedness (w) is kept. The model bbox
+    /// is transformed by its 8 corners; the scaling bbox (dequantization
+    /// only) is left as is.
+    pub fn transform(&mut self, affine: glam::Affine3A) {
+        // Parity guard: no `..` — every spatial Mesh field must be transformed here.
+        let Mesh {
+            positions,
+            normals,
+            tangents,
+            morph_targets,
+            model_min,
+            model_max,
+            scaling_min: _, // dequantization only
+            scaling_max: _,
+            indices: _,       // not spatial
+            uvs: _,           // not spatial
+            secondary_uvs: _, // not spatial
+            colors: _,        // not spatial
+            submeshes: _,     // not spatial
+            skin: _,          // joint space, not mesh space
+        } = self;
+        let linear = glam::Mat3::from(affine.matrix3);
+        let normal_matrix = linear.inverse().transpose();
+        let map = |m: glam::Mat3, v: [f32; 3]| -> [f32; 3] { (m * glam::Vec3::from(v)).into() };
+        for p in positions.iter_mut() {
+            *p = affine.transform_point3(glam::Vec3::from(*p)).into();
+        }
+        for n in normals.iter_mut().flatten() {
+            *n = (normal_matrix * glam::Vec3::from(*n)).normalize_or_zero().into();
+        }
+        for t in tangents.iter_mut().flatten() {
+            let v = map(linear, [t[0], t[1], t[2]]);
+            *t = [v[0], v[1], v[2], t[3]];
+        }
+        for target in morph_targets.iter_mut() {
+            for d in &mut target.position_deltas {
+                *d = map(linear, *d);
+            }
+            for d in target.normal_deltas.iter_mut().flatten() {
+                *d = map(normal_matrix, *d);
+            }
+        }
+        let (mn, mx) = (glam::Vec3::from(*model_min), glam::Vec3::from(*model_max));
+        let mut new_min = glam::Vec3::splat(f32::MAX);
+        let mut new_max = glam::Vec3::splat(f32::MIN);
+        for x in [mn.x, mx.x] {
+            for y in [mn.y, mx.y] {
+                for z in [mn.z, mx.z] {
+                    let t = affine.transform_point3(glam::Vec3::new(x, y, z));
+                    new_min = new_min.min(t);
+                    new_max = new_max.max(t);
+                }
+            }
+        }
+        *model_min = new_min.into();
+        *model_max = new_max.into();
+    }
+}
+
+/// Axis-aligned bounds of `positions` (zero box when empty).
+fn bounds(positions: &[[f32; 3]]) -> ([f32; 3], [f32; 3]) {
+    if positions.is_empty() {
+        return ([0.0; 3], [0.0; 3]);
+    }
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for p in positions {
+        for axis in 0..3 {
+            min[axis] = min[axis].min(p[axis]);
+            max[axis] = max[axis].max(p[axis]);
+        }
+    }
+    (min, max)
+}
+
+/// Append `theirs` to `mine` for an optional per-vertex stream, padding the
+/// missing side with `fill` so the result has `total` entries.
+fn merge_padded<T: Copy>(mine: &mut Option<Vec<T>>, theirs: Option<Vec<T>>, mine_len: usize, total: usize, fill: T) {
+    match (mine.as_mut(), theirs) {
+        (None, None) => {}
+        (Some(a), Some(b)) => a.extend(b),
+        (Some(a), None) => a.resize(total, fill),
+        (None, Some(b)) => {
+            let mut padded = vec![fill; mine_len];
+            padded.extend(b);
+            *mine = Some(padded);
         }
     }
 }
@@ -140,110 +359,152 @@ fn compute_smooth_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 
     norms
 }
 
+/// Split rigidly-skinned triangles onto their bone (`node_parent_index`).
+///
+/// A triangle is rigid when all three vertices have exactly one influence,
+/// on the same joint. A submesh whose triangles are at least 90 % rigid is
+/// split: rigid triangles go to one submesh per joint, the blended remainder
+/// stays a soft submesh on the original node. Otherwise the submesh stays
+/// soft as a whole. Returns the rebuilt submeshes and indices, and per
+/// rebuilt submesh whether it is a rigid split.
 fn split_rigid_weighted_submeshes(
     submeshes: &[SubMesh],
     indices: &[u32],
     bone_maps: Option<&[crate::ivo::skin::BoneMap12]>,
-) -> (Vec<SubMesh>, Vec<u32>) {
+) -> (Vec<SubMesh>, Vec<u32>, Vec<bool>) {
     let Some(bone_maps) = bone_maps else {
-        return (submeshes.to_vec(), indices.to_vec());
+        return (submeshes.to_vec(), indices.to_vec(), vec![false; submeshes.len()]);
+    };
+    // The joint of a vertex with exactly one influence.
+    let single_joint = |vertex: u32| -> Option<u16> {
+        let entry = bone_maps.get(vertex as usize)?;
+        let mut found = None;
+        for (&joint, &weight) in entry.joint_indices.iter().zip(&entry.weights) {
+            if weight > 0 {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(joint);
+            }
+        }
+        found
     };
 
     let mut rebuilt_submeshes = Vec::with_capacity(submeshes.len());
     let mut rebuilt_indices = Vec::with_capacity(indices.len());
+    let mut rigid = Vec::with_capacity(submeshes.len());
+    let push = |submesh: &SubMesh, tris: &[u32], node: Option<u16>, is_rigid: bool,
+                    out_sub: &mut Vec<SubMesh>, out_idx: &mut Vec<u32>, out_rigid: &mut Vec<bool>| {
+        let mut part = submesh.clone();
+        part.first_index = out_idx.len() as u32;
+        part.num_indices = tris.len() as u32;
+        if let Some(node) = node {
+            part.node_parent_index = node;
+        }
+        out_idx.extend_from_slice(tris);
+        out_sub.push(part);
+        out_rigid.push(is_rigid);
+    };
 
     for submesh in submeshes {
         let start = submesh.first_index as usize;
         let end = (start + submesh.num_indices as usize).min(indices.len());
         let source_indices = &indices[start..end];
-        let triangle_count = source_indices.len() / 3;
-
-        if triangle_count == 0 {
-            let mut original = submesh.clone();
-            original.first_index = rebuilt_indices.len() as u32;
-            original.num_indices = source_indices.len() as u32;
-            rebuilt_indices.extend_from_slice(source_indices);
-            rebuilt_submeshes.push(original);
+        let triangles: Vec<&[u32]> = source_indices.chunks_exact(3).collect();
+        if triangles.is_empty() {
+            push(submesh, source_indices, None, false, &mut rebuilt_submeshes, &mut rebuilt_indices, &mut rigid);
             continue;
         }
 
-        let mut grouped_indices = std::collections::BTreeMap::<u16, Vec<u32>>::new();
-        let mut rigid_triangles = 0usize;
-        let mut valid = true;
-
-        for triangle in source_indices.chunks(3) {
-            if triangle.len() < 3 {
-                continue;
+        let mut rigid_groups = std::collections::BTreeMap::<u16, Vec<u32>>::new();
+        let mut soft_remainder: Vec<u32> = Vec::new();
+        for tri in &triangles {
+            let joints = [single_joint(tri[0]), single_joint(tri[1]), single_joint(tri[2])];
+            match joints {
+                [Some(a), Some(b), Some(c)] if a == b && b == c => {
+                    rigid_groups.entry(a).or_default().extend_from_slice(tri)
+                }
+                _ => soft_remainder.extend_from_slice(tri),
             }
-
-            let mut triangle_joints = [0u16; 3];
-            for (joint_slot, vertex_index) in triangle.iter().enumerate() {
-                let Some(joint) = bone_maps
-                    .get(*vertex_index as usize)
-                    .and_then(|entry| entry.dominant_joint())
-                else {
-                    valid = false;
-                    break;
-                };
-                triangle_joints[joint_slot] = joint;
-            }
-
-            if !valid {
-                break;
-            }
-
-            let triangle_joint = if triangle_joints[0] == triangle_joints[1]
-                || triangle_joints[0] == triangle_joints[2]
-            {
-                triangle_joints[0]
-            } else if triangle_joints[1] == triangle_joints[2] {
-                triangle_joints[1]
-            } else {
-                triangle_joints[0]
-            };
-
-            if triangle_joints[0] == triangle_joints[1] && triangle_joints[1] == triangle_joints[2]
-            {
-                rigid_triangles += 1;
-            }
-
-            grouped_indices
-                .entry(triangle_joint)
-                .or_default()
-                .extend_from_slice(triangle);
         }
-
-        let rigid_ratio = rigid_triangles as f32 / triangle_count as f32;
-        // Phase 47.4: previously bailed when `grouped_indices.len() <= 1`,
-        // but a submesh whose triangles all belong to a single dominant
-        // joint (e.g. an un-skinned residual housing geometry that the
-        // .skin authored as `node_parent_index = 0` (root) but whose
-        // BoneMap12 entries all point to a single articulated bone) must
-        // still be reassigned to that joint, otherwise it stays static
-        // at the CHR root while its owning bone animates. The split loop
-        // below handles len == 1 correctly (it just emits one rebuilt
-        // submesh with `node_parent_index = joint`); only `!valid` and
-        // `rigid_ratio < 0.9` (truly soft-skinned) need to bail.
-        if !valid || grouped_indices.is_empty() || rigid_ratio < 0.9 {
-            let mut original = submesh.clone();
-            original.first_index = rebuilt_indices.len() as u32;
-            original.num_indices = source_indices.len() as u32;
-            rebuilt_indices.extend_from_slice(source_indices);
-            rebuilt_submeshes.push(original);
+        let rigid_triangles = triangles.len() - soft_remainder.len() / 3;
+        if (rigid_triangles as f32) < 0.9 * triangles.len() as f32 {
+            push(submesh, source_indices, None, false, &mut rebuilt_submeshes, &mut rebuilt_indices, &mut rigid);
             continue;
         }
-
-        for (joint, joint_indices) in grouped_indices {
-            let mut split = submesh.clone();
-            split.first_index = rebuilt_indices.len() as u32;
-            split.num_indices = joint_indices.len() as u32;
-            split.node_parent_index = joint;
-            rebuilt_indices.extend_from_slice(&joint_indices);
-            rebuilt_submeshes.push(split);
+        // Phase 47.4: a single rigid group is still re-parented to its joint,
+        // otherwise it stays static at the CHR root while its bone animates.
+        for (joint, joint_indices) in rigid_groups {
+            push(submesh, &joint_indices, Some(joint), true, &mut rebuilt_submeshes, &mut rebuilt_indices, &mut rigid);
+        }
+        if !soft_remainder.is_empty() {
+            push(submesh, &soft_remainder, None, false, &mut rebuilt_submeshes, &mut rebuilt_indices, &mut rigid);
         }
     }
 
-    (rebuilt_submeshes, rebuilt_indices)
+    (rebuilt_submeshes, rebuilt_indices, rigid)
+}
+
+/// Skin for the vertices of soft-skinned (non-rigid-split) submeshes from the
+/// IVO bone map (8 influences preferred over 4), weights normalised. `None`
+/// without joint names, without a bone map, or when no vertex is influenced.
+fn soft_skin(
+    streams: &crate::ivo::skin::DataStreams,
+    vertex_count: usize,
+    submeshes: &[SubMesh],
+    indices: &[u32],
+    rigid: &[bool],
+    joint_names: Option<&[String]>,
+) -> Option<crate::mesh_rig::Skin> {
+    use crate::mesh_rig::MAX_INFLUENCES;
+    let joint_names = joint_names?;
+    let influences: Vec<([u16; MAX_INFLUENCES], [u8; MAX_INFLUENCES])> = if let Some(maps) = &streams.bone_maps32 {
+        maps.iter().map(|m| (m.joint_indices, m.weights)).collect()
+    } else {
+        streams
+            .bone_maps
+            .as_ref()?
+            .iter()
+            .map(|m| {
+                let mut j = [0u16; MAX_INFLUENCES];
+                let mut w = [0u8; MAX_INFLUENCES];
+                j[..4].copy_from_slice(&m.joint_indices);
+                w[..4].copy_from_slice(&m.weights);
+                (j, w)
+            })
+            .collect()
+    };
+    let mut soft = vec![false; vertex_count];
+    for (submesh, &is_rigid) in submeshes.iter().zip(rigid) {
+        if is_rigid {
+            continue;
+        }
+        let start = submesh.first_index as usize;
+        let end = (start + submesh.num_indices as usize).min(indices.len());
+        for &v in &indices[start..end] {
+            if let Some(flag) = soft.get_mut(v as usize) {
+                *flag = true;
+            }
+        }
+    }
+    let mut joints = vec![[0u16; MAX_INFLUENCES]; vertex_count];
+    let mut weights = vec![[0f32; MAX_INFLUENCES]; vertex_count];
+    let mut any = false;
+    for (v, is_soft) in soft.iter().enumerate() {
+        let Some((j, w)) = influences.get(v).filter(|_| *is_soft) else { continue };
+        let total: u32 = w.iter().map(|&x| x as u32).sum();
+        if total == 0 {
+            continue;
+        }
+        for slot in 0..MAX_INFLUENCES {
+            if w[slot] > 0 && (j[slot] as usize) < joint_names.len() {
+                joints[v][slot] = j[slot];
+                weights[v][slot] = w[slot] as f32 / total as f32;
+            }
+        }
+        any = true;
+    }
+    any.then(|| crate::mesh_rig::Skin { joint_names: joint_names.to_vec(), joints, weights })
 }
 
 pub fn build_mesh(skin: &SkinMesh, materials: &[MaterialName]) -> Mesh {
@@ -254,10 +515,17 @@ pub fn build_mesh(skin: &SkinMesh, materials: &[MaterialName]) -> Mesh {
 /// Interior CGFs use model bbox because IncludedObjects placements are authored
 /// for model-bbox space. The scaling bbox is expanded for GPU skinning across
 /// NMC nodes and gives wrong vertex positions for placement.
-pub fn build_mesh_with_bbox(
+pub fn build_mesh_with_bbox(skin: &SkinMesh, materials: &[MaterialName], use_model_bbox: bool) -> Mesh {
+    build_mesh_with_rig(skin, materials, use_model_bbox, None)
+}
+
+/// [`build_mesh_with_bbox`] plus the soft-skinned vertices' [`crate::mesh_rig::Skin`],
+/// named by `joint_names` (the `.skin`'s own bone table).
+pub fn build_mesh_with_rig(
     skin: &SkinMesh,
     materials: &[MaterialName],
     use_model_bbox: bool,
+    joint_names: Option<&[String]>,
 ) -> Mesh {
     let (dequant_min, dequant_max) = if use_model_bbox {
         (&skin.info.model_min, &skin.info.model_max)
@@ -322,8 +590,11 @@ pub fn build_mesh_with_bbox(
         }
     }
 
-    let (submeshes, indices) =
-        split_rigid_weighted_submeshes(&submeshes, &indices, skin.streams.bone_maps.as_deref());
+    let (submeshes, indices, rigid) = split_rigid_weighted_submeshes(
+        &submeshes,
+        &indices,
+        skin.streams.bone_maps.as_deref(),
+    );
 
     // Decode normals and tangents from stream data.
     // Priority for normals:
@@ -373,6 +644,7 @@ pub fn build_mesh_with_bbox(
 
     let tangents_out: Option<Vec<[f32; 4]>> =
         tangent_decode.map(|td| td.iter().map(|nt| nt.tangent).collect());
+    let rig = soft_skin(&skin.streams, positions.len(), &submeshes, &indices, &rigid, joint_names);
 
     Mesh {
         positions,
@@ -387,6 +659,8 @@ pub fn build_mesh_with_bbox(
         model_max: skin.info.model_max,
         scaling_min: skin.info.min_bound,
         scaling_max: skin.info.max_bound,
+        skin: rig,
+        morph_targets: Vec::new(),
     }
 }
 
@@ -763,6 +1037,171 @@ mod tests {
     use super::*;
     use crate::ivo::skin::{BoneMap12, DataStreams, MeshInfo, SubMeshDescriptor};
 
+    fn triangle(normals: bool, tangents: bool) -> Mesh {
+        Mesh {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            indices: vec![0, 1, 2],
+            uvs: None,
+            secondary_uvs: None,
+            normals: normals.then(|| vec![[0.0, 0.0, 1.0]; 3]),
+            tangents: tangents.then(|| vec![[1.0, 0.0, 0.0, 1.0]; 3]),
+            colors: None,
+            submeshes: vec![SubMesh {
+                material_name: None,
+                material_id: 0,
+                source_material_id: None,
+                first_index: 0,
+                num_indices: 3,
+                first_vertex: 0,
+                num_vertices: 3,
+                node_parent_index: 0,
+            }],
+            model_min: [0.0; 3],
+            model_max: [1.0, 1.0, 0.0],
+            scaling_min: [0.0; 3],
+            scaling_max: [1.0, 1.0, 0.0],
+            skin: None,
+            morph_targets: Vec::new(),
+        }
+    }
+
+    fn skinned(names: &[&str], joint: u16) -> crate::mesh_rig::Skin {
+        crate::mesh_rig::Skin {
+            joint_names: names.iter().map(|n| n.to_string()).collect(),
+            joints: vec![[joint, 0, 0, 0, 0, 0, 0, 0]; 3],
+            weights: vec![[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]; 3],
+        }
+    }
+
+    fn morph(name: &str, delta: [f32; 3]) -> crate::mesh_rig::MorphTarget {
+        crate::mesh_rig::MorphTarget { name: name.into(), position_deltas: vec![delta; 3], normal_deltas: None }
+    }
+
+    /// Each .skin numbers joints against its own bone table, so a merge must
+    /// union the tables by name and remap the incoming indices.
+    #[test]
+    fn merge_remaps_skin_joints_by_name() {
+        let mut a = triangle(true, false);
+        a.skin = Some(skinned(&["root", "spine"], 1));
+        let mut b = triangle(true, false);
+        b.skin = Some(skinned(&["spine", "head"], 1));
+        a.merge_from(b);
+        let skin = a.skin.expect("skin");
+        assert_eq!(skin.joint_names, vec!["root", "spine", "head"]);
+        assert_eq!(skin.joints.len(), 6);
+        assert_eq!(skin.joints[0][0], 1, "a keeps spine");
+        assert_eq!(skin.joints[3][0], 2, "b's head remapped to the merged table");
+    }
+
+    /// Vertices from an unskinned side carry no influence (all-zero weights);
+    /// writers decide how to represent that.
+    #[test]
+    fn merge_with_unskinned_side_leaves_it_without_influence() {
+        for skinned_left in [true, false] {
+            let mut a = triangle(true, false);
+            let mut b = triangle(true, false);
+            if skinned_left { a.skin = Some(skinned(&["root"], 0)) } else { b.skin = Some(skinned(&["root"], 0)) }
+            a.merge_from(b);
+            let skin = a.skin.expect("skin");
+            assert_eq!(skin.weights.len(), 6);
+            let unskinned = if skinned_left { 3..6 } else { 0..3 };
+            assert!(skin.weights[unskinned].iter().all(|w| w.iter().all(|&x| x == 0.0)));
+        }
+    }
+
+    /// Morph targets merge by name; a side without a target gets zero deltas.
+    #[test]
+    fn merge_unions_morph_targets_by_name() {
+        let mut a = triangle(true, false);
+        a.morph_targets = vec![morph("smile", [0.0, 1.0, 0.0])];
+        let mut b = triangle(true, false);
+        b.morph_targets = vec![morph("frown", [0.0, -1.0, 0.0])];
+        a.merge_from(b);
+        let names: Vec<_> = a.morph_targets.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["smile", "frown"]);
+        assert_eq!(a.morph_targets[0].position_deltas[4], [0.0, 0.0, 0.0]);
+        assert_eq!(a.morph_targets[1].position_deltas[1], [0.0, 0.0, 0.0]);
+        assert_eq!(a.morph_targets[1].position_deltas[4], [0.0, -1.0, 0.0]);
+    }
+
+    /// One transform moves every spatial stream: positions get the full
+    /// affine; normals, tangent xyz and morph deltas only the rotation;
+    /// tangent handedness (w) is kept.
+    #[test]
+    fn transform_moves_every_spatial_stream() {
+        let mut mesh = triangle(true, true);
+        mesh.morph_targets = vec![morph("m", [1.0, 0.0, 0.0])];
+        let rot = glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        mesh.transform(glam::Affine3A::from_rotation_translation(rot, glam::Vec3::new(10.0, 0.0, 0.0)));
+        let close = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5);
+        assert!(close(mesh.positions[1], [10.0, 1.0, 0.0]), "{:?}", mesh.positions[1]);
+        assert!(close(mesh.normals.as_ref().unwrap()[0], [0.0, 0.0, 1.0]));
+        let t = mesh.tangents.as_ref().unwrap()[0];
+        assert!(close([t[0], t[1], t[2]], [0.0, 1.0, 0.0]) && t[3] == 1.0, "{t:?}");
+        assert!(close(mesh.morph_targets[0].position_deltas[0], [0.0, 1.0, 0.0]));
+        // the model bbox is transformed by its corners: (1, 1) -> (-1, 1) + (10, 0)
+        assert!(close(mesh.model_min, [9.0, 0.0, 0.0]) && close(mesh.model_max, [10.0, 1.0, 0.0]));
+    }
+
+    /// `subset` carries skin and morph data for the kept vertices.
+    #[test]
+    fn subset_carries_skin_and_morphs() {
+        let mut mesh = triangle(true, false);
+        mesh.skin = Some(skinned(&["root"], 0));
+        mesh.morph_targets = vec![morph("m", [0.0, 0.0, 2.0])];
+        let (part, _) = mesh.subset(&[0]);
+        assert_eq!(part.skin.as_ref().map(|s| s.joints.len()), Some(3));
+        assert_eq!(part.morph_targets[0].position_deltas.len(), 3);
+    }
+
+    /// `subset` keeps exactly the vertices the chosen submeshes reference,
+    /// carries every per-vertex stream, and reindexes from 0.
+    #[test]
+    fn subset_carries_every_stream_for_the_chosen_submeshes() {
+        let mut mesh = triangle(true, true);
+        mesh.colors = Some(vec![[1, 2, 3, 4]; 3]);
+        mesh.uvs = Some(vec![[0.5, 0.5]; 3]);
+        let mut second = triangle(true, true);
+        second.positions = vec![[5.0, 0.0, 0.0], [6.0, 0.0, 0.0], [5.0, 1.0, 0.0]];
+        second.colors = Some(vec![[9, 9, 9, 9]; 3]);
+        second.uvs = Some(vec![[0.25, 0.75]; 3]);
+        second.submeshes[0].material_id = 7;
+        mesh.merge_from(second);
+
+        let (part, old_to_new) = mesh.subset(&[1]);
+        assert_eq!(part.positions, vec![[5.0, 0.0, 0.0], [6.0, 0.0, 0.0], [5.0, 1.0, 0.0]]);
+        assert_eq!(part.indices, vec![0, 1, 2]);
+        assert_eq!(part.colors, Some(vec![[9, 9, 9, 9]; 3]));
+        assert_eq!(part.uvs, Some(vec![[0.25, 0.75]; 3]));
+        assert_eq!(part.normals.as_ref().map(Vec::len), Some(3));
+        assert_eq!(part.tangents.as_ref().map(Vec::len), Some(3));
+        assert_eq!(part.submeshes.len(), 1);
+        assert_eq!((part.submeshes[0].material_id, part.submeshes[0].first_index), (7, 0));
+        assert_eq!(part.model_min, [5.0, 0.0, 0.0]);
+        assert_eq!(old_to_new.get(&3), Some(&0));
+    }
+
+    /// Per-vertex streams must stay as long as `positions` after a merge:
+    /// a side without normals gets geometry-derived smooth normals (as the
+    /// mesh builder does for a stream-less mesh); tangents that cannot be
+    /// complete are dropped.
+    #[test]
+    fn merge_keeps_per_vertex_streams_aligned() {
+        for (left, right) in [(true, false), (false, true)] {
+            let mut mesh = triangle(left, left);
+            mesh.merge_from(triangle(right, right));
+            let normals = mesh.normals.as_ref().expect("normals");
+            assert_eq!(normals.len(), mesh.positions.len(), "normals ({left}, {right})");
+            for n in normals {
+                assert!((n[2].abs() - 1.0).abs() < 1e-5, "unit +/-Z for a flat XY triangle: {n:?}");
+            }
+            assert!(mesh.tangents.is_none(), "incomplete tangents must be dropped ({left}, {right})");
+        }
+        let mut both = triangle(true, true);
+        both.merge_from(triangle(true, true));
+        assert_eq!(both.tangents.as_ref().map(Vec::len), Some(6));
+    }
+
     #[test]
     fn build_mesh_from_synthetic_skin() {
         let skin = SkinMesh {
@@ -802,6 +1241,7 @@ mod tests {
                 secondary_uvs: Some(vec![[0x3800, 0x0000], [0x0000, 0x3800], [0x3C00, 0x0000]]),
                 indices: vec![0, 1, 2],
                 bone_maps: None,
+                bone_maps32: None,
                 colors: None,
                 tangents: None,
                 normals: None,
@@ -902,6 +1342,7 @@ mod tests {
                         weights: [255, 0, 0, 0],
                     },
                 ]),
+                bone_maps32: None,
                 colors: None,
                 tangents: None,
                 normals: None,
@@ -920,6 +1361,142 @@ mod tests {
         assert_eq!(mesh.submeshes[0].num_indices, 3);
         assert_eq!(mesh.submeshes[1].num_indices, 3);
         assert_eq!(mesh.indices, vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    fn two_triangle_skin(bone_maps: Vec<BoneMap12>) -> SkinMesh {
+        SkinMesh {
+            flags: 0,
+            info: MeshInfo {
+                flags2: 5,
+                num_vertices: 6,
+                num_indices: 6,
+                num_submeshes: 1,
+                model_min: [0.0; 3],
+                model_max: [3.0, 1.0, 0.0],
+                min_bound: [0.0; 3],
+                max_bound: [3.0, 1.0, 0.0],
+                extra_count: 0,
+            },
+            submeshes: vec![SubMeshDescriptor {
+                mat_id: 0,
+                node_parent_index: 0,
+                first_index: 0,
+                num_indices: 6,
+                first_vertex: 0,
+                page_base: 0,
+                num_vertices: 6,
+                radius: 1.0,
+                center: [1.5, 0.5, 0.0],
+                unknown0: 0,
+                unknown1: 0,
+            }],
+            extra_words: Vec::new(),
+            streams: DataStreams {
+                positions: PositionData::Float(vec![
+                    [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0],
+                    [2.0, 0.0, 0.0], [3.0, 0.0, 0.0], [2.0, 1.0, 0.0],
+                ]),
+                uvs: Vec::new(),
+                secondary_uvs: None,
+                indices: vec![0, 1, 2, 3, 4, 5],
+                bone_maps: Some(bone_maps),
+                bone_maps32: None,
+                colors: None,
+                tangents: None,
+                normals: None,
+            },
+        }
+    }
+
+    fn names(n: &[&str]) -> Vec<String> {
+        n.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// A soft-skinned submesh keeps its weights as a named, normalised skin.
+    /// (Triangles mix dominant joints, so the rigid splitter leaves it soft;
+    /// see the parity plan for the dominant-joint misclassification.)
+    #[test]
+    fn build_mesh_keeps_soft_skin_weights() {
+        let blended = BoneMap12 { joint_indices: [0, 1, 0, 0], weights: [128, 127, 0, 0] };
+        let other = BoneMap12 { joint_indices: [0, 1, 0, 0], weights: [27, 228, 0, 0] };
+        let skin = two_triangle_skin(vec![blended, other, blended, other, blended, other]);
+        let materials = vec![MaterialName { name: "m".into() }];
+        let mesh = build_mesh_with_rig(&skin, &materials, false, Some(&names(&["root", "spine"])));
+        let rig = mesh.skin.expect("soft skin kept");
+        assert_eq!(rig.joint_names, names(&["root", "spine"]));
+        assert_eq!(rig.joints.len(), 6);
+        assert_eq!(&rig.joints[0][..2], &[0, 1]);
+        assert!((rig.weights[0][0] - 128.0 / 255.0).abs() < 1e-6);
+        assert!((rig.weights[0].iter().sum::<f32>() - 1.0).abs() < 1e-6, "normalised");
+    }
+
+    /// Blended vertices are soft even when every vertex of a triangle has the
+    /// same strongest joint: "rigid" means exactly one influence. (The splitter
+    /// used to snap such triangles onto the dominant joint's bone.)
+    #[test]
+    fn build_mesh_keeps_blended_triangles_soft_when_dominant_joints_agree() {
+        let blended = BoneMap12 { joint_indices: [0, 1, 0, 0], weights: [200, 55, 0, 0] };
+        let skin = two_triangle_skin(vec![blended; 6]);
+        let materials = vec![MaterialName { name: "m".into() }];
+        let mesh = build_mesh_with_rig(&skin, &materials, false, Some(&names(&["root", "spine"])));
+        assert_eq!(mesh.submeshes.len(), 1, "not split onto bones");
+        let rig = mesh.skin.expect("blended weights kept");
+        assert!((rig.weights[0][1] - 55.0 / 255.0).abs() < 1e-6);
+    }
+
+    /// A mostly rigid submesh splits its single-influence triangles onto
+    /// bones and keeps the blended remainder as a soft submesh.
+    #[test]
+    fn build_mesh_splits_rigid_triangles_and_keeps_a_soft_remainder() {
+        let a = BoneMap12 { joint_indices: [0, 0, 0, 0], weights: [255, 0, 0, 0] };
+        let blended = BoneMap12 { joint_indices: [0, 1, 0, 0], weights: [128, 127, 0, 0] };
+        let mut skin = two_triangle_skin(vec![a; 6]);
+        // 10 rigid triangles + 1 blended one: ratio 10/11 >= 0.9
+        let mut positions = Vec::new();
+        let mut maps = Vec::new();
+        for t in 0..11 {
+            for k in 0..3 {
+                positions.push([t as f32, k as f32, 0.0]);
+                maps.push(if t == 10 { blended } else { a });
+            }
+        }
+        skin.streams.positions = PositionData::Float(positions);
+        skin.streams.indices = (0..33).collect();
+        skin.streams.bone_maps = Some(maps);
+        skin.info.num_vertices = 33;
+        skin.info.num_indices = 33;
+        skin.submeshes[0].num_indices = 33;
+        skin.submeshes[0].num_vertices = 33;
+        let materials = vec![MaterialName { name: "m".into() }];
+        let mesh = build_mesh_with_rig(&skin, &materials, false, Some(&names(&["root", "spine"])));
+        assert_eq!(mesh.submeshes.len(), 2, "rigid part + soft remainder");
+        let soft = mesh.submeshes.iter().find(|s| s.num_indices == 3).expect("soft remainder");
+        let v = mesh.indices[soft.first_index as usize] as usize;
+        let rig = mesh.skin.expect("soft remainder keeps its skin");
+        assert!(rig.weights[v][1] > 0.0);
+        assert!(rig.weights[0].iter().all(|&w| w == 0.0), "rigid vertices stay bone-parented");
+    }
+
+    /// Rigid-split submeshes are parented to their bone node; weighting them
+    /// too would apply the bone twice, so a fully rigid mesh has no skin.
+    #[test]
+    fn build_mesh_rigid_split_has_no_skin() {
+        let a = BoneMap12 { joint_indices: [0, 0, 0, 0], weights: [255, 0, 0, 0] };
+        let b = BoneMap12 { joint_indices: [1, 0, 0, 0], weights: [255, 0, 0, 0] };
+        let skin = two_triangle_skin(vec![a, a, a, b, b, b]);
+        let materials = vec![MaterialName { name: "m".into() }];
+        let mesh = build_mesh_with_rig(&skin, &materials, false, Some(&names(&["root", "spine"])));
+        assert_eq!(mesh.submeshes.len(), 2, "split onto bones as before");
+        assert!(mesh.skin.is_none());
+    }
+
+    /// Without the .skin's bone table the joint indices cannot be named.
+    #[test]
+    fn build_mesh_without_joint_names_has_no_skin() {
+        let blended = BoneMap12 { joint_indices: [0, 1, 0, 0], weights: [128, 127, 0, 0] };
+        let materials = vec![MaterialName { name: "m".into() }];
+        let mesh = build_mesh_with_rig(&two_triangle_skin(vec![blended; 6]), &materials, false, None);
+        assert!(mesh.skin.is_none());
     }
 
     /// Phase 47.4: a submesh whose `node_parent_index = 0` (root) but
@@ -982,6 +1559,7 @@ mod tests {
                         weights: [255, 0, 0, 0],
                     },
                 ]),
+                bone_maps32: None,
                 colors: None,
                 tangents: None,
                 normals: None,

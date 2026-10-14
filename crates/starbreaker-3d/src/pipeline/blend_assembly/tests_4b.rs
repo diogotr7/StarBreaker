@@ -1,6 +1,7 @@
 //! Phase 4B tests for decal vertex group creation.
 
 use super::*;
+use crate::types::SubMesh;
 
 #[test]
 fn test_identify_meshes_with_decals_excludes_pom_only_damage_material() {
@@ -236,6 +237,8 @@ fn test_decal_face_indices_use_source_material_id() {
         model_max: [0.0, 0.0, 0.0],
         scaling_min: [0.0, 0.0, 0.0],
         scaling_max: [0.0, 0.0, 0.0],
+        skin: None,
+        morph_targets: Vec::new(),
     };
     let mesh_with_decals = MeshWithDecals {
         mesh_path: "source_id_mesh".to_string(),
@@ -277,6 +280,8 @@ fn test_decal_face_indices_fall_back_to_submesh_material_name() {
         model_max: [0.0, 0.0, 0.0],
         scaling_min: [0.0, 0.0, 0.0],
         scaling_max: [0.0, 0.0, 0.0],
+        skin: None,
+        morph_targets: Vec::new(),
     };
     let mesh_with_decals = MeshWithDecals {
         mesh_path: "name_fallback_mesh".to_string(),
@@ -330,6 +335,8 @@ fn test_decal_face_indices_prefers_material_name_over_mismatched_source_material
         model_max: [0.0, 0.0, 0.0],
         scaling_min: [0.0, 0.0, 0.0],
         scaling_max: [0.0, 0.0, 0.0],
+        skin: None,
+        morph_targets: Vec::new(),
     };
     let mesh_with_decals = MeshWithDecals {
         mesh_path: "prefer_name_mesh".to_string(),

@@ -13,6 +13,11 @@ use std::io::Write;
 use rustc_hash::FxHashMap;
 use zstd::Encoder;
 
+pub mod action;
+pub mod armature;
+pub mod custom_normals;
+pub mod reader;
+pub mod shape_keys;
 mod idprop;
 mod ui_prefix;
 
@@ -495,7 +500,7 @@ pub fn build_scene_with_motion_blur_curve_and_properties(
     write_f32(&mut data, 1184, 1.0); // r.dither_intensity
     write_cstr_fixed(&mut data, 1196, 1024, "//"); // r.pic
     write_i32(&mut data, 2224, 0x00ff); // r.stamp defaults
-    write_u16(&mut data, 2228, 12); // r.stamp_font_id
+    write_u16(&mut data, 2224, 12); // r.stamp_font_id (the stamp font size)
     for i in 0..4 {
         write_f32(&mut data, 3000 + i * 4, [0.8, 0.8, 0.8, 1.0][i]); // r.fg_stamp
         write_f32(&mut data, 3016 + i * 4, [0.0, 0.0, 0.0, 0.25][i]); // r.bg_stamp
@@ -549,11 +554,14 @@ pub fn build_scene_with_motion_blur_curve_and_properties(
     data[5185] = 1; // unit.mass_unit
     data[5186] = 1; // unit.time_unit
     data[5187] = 1; // unit.temperature_unit
-    write_i32(&mut data, 5304, 1); // physics_settings.flag = PHYS_GLOBAL_GRAVITY
+    write_f32(&mut data, 5216, -9.81); // physics_settings.gravity[2]
+    write_i32(&mut data, 5220, 1); // physics_settings.flag = PHYS_GLOBAL_GRAVITY
     write_cstr_fixed(&mut data, 5320, 64, "None"); // view_settings.look
     write_cstr_fixed(&mut data, 5384, 64, "AgX"); // view_settings.view_transform
     write_f32(&mut data, 5448, 0.0); // view_settings.exposure
     write_f32(&mut data, 5452, 1.0); // view_settings.gamma
+    write_f32(&mut data, 5456, 6500.0); // view_settings.temperature (white balance)
+    write_f32(&mut data, 5460, 10.0); // view_settings.tint
     write_cstr_fixed(&mut data, 5480, 64, "sRGB"); // display_settings.display_device
     write_cstr_fixed(&mut data, 5552, 64, "sRGB"); // sequencer_colorspace_settings.name
     write_f32(&mut data, 5672, 0.57735026); // display.light_direction[0]
@@ -567,23 +575,23 @@ pub fn build_scene_with_motion_blur_curve_and_properties(
     data[5705] = 8; // display.render_aa = 8 samples
     data[5712] = 3; // display.shading.type = OB_SOLID
     data[5713] = 3; // display.shading.prev_type = OB_SOLID
-    write_u16(&mut data, 5716, (1 << 1) | (1 << 2) | (1 << 12) | (1 << 13)); // View3DShading.flag defaults
+    write_u16(&mut data, 5716, 1 << 4); // display.shading.flag = V3D_SHADING_SPECULAR_HIGHLIGHT (Blender's default; X-ray off)
     data[5718] = 1; // display.shading.light = V3D_LIGHTING_STUDIO
     data[5720] = 1; // display.shading.cavity_type = V3D_SHADING_CAVITY_CURVATURE
     data[5721] = 2; // display.shading.wire_color_type = V3D_SHADING_SINGLE_COLOR
-    write_f32(&mut data, 5970, 0.5); // display.shading.shadow_intensity
+    write_f32(&mut data, 6492, 0.5); // display.shading.shadow_intensity
     for i in 0..3 {
-        write_f32(&mut data, 5974 + i * 4, 0.8); // display.shading.single_color
-        write_f32(&mut data, 5986 + i * 4, 0.0); // display.shading.object_outline_color
-        write_f32(&mut data, 6014 + i * 4, 0.05); // display.shading.background_color
+        write_f32(&mut data, 6496 + i * 4, 0.8); // display.shading.single_color
+        write_f32(&mut data, 6524 + i * 4, 0.0); // display.shading.object_outline_color
+        write_f32(&mut data, 6552 + i * 4, 0.05); // display.shading.background_color
     }
-    write_f32(&mut data, 5998, 0.5); // display.shading.xray_alpha
-    write_f32(&mut data, 6002, 0.5); // display.shading.xray_alpha_wire
-    write_f32(&mut data, 6006, 1.0); // display.shading.cavity_valley_factor
-    write_f32(&mut data, 6010, 1.0); // display.shading.cavity_ridge_factor
-    write_f32(&mut data, 6026, 1.0); // display.shading.curvature_ridge_factor
-    write_f32(&mut data, 6030, 1.0); // display.shading.curvature_valley_factor
-    write_i32(&mut data, 6034, 1); // display.shading.render_pass = SCE_PASS_COMBINED
+    write_f32(&mut data, 6536, 0.5); // display.shading.xray_alpha
+    write_f32(&mut data, 6540, 0.5); // display.shading.xray_alpha_wire
+    write_f32(&mut data, 6544, 1.0); // display.shading.cavity_valley_factor
+    write_f32(&mut data, 6548, 1.0); // display.shading.cavity_ridge_factor
+    write_f32(&mut data, 6564, 1.0); // display.shading.curvature_ridge_factor
+    write_f32(&mut data, 6568, 1.0); // display.shading.curvature_valley_factor
+    write_i32(&mut data, 6572, 1); // display.shading.render_pass = SCE_PASS_COMBINED
     write_i32(&mut data, 6656, (1 << 11) | (1 << 24)); // eevee.flag
     write_i32(&mut data, 6660, 3); // eevee.gi_diffuse_bounces
     write_i32(&mut data, 6664, 512); // eevee.gi_cubemap_resolution
@@ -616,7 +624,7 @@ pub fn build_scene_with_motion_blur_curve_and_properties(
     write_i32(&mut data, 6816, 1); // eevee.shadow_ray_count
     write_i32(&mut data, 6820, 6); // eevee.shadow_step_count
     write_f32(&mut data, 6824, 1.0); // eevee.shadow_resolution_scale
-    write_f32(&mut data, 6836, 10.0); // eevee.clamp_surface_indirect
+    write_f32(&mut data, 6832, 10.0); // eevee.clamp_surface_indirect
     write_f32(&mut data, 6844, 1.0); // eevee.direct_light_intensity
     write_f32(&mut data, 6848, 1.0); // eevee.indirect_light_intensity
     write_i32(&mut data, 6852, 1); // eevee.ray_tracing_method
@@ -937,7 +945,7 @@ pub fn build_object(
     write_identity_matrix4x4(&mut data, 884); // parentinv
     write_identity_matrix4x4(&mut data, 948); // constinv
     write_i16(&mut data, 1040, 1);  // ROT_MODE_EUL
-    write_i16(&mut data, 1042, -1); // protectflag = OB_LOCK_ROT4D
+    write_i16(&mut data, 1022, 1 << 10); // protectflag = OB_LOCK_ROT4D (boundtype at 1042 stays OB_BOUND_BOX)
     data[1046] = 5; // Object.dt = OB_TEXTURE
     data[1047] = 2; // empty_drawtype = OB_PLAINAXES
     write_f32(&mut data, 1048, 1.0); // empty_drawsize
@@ -981,7 +989,7 @@ pub fn build_empty_object_with_properties(
     write_identity_matrix4x4(&mut data, 884);
     write_identity_matrix4x4(&mut data, 948);
     write_i16(&mut data, 1040, 0);
-    write_i16(&mut data, 1042, -1);
+    write_i16(&mut data, 1022, 1 << 10); // protectflag = OB_LOCK_ROT4D (boundtype at 1042 stays OB_BOUND_BOX)
     data[1046] = 5;
     data[1047] = 2;
     write_f32(&mut data, 1048, 1.0);
@@ -1051,7 +1059,7 @@ pub fn build_lamp_object_with_properties_and_visibility(
     write_identity_matrix4x4(&mut data, 884);
     write_identity_matrix4x4(&mut data, 948);
     write_i16(&mut data, 1040, 0);
-    write_i16(&mut data, 1042, -1);
+    write_i16(&mut data, 1022, 1 << 10); // protectflag = OB_LOCK_ROT4D (boundtype at 1042 stays OB_BOUND_BOX)
     data[1046] = 5;
     data[1047] = 2;
     write_f32(&mut data, 1048, 1.0);
@@ -1094,7 +1102,7 @@ pub fn build_linked_instance_object(
     write_identity_matrix4x4(&mut data, 884);
     write_identity_matrix4x4(&mut data, 948);
     write_i16(&mut data, 1040, 0); // ROT_MODE_QUAT
-    write_i16(&mut data, 1042, -1); // protectflag = OB_LOCK_ROT4D
+    write_i16(&mut data, 1022, 1 << 10); // protectflag = OB_LOCK_ROT4D (boundtype at 1042 stays OB_BOUND_BOX)
     data[1046] = 5; // Object.dt = OB_TEXTURE
     data[1047] = 2; // empty_drawtype = OB_PLAINAXES
     write_f32(&mut data, 1048, 1.0); // empty_drawsize
@@ -2292,6 +2300,41 @@ pub fn set_object_modifiers_listbase(data: &mut Vec<u8>, first_ptr: u64, last_pt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Object locks land on `protectflag` (1022, Blender's default
+    /// `OB_LOCK_ROT4D`), not on `boundtype` (1042, `OB_BOUND_BOX` = 0).
+    #[test]
+    fn object_defaults_land_on_their_dna_fields() {
+        let objects = [
+            build_object("m", 1, 0, 0, 0, 0),
+            build_empty_object("e", [0.0; 3], [1.0, 0.0, 0.0, 0.0], [1.0; 3], 0),
+            build_lamp_object("l", 1, [0.0; 3], [1.0, 0.0, 0.0, 0.0], [1.0; 3], 0),
+        ];
+        for o in objects {
+            assert_eq!(i16::from_le_bytes(o[1022..1024].try_into().unwrap()), 1 << 10, "protectflag");
+            assert_eq!(i16::from_le_bytes(o[1042..1044].try_into().unwrap()), 0, "boundtype");
+        }
+    }
+
+    /// Scene defaults land on the Blender 5.1 DNA fields (offsets from the
+    /// bundled DNA1): Workbench renders nothing when the render shading's
+    /// X-ray alpha and render pass are zero.
+    #[test]
+    fn scene_defaults_land_on_their_dna_fields() {
+        let d = build_scene_with_motion_blur_curve_and_properties("s", 0, 0, 0, 0, 0, 0, "CYCLES");
+        let f = |o: usize| f32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let i = |o: usize| i32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        assert_eq!(f(6492), 0.5, "display.shading.shadow_intensity");
+        assert_eq!((f(6496), f(6500), f(6504)), (0.8, 0.8, 0.8), "display.shading.single_color");
+        assert_eq!(f(6536), 0.5, "display.shading.xray_alpha");
+        assert_eq!(u16::from_le_bytes(d[5716..5718].try_into().unwrap()), 0x10, "display.shading.flag: X-ray off");
+        assert_eq!(i(6572), 1, "display.shading.render_pass = COMBINED");
+        assert!(d[5724..5724 + 768].iter().all(|&b| b == 0), "studio/lookdev/matcap names untouched");
+        assert_eq!((f(5456), f(5460)), (6500.0, 10.0), "white balance");
+        assert_eq!((f(5216), i(5220)), (-9.81, 1), "physics gravity");
+        assert_eq!(u16::from_le_bytes(d[2224..2226].try_into().unwrap()), 12, "r.stamp_font_id (size)");
+        assert_eq!(f(6832), 10.0, "eevee.clamp_surface_indirect");
+    }
     
     #[test]
     fn test_zstd_compression_roundtrip() {

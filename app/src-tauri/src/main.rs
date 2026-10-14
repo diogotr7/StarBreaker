@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio_commands;
+mod character_commands;
 mod commands;
 mod datacore_commands;
 mod error;
@@ -257,6 +258,12 @@ fn main() {
             commands::install_blender_addon,
             commands::uninstall_blender_addon,
             commands::reload_blender_addon,
+            character_commands::dna_preview_glb,
+            character_commands::dna_export_chf_to,
+            character_commands::dna_export_glb_to,
+            character_commands::dna_import_chf,
+            character_commands::dna_list_expressions,
+            character_commands::dna_expression_anim_glb,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

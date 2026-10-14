@@ -12,6 +12,11 @@ Blender API pitfall — **document the fix here before committing**. Keep
 entries short and factual. This file must stay concise to limit token use;
 prefer a one-liner or a compact code block over prose.
 
+- Headless validation (`blender -b --factory-startup --python x.py`): the import
+  operator is modal (timer) and never runs. `sys.path.insert(0, blender_addon)`,
+  `bpy.ops.wm.open_mainfile(<package>/scene.blend)`, *then* `starbreaker_addon.register()`
+  (opening a file drops it), then `package_ops.refresh_materials_for_package_root`.
+- Run the stub suite with `PYTHONUTF8=1` on Windows (fixtures are UTF-8).
 - Load-post material auto-refresh must treat local placeholder materials with no
   node tree as "needs refresh"; saved refreshed materials are local too, so
   checking only for linked materials is insufficient.
@@ -56,7 +61,14 @@ blender_addon/
 
 `PackageImporter` is composed from mixins in this order:
 `(PaletteMixin, DecalsMixin, LayersMixin, MaterialsMixin,
-BuildersMixin, GroupsMixin, OrchestrationMixin)`.
+BuildersMixin, SkinMixin, HairMixin, GroupsMixin, OrchestrationMixin)`.
+`HairMixin` (`importer/hair.py`) builds `HairPBR` caps and fibres (params,
+incl. CHF dye bound via `applies_to`, in `runtime/hair_utils.py`). Shared node
+math for both builders lives in `importer/node_math.py` (`NodeMath`).
+`SkinMixin` (`importer/skin.py`) builds `HumanSkin_V2`; its parameters
+(incl. CHF overrides from `root_entity.character`) resolve in the bpy-free
+`runtime/skin_utils.py`. Tests that stub mixin modules by name
+(`test_scene_instances.py`) must list every mixin module.
 
 Orchestration owns `create_light`, interior placement, and the
 top-level import loop. When adding a new per-entity behaviour, add it
@@ -325,9 +337,11 @@ per-phase history (stored outside this repo).
   with data (Bias/Scale distribution across nodes, pixel-diffs, UV
   winding), not by eyeballing renders — motion artifacts don't show in
   stills.
-- All imported meshes get a **Weighted Normal modifier** (Face Area,
-  Weight=50, Threshold=0.01) to smooth shading across flat faces
-  (Phase 19).
+- Imported meshes without authored normals get a **Weld** + **Weighted
+  Normal modifier** (Face Area, Weight=50, Threshold=0.01) to smooth
+  shading across flat faces (Phase 19). Meshes with authored normals carry
+  them as the `custom_normal` corner attribute instead and get neither
+  (both would override or misdecode them).
 
 See `../docs/blender-material-contract-naming-rules.md` for the
 in-repo material contract and `../docs/blender-pom-parallax-occlusion.md`

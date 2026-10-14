@@ -41,6 +41,8 @@ pub(crate) struct DecomposedInput {
     pub interiors: LoadedInteriors,
     /// All available paint variants for this entity, populated from SubGeometry entries.
     pub paint_variants: Vec<crate::mtl::PaintVariant>,
+    /// Animation clips over the root skeleton and morph targets.
+    pub animations: Vec<crate::clip::Clip>,
 }
 
 pub(crate) type ExistingInteriorAssetMap = HashMap<String, (String, Option<String>)>;
@@ -170,20 +172,7 @@ fn identity_flat_4x4() -> [f32; 16] {
 }
 
 fn empty_scene_graph_mesh() -> Mesh {
-    Mesh {
-        positions: Vec::new(),
-        indices: Vec::new(),
-        uvs: None,
-        secondary_uvs: None,
-        normals: None,
-        tangents: None,
-        colors: None,
-        submeshes: Vec::new(),
-        model_min: [0.0; 3],
-        model_max: [0.0; 3],
-        scaling_min: [0.0; 3],
-        scaling_max: [0.0; 3],
-    }
+    Mesh::empty()
 }
 
 fn flat_4x4_to_rows(flat: [f32; 16]) -> [[f32; 4]; 4] {
@@ -315,12 +304,7 @@ fn resolve_child_instance_transforms(input: &DecomposedInput) -> Vec<ResolvedChi
     let mut builder = GlbBuilder::new();
     let dummy_packed = PackedMeshInfo {
         mesh_idx: 0,
-        pos_accessor_idx: 0,
-        uv_accessor_idx: None,
-        secondary_uv_accessor_idx: None,
-        normal_accessor_idx: None,
-        color_accessor_idx: None,
-        tangent_accessor_idx: None,
+        vertex: crate::gltf::VertexAccessors::default(),
         submesh_mat_indices: Vec::new(),
         submesh_idx_accessors: Vec::new(),
     };
@@ -3659,6 +3643,25 @@ fn texture_cache_key(normalized_source: &str, flavor: TextureFlavor) -> (String,
     (normalized_source.to_ascii_lowercase(), flavor)
 }
 
+/// Decode one P4k texture to its package PNG: `(relative path, bytes)`, at
+/// the path and with the encoding a generic material slot would get. For
+/// exporters that add textures outside a material sidecar.
+pub(crate) fn texture_png(
+    p4k: &MappedP4k,
+    png_cache: &mut PngCache,
+    source_path: &str,
+    texture_mip: u32,
+) -> Option<(String, Vec<u8>)> {
+    let bytes = crate::pipeline::cached_load(
+        p4k,
+        source_path,
+        texture_mip,
+        png_cache,
+        crate::pipeline::load_diffuse_texture,
+    )?;
+    Some((texture_relative_path(p4k, source_path, TextureFlavor::Generic, texture_mip), bytes))
+}
+
 fn register_palette(
     records: &mut BTreeMap<String, PaletteRecord>,
     palette: &TintPalette,
@@ -4092,7 +4095,7 @@ fn palette_id(palette: &TintPalette) -> String {
     }
 }
 
-fn sanitize_identifier(value: &str) -> String {
+pub(crate) fn sanitize_identifier(value: &str) -> String {
     value
         .chars()
         .map(|ch| {
@@ -5776,6 +5779,8 @@ mod tests {
             model_max: [0.0, 0.0, 0.0],
             scaling_min: [0.0, 0.0, 0.0],
             scaling_max: [0.0, 0.0, 0.0],
+            skin: None,
+            morph_targets: Vec::new(),
         }
     }
 
@@ -7879,6 +7884,8 @@ mod tests {
             model_max: [0.0; 3],
             scaling_min: [0.0; 3],
             scaling_max: [0.0; 3],
+            skin: None,
+            morph_targets: Vec::new(),
         }
     }
 
@@ -7931,12 +7938,7 @@ mod tests {
         let mut builder = GlbBuilder::new();
         let dummy_packed = PackedMeshInfo {
             mesh_idx: 0,
-            pos_accessor_idx: 0,
-            uv_accessor_idx: None,
-            secondary_uv_accessor_idx: None,
-            normal_accessor_idx: None,
-            color_accessor_idx: None,
-            tangent_accessor_idx: None,
+            vertex: crate::gltf::VertexAccessors::default(),
             submesh_mat_indices: Vec::new(),
             submesh_idx_accessors: Vec::new(),
         };

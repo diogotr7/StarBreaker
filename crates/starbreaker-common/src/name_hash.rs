@@ -274,6 +274,10 @@ const KNOWN_NAMES: &[&str] = &[
 
 /// Manually-mapped hashes where the original name is not simply the CRC32C
 /// of the display string (or the original source string is unknown).
+///
+/// Material slot names (`Head Material`, `HairDyeMaterial`, …) are the CRC32
+/// (IEEE) of the lowercase attachment port they customize
+/// (`head_itemport_skinitemport`, `hair_itemport_skinitemport`, …).
 const MANUAL_MAPPINGS: &[(u32, &str)] = &[
     (0xa98beb34, "Head Material"),
     (0x6c836947, "HairDyeMaterial"),
@@ -293,8 +297,9 @@ const MANUAL_MAPPINGS: &[(u32, &str)] = &[
     (0x2c3ef42d, "LipMakeupColor2"),
     (0xe1dd1d34, "LipMakeupColor3"),
     (0x442a34ac, "EyeColor"),
-    (0x15e90814, "HairDyeColor1"),
-    (0xa2c7c909, "HairDyeColor2"),
+    // HairPBR shader params (see tests): colour 1 = DyeColor, 2 = BaseTintColor.
+    (0x15e90814, "DyeColor"),
+    (0xa2c7c909, "BaseTintColor"),
     (0x4e865b74, "EyebrowDye"),
     (0x3b73d344, "StubbleDye"),
     (0x8792319b, "BeardDye"),
@@ -316,12 +321,45 @@ static HASH_TO_NAME: LazyLock<HashMap<u32, &'static str>> = LazyLock::new(|| {
     map
 });
 
+/// Earlier display names for manual mappings, accepted when parsing so
+/// previously exported JSON keeps round-tripping.
+const LEGACY_NAMES: &[(u32, &str)] = &[(0x15e90814, "HairDyeColor1"), (0xa2c7c909, "HairDyeColor2")];
+
 /// Reverse lookup: display name -> hash value.
 /// Only needed for manual mappings where crc32c(name) != stored hash.
 static NAME_TO_HASH: LazyLock<HashMap<&'static str, u32>> = LazyLock::new(|| {
-    let mut map = HashMap::with_capacity(MANUAL_MAPPINGS.len());
-    for &(hash, name) in MANUAL_MAPPINGS {
+    let mut map = HashMap::with_capacity(MANUAL_MAPPINGS.len() + LEGACY_NAMES.len());
+    for &(hash, name) in MANUAL_MAPPINGS.iter().chain(LEGACY_NAMES) {
         map.insert(name, hash);
     }
     map
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two CHF hair-dye colours are the HairPBR `DyeColor` and
+    /// `BaseTintColor` params (sRGB): the stock beard's colour 1 equals its
+    /// `.mtl` `DyeColor` (same `DyeAmount`), colour 2 is white where the
+    /// `.mtl` `BaseTintColor` is `1,1,1`.
+    #[test]
+    fn hair_dye_colours_are_named_after_their_shader_params() {
+        assert_eq!(NameHash(0x15e90814).name(), Some("DyeColor"));
+        assert_eq!(NameHash(0xa2c7c909).name(), Some("BaseTintColor"));
+    }
+
+    #[test]
+    fn shader_param_names_parse_to_the_chf_hashes() {
+        let dye: NameHash = serde_json::from_str("\"DyeColor\"").unwrap();
+        let tint: NameHash = serde_json::from_str("\"BaseTintColor\"").unwrap();
+        assert_eq!((dye.value(), tint.value()), (0x15e90814, 0xa2c7c909));
+    }
+
+    #[test]
+    fn legacy_hair_dye_colour_labels_still_parse() {
+        let one: NameHash = serde_json::from_str("\"HairDyeColor1\"").unwrap();
+        let two: NameHash = serde_json::from_str("\"HairDyeColor2\"").unwrap();
+        assert_eq!((one.value(), two.value()), (0x15e90814, 0xa2c7c909));
+    }
+}

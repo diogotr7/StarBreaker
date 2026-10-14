@@ -3,6 +3,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use parking_lot::Mutex;
 
+use starbreaker_3d::character::HeadIdentityContext;
 use starbreaker_p4k::MappedP4k;
 use starbreaker_wwise::{AtlIndex, Hierarchy};
 
@@ -23,6 +24,9 @@ pub struct AppState {
     pub bank_cache: Mutex<HashMap<String, Option<Arc<Hierarchy>>>>,
     /// Maps wwise filename (bnk/wem) to full P4k path (e.g. "Data\\Sounds\\wwise\\English(US)\\Foo.bnk").
     pub wwise_paths: Mutex<HashMap<String, String>>,
+    /// Per-gender cached head rig context for the Character Builder.
+    /// Keyed by gender_hash value. Built lazily on first preview.
+    pub head_contexts: Mutex<HashMap<u32, Arc<HeadIdentityContext>>>,
 }
 
 impl AppState {
@@ -36,6 +40,7 @@ impl AppState {
             atl_index: Mutex::new(None),
             bank_cache: Mutex::new(HashMap::new()),
             wwise_paths: Mutex::new(HashMap::new()),
+            head_contexts: Mutex::new(HashMap::new()),
         }
     }
 }

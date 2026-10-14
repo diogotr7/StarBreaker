@@ -1,5 +1,5 @@
 /// Errors produced when parsing binary data.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, PartialEq, thiserror::Error)]
 pub enum ParseError {
     /// The input was shorter than expected.
     #[error("data truncated at offset {offset}: need {need} bytes, have {have}")]

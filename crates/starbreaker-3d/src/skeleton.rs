@@ -26,6 +26,11 @@ pub struct Bone {
     pub world_position: [f32; 3],
     /// World-space rotation quaternion [w, x, y, z]
     pub world_rotation: [f32; 4],
+    /// Bind-pose world position: the skinning reference (inverse binds).
+    /// Equals `world_position` as parsed; poses move `local_*` / `world_*` only.
+    pub bind_world_position: [f32; 3],
+    /// Bind-pose world rotation [w, x, y, z] (see `bind_world_position`).
+    pub bind_world_rotation: [f32; 4],
 }
 
 // ── Binary layouts ──────────────────────────────────────────────────────────
@@ -198,6 +203,8 @@ fn parse_compiled_bones_v900(data: &[u8]) -> Option<Vec<Bone>> {
                 local_rotation: e.relative.rotation_wxyz(),
                 world_position: e.world.position_xyz(),
                 world_rotation: e.world.rotation_wxyz(),
+                bind_world_position: e.world.position_xyz(),
+                bind_world_rotation: e.world.rotation_wxyz(),
             }
         })
         .collect();
@@ -244,6 +251,8 @@ fn parse_compiled_bones_v901(data: &[u8]) -> Option<Vec<Bone>> {
                 local_rotation: relative.rotation_wxyz(),
                 world_position: world.position_xyz(),
                 world_rotation: world.rotation_wxyz(),
+                bind_world_position: world.position_xyz(),
+                bind_world_rotation: world.rotation_wxyz(),
             }
         })
         .collect();

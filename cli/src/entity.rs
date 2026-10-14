@@ -815,20 +815,12 @@ fn export_blend(
     let mesh_bytes = p4k.read(entry)
         .map_err(|e| CliError::InvalidInput(format!("Failed to read mesh data: {e}")))?;
 
-    let mesh = starbreaker_3d::parse_skin(&mesh_bytes)
-        .map_err(|e| CliError::InvalidInput(format!("Failed to parse mesh: {e}")))?;
+    // The metadata file (.skin / .cgf) holds the NMC and the bone table.
+    let metadata = p4k.entry_case_insensitive(&p4k_base).and_then(|e| p4k.read(e).ok());
 
-    eprintln!(
-        "Mesh: {} verts, {} triangles, {} submeshes, uvs={}, colors={}",
-        mesh.positions.len(),
-        mesh.indices.len() / 3,
-        mesh.submeshes.len(),
-        mesh.uvs.is_some(),
-        mesh.colors.is_some(),
-    );
-
-    // Bundled blend export (single monolithic mesh).
-    let blend_bytes = crate::blend::mesh_to_blend(&export_name, &mesh);
+    // Bundled blend export: the shared .blend mesh writer, as decomposed exports use.
+    let blend_bytes = starbreaker_3d::skin_to_blend(&export_name, &mesh_bytes, metadata.as_deref())
+        .map_err(|e| CliError::InvalidInput(format!("Failed to convert mesh: {e}")))?;
     let output = output.unwrap_or_else(|| PathBuf::from(format!("{export_name}.blend")));
     std::fs::write(&output, &blend_bytes)
         .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;

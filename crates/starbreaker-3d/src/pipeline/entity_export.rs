@@ -9,8 +9,8 @@
 //! reference bone indices that the primary CGF's NMC does not cover.
 //! Public types: `GeometryPart`, `ResolvedGeometry`.
 
-use starbreaker_datacore::database::Database;
 use starbreaker_datacore::error::QueryError;
+use starbreaker_datacore::database::Database;
 use starbreaker_datacore::types::Record;
 use starbreaker_p4k::MappedP4k;
 
@@ -452,41 +452,12 @@ fn swap_extension(path: &str, new_ext: &str) -> Option<String> {
     out.push_str(new_ext);
     Some(out)
 }
+/// Move a CA_BONE attachment into its bone's frame and bind it rigidly to
+/// that bone.
 fn transform_mesh_by_bone(mesh: &mut crate::Mesh, bone: &crate::skeleton::Bone) {
-    let [qw, qx, qy, qz] = bone.world_rotation;
-    let rot = glam::Quat::from_xyzw(qx, qy, qz, qw);
-    let trans = glam::Vec3::from(bone.world_position);
-    let affine = glam::Affine3A::from_rotation_translation(rot, trans);
-    let mat3 = glam::Mat3A::from_quat(rot);
-
-    for pos in &mut mesh.positions {
-        let p = affine.transform_point3(glam::Vec3::from(*pos));
-        *pos = p.into();
-    }
-
-    if let Some(ref mut normals) = mesh.normals {
-        for n in normals {
-            let v = mat3 * glam::Vec3::from(*n);
-            *n = v.into();
-        }
-    }
-
-    // Update bounding box by transforming all 8 corners
-    let mn = glam::Vec3::from(mesh.model_min);
-    let mx = glam::Vec3::from(mesh.model_max);
-    let mut new_min = glam::Vec3::splat(f32::MAX);
-    let mut new_max = glam::Vec3::splat(f32::MIN);
-    for &x in &[mn.x, mx.x] {
-        for &y in &[mn.y, mx.y] {
-            for &z in &[mn.z, mx.z] {
-                let t = affine.transform_point3(glam::Vec3::new(x, y, z));
-                new_min = new_min.min(t);
-                new_max = new_max.max(t);
-            }
-        }
-    }
-    mesh.model_min = new_min.into();
-    mesh.model_max = new_max.into();
+    let world = bone_world_transform(bone);
+    mesh.transform(glam::Affine3A::from_mat4(world));
+    mesh.skin = Some(crate::mesh_rig::Skin::rigid(&bone.name, mesh.positions.len()));
 }
 
 pub(crate) fn rebase_mesh_submeshes_to_bone_space(
@@ -496,111 +467,43 @@ pub(crate) fn rebase_mesh_submeshes_to_bone_space(
     if mesh.submeshes.is_empty() || bones.is_empty() {
         return false;
     }
-
-    let source_positions = mesh.positions.clone();
-    let source_uvs = mesh.uvs.clone();
-    let source_secondary_uvs = mesh.secondary_uvs.clone();
-    let source_normals = mesh.normals.clone();
-    let source_tangents = mesh.tangents.clone();
-    let source_colors = mesh.colors.clone();
-    let source_indices = mesh.indices.clone();
-    let source_submeshes = mesh.submeshes.clone();
-
-    let mut rebuilt_positions: Vec<[f32; 3]> = Vec::new();
-    let mut rebuilt_uvs = source_uvs.as_ref().map(|_| Vec::new());
-    let mut rebuilt_secondary_uvs = source_secondary_uvs.as_ref().map(|_| Vec::new());
-    let mut rebuilt_normals = source_normals.as_ref().map(|_| Vec::new());
-    let mut rebuilt_tangents = source_tangents.as_ref().map(|_| Vec::new());
-    let mut rebuilt_colors = source_colors.as_ref().map(|_| Vec::new());
-    let mut rebuilt_indices = Vec::new();
-    let mut rebuilt_submeshes = Vec::with_capacity(source_submeshes.len());
-
-    for submesh in &source_submeshes {
-        let bone_index = submesh.node_parent_index as usize;
-        if bone_index >= bones.len() {
-            return false;
-        }
-
-        let bone = &bones[bone_index];
-        let bone_inverse = bone_world_transform(bone).inverse();
-        let [qw, qx, qy, qz] = bone.world_rotation;
-        let inv_rot = glam::Quat::from_xyzw(qx, qy, qz, qw).inverse();
-
-        let start = (submesh.first_index as usize).min(source_indices.len());
-        let end = (start + submesh.num_indices as usize).min(source_indices.len());
-        let mut remap = std::collections::BTreeMap::<u32, u32>::new();
-        let first_vertex = rebuilt_positions.len() as u32;
-        let first_index = rebuilt_indices.len() as u32;
-
-        for source_index in &source_indices[start..end] {
-            let rebuilt_index = if let Some(existing) = remap.get(source_index) {
-                *existing
-            } else {
-                let source_vertex = *source_index as usize;
-                if source_vertex >= source_positions.len() {
-                    return false;
-                }
-                let transformed = bone_inverse
-                    .transform_point3(glam::Vec3::from(source_positions[source_vertex]));
-                let new_index = rebuilt_positions.len() as u32;
-                rebuilt_positions.push(transformed.into());
-
-                if let (Some(source), Some(target)) = (&source_uvs, rebuilt_uvs.as_mut()) {
-                    target.push(source[source_vertex]);
-                }
-                if let (Some(source), Some(target)) =
-                    (&source_secondary_uvs, rebuilt_secondary_uvs.as_mut())
-                {
-                    target.push(source[source_vertex]);
-                }
-                if let (Some(source), Some(target)) = (&source_normals, rebuilt_normals.as_mut()) {
-                    target.push((inv_rot * glam::Vec3::from(source[source_vertex])).into());
-                }
-                if let (Some(source), Some(target)) = (&source_tangents, rebuilt_tangents.as_mut())
-                {
-                    let tangent = source[source_vertex];
-                    let rotated = inv_rot * glam::Vec3::new(tangent[0], tangent[1], tangent[2]);
-                    target.push([rotated.x, rotated.y, rotated.z, tangent[3]]);
-                }
-                if let (Some(source), Some(target)) = (&source_colors, rebuilt_colors.as_mut()) {
-                    target.push(source[source_vertex]);
-                }
-
-                remap.insert(*source_index, new_index);
-                new_index
-            };
-            rebuilt_indices.push(rebuilt_index);
-        }
-
-        let mut rebuilt_submesh = submesh.clone();
-        rebuilt_submesh.first_vertex = first_vertex;
-        rebuilt_submesh.num_vertices = rebuilt_positions.len() as u32 - first_vertex;
-        rebuilt_submesh.first_index = first_index;
-        rebuilt_submesh.num_indices = rebuilt_indices.len() as u32 - first_index;
-        rebuilt_submeshes.push(rebuilt_submesh);
+    // Every submesh must name a bone and reference only real vertices.
+    let valid = mesh.submeshes.iter().all(|submesh| {
+        let start = (submesh.first_index as usize).min(mesh.indices.len());
+        let end = (start + submesh.num_indices as usize).min(mesh.indices.len());
+        (submesh.node_parent_index as usize) < bones.len()
+            && mesh.indices[start..end].iter().all(|&i| (i as usize) < mesh.positions.len())
+    });
+    if !valid {
+        return false;
     }
 
-    let mut new_min = [f32::MAX; 3];
-    let mut new_max = [f32::MIN; 3];
-    for position in &rebuilt_positions {
-        for axis in 0..3 {
-            new_min[axis] = new_min[axis].min(position[axis]);
-            new_max[axis] = new_max[axis].max(position[axis]);
+    // Each submesh, moved into its bone's space, then concatenated.
+    let mut rebuilt: Option<crate::Mesh> = None;
+    for (index, submesh) in mesh.submeshes.iter().enumerate() {
+        let bone = &bones[submesh.node_parent_index as usize];
+        let (mut part, _) = mesh.subset(&[index]);
+        part.transform(glam::Affine3A::from_mat4(
+            bone_world_transform(bone).inverse(),
+        ));
+        match rebuilt.as_mut() {
+            Some(out) => out.merge_from(part),
+            None => rebuilt = Some(part),
         }
     }
-
-    mesh.positions = rebuilt_positions;
-    mesh.uvs = rebuilt_uvs;
-    mesh.secondary_uvs = rebuilt_secondary_uvs;
-    mesh.normals = rebuilt_normals;
-    mesh.tangents = rebuilt_tangents;
-    mesh.colors = rebuilt_colors;
-    mesh.indices = rebuilt_indices;
-    mesh.submeshes = rebuilt_submeshes;
-    if !mesh.positions.is_empty() {
-        mesh.model_min = new_min;
-        mesh.model_max = new_max;
+    let Some(mut rebuilt) = rebuilt else { return false };
+    // Bone-space parts share no frame, so the model bbox is the bounds of the
+    // rebased positions (as before); the dequantization bbox is unchanged.
+    if let (Some(min), Some(max)) = (
+        rebuilt.positions.iter().copied().reduce(|a, b| [a[0].min(b[0]), a[1].min(b[1]), a[2].min(b[2])]),
+        rebuilt.positions.iter().copied().reduce(|a, b| [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])]),
+    ) {
+        rebuilt.model_min = min;
+        rebuilt.model_max = max;
     }
+    rebuilt.scaling_min = mesh.scaling_min;
+    rebuilt.scaling_max = mesh.scaling_max;
+    *mesh = rebuilt;
     true
 }
 
@@ -774,7 +677,7 @@ pub(crate) fn load_nmc_and_material(
     (nmc, mtl_file)
 }
 
-fn load_single_mesh(
+pub(crate) fn load_single_mesh(
     p4k: &MappedP4k,
     geometry_path: &str,
     material_path: &str,
@@ -800,9 +703,10 @@ fn load_single_mesh(
     })?;
 
     let (nmc, mut mtl_file) = load_nmc_and_material(p4k, geometry_path, material_path);
-    let mesh = crate::parse_skin_with_options(&mesh_bytes, use_model_bbox)?;
+    // The metadata file (.skin / .cgf) holds the bone table naming the skin's joints.
+    let metadata_bytes = crate::socpak::read_geometry_file(p4k, &p4k_geom_path);
+    let mesh = crate::parse_skin_pair_with_options(&mesh_bytes, metadata_bytes.as_deref(), use_model_bbox)?;
     if material_path_is_incompatible_with_mesh(&mesh, mtl_file.as_ref()) {
-        let metadata_bytes = crate::socpak::read_geometry_file(p4k, &p4k_geom_path);
         if let Some(fallback_mtl) = resolve_material(p4k, "", &p4k_geom_path, metadata_bytes.as_deref()) {
             if !material_path_is_incompatible_with_mesh(&mesh, Some(&fallback_mtl)) {
                 log::debug!(
@@ -866,6 +770,71 @@ mod tests {
     use crate::nmc::{NmcNode, NodeMeshCombo};
     use crate::types::SubMesh;
 
+    fn rotated_bone(name: &str) -> crate::skeleton::Bone {
+        // 90 degrees about +Z, at (10, 0, 0); quaternion stored [w, x, y, z]
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        crate::skeleton::Bone {
+            name: name.to_string(),
+            parent_index: None,
+            object_node_index: None,
+            local_position: [10.0, 0.0, 0.0],
+            local_rotation: [h, 0.0, 0.0, h],
+            world_position: [10.0, 0.0, 0.0],
+            world_rotation: [h, 0.0, 0.0, h],
+            bind_world_position: [10.0, 0.0, 0.0],
+            bind_world_rotation: [h, 0.0, 0.0, h],
+        }
+    }
+
+    fn tangent_triangle() -> crate::Mesh {
+        let mut mesh = crate::Mesh::empty();
+        mesh.positions = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        mesh.indices = vec![0, 1, 2];
+        mesh.normals = Some(vec![[0.0, 0.0, 1.0]; 3]);
+        mesh.tangents = Some(vec![[1.0, 0.0, 0.0, -1.0]; 3]);
+        mesh.colors = Some(vec![[1, 2, 3, 4]; 3]);
+        mesh.submeshes = vec![SubMesh {
+            material_name: None,
+            material_id: 0,
+            source_material_id: None,
+            first_index: 0,
+            num_indices: 3,
+            first_vertex: 0,
+            num_vertices: 3,
+            node_parent_index: 0,
+        }];
+        mesh.model_max = [1.0, 1.0, 0.0];
+        mesh
+    }
+
+    /// A CA_BONE part follows its bone: every spatial stream (tangents too)
+    /// is moved into the bone's frame and the part is rigidly skinned to it.
+    #[test]
+    fn transform_mesh_by_bone_moves_tangents_and_binds_the_bone() {
+        let mut mesh = tangent_triangle();
+        transform_mesh_by_bone(&mut mesh, &rotated_bone("hand"));
+        let close = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5);
+        assert!(close(mesh.positions[1], [10.0, 1.0, 0.0]), "{:?}", mesh.positions[1]);
+        let t = mesh.tangents.as_ref().unwrap()[0];
+        assert!(close([t[0], t[1], t[2]], [0.0, 1.0, 0.0]) && t[3] == -1.0, "{t:?}");
+        let skin = mesh.skin.expect("rigid skin to the bone");
+        assert_eq!(skin.joint_names, vec!["hand".to_string()]);
+        assert!(skin.weights.iter().all(|w| w[0] == 1.0));
+    }
+
+    /// Rebasing into bone space rotates tangents with normals and keeps every
+    /// other per-vertex stream.
+    #[test]
+    fn rebase_into_bone_space_moves_tangents_and_keeps_streams() {
+        let mut mesh = tangent_triangle();
+        assert!(rebase_mesh_submeshes_to_bone_space(&mut mesh, &[rotated_bone("root")]));
+        let close = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5);
+        let t = mesh.tangents.as_ref().unwrap()[0];
+        assert!(close([t[0], t[1], t[2]], [0.0, -1.0, 0.0]), "inverse rotation: {t:?}");
+        assert_eq!(mesh.colors, Some(vec![[1, 2, 3, 4]; 3]));
+        assert!(close(mesh.positions[0], [0.0, 10.0, 0.0]), "{:?}", mesh.positions[0]);
+    }
+
     #[test]
     fn mesh_material_ids_detect_material_override_that_cannot_cover_mesh() {
         let mesh = crate::Mesh {
@@ -902,6 +871,8 @@ mod tests {
             model_max: [0.0; 3],
             scaling_min: [0.0; 3],
             scaling_max: [0.0; 3],
+            skin: None,
+            morph_targets: Vec::new(),
         };
 
         assert!(mesh_material_ids_fit_material_count(&mesh, 3));
@@ -944,6 +915,8 @@ mod tests {
             model_max: [0.0; 3],
             scaling_min: [0.0; 3],
             scaling_max: [0.0; 3],
+            skin: None,
+            morph_targets: Vec::new(),
         };
         let primary_cgf_nmc = NodeMeshCombo {
             nodes: vec![nmc_node("body", None)],

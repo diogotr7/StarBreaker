@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { DnaInput, Gender } from "./dna";
 
 export interface DiscoverResult {
   path: string;
@@ -627,4 +628,53 @@ export async function extractP4kFile(
   outputPath: string,
 ): Promise<void> {
   return invoke<void>("extract_p4k_file", { path, outputPath });
+}
+
+// ── Character builder ──
+
+/** Build a head GLB preview from DNA. `full` includes eyes/teeth.
+ *  The Rust command returns raw bytes via `ipc::Response`, so `invoke`
+ *  resolves directly to an ArrayBuffer (no JSON `number[]` round-trip). */
+export async function dnaPreviewGlb(dna: DnaInput, full: boolean): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("dna_preview_glb", { dna, full });
+}
+
+/** Build the DNA's .chf and write it to `path` (chosen via the save dialog). */
+export async function dnaExportChfTo(dna: DnaInput, path: string): Promise<void> {
+  return invoke<void>("dna_export_chf_to", { dna, path });
+}
+
+/** Build the head GLB and write it to `path` (chosen via the save dialog). */
+export async function dnaExportGlbTo(
+  dna: DnaInput,
+  full: boolean,
+  path: string,
+): Promise<void> {
+  return invoke<void>("dna_export_glb_to", { dna, full, path });
+}
+
+/** Read a .chf from `path` (chosen via the open dialog) and parse it into DNA. */
+export async function dnaImportChf(path: string): Promise<DnaInput> {
+  return invoke<DnaInput>("dna_import_chf", { path });
+}
+
+export interface ExpressionSet {
+  emotion: string;
+  variations: number[];
+}
+
+/** List idle face-anim emotions + variations for a gender. */
+export async function dnaListExpressions(gender: Gender): Promise<ExpressionSet[]> {
+  return invoke<ExpressionSet[]>("dna_list_expressions", { gender });
+}
+
+/** Build a looping expression-animation GLB. Returns a raw ArrayBuffer (the
+ *  Rust command returns ipc::Response, so invoke resolves to an ArrayBuffer). */
+export async function dnaExpressionAnimGlb(
+  dna: DnaInput,
+  emotion: string,
+  variation: number,
+  intensity: number,
+): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("dna_expression_anim_glb", { dna, emotion, variation, intensity });
 }

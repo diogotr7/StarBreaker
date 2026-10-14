@@ -545,6 +545,8 @@ mod tests {
             model_max: [0.0; 3],
             scaling_min: [0.0; 3],
             scaling_max: [0.0; 3],
+            skin: None,
+            morph_targets: Vec::new(),
         };
         let nmc = NodeMeshCombo {
             nodes: vec![

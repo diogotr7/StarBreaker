@@ -538,7 +538,9 @@ impl SubMaterial {
         self.is_nodraw || self.opacity <= f32::EPSILON
     }
 
-    /// Whether this material is a decal overlay (needs alpha texture to look correct).
+    /// Whether this material is a decal overlay (needs alpha texture to look
+    /// correct): the `%DECAL` gen-mask token (whole token — LayerBlend_V2's
+    /// `%DECALS` decal-sheet feature is not it) or the MeshDecal shader.
     pub fn is_decal(&self) -> bool {
         // The whole `%DECAL` token: LayerBlend_V2's `%DECALS` (a decal sheet,
         // see `DecodedStringGenMask::has_decal`) is not a decal surface.

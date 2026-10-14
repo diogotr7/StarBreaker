@@ -4,6 +4,9 @@ pub mod error;
 pub(crate) mod gltf;
 pub(crate) mod included_objects;
 pub mod ivo;
+pub mod clip;
+pub mod mesh_rig;
+pub mod parity;
 pub mod mtl;
 pub mod nmc;
 pub(crate) mod pipeline;
@@ -11,7 +14,9 @@ pub mod skeleton;
 pub(crate) mod socpak;
 pub mod types;
 pub mod animation;
+pub mod character;
 pub mod chrparams;
+pub mod riglogic;
 pub mod validation;
 pub mod ui_pipeline;
 
@@ -291,6 +296,21 @@ pub fn parse_skin(data: &[u8]) -> Result<Mesh, Error> {
 /// Interior CGFs use `use_model_bbox = true` because IncludedObjects placements
 /// are authored for model-bbox space.
 pub(crate) fn parse_skin_with_options(data: &[u8], use_model_bbox: bool) -> Result<Mesh, Error> {
+    parse_skin_pair_with_options(data, Some(data), use_model_bbox)
+}
+
+/// Parse an IVO mesh from its stream file (`.skinm` / `.cgfm`, or a
+/// single-file `.skin`) and its metadata file (`.skin` / `.cgf`), which holds
+/// the bone table that names the soft skin's joints (`Mesh::skin`).
+pub fn parse_skin_pair(streams: &[u8], metadata: Option<&[u8]>) -> Result<Mesh, Error> {
+    parse_skin_pair_with_options(streams, metadata, false)
+}
+
+pub(crate) fn parse_skin_pair_with_options(
+    data: &[u8],
+    metadata: Option<&[u8]>,
+    use_model_bbox: bool,
+) -> Result<Mesh, Error> {
     let chunk_file = ChunkFile::from_bytes(data)?;
     let ivo = match &chunk_file {
         ChunkFile::Ivo(ivo) => ivo,
@@ -315,14 +335,37 @@ pub(crate) fn parse_skin_with_options(data: &[u8], use_model_bbox: bool) -> Resu
         .map(|entry| ivo::material::MaterialName::read(ivo.chunk_data(entry)))
         .collect::<Result<_, _>>()?;
 
-    Ok(types::build_mesh_with_bbox(&skin_mesh, &materials, use_model_bbox))
+    let joint_names: Option<Vec<String>> = [metadata, Some(data)]
+        .into_iter()
+        .flatten()
+        .find_map(skeleton::parse_skeleton)
+        .filter(|bones| !bones.is_empty())
+        .map(|bones| bones.into_iter().map(|b| b.name).collect());
+    Ok(types::build_mesh_with_rig(&skin_mesh, &materials, use_model_bbox, joint_names.as_deref()))
+}
+
+/// Parse a `.skin`/`.cgf` IVO file and write it as a native `.blend` (one
+/// object `name`), through the same `.blend` mesh writer as decomposed
+/// exports: NMC hierarchy from `metadata`, and the skin as vertex groups.
+/// The counterpart of [`skin_to_glb`].
+pub fn skin_to_blend(name: &str, data: &[u8], metadata: Option<&[u8]>) -> Result<Vec<u8>, Error> {
+    let mesh = parse_skin_pair(data, metadata)?;
+    let nmc = metadata
+        .and_then(nmc::parse_nmc_full)
+        .map(|(nodes, material_indices)| nmc::NodeMeshCombo { nodes, material_indices });
+    // A standalone .skin's own bone table is its skeleton.
+    let bones = metadata.and_then(skeleton::parse_skeleton).unwrap_or_default();
+    pipeline::mesh_to_blend(name, &mesh, &None, nmc.as_ref(), None, &bones, &[])
 }
 
 /// Parse a `.skin`/`.cgf` IVO file and convert to GLB in one step.
-/// If `metadata` is provided (the primary `.cgf`/`.skin` bytes), NMC transforms
-/// are parsed from it and applied to the scene graph.
+/// If `metadata` is provided (the primary `.cgf`/`.skin` bytes), its NMC
+/// transforms build the scene graph and its bone table is the skeleton the
+/// mesh's skin binds to.
 pub fn skin_to_glb(data: &[u8], metadata: Option<&[u8]>) -> Result<Vec<u8>, Error> {
-    let mesh = parse_skin(data)?;
+    let mesh = parse_skin_pair(data, metadata)?;
+    // A standalone .skin's own bone table is its skeleton.
+    let skeleton_bones = metadata.and_then(skeleton::parse_skeleton).unwrap_or_default();
     let root_nmc = metadata
         .and_then(nmc::parse_nmc_full)
         .map(|(nodes, mat_indices)| nmc::NodeMeshCombo {
@@ -336,9 +379,10 @@ pub fn skin_to_glb(data: &[u8], metadata: Option<&[u8]>) -> Result<Vec<u8>, Erro
             root_textures: None,
             root_nmc,
             root_palette: None,
-            skeleton_bones: Vec::new(),
+            skeleton_bones,
             children: Vec::new(),
             interiors: pipeline::LoadedInteriors::default(),
+            animations: Vec::new(),
         },
         &mut gltf::GlbLoaders {
             load_textures: &mut |_, _| None,
@@ -422,6 +466,8 @@ mod nmc_flatten_tests {
             model_max: [0.0; 3],
             scaling_min: [0.0; 3],
             scaling_max: [0.0; 3],
+            skin: None,
+            morph_targets: Vec::new(),
         };
         // Make each index reference the single shared origin vertex.
         mesh.indices = vec![0, 0, 0];
@@ -449,6 +495,8 @@ mod nmc_flatten_tests {
             model_max: [0.0; 3],
             scaling_min: [0.0; 3],
             scaling_max: [0.0; 3],
+            skin: None,
+            morph_targets: Vec::new(),
         }
     }
 

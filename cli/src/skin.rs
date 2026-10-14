@@ -10,7 +10,7 @@ use crate::error::{CliError, Result};
 
 #[derive(Subcommand)]
 pub enum SkinCommand {
-    /// Export a .skin/.cgf file to GLB
+    /// Export a .skin/.cgf file to GLB, or to .blend when OUTPUT ends in .blend
     Export {
         /// P4k path substring (case-insensitive)
         path: String,
@@ -307,16 +307,29 @@ fn export(search: String, output: Option<PathBuf>, p4k_path: Option<PathBuf>) ->
 
     eprintln!("Found: {}", entry.name);
     let data = p4k.read(entry)?;
-    let glb = starbreaker_3d::skin_to_glb(&data, None)?;
+    // The companion metadata file (.skin / .cgf) holds the NMC and bone table.
+    let metadata_name = entry.name.trim_end_matches('m').to_owned();
+    let metadata = p4k
+        .entry_case_insensitive(&metadata_name)
+        .and_then(|e| p4k.read(e).ok());
+    let stem = entry
+        .name
+        .rsplit(['/', '\\'])
+        .next()
+        .and_then(|file| file.split('.').next())
+        .unwrap_or("output")
+        .to_owned();
+    let output = output.unwrap_or_else(|| PathBuf::from(format!("{stem}.glb")));
+    // Same mesh, either writer: chosen by the output extension.
+    let bytes = if output.extension().is_some_and(|e| e.eq_ignore_ascii_case("blend")) {
+        starbreaker_3d::skin_to_blend(&stem, &data, metadata.as_deref())?
+    } else {
+        starbreaker_3d::skin_to_glb(&data, metadata.as_deref())?
+    };
 
-    let output = output.unwrap_or_else(|| {
-        let stem = entry.name.rsplit(['/', '\\']).next().unwrap_or("output");
-        PathBuf::from(format!("{stem}.glb"))
-    });
-
-    std::fs::write(&output, &glb)
+    std::fs::write(&output, &bytes)
         .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;
-    eprintln!("Written {} bytes to {}", glb.len(), output.display());
+    eprintln!("Written {} bytes to {}", bytes.len(), output.display());
     Ok(())
 }
 

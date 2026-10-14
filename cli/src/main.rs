@@ -1,5 +1,5 @@
 mod animation;
-mod blend;
+mod armour;
 mod chf;
 mod common;
 mod cryxml;
@@ -10,6 +10,7 @@ mod error;
 mod glb;
 mod nmc;
 mod p4k;
+mod riglogic;
 mod skin;
 mod socpak;
 mod ui;
@@ -135,6 +136,11 @@ enum Command {
         #[command(subcommand)]
         command: chf::ChfCommand,
     },
+    /// Armour and clothing export (single pieces: `entity export`)
+    Armour {
+        #[command(subcommand)]
+        command: armour::ArmourCommand,
+    },
     /// Wwise soundbank (BNK/WEM) operations
     Wwise {
         #[command(subcommand)]
@@ -154,6 +160,11 @@ enum Command {
     Animation {
         #[command(subcommand)]
         command: animation::AnimationCommand,
+    },
+    /// RigLogic facial DNA inspection
+    Riglogic {
+        #[command(subcommand)]
+        command: riglogic::RigLogicCommand,
     },
 }
 
@@ -202,10 +213,12 @@ fn main() {
         Command::Dds { command } => command.run(),
         Command::Glb { command } => command.run(),
         Command::Chf { command } => command.run(),
+        Command::Armour { command } => command.run(),
         Command::Wwise { command } => command.run(),
         Command::Nmc { command } => command.run(),
         Command::Ui { command } => command.run(),
         Command::Animation { command } => command.run(),
+        Command::Riglogic { command } => command.run(),
     };
 
     if let Err(e) = result {

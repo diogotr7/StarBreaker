@@ -2,6 +2,7 @@ use clap::Parser;
 use rmcp::ServiceExt;
 
 mod blend_debug;
+mod riglogic;
 mod tools;
 mod ui_variant_styles;
 

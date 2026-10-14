@@ -215,8 +215,11 @@ then export with the wrapper:
 scripts/export_ship.sh <entity_name> <export_root>   # --lod N --mip N to override
 ```
 
-Do NOT set `SC_DATA_P4K` — the P4K path is auto-detected. The wrapper
-refuses to run a stale binary (older than the newest cli/crates commit)
+Do NOT set `SC_DATA_P4K`. The CLI, tests, examples and the MCP server
+all auto-discover `Data.p4k` in the standard RSI install locations;
+the variable only forces a non-default archive (a PTU/EPTU build or a
+copy elsewhere), and setting it by hand risks pointing at the wrong
+build. The wrapper refuses to run a stale binary (older than the newest cli/crates commit)
 so timings and artifact comparisons aren't poisoned by an old build.
 `--kind decomposed` (the wrapper's default) emits the reusable
 `scene.json` + `Packages/<name>/` layout documented in

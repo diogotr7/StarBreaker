@@ -1,0 +1,17 @@
+[package]
+name = "starbreaker-dna"
+version.workspace = true
+edition = "2024"
+
+[dependencies]
+starbreaker-common = { path = "../starbreaker-common" }
+zerocopy = { version = "0.8", features = ["derive"] }
+thiserror = "2"
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[lints]
+workspace = true

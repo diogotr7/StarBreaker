@@ -78,6 +78,7 @@ from starbreaker_addon.runtime.constants import (
     PROP_MATERIAL_IDENTITY,
     PROP_MATERIAL_SIDECAR,
     PROP_PALETTE_SCOPE,
+    PROP_SHADER_FAMILY,
     PROP_SUBMATERIAL_JSON,
     PROP_TEMPLATE_KEY,
 )
@@ -632,6 +633,15 @@ class ManagedMaterialBuildImporterUnderTest(BuildersMixin):
 
     def _build_hard_surface_material(self, material, submaterial, palette, plan) -> None:
         self.build_calls.append("hard_surface")
+
+    def _build_human_skin_material(self, material, sidecar, submaterial, plan) -> None:
+        self.build_calls.append("human_skin")
+
+    def _build_hair_cap_material(self, material, submaterial, plan) -> None:
+        self.build_calls.append("hair_cap")
+
+    def _build_hair_fibre_material(self, material, sidecar, submaterial, plan) -> None:
+        self.build_calls.append("hair_fibre")
 
     def _group_contract_for_submaterial(self, submaterial):
         return None
@@ -4283,6 +4293,42 @@ class MaterialReuseTests(unittest.TestCase):
 
         self.assertEqual(importer.build_calls, ["nodraw"])
         self.assertEqual(material[PROP_TEMPLATE_KEY], "nodraw")
+
+
+class HumanSkinDispatchTests(unittest.TestCase):
+    def test_human_skin_submaterial_uses_skin_builder(self) -> None:
+        from test_templates import synthetic_submaterial
+
+        submaterial = synthetic_submaterial("HumanSkin_V2", tokens=["TONE_ADJUSTMENT"])
+        sidecar = MaterialSidecar.from_value({"source_material_path": "Data/x/head.mtl", "submaterials": []})
+        importer = ManagedMaterialBuildImporterUnderTest()
+        material = FakeMaterial("head:shader_head")
+
+        importer._build_managed_material(material, "", sidecar, submaterial, None, "identity")
+
+        self.assertEqual(importer.build_calls, ["human_skin"])
+        self.assertEqual(material[PROP_SHADER_FAMILY], "HumanSkin_V2")
+
+    def test_hair_cap_submaterial_uses_hair_cap_builder(self) -> None:
+        from test_templates import synthetic_submaterial
+
+        submaterial = synthetic_submaterial("HairPBR", tokens=["HAIR_CAP"])
+        sidecar = MaterialSidecar.from_value({"source_material_path": "Data/x/hair.mtl", "submaterials": []})
+        importer = ManagedMaterialBuildImporterUnderTest()
+
+        importer._build_managed_material(FakeMaterial("hair:scalp"), "", sidecar, submaterial, None, "identity")
+
+        self.assertEqual(importer.build_calls, ["hair_cap"])
+
+    def test_hair_cards_and_coat_use_hair_fibre_builder(self) -> None:
+        from test_templates import synthetic_submaterial
+
+        sidecar = MaterialSidecar.from_value({"source_material_path": "Data/x/hair.mtl", "submaterials": []})
+        for tokens in (["HAIR_CARDS", "CARD_ID_MAP"], ["HAIR_COAT"]):
+            importer = ManagedMaterialBuildImporterUnderTest()
+            submaterial = synthetic_submaterial("HairPBR", tokens=tokens)
+            importer._build_managed_material(FakeMaterial("hair:strands"), "", sidecar, submaterial, None, "identity")
+            self.assertEqual(importer.build_calls, ["hair_fibre"], tokens)
 
 
 class SceneAttachmentOffsetTests(unittest.TestCase):
