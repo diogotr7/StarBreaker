@@ -218,11 +218,10 @@ fn library_content_hash_is_stable() {
 #[test]
 fn library_construction_parses_once() {
     use crate::swf_assets::extract::SWF_PARSE_COUNT;
-    use std::sync::atomic::Ordering;
     let bytes = make_minimal_swf();
-    let before = SWF_PARSE_COUNT.load(Ordering::Relaxed);
+    let before = SWF_PARSE_COUNT.with(|c| c.get());
     let lib = SwfAssetLibrary::new(bytes.clone()).expect("library");
-    let after = SWF_PARSE_COUNT.load(Ordering::Relaxed);
+    let after = SWF_PARSE_COUNT.with(|c| c.get());
     assert_eq!(
         after - before,
         1,
