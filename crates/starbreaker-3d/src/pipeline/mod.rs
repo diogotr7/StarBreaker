@@ -19,6 +19,7 @@ use crate::types::MaterialTextures;
 
 mod textures;
 use self::textures::*;
+pub(crate) use self::textures::cached_load;
 pub(crate) use self::textures::{
     PngCache, RoughnessCache, cached_load_keyed, load_diffuse_texture, load_normal_texture,
     load_roughness_texture, load_roughness_texture_result, png_cache_key,
@@ -33,7 +34,7 @@ pub(crate) use self::child_payload::*;
 mod loadout;
 pub use self::loadout::resolve_loadout_meshes;
 pub(crate) use self::loadout::*;
-mod entity_export;
+pub(crate) mod entity_export;
 mod geometry_variant;
 pub(crate) use self::entity_export::*;
 mod weapon_assembly;
@@ -49,6 +50,7 @@ mod glb_assembly;
 pub(crate) use self::glb_assembly::path_is_shield_related;
 pub use self::glb_assembly::{assemble_glb_with_loadout, assemble_glb_with_loadout_with_progress};
 mod blend_assembly;
+pub(crate) use blend_assembly::mesh_to_blend;
 pub use self::blend_assembly::write_decomposed_export_blend;
 
 pub fn inspect_socpak_hierarchy(
@@ -414,6 +416,7 @@ pub fn socpaks_to_glb(
             skeleton_bones: Vec::new(),
             children: Vec::new(),
             interiors,
+            animations: Vec::new(),
         },
         &mut crate::gltf::GlbLoaders {
             load_textures: &mut no_tex,
@@ -566,26 +569,14 @@ where
         children,
         interiors,
         paint_variants: Vec::new(),
+        animations: Vec::new(),
     };
 
     write_decomposed_export_blend(db, p4k, input, opts, None, None, None, None)
 }
 
 fn empty_socpak_scene_root_mesh() -> crate::types::Mesh {
-    crate::types::Mesh {
-        positions: Vec::new(),
-        indices: Vec::new(),
-        uvs: None,
-        secondary_uvs: None,
-        normals: None,
-        tangents: None,
-        colors: None,
-        submeshes: Vec::new(),
-        model_min: [0.0; 3],
-        model_max: [0.0; 3],
-        scaling_min: [0.0; 3],
-        scaling_max: [0.0; 3],
-    }
+    crate::types::Mesh::empty()
 }
 
 /// Write NMC node properties for a geometry path into the JSON output.
@@ -905,6 +896,8 @@ mod tests {
             model_max: [0.0; 3],
             scaling_min: [0.0; 3],
             scaling_max: [0.0; 3],
+            skin: None,
+            morph_targets: Vec::new(),
         }
     }
 
@@ -922,6 +915,8 @@ mod tests {
             local_rotation: [1.0, 0.0, 0.0, 0.0],
             world_position,
             world_rotation: [1.0, 0.0, 0.0, 0.0],
+            bind_world_position: world_position,
+            bind_world_rotation: [1.0, 0.0, 0.0, 0.0],
         }
     }
 
@@ -996,6 +991,8 @@ mod tests {
             model_max: [6.0, 5.0, 0.0],
             scaling_min: [2.0, 0.0, 0.0],
             scaling_max: [6.0, 5.0, 0.0],
+            skin: None,
+            morph_targets: Vec::new(),
         };
         let bones = vec![
             sample_bone("root", None, [2.0, 0.0, 0.0], [2.0, 0.0, 0.0]),

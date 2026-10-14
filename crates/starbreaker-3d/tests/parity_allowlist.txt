@@ -1,0 +1,6 @@
+# GLB <-> .blend parity: known gaps (plan docs/superpowers/plans/2026-10-14-glb-blend-parity.md, phase F).
+# One glob per line over difference keys fixture/area/name/field; '*' matches anything.
+# A pattern that no longer matches anything fails the parity tests: delete it when a gap is fixed.
+
+# .blend writes no shader-parameter tracks (the HumanSkin_V2 wrinkle weights).
+*/clip/*/material:*/missing-in-blend

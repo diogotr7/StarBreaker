@@ -34,6 +34,8 @@ pub enum CliError {
     #[error(transparent)]
     Gltf(#[from] starbreaker_3d::Error),
     #[error(transparent)]
+    Parse(#[from] starbreaker_common::ParseError),
+    #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Regex(#[from] regex::Error),

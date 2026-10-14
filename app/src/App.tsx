@@ -8,6 +8,7 @@ import { DataCoreBrowser } from "./views/datacore-browser";
 import { ExportView } from "./views/export-view";
 import { SocpakExportView } from "./views/socpak-export-view";
 import { AudioView } from "./views/audio-view";
+import { CharacterBuilder } from "./views/character-builder";
 import { getSystemTheme, onSystemThemeChanged } from "./lib/commands";
 import { applySystemTheme } from "./lib/theme";
 
@@ -37,6 +38,7 @@ function App() {
           {(mode === "export" || mode === "armor") && <ExportView armorOnly={mode === "armor"} />}
           {mode === "socpak-export" && <SocpakExportView />}
           {mode === "audio" && <AudioView />}
+          {mode === "character" && <CharacterBuilder />}
         </main>
       </div>
     </div>

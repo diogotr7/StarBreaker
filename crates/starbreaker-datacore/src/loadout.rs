@@ -49,6 +49,9 @@ pub struct SubGeometryVariant {
     pub tag: String,
     pub geometry_path: String,
     pub material_path: String,
+    /// `SGeometryDataParams.DeformerType` (e.g. `Standard`, `WD_Elastic`,
+    /// `WD_ElasticNUScaling`); empty when absent.
+    pub deformer_type: String,
 }
 
 /// Pre-built index for fast entity lookups and cached compiled query paths.
@@ -134,39 +137,53 @@ impl<'a> EntityIndex<'a> {
     /// Query SubGeometry variants from an entity's SGeometryResourceParams.
     /// Returns tagged geometry variants (e.g., "right" -> Right.cga, "left" -> Left.cga).
     pub fn query_sub_geometry(&self, record: &Record) -> Vec<SubGeometryVariant> {
-        // Query the full SGeometryResourceParams component, then walk to SubGeometry.
-        // Querying just ".Geometry" may truncate the SubGeometry array.
-        let compiled = match self.db.compile_path::<Value>(
-            record.struct_id(),
-            "Components[SGeometryResourceParams]",
-        ) {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
-        };
+        sub_geometry_variants(self.db, record)
+    }
+}
 
-        let components = match self.db.query::<Value>(&compiled, record) {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
-        };
+/// Every SubGeometry variant of a record's `SGeometryResourceParams`
+/// (nested tags joined with spaces). Needs no [`EntityIndex`].
+pub fn sub_geometry_variants(db: &Database, record: &Record) -> Vec<SubGeometryVariant> {
+    // Query the full SGeometryResourceParams component, then walk to SubGeometry.
+    // Querying just ".Geometry" may truncate the SubGeometry array.
+    let compiled = match db.compile_path::<Value>(
+        record.struct_id(),
+        "Components[SGeometryResourceParams]",
+    ) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
 
-        let mut variants = Vec::new();
-        for component in &components {
-            let geom_node = match get_object_field(component, "Geometry") {
-                Some(g) => g,
-                None => {
-                    log::debug!("    no Geometry field in component");
-                    continue;
-                }
-            };
-            let sub_arr = get_array_field(geom_node, "SubGeometry");
-            if let Some(sub_geom_arr) = sub_arr {
-                for sub in sub_geom_arr {
-                    collect_sub_geometry_variants(sub, &[], &mut variants);
-                }
+    let components = match db.query::<Value>(&compiled, record) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut variants = Vec::new();
+    for component in &components {
+        let geom_node = match get_object_field(component, "Geometry") {
+            Some(g) => g,
+            None => {
+                log::debug!("    no Geometry field in component");
+                continue;
+            }
+        };
+        let sub_arr = get_array_field(geom_node, "SubGeometry");
+        if let Some(sub_geom_arr) = sub_arr {
+            for sub in sub_geom_arr {
+                collect_sub_geometry_variants(sub, &[], &mut variants);
             }
         }
-        variants
     }
+    variants
+}
+
+/// Borrow any field from a Value::Object.
+fn get_field<'v, 'a>(val: &'v Value<'a>, name: &str) -> Option<&'v Value<'a>> {
+    if let Value::Object { fields, .. } = val {
+        return fields.iter().find(|(k, _)| *k == name).map(|(_, v)| v);
+    }
+    None
 }
 
 /// Extract a string field from a Value::Object.
@@ -531,6 +548,12 @@ fn collect_sub_geometry_variants(
     }
 
     let (geom, mtl) = extract_sub_geometry_paths(node);
+    let deformer_type = get_object_field(node, "Geometry")
+        .and_then(|gd| match get_field(gd, "DeformerType") {
+            Some(Value::Enum(e)) | Some(Value::String(e)) => Some((*e).to_owned()),
+            _ => None,
+        })
+        .unwrap_or_default();
     if let Some(geometry_path) = geom {
         let tag = combined_tags.join(" ");
         if !tag.is_empty()
@@ -543,6 +566,7 @@ fn collect_sub_geometry_variants(
                 tag,
                 geometry_path,
                 material_path: mtl.unwrap_or_default(),
+                deformer_type,
             });
         }
     }
@@ -814,21 +838,25 @@ mod tests {
                 tag: "front".to_string(),
                 geometry_path: "Objects/Ships/Vulture/Front_Left.cga".to_string(),
                 material_path: String::new(),
+                deformer_type: String::new(),
             },
             SubGeometryVariant {
                 tag: "front left".to_string(),
                 geometry_path: "Objects/Ships/Vulture/Front_Left.cga".to_string(),
                 material_path: String::new(),
+                deformer_type: String::new(),
             },
             SubGeometryVariant {
                 tag: "front right".to_string(),
                 geometry_path: "Objects/Ships/Vulture/Front_Right.cga".to_string(),
                 material_path: String::new(),
+                deformer_type: String::new(),
             },
             SubGeometryVariant {
                 tag: "rear".to_string(),
                 geometry_path: "Objects/Ships/Vulture/Rear.cga".to_string(),
                 material_path: String::new(),
+                deformer_type: String::new(),
             },
         ];
 
@@ -854,11 +882,13 @@ mod tests {
                 tag: "brown01".to_string(),
                 geometry_path: "Objects/fps_weapons/gadgets/grin/multitool/Cutter/gdgt_fps_grin_multitool_cutter.cgf".to_string(),
                 material_path: "Objects/fps_weapons/gadgets/grin/multitool/Cutter/gdgt_fps_grin_multitool_cutter_mirage_mat.mtl".to_string(),
+                deformer_type: String::new(),
             },
             SubGeometryVariant {
                 tag: "red01".to_string(),
                 geometry_path: "Objects/fps_weapons/gadgets/grin/multitool/Cutter/gdgt_fps_grin_multitool_cutter.cgf".to_string(),
                 material_path: "Objects/fps_weapons/gadgets/grin/multitool/Cutter/gdgt_fps_grin_multitool_cutter_bloodline_mat.mtl".to_string(),
+                deformer_type: String::new(),
             },
         ];
 
@@ -872,6 +902,7 @@ mod tests {
             geometry_path: "objects/spaceships/ships/drak/cutlass/drak_cutlass_door_side_left.cga"
                 .to_string(),
             material_path: String::new(),
+            deformer_type: String::new(),
         }];
 
         assert!(should_attempt_sub_geometry_resolution(None, &variants));

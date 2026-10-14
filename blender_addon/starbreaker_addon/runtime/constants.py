@@ -164,3 +164,17 @@ SCENE_AXIS_CONVERSION_INV = SCENE_AXIS_CONVERSION.inverted()
 GLTF_LIGHT_BASIS_CORRECTION = Quaternion((math.sqrt(0.5), 0.0, -math.sqrt(0.5), 0.0))
 NON_COLOR_INPUT_KEYWORDS = ("normal", "roughness", "gloss", "mask", "height", "specular", "opacity", "id_map")
 MATERIAL_IDENTITY_SCHEMA = "runtime_material_v11"
+
+# HumanSkin_V2 → Principled BSDF. CryEngine's LIGHTINGMODEL_SKIN (screen-space
+# skin scattering + thin-region transmittance) has no direct Principled
+# equivalent; skin is rendered as random-walk subsurface with these knobs.
+SKIN_SUBSURFACE_RADIUS = (1.0, 0.35, 0.2)  # per-channel scatter ratio; red travels furthest
+SKIN_SUBSURFACE_SCALE = 0.004  # metres (packages are metre-scale)
+# HumanSkin_V2 transmittance = TexSlot12.r * TranslucencyMultiplier * 0.25;
+# widens the subsurface distance in thin regions (ears, nostrils).
+SKIN_TRANSMITTANCE_SCALE_GAIN = 4.0
+
+# HairPBR -> Principled BSDF. HairPBR diffuse is a wrapped term
+# lerp((N.L + 1)/4, KajiyaKay, k) * hairColor * 0.5 - about half the energy of
+# a Lambertian with albedo hairColor - so fibre/cap colour is scaled by this.
+HAIR_DIFFUSE_SCALE = 0.5

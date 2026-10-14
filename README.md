@@ -27,7 +27,7 @@ There is also a legacy C# version on the [`master`](../../tree/master) branch.
 starbreaker <command> [options]
 ```
 
-Commands: `p4k`, `dcb`, `entity`, `skin`, `socpak`, `cryxml`, `dds`, `glb`, `chf`, `wwise`.
+Commands: `p4k`, `dcb`, `entity`, `skin`, `socpak`, `cryxml`, `dds`, `glb`, `chf`, `armour`, `wwise`.
 
 Run `starbreaker <command> --help` for details.
 
@@ -113,6 +113,9 @@ starbreaker entity export Gladius gladius.glb --no-textures --no-normals --lod 2
 
 # Just inspect the loadout tree
 starbreaker entity export Gladius --dump-hierarchy
+
+# Export an armour piece as worn (its female mesh, skinned to its bones)
+starbreaker entity export cds_armor_heavy_arms_01_01_01 arms.glb --geometry-tag Female
 ```
 
 ```
@@ -128,6 +131,62 @@ Loadout tree for EntityClassDefinition.AEGS_Gladius:
 
 GLB size: 37498672 bytes
 Written to gladius.glb
+```
+
+</details>
+
+<details>
+<summary><b>Character export</b> — a <code>.chf</code> character as a rigged GLB or <code>.blend</code> package</summary>
+
+### Character export
+
+`chf to-glb` exports the whole character: the DNA-shaped head with its
+eyes, teeth and CHF head items (hair, brows, lashes, beard), and the body,
+all on the player actor skeleton. `chf to-package` writes the same rig as
+a decomposed `.blend` package with the CHF's skin material customization.
+Both can dress the character in a loadout and bake a face and/or body clip.
+
+```sh
+starbreaker chf to-glb masculinedefault.chf
+
+# Dressed in a game loadout, playing a face idle
+starbreaker chf to-glb masculinedefault.chf marine.glb \
+  --loadout Data/Scripts/Loadouts/Character/Human/Armor/NPC/UEE/marine_Armor_Heavy.xml \
+  --face-anim Data/Animations/Characters/Human/heads/male/ai/idlesets/happy/face/ai_civ_happy_idle_02_face.caf
+
+# Decomposed .blend package for the Blender addon
+starbreaker chf to-package masculinedefault.chf ./export
+```
+
+</details>
+
+<details>
+<summary><b>Armour export</b> — armour and clothing, single pieces or worn sets</summary>
+
+### Armour export
+
+A single piece exports as worn (its gendered mesh, skinned to its bones):
+
+```sh
+starbreaker entity export cds_armor_heavy_arms_01_01_01 arms.glb --geometry-tag Female
+```
+
+A set is worn by a character on one skeleton — the game's default
+character of `--gender`, or any `.chf` with `--chf` — with covered body
+parts left out (delete the head and body in Blender for the armour alone).
+Pieces are exact entity class names; each goes on the port that accepts it,
+as in game:
+
+```sh
+starbreaker armour export marine.glb --gender male \
+  --wear cds_undersuit_01_01_01 --wear cds_armor_heavy_core_01_01_01 \
+  --wear cds_armor_heavy_arms_01_01_01 --wear cds_armor_heavy_legs_01_01_01
+
+# Decomposed .blend package from a game loadout, playing a body idle
+starbreaker armour export marine_pkg --kind package \
+  --loadout Data/Scripts/Loadouts/Character/Human/Armor/NPC/UEE/marine_Armor_Heavy.xml \
+  --body-anim Data/Animations/Characters/Human/male_v7/character_select_screen.dba \
+  --body-anim-clip char_customizer_stand_idle_01
 ```
 
 </details>

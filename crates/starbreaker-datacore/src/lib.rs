@@ -12,6 +12,7 @@ pub mod walker;
 
 pub use database::{Database, OwnedDatabase};
 pub mod loadout;
+pub mod material_variants;
 pub mod query;
 
 pub use error::{ExportError, ParseError, QueryError, QueryResultExt};

@@ -15,6 +15,7 @@ starbreaker-chf = { path = "../crates/starbreaker-chf" }
 starbreaker-p4k = { path = "../crates/starbreaker-p4k" }
 starbreaker-datacore = { path = "../crates/starbreaker-datacore" }
 starbreaker-3d = { path = "../crates/starbreaker-3d" }
+starbreaker-common = { path = "../crates/starbreaker-common" }
 starbreaker-blend = { path = "../crates/starbreaker-blend" }
 starbreaker-cryxml = { path = "../crates/starbreaker-cryxml" }
 starbreaker-dds = { path = "../crates/starbreaker-dds" }
@@ -36,5 +37,4 @@ filetime = "0.2"
 # Dev-dependencies used only by examples (not shipped in the release binary).
 [dev-dependencies]
 crc32c = "0.6"
-starbreaker-common = { path = "../crates/starbreaker-common" }
 anyhow = "1"

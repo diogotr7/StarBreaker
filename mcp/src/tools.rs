@@ -2849,6 +2849,46 @@ impl StarBreakerMcp {
         }
     }
 
+    #[tool(description = "Inspect a .RigLogic file or extract the RigLogic chunk from a .skin \
+        IVO container and dump it as structured JSON. Provide either standalone_path (a virtual \
+        P4k path to a raw .RigLogic file) or skin_path (a virtual P4k path to a .skin IVO \
+        container). The optional section parameter restricts output to a named subset: \
+        'header' (counts, name, rig_type, section_starts), 'joints' (control names and CRCs), \
+        'regions' (blend region bones and weights), 'appearance' (blendshape appearance data), \
+        'corrective' (corrective blendshape data), or 'protos-info' (ProtosInfo chunk — \
+        skin_path only).")]
+    fn riglogic_dump(
+        &self,
+        Parameters(req): Parameters<crate::riglogic::RigLogicDumpRequest>,
+    ) -> String {
+        match (&req.standalone_path, &req.skin_path) {
+            (Some(_), Some(_)) => {
+                return "Provide either standalone_path or skin_path, not both.".to_string();
+            }
+            (None, None) => {
+                return "Provide either standalone_path or skin_path.".to_string();
+            }
+            _ => {}
+        }
+
+        let section = req.section.as_deref();
+
+        if let Some(standalone) = &req.standalone_path {
+            let bytes = match self.read_p4k_file(standalone) {
+                Ok(b) => b,
+                Err(e) => return format!("Failed to read '{standalone}' from P4k: {e}"),
+            };
+            crate::riglogic::dump_standalone(&bytes, section)
+        } else {
+            let skin = req.skin_path.as_ref().unwrap();
+            let bytes = match self.read_p4k_file(skin) {
+                Ok(b) => b,
+                Err(e) => return format!("Failed to read '{skin}' from P4k: {e}"),
+            };
+            crate::riglogic::dump_from_ivo(&bytes, section, skin)
+        }
+    }
+
     #[tool(description = "Parse the DNA1/SDNA block from a .blend file and show struct field layouts with absolute byte offsets. Accepts an absolute filesystem path to a .blend file (zstd-compressed Blender 5.x or uncompressed). Optionally filter to a single struct name; otherwise returns a list of all struct names and sizes.")]
     fn blend_sdna(&self, Parameters(req): Parameters<BlendSdnaRequest>) -> String {
         use crate::blend_debug::{decompress_blend, parse_blend_blocks, parse_sdna, format_struct_layout};

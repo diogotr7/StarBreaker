@@ -22,6 +22,8 @@ pub enum AppError {
     #[error(transparent)]
     Gltf(#[from] starbreaker_3d::Error),
     #[error(transparent)]
+    Character(#[from] starbreaker_3d::character::CharacterError),
+    #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Guid(#[from] GuidParseError),

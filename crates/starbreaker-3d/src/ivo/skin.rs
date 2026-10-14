@@ -64,12 +64,25 @@ struct RawBoneMap12 {
     weights: [u8; 4],
 }
 
+/// Extended bone map used by character `.skinm` files (IVOBONEMAP32, elem_size=24).
+///
+/// Layout (24 bytes):
+/// - `+0x00` u16×8 `joint_indices` — up to 8 bone indices (0 = unused if weight == 0)
+/// - `+0x10` u8×8  `weights`       — 0..=255, scaled from 0.0..=1.0 (sum ≈ 255 for valid verts)
+#[derive(Clone, Copy, FromBytes, KnownLayout, Immutable)]
+#[repr(C, packed)]
+struct RawBoneMap24 {
+    joint_indices: [u16; 8],
+    weights: [u8; 8],
+}
+
 const _: () = {
     assert!(size_of::<RawMeshInfo>() == 76);
     assert!(size_of::<RawSubMeshDescriptor>() == 48);
     assert!(size_of::<RawQuantizedVertex>() == 16);
     assert!(size_of::<RawFloatVertex>() == 20);
     assert!(size_of::<RawBoneMap12>() == 12);
+    assert!(size_of::<RawBoneMap24>() == 24);
 };
 
 /// Datastream type tag constants.
@@ -137,7 +150,10 @@ pub struct DataStreams {
     pub uvs: Vec<[u16; 2]>,
     pub secondary_uvs: Option<Vec<[u16; 2]>>,
     pub indices: Vec<u32>,
+    /// Compact bone map (4 influences): from `IVOBONEMAP` (elem_size=12). Used by ship meshes.
     pub bone_maps: Option<Vec<BoneMap12>>,
+    /// Extended bone map (8 influences): from `IVOBONEMAP32` (elem_size=24). Used by head `.skinm`.
+    pub bone_maps32: Option<Vec<BoneMap32>>,
     pub colors: Option<Vec<[u8; 4]>>,
     pub tangents: Option<TangentData>,
     pub normals: Option<NormalData>,
@@ -159,6 +175,19 @@ impl BoneMap12 {
             .max_by_key(|(_, weight)| *weight)?;
         (weight > 0).then_some(self.joint_indices[slot])
     }
+}
+
+/// Extended bone weight entry with up to 8 bone influences, from `IVOBONEMAP32`.
+///
+/// Used by character head `.skinm` meshes. Unlike `BoneMap12` (4 influences / 12 bytes),
+/// this form supports up to 8 simultaneous influences per vertex for high-quality
+/// facial skinning. Weights are stored as `u8` (0=no influence, 255=full).
+#[derive(Debug, Clone, Copy)]
+pub struct BoneMap32 {
+    /// Up to 8 bone indices. Indices beyond the last non-zero weight are ignored.
+    pub joint_indices: [u16; 8],
+    /// Influence weights (0..=255). Sum ≈ 255 for a fully-weighted vertex.
+    pub weights: [u8; 8],
 }
 
 /// Raw normal data — format determined by which stream was present.
@@ -300,6 +329,7 @@ impl SkinMesh {
         let mut secondary_uvs: Option<Vec<[u16; 2]>> = None;
         let mut indices: Option<Vec<u32>> = None;
         let mut bone_maps: Option<Vec<BoneMap12>> = None;
+        let mut bone_maps32: Option<Vec<BoneMap32>> = None;
         let mut colors: Option<Vec<[u8; 4]>> = None;
         let mut tangents: Option<TangentData> = None;
         let mut normals: Option<NormalData> = None;
@@ -431,6 +461,24 @@ impl SkinMesh {
                         reader.advance(element_size as usize * num_verts)?;
                     }
                 }
+                stream_type::IVOBONEMAP32 => {
+                    if element_size == 24 {
+                        // Extended bone map: 8 joint indices (u16 each) + 8 weights (u8 each).
+                        // Used by character `.skinm` files for high-quality facial skinning with
+                        // up to 8 simultaneous bone influences per vertex.
+                        let raw = reader.read_slice::<RawBoneMap24>(num_verts)?;
+                        bone_maps32 = Some(
+                            raw.iter()
+                                .map(|entry| BoneMap32 {
+                                    joint_indices: entry.joint_indices,
+                                    weights: entry.weights,
+                                })
+                                .collect(),
+                        );
+                    } else {
+                        reader.advance(element_size as usize * num_verts)?;
+                    }
+                }
                 _ => {
                     let count = num_verts;
                     let skip_bytes = element_size as usize * count;
@@ -463,6 +511,7 @@ impl SkinMesh {
                 chunk_type: stream_type::IVOINDICES,
             })?,
             bone_maps,
+            bone_maps32,
             colors,
             tangents,
             normals,

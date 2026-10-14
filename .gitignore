@@ -8,6 +8,7 @@ mcp/starbreaker-mcp.exe
 mcp/starbreaker-mcp
 research/
 test-artifacts/
+
 docs-local/
 .claude/*
 !.claude/skills/

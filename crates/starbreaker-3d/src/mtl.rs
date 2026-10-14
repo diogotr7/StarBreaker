@@ -518,12 +518,11 @@ impl SubMaterial {
         if self.is_nodraw {
             return AlphaConfig::Blend;
         }
-        let mask = &self.string_gen_mask;
         // Decals use alpha blending for layering on top of hull geometry.
         // MeshDecal shader is always a decal overlay, even without %DECAL flag.
         // Note: STENCIL_MAP on non-MeshDecal shaders (e.g. HardSurface camo paints)
         // is for the stencil pattern system, NOT alpha blending — don't treat as decal.
-        if mask.contains("%DECAL") || self.shader == "MeshDecal" {
+        if self.is_decal() {
             return AlphaConfig::Blend;
         }
         if self.alpha_test > 0.0 {
@@ -539,10 +538,13 @@ impl SubMaterial {
         self.is_nodraw || self.opacity <= f32::EPSILON
     }
 
-    /// Whether this material is a decal overlay (needs alpha texture to look correct).
+    /// Whether this material is a decal overlay (needs alpha texture to look
+    /// correct): the `%DECAL` gen-mask token (whole token — LayerBlend_V2's
+    /// `%DECALS` decal-sheet feature is not it) or the MeshDecal shader.
     pub fn is_decal(&self) -> bool {
-        let mask = &self.string_gen_mask;
-        mask.contains("%DECAL") || self.shader == "MeshDecal"
+        // The whole `%DECAL` token: LayerBlend_V2's `%DECALS` (a decal sheet,
+        // see `DecodedStringGenMask::has_decal`) is not a decal surface.
+        self.string_gen_mask.split('%').any(|t| t.eq_ignore_ascii_case("DECAL")) || self.shader == "MeshDecal"
     }
 
     /// Whether this material uses a glass shader family.
@@ -624,8 +626,7 @@ impl SubMaterial {
     }
 
     pub fn is_double_sided(&self) -> bool {
-        let mask = &self.string_gen_mask;
-        mask.contains("%DECAL") || self.shader == "MeshDecal"
+        self.is_decal()
     }
 }
 
@@ -1505,6 +1506,22 @@ mod tests {
         };
 
         assert_eq!(material.metallic(), 0.0);
+    }
+
+    /// A decal surface is the `%DECAL` token; `%DECALS` (LayerBlend_V2's
+    /// decal-sheet feature, on whole garments such as undersuits) only gives
+    /// the material a decal sheet (texture role), never makes it a decal.
+    #[test]
+    fn decal_surface_is_the_whole_decal_token() {
+        let decal_sheet = dummy_submaterial("LayerBlend_V2", "%NORMAL_MAP%BLEND_MAP%DECALS");
+        assert!(decal_sheet.decoded_string_gen_mask().has_decal, "it has a decal sheet");
+        assert!(!decal_sheet.is_decal());
+        assert!(!decal_sheet.is_double_sided());
+        assert!(matches!(decal_sheet.alpha_config(), AlphaConfig::Opaque));
+        let decal = dummy_submaterial("Illum", "%DECAL%NORMAL_MAP");
+        assert!(decal.is_decal());
+        assert!(decal.is_double_sided());
+        assert!(matches!(decal.alpha_config(), AlphaConfig::Blend));
     }
 
     #[test]

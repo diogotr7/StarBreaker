@@ -446,6 +446,12 @@ dependencies = [
 
 [[package]]
 name = "base64"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
+
+[[package]]
+name = "base64"
 version = "0.21.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
@@ -2171,6 +2177,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9985c9503b412198aa4197559e9a318524ebc4519c229bfa05a535828c950b9d"
 
 [[package]]
+name = "gltf"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3ce1918195723ce6ac74e80542c5a96a40c2b26162c1957a5cd70799b8cacf7"
+dependencies = [
+ "base64 0.13.1",
+ "byteorder",
+ "gltf-json",
+ "image",
+ "lazy_static",
+ "serde_json",
+ "urlencoding",
+]
+
+[[package]]
 name = "gltf-derive"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3016,6 +3037,12 @@ dependencies = [
  "euclid",
  "smallvec",
 ]
+
+[[package]]
+name = "lazy_static"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 
 [[package]]
 name = "leb128fmt"
@@ -5418,21 +5445,26 @@ dependencies = [
  "env_logger",
  "exr",
  "glam",
+ "gltf",
  "gltf-json",
  "half",
  "image",
  "log",
+ "memmap2",
  "quick-xml 0.37.5",
  "rayon",
+ "serde",
  "serde_json",
  "sha2",
  "smallvec",
  "starbreaker-blend",
+ "starbreaker-chf",
  "starbreaker-chunks",
  "starbreaker-common",
  "starbreaker-cryxml",
  "starbreaker-datacore",
  "starbreaker-dds",
+ "starbreaker-dna",
  "starbreaker-gfx",
  "starbreaker-p4k",
  "starbreaker-ui",
@@ -5454,6 +5486,7 @@ dependencies = [
  "serde",
  "serde_json",
  "starbreaker-3d",
+ "starbreaker-chf",
  "starbreaker-common",
  "starbreaker-cryxml",
  "starbreaker-datacore",
@@ -5555,6 +5588,16 @@ version = "0.3.2"
 dependencies = [
  "bcdec_rs",
  "image",
+ "starbreaker-common",
+ "thiserror 2.0.18",
+ "zerocopy",
+]
+
+[[package]]
+name = "starbreaker-dna"
+version = "0.3.2"
+dependencies = [
+ "serde",
  "starbreaker-common",
  "thiserror 2.0.18",
  "zerocopy",
@@ -6946,6 +6989,12 @@ dependencies = [
  "serde",
  "serde_derive",
 ]
+
+[[package]]
+name = "urlencoding"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
 name = "urlpattern"

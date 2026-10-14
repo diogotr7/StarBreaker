@@ -218,10 +218,11 @@ fn parse_dba_metadata(data: &[u8]) -> Vec<(String, DbaMetaEntry)> {
         });
     }
 
-    // Names region is preceded by alignment-padding NUL bytes (observed in
-    // Scorpius.dba: 4 leading NULs to align the first name to an 8-byte
-    // boundary). Skip leading NULs so we land on the first real name.
-    let mut pos = entries_end;
+    // The names region starts at the next 8-byte boundary (entries end 4
+    // bytes past one: 4 + 48·count). The padding is not always NUL (Scorpius
+    // has 4 NULs, character_select_screen.dba `53 0C CC BC`), so align rather
+    // than skip NULs; then skip any further NULs.
+    let mut pos = entries_end.next_multiple_of(8);
     while pos < data.len() && data[pos] == 0 {
         pos += 1;
     }

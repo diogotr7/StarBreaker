@@ -29,6 +29,8 @@ fn assign_decal_materials_basic() {
             model_max: [1.0, 1.0, 0.0],
             scaling_min: [0.0, 0.0, 0.0],
             scaling_max: [1.0, 1.0, 0.0],
+            skin: None,
+            morph_targets: Vec::new(),
         },
         root_materials: None,
         root_nmc: None,
@@ -40,6 +42,7 @@ fn assign_decal_materials_basic() {
         children: vec![],
         interiors: LoadedInteriors::default(),
         paint_variants: vec![],
+        animations: Vec::new(),
     };
 
     let result = assign_decal_materials_to_vertex_groups(&input);
@@ -68,6 +71,8 @@ fn assign_decal_materials_no_materials() {
             model_max: [0.0, 0.0, 0.0],
             scaling_min: [0.0, 0.0, 0.0],
             scaling_max: [0.0, 0.0, 0.0],
+            skin: None,
+            morph_targets: Vec::new(),
         },
         root_materials: None,
         root_nmc: None,
@@ -79,6 +84,7 @@ fn assign_decal_materials_no_materials() {
         children: vec![],
         interiors: LoadedInteriors::default(),
         paint_variants: vec![],
+        animations: Vec::new(),
     };
 
     let result = assign_decal_materials_to_vertex_groups(&input);
@@ -107,6 +113,8 @@ fn assign_decal_materials_empty_mesh() {
             model_max: [0.0, 0.0, 0.0],
             scaling_min: [0.0, 0.0, 0.0],
             scaling_max: [0.0, 0.0, 0.0],
+            skin: None,
+            morph_targets: Vec::new(),
         },
         root_materials: None,
         root_nmc: None,
@@ -118,6 +126,7 @@ fn assign_decal_materials_empty_mesh() {
         children: vec![],
         interiors: LoadedInteriors::default(),
         paint_variants: vec![],
+        animations: Vec::new(),
     };
 
     let result = assign_decal_materials_to_vertex_groups(&input);
@@ -146,6 +155,8 @@ fn assign_decal_materials_multiple_children() {
             model_max: [0.0, 0.0, 0.0],
             scaling_min: [0.0, 0.0, 0.0],
             scaling_max: [0.0, 0.0, 0.0],
+            skin: None,
+            morph_targets: Vec::new(),
         },
         root_materials: None,
         root_nmc: None,
@@ -170,6 +181,8 @@ fn assign_decal_materials_multiple_children() {
                     model_max: [0.0, 0.0, 0.0],
                     scaling_min: [0.0, 0.0, 0.0],
                     scaling_max: [0.0, 0.0, 0.0],
+                    skin: None,
+                    morph_targets: Vec::new(),
                 },
                 materials: None,
                 nmc: None,
@@ -193,6 +206,7 @@ fn assign_decal_materials_multiple_children() {
         ],
         interiors: LoadedInteriors::default(),
         paint_variants: vec![],
+        animations: Vec::new(),
     };
 
     let result = assign_decal_materials_to_vertex_groups(&input);
@@ -221,6 +235,8 @@ fn assign_decal_materials_with_child_mesh() {
             model_max: [0.0, 0.0, 0.0],
             scaling_min: [0.0, 0.0, 0.0],
             scaling_max: [0.0, 0.0, 0.0],
+            skin: None,
+            morph_targets: Vec::new(),
         },
         root_materials: None,
         root_nmc: None,
@@ -249,6 +265,8 @@ fn assign_decal_materials_with_child_mesh() {
                     model_max: [1.0, 1.0, 1.0],
                     scaling_min: [0.0, 0.0, 0.0],
                     scaling_max: [1.0, 1.0, 1.0],
+                    skin: None,
+                    morph_targets: Vec::new(),
                 },
                 materials: None,
                 nmc: None,
@@ -272,6 +290,7 @@ fn assign_decal_materials_with_child_mesh() {
         ],
         interiors: LoadedInteriors::default(),
         paint_variants: vec![],
+        animations: Vec::new(),
     };
 
     let result = assign_decal_materials_to_vertex_groups(&input);

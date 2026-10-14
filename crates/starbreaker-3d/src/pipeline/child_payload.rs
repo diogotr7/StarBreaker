@@ -210,20 +210,7 @@ pub(crate) fn collect_child_payload_specs(
 }
 
 pub(crate) fn empty_child_mesh() -> crate::types::Mesh {
-    crate::types::Mesh {
-        positions: Vec::new(),
-        indices: Vec::new(),
-        uvs: None,
-        secondary_uvs: None,
-        normals: None,
-        tangents: None,
-        colors: None,
-        submeshes: Vec::new(),
-        model_min: [0.0; 3],
-        model_max: [0.0; 3],
-        scaling_min: [0.0; 3],
-        scaling_max: [0.0; 3],
-    }
+    crate::types::Mesh::empty()
 }
 
 pub(crate) fn normalize_decomposed_source_path(p4k: &MappedP4k, path: &str) -> String {

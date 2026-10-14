@@ -41,10 +41,8 @@ use starbreaker_blend::{
     build_lamp, build_lamp_with_node_tree_and_properties, build_lamp_object,
     build_lamp_object_with_properties_and_visibility, build_empty_object, build_empty_object_with_properties,
     build_library_block, build_id_stub, LAMP_SIZE, OBJECT_SIZE,
-    build_bdeformgroup, build_mdeformvert_array, build_mdeformweight_array,
-    build_custom_data_layer_mdeformvert, SDNA_IDX_BDEFORMGROUP, SDNA_IDX_MDEFORMVERT, SDNA_IDX_LAMP,
-    build_displace_modifier, build_weld_modifier, build_weighted_normal_modifier, set_object_modifiers_listbase,
-    SDNA_IDX_DISPLACE_MODIFIER, SDNA_IDX_WELD_MODIFIER, SDNA_IDX_WEIGHTED_NORMAL_MODIFIER,
+    SDNA_IDX_LAMP,
+    set_object_modifiers_listbase, SDNA_IDX_DISPLACE_MODIFIER,
     ints2_data, triangle_edge_topology, write_f32, write_i16, write_identity_matrix4x4, write_ptr,
     write_idprop_blocks, write_light_gobo_node_tree, ATTR_TYPE_INT32_2D, IdPropValue, STARTUP_UI_SCREEN_PTR,
 };
@@ -55,13 +53,16 @@ use crate::pipeline::{
     load_interior_mesh_asset, preload_interior_meshes, DecomposedExport, ExportedFile, ExportedFileKind, ExportOptions,
     LoadedInteriors, PngCache, port_flags_mark_invisible,
 };
-use crate::types::{Mesh, SubMesh};
+use crate::types::Mesh;
 use crate::nmc::NodeMeshCombo;
 use crate::mtl::MtlFile;
 
 const DECAL_OFFSET_GROUP_NAME: &str = "starbreaker_decal_offset";
 const DECAL_OFFSET_MODIFIER_NAME: &str = "StarBreaker Decal Offset";
 const DECAL_OFFSET_MIDLEVEL: f32 = 0.0;
+/// Displace strength of the decal-offset modifier on mesh assets (scene
+/// wrappers use the instance's strength).
+const DECAL_OFFSET_STRENGTH: f32 = 0.005;
 
 /// Internal structure to hold mesh data for .blend file generation
 #[derive(Clone)]
@@ -270,7 +271,13 @@ fn mesh_ref_has_decal_offset(
     instance: &LinkedMeshInstance,
     decal_mesh_refs: &HashSet<(String, String)>,
 ) -> bool {
-    decal_mesh_refs.contains(&(instance.mesh_asset.to_ascii_lowercase(), instance.source_object_name.clone()))
+    instance_in_mesh_refs(instance, decal_mesh_refs)
+}
+
+/// Whether `refs` (lowercase mesh asset, source object name) names the
+/// instance's source mesh object.
+fn instance_in_mesh_refs(instance: &LinkedMeshInstance, refs: &HashSet<(String, String)>) -> bool {
+    refs.contains(&(instance.mesh_asset.to_ascii_lowercase(), instance.source_object_name.clone()))
 }
 
 
@@ -899,6 +906,8 @@ pub fn write_decomposed_export_blend(
     
     // Extract minimal data needed for scene.blend before passing input to write_decomposed_export
     let scene_entity_name = input.entity_name.clone();
+    let scene_root_bones = input.root_bones.clone();
+    let scene_clips = input.animations.clone();
     let children_for_scene = input.children.iter().map(|c| c.entity_name.clone()).collect::<Vec<_>>();
     let mut scene_mesh_instances = Vec::new();
     
@@ -1299,6 +1308,7 @@ pub fn write_decomposed_export_blend(
         &blend_asset_jobs,
         &mesh_data_map,
         &mesh_vertex_groups,
+        &scene_clips,
         opts.threads,
         progress,
         NATIVE_BLEND_ASSETS_START,
@@ -1447,14 +1457,18 @@ pub fn write_decomposed_export_blend(
     log::info!("[timing][blend] scene_instance_records: {:.2}s", phase_start.elapsed().as_secs_f32());
     phase_start = Instant::now();
 
-    let decal_mesh_refs = refs_by_asset
-        .iter()
-        .flat_map(|(asset_path, refs)| {
-            refs.iter()
-                .filter(|mesh_ref| mesh_ref.has_decal_offset_modifier)
-                .map(|mesh_ref| (asset_path.to_ascii_lowercase(), mesh_ref.object_name.clone()))
-        })
-        .collect::<HashSet<_>>();
+    let mesh_refs_where = |keep: fn(&LinkedMeshRef) -> bool| {
+        refs_by_asset
+            .iter()
+            .flat_map(|(asset_path, refs)| {
+                refs.iter()
+                    .filter(move |mesh_ref| keep(mesh_ref))
+                    .map(|mesh_ref| (asset_path.to_ascii_lowercase(), mesh_ref.object_name.clone()))
+            })
+            .collect::<HashSet<_>>()
+    };
+    let decal_mesh_refs = mesh_refs_where(|mesh_ref| mesh_ref.has_decal_offset_modifier);
+    let custom_normal_mesh_refs = mesh_refs_where(|mesh_ref| mesh_ref.has_custom_normals);
 
     // Phase 3: Create scene.blend with lights and empties
     report_progress(progress, SCENE_BLEND_START, "Creating scene.blend with linked mesh instances");
@@ -1463,6 +1477,11 @@ pub fn write_decomposed_export_blend(
     // Library paths are relative to scene.blend location, which is in Packages/{package}/
     // So we need ../../Data/Objects to reach the shared assets
     log::info!("[blend-debug] Creating scene.blend with {} children and {} lights", children_for_scene.len(), extracted_lights.len());
+    let skinned_assets: HashSet<String> = mesh_data_map
+        .iter()
+        .filter(|(_, entry)| entry.mesh.skin.is_some())
+        .map(|(asset, _)| asset.clone())
+        .collect();
     let scene_blend_bytes = create_scene_blend_package_with_instances_and_decal_offsets(
         &scene_package_name,
         &scene_entity_name,
@@ -1470,6 +1489,8 @@ pub fn write_decomposed_export_blend(
         &extracted_lights,
         &light_projector_texture_map,
         &decal_mesh_refs,
+        &custom_normal_mesh_refs,
+        Some(&SceneRig { bones: &scene_root_bones, skinned_assets: &skinned_assets, clips: &scene_clips }),
     )?;
     log::info!("[blend-debug] scene.blend created, size: {} bytes", scene_blend_bytes.len());
     log::info!("[blend-debug] First 20 bytes of uncompressed: {:?}", &scene_blend_bytes[..20.min(scene_blend_bytes.len())]);
@@ -1557,17 +1578,23 @@ fn blend_material_slots(name: &str, mesh: &Mesh, materials: &Option<crate::mtl::
     (material_names, submesh_slots)
 }
 
-fn mesh_to_blend(
+/// `bones` is the mesh's skeleton (bind pose): on the flat path it becomes an
+/// armature object, and a skinned mesh gets an Armature modifier bound to it.
+pub(crate) fn mesh_to_blend(
     name: &str,
     mesh: &Mesh,
     materials: &Option<crate::mtl::MtlFile>,
     nmc: Option<&NodeMeshCombo>,
     vertex_groups: Option<&Vec<VertexGroup>>,
-) -> Vec<u8> {
+    bones: &[crate::skeleton::Bone],
+    clips: &[crate::clip::Clip],
+) -> Result<Vec<u8>, Error> {
     if let Some(nmc) = nmc.filter(|nmc| !nmc.nodes.is_empty()) {
+        // PARITY GAP (plan D): the NMC hierarchy path writes no armature; its
+        // skeletons are NMC nodes (rigid parts), written as empties.
         return mesh_to_blend_hierarchy(name, mesh, materials, nmc, vertex_groups);
     }
-    mesh_to_blend_flat(name, mesh, materials, vertex_groups)
+    mesh_to_blend_flat(name, mesh, materials, vertex_groups, bones, clips)
 }
 
 fn mesh_to_blend_flat(
@@ -1575,7 +1602,27 @@ fn mesh_to_blend_flat(
     mesh: &Mesh,
     materials: &Option<crate::mtl::MtlFile>,
     vertex_groups: Option<&Vec<VertexGroup>>,
-) -> Vec<u8> {
+    bones: &[crate::skeleton::Bone],
+    clips: &[crate::clip::Clip],
+) -> Result<Vec<u8>, Error> {
+    // Parity guard (docs/superpowers/plans/2026-10-14-glb-blend-parity.md): no `..` — a new Mesh field must be written
+    // here or named as a gap.
+    let Mesh {
+        positions: _,
+        indices: _,
+        uvs: _,
+        secondary_uvs: _,
+        colors: _,
+        submeshes: _,
+        normals: _,  // custom split normals: the `custom_normal` corner attribute (custom_normals)
+        tangents: _, // not written: Blender derives tangents (MikkTSpace) from normals + UVs
+        model_min: _,
+        model_max: _,
+        scaling_min: _,
+        scaling_max: _,
+        skin: _,          // one vertex group per joint (deform_groups) + an Armature modifier (rig)
+        morph_targets: _, // shape keys (rig::shape_key_targets)
+    } = mesh;
     let totvert = mesh.positions.len();
     let totloop = mesh.indices.len();
     let totpoly = totloop / 3;
@@ -1653,54 +1700,65 @@ fn mesh_to_blend_flat(
     } else {
         (0, 0, 0)
     };
+    // Optional: authored normals
+    let custom_normals = custom_normals::CustomNormalLayer::allocate(&mut ptrs, mesh)?;
 
-    // Vertex group structures (Phase 5D)
-    let (vgroup_first_ptr, vgroup_last_ptr, _vgroup_count, cdl_ptr, vgroup_ptrs, mdeformvert_ptrs, mdeformweight_ptrs) = 
-        if let Some(vgroups) = vertex_groups {
-            let mut v_ptrs = Vec::new();
-            let mut mdv_ptrs = Vec::new();
-            let mut mdw_ptrs = Vec::new();
-            
-            if !vgroups.is_empty() {
-                // Allocate bDeformGroup pointers
-                for _ in vgroups.iter() {
-                    v_ptrs.push(ptrs.alloc());
-                }
-                let v_first = v_ptrs[0];
-                let v_last = v_ptrs[v_ptrs.len() - 1];
-                
-                // Allocate MDeformVert array
-                let mdv_array_ptr = ptrs.alloc();
-                let mdv_data_ptr = ptrs.alloc();
-                mdv_ptrs.push((mdv_array_ptr, mdv_data_ptr));
-                
-                // Allocate MDeformWeight arrays for each vertex group
-                for _ in vgroups.iter() {
-                    for _ in 0..totvert {
-                        mdw_ptrs.push(ptrs.alloc());
-                    }
-                }
-                
-                let cdl = ptrs.alloc();
-                (v_first, v_last, vgroups.len() as u64, cdl, v_ptrs, mdv_ptrs, mdw_ptrs)
-            } else {
-                (0, 0, 0, 0, Vec::new(), Vec::new(), Vec::new())
-            }
-        } else {
-            (0, 0, 0, 0, Vec::new(), Vec::new(), Vec::new())
-        };
+    // Vertex groups: decal masks + one group per skin joint.
+    let deform = deform_groups::deform_groups(vertex_groups, mesh.skin.as_ref(), totvert);
+    let deform_ptrs = deform.as_ref().map(|groups| deform_groups::DeformGroupPtrs::allocate(&mut ptrs, groups));
+    let (vgroup_first_ptr, vgroup_last_ptr, cdl_ptr) = deform_ptrs
+        .as_ref()
+        .map_or((0, 0, 0), |p| (p.first(), p.last(), p.custom_data_layer));
+
+    // Skeleton -> armature object; a skinned mesh deforms with it.
+    let rig_object = rig::RigObject::new(
+        &format!("{name}_armature"),
+        bones,
+        clips,
+        0,
+        [0.0, 0.0, 0.0],
+        BLENDER_BAKED_ROOT_QUAT,
+        BLENDER_BAKED_ROOT_SCALE,
+        &mut ptrs,
+    )?;
+    let rig_collection_object_ptr = if rig_object.is_some() { ptrs.alloc() } else { 0 };
+    let armature_mod_ptr = match (&rig_object, &mesh.skin) {
+        (Some(_), Some(_)) => ptrs.alloc(),
+        _ => 0,
+    };
+    let modifiers = mesh_modifiers::MeshModifiers {
+        armature: armature_mod_ptr,
+        ..mesh_modifiers::MeshModifiers::allocate(
+            &mut ptrs,
+            mesh_modifiers::writes_normal_modifiers(mesh),
+            has_decal_offset_vertices(vertex_groups),
+        )
+    };
+    // Morph targets -> shape keys.
+    let mut shape_keys = if mesh.morph_targets.is_empty() {
+        None
+    } else {
+        Some(
+            starbreaker_blend::shape_keys::ShapeKeyData::new(
+                "Key",
+                mesh_ptr,
+                &mesh.positions,
+                &rig::shape_key_targets(mesh),
+                &mut ptrs,
+            )
+            .map_err(Error::Other)?,
+        )
+    };
+    let shape_key_actions = match shape_keys.as_mut() {
+        Some(keys) => rig::animate_shape_keys(clips, mesh, keys, &mut ptrs)?,
+        None => Vec::new(),
+    };
 
     // ── Geometry data ─────────────────────────────────────────────────────────
 
     // poly_offsets: [0, 3, 6, ..., totloop] — totpoly+1 entries (sentinel at end)
     let poly_offsets: Vec<i32> = (0..=totpoly as i32).map(|i| i * 3).collect();
 
-    // Modifier pointer allocations. Decal meshes append a Displace modifier
-    // after the existing Weld and Weighted Normal modifiers.
-    let has_decal_offset = has_decal_offset_vertices(vertex_groups);
-    let weld_mod_ptr = ptrs.alloc();
-    let wn_mod_ptr = ptrs.alloc();
-    let decal_offset_mod_ptr = if has_decal_offset { ptrs.alloc() } else { 0 };
     let raw_poly_offsets = ints_data(&poly_offsets);
 
     // corner_vert[i] = vertex index for loop corner i
@@ -1780,6 +1838,10 @@ fn mesh_to_blend_flat(
         ));
         num_attrs += 1;
     }
+    if let Some(layer) = &custom_normals {
+        attr_blob.extend_from_slice(&layer.attribute());
+        num_attrs += 1;
+    }
 
     // ── Datablocks ────────────────────────────────────────────────────────────
 
@@ -1793,12 +1855,8 @@ fn mesh_to_blend_flat(
         BLENDER_BAKED_ROOT_QUAT,
         BLENDER_BAKED_ROOT_SCALE,
     );
-    set_object_modifiers_listbase(
-        &mut object_data,
-        weld_mod_ptr,
-        if has_decal_offset { decal_offset_mod_ptr } else { wn_mod_ptr },
-    );
-    let scene_data = build_scene_with_motion_blur_curve_and_properties(
+    set_object_modifiers_listbase(&mut object_data, modifiers.first(), modifiers.last());
+    let mut scene_data = build_scene_with_motion_blur_curve_and_properties(
         name,
         view_layer_ptr,
         collection_ptr,
@@ -1808,13 +1866,17 @@ fn mesh_to_blend_flat(
         world_ptr,
         "CYCLES",
     );
+    if let Some(end) = rig::clips_end_frame(clips) {
+        starbreaker_blend::write_i32(&mut scene_data, 1040, end); // r.efra: play every clip through
+    }
     let motion_blur_curve_points_data = build_motion_blur_shutter_curve_points();
     let tool_settings_data = build_tool_settings();
     let view_layer_data = build_view_layer("ViewLayer", base_ptr, layer_collection_ptr);
     let base_data = build_base(object_ptr);
-    let collection_data = build_master_collection(collection_object_ptr, collection_object_ptr, 0, 0);
+    let collection_tail_ptr = if rig_object.is_some() { rig_collection_object_ptr } else { collection_object_ptr };
+    let collection_data = build_master_collection(collection_object_ptr, collection_tail_ptr, 0, 0);
     let collection_object_data =
-        build_collection_object_linked(object_ptr, 0, 0);
+        build_collection_object_linked(object_ptr, 0, rig_collection_object_ptr);
     let layer_collection_data = build_layer_collection(collection_ptr);
     let mut mesh_data = build_mesh(
         name, totvert, totedge, totpoly, totloop,
@@ -1826,6 +1888,9 @@ fn mesh_to_blend_flat(
     if raw_uv.is_some() {
         write_ptr(&mut mesh_data, 1584, active_uv_name_ptr);
         write_ptr(&mut mesh_data, 1592, default_uv_name_ptr);
+    }
+    if let Some(keys) = &shape_keys {
+        write_ptr(&mut mesh_data, starbreaker_blend::shape_keys::MESH_KEY_OFFSET, keys.key_ptr);
     }
     let mesh_mat_array = build_mat_ptr_array_from_ptrs(&material_ptrs);
     let obj_mat_array  = build_mat_ptr_array(mat_slots as usize);
@@ -1857,6 +1922,10 @@ fn mesh_to_blend_flat(
     write_block(&mut out, b"DATA", SDNA_IDX_LAYER_COLLECTION, layer_collection_ptr, 1, &layer_collection_data);
     write_block(&mut out, b"DATA", SDNA_IDX_COLLECTION, collection_ptr, 1, &collection_data);  // embedded master_collection
     write_block(&mut out, b"DATA", SDNA_IDX_COLLECTION_OBJECT, collection_object_ptr, 1, &collection_object_data);
+    if let Some(rig_object) = &rig_object {
+        write_block(&mut out, b"DATA", SDNA_IDX_COLLECTION_OBJECT, rig_collection_object_ptr, 1,
+            &build_collection_object_linked(rig_object.object_ptr, collection_object_ptr, 0));
+    }
     write_block(&mut out, b"DATA", SDNA_IDX_BASE, base_ptr, 1, &base_data);
     write_world_with_sky_shader(&mut out, "World", world_ptr, world_node_tree_ptr, &mut ptrs);
 
@@ -1865,27 +1934,7 @@ fn mesh_to_blend_flat(
     write_block(&mut out, b"DATA", 0, obj_mat_ptr,      1, &obj_mat_array);
     write_block(&mut out, b"DATA", 0, obj_matbits_ptr,  1, &obj_matbits);
     // Modifier DATA blocks (part of OB's consecutive data chain).
-    write_block(&mut out, b"DATA", SDNA_IDX_WELD_MODIFIER, weld_mod_ptr, 1,
-        &build_weld_modifier("StarBreaker Weld", wn_mod_ptr, 0, 0.0005));
-    write_block(&mut out, b"DATA", SDNA_IDX_WEIGHTED_NORMAL_MODIFIER, wn_mod_ptr, 1,
-        &build_weighted_normal_modifier(
-            "StarBreaker Weighted Normal",
-            decal_offset_mod_ptr,
-            weld_mod_ptr,
-            50,
-            0.01,
-        ));
-    if has_decal_offset {
-        write_block(&mut out, b"DATA", SDNA_IDX_DISPLACE_MODIFIER, decal_offset_mod_ptr, 1,
-            &build_displace_modifier(
-                DECAL_OFFSET_MODIFIER_NAME,
-                0,
-                wn_mod_ptr,
-                0.005,
-                DECAL_OFFSET_GROUP_NAME,
-                DECAL_OFFSET_MIDLEVEL,
-            ));
-    }
+    modifiers.write(&mut out, rig_object.as_ref().map_or(0, |rig| rig.object_ptr), DECAL_OFFSET_STRENGTH);
 
     // ME block + DATA block (gap=1 rule: mesh mat** must immediately follow ME)
     write_block(&mut out, b"ME\0\0", SDNA_IDX_MESH, mesh_ptr, 1, &mesh_data);
@@ -1937,86 +1986,17 @@ fn mesh_to_blend_flat(
         write_block(&mut out, b"DATA", SDNA_IDX_ATTRIBUTE_ARRAY, array_col_ptr, 1, &arr_col);
         write_block(&mut out, b"DATA", 0,  raw_col_ptr,   1, color_data);
     }
+    // Optional: authored normals
+    if let Some(layer) = &custom_normals {
+        layer.write(&mut out);
+    }
 
     // Polygon offset array
     write_block(&mut out, b"DATA", 0, poly_offs_ptr, 1, &raw_poly_offsets);
 
-    // Phase 5D: Vertex groups
-    if let Some(vgroups) = vertex_groups {
-        if !vgroups.is_empty() && !vgroup_ptrs.is_empty() {
-            // Write bDeformGroup entries
-            for (idx, vgroup) in vgroups.iter().enumerate() {
-                let next_ptr = if idx + 1 < vgroup_ptrs.len() {
-                    vgroup_ptrs[idx + 1]
-                } else {
-                    0
-                };
-                let prev_ptr = if idx > 0 {
-                    vgroup_ptrs[idx - 1]
-                } else {
-                    0
-                };
-                let bdeform_data = build_bdeformgroup(&vgroup.name, next_ptr, prev_ptr);
-                write_block(&mut out, b"DATA", SDNA_IDX_BDEFORMGROUP, vgroup_ptrs[idx], 1, &bdeform_data);
-            }
-            
-            // Write MDeformVert array with weights for each vertex
-            if !mdeformvert_ptrs.is_empty() {
-                let (mdv_array_ptr, mdv_data_ptr) = mdeformvert_ptrs[0];
-                let mut mdeformvert_data = Vec::new();
-                
-                for vert_idx in 0..totvert {
-                    // Find which vertex groups this vertex belongs to
-                    let mut weights_for_vert = Vec::new();
-                    for (group_idx, vgroup) in vgroups.iter().enumerate() {
-                        if vgroup.vertex_indices.contains(&vert_idx) {
-                            weights_for_vert.push((group_idx as u32, 1.0f32));
-                        }
-                    }
-                    
-                    if !weights_for_vert.is_empty() {
-                        // For this implementation, write weight array for this vertex
-                        let weight_array_ptr = if vert_idx < mdeformweight_ptrs.len() {
-                            mdeformweight_ptrs[vert_idx]
-                        } else {
-                            0
-                        };
-                        mdeformvert_data.push((weight_array_ptr, weights_for_vert.len() as u32));
-                    } else {
-                        mdeformvert_data.push((0, 0));
-                    }
-                }
-                
-                let mdv_array_data = build_mdeformvert_array(&mdeformvert_data);
-                write_block(&mut out, b"DATA", SDNA_IDX_ATTRIBUTE_ARRAY, mdv_array_ptr, 1, &mdv_array_data);
-                
-                // Write individual weight arrays
-                for vert_idx in 0..totvert {
-                    for (group_idx, vgroup) in vgroups.iter().enumerate() {
-                        if vgroup.vertex_indices.contains(&vert_idx) {
-                            let weight_array_ptr = if vert_idx < mdeformweight_ptrs.len() {
-                                mdeformweight_ptrs[vert_idx]
-                            } else {
-                                continue;
-                            };
-                            let weight_data = build_mdeformweight_array(&[(group_idx as u32, 1.0f32)]);
-                            write_block(&mut out, b"DATA", 0, weight_array_ptr, 1, &weight_data);
-                        }
-                    }
-                }
-                
-                // Write MDeformVert data array itself
-                let mdv_raw_data = build_mdeformvert_array(&mdeformvert_data);
-                write_block(&mut out, b"DATA", SDNA_IDX_MDEFORMVERT, mdv_data_ptr, totvert as u32, &mdv_raw_data);
-            }
-            
-            // Write CustomDataLayer
-            if cdl_ptr != 0 && !mdeformvert_ptrs.is_empty() {
-                let (_, mdv_data_ptr) = mdeformvert_ptrs[0];
-                let cdl_data = build_custom_data_layer_mdeformvert(mdv_data_ptr);
-                write_block(&mut out, b"DATA", 0, cdl_ptr, 1, &cdl_data);
-            }
-        }
+    // Vertex groups (decal masks + skin joints)
+    if let (Some(groups), Some(ptrs)) = (deform.as_ref(), deform_ptrs.as_ref()) {
+        deform_groups::write_deform_groups(&mut out, groups, ptrs);
     }
 
     for ((material_ptr, material_props), material_name) in material_ptrs
@@ -2034,13 +2014,22 @@ fn mesh_to_blend_flat(
             write_idprop_blocks(&mut out, props);
         }
     }
+    if let Some(rig_object) = &rig_object {
+        rig_object.write(&mut out);
+    }
+    if let Some(keys) = &shape_keys {
+        keys.write(&mut out);
+    }
+    for action in &shape_key_actions {
+        action.write(&mut out);
+    }
 
     write_block(&mut out, b"DNA1", SDNA_IDX_DNA1, 0x01, 1, DNA1_BYTES);
     write_block_header(&mut out, b"ENDB", 0, 0, 0, 0);
 
     // Phase 1D: Do NOT compress individual mesh files (keep uncompressed)
     // Compression only happens at scene.blend (Phase 2)
-    out
+    Ok(out)
 }
 
 #[derive(Clone)]
@@ -2051,20 +2040,7 @@ struct MeshObjectExport {
 }
 
 fn empty_anchor_mesh() -> Mesh {
-    Mesh {
-        positions: Vec::new(),
-        indices: Vec::new(),
-        uvs: None,
-        secondary_uvs: None,
-        normals: None,
-        tangents: None,
-        colors: None,
-        submeshes: Vec::new(),
-        model_min: [0.0; 3],
-        model_max: [0.0; 3],
-        scaling_min: [0.0; 3],
-        scaling_max: [0.0; 3],
-    }
+    Mesh::empty()
 }
 
 struct MeshBlockData {
@@ -2105,12 +2081,10 @@ struct MeshBlockData {
     vgroup_last_ptr: u64,
     vgroup_count: u64,
     cdl_ptr: u64,
-    vgroup_ptrs: Vec<u64>,
-    mdeformvert_ptrs: Vec<(u64, u64)>,
-    mdeformweight_ptrs: Vec<u64>,
-    weld_mod_ptr: u64,
-    wn_mod_ptr: u64,
-    decal_offset_mod_ptr: u64,
+    /// Vertex groups (decal masks + skin joints) and their blocks.
+    deform: Option<(deform_groups::DeformGroups, deform_groups::DeformGroupPtrs)>,
+    modifiers: mesh_modifiers::MeshModifiers,
+    custom_normals: Option<custom_normals::CustomNormalLayer>,
     totvert: usize,
     totedge: usize,
     totpoly: usize,
@@ -2203,6 +2177,9 @@ struct LinkedMeshRef {
     object_scale: [f32; 3],
     ancestors: Vec<LinkedSourceAncestor>,
     has_decal_offset_modifier: bool,
+    /// The mesh carries authored normals (`custom_normal`), so the scene
+    /// wrapper must not add Weld / Weighted Normal (see mesh_modifiers).
+    has_custom_normals: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2239,6 +2216,8 @@ fn blend_link_data_from_bytes(blend_bytes: &[u8]) -> (Vec<LinkedMeshRef>, Vec<Li
         name: String,
         mat_ptr: u64,
         mat_slots: usize,
+        attrs_ptr: u64,
+        attrs_count: usize,
     }
 
     let mut object_order = Vec::new();
@@ -2268,6 +2247,8 @@ fn blend_link_data_from_bytes(blend_bytes: &[u8]) -> (Vec<LinkedMeshRef>, Vec<Li
                         name: String::from_utf8_lossy(&raw[..end]).to_string(),
                         mat_ptr: u64::from_le_bytes(data[424..432].try_into().unwrap()),
                         mat_slots: i16::from_le_bytes(data[1618..1620].try_into().unwrap()).max(0) as usize,
+                        attrs_ptr: u64::from_le_bytes(data[456..464].try_into().unwrap()),
+                        attrs_count: i32::from_le_bytes(data[464..468].try_into().unwrap()).max(0) as usize,
                     },
                 );
             }
@@ -2348,6 +2329,18 @@ fn blend_link_data_from_bytes(blend_bytes: &[u8]) -> (Vec<LinkedMeshRef>, Vec<Li
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            // `Attribute` structs are 24 bytes, the name pointer first.
+            let has_custom_normals = mesh_info
+                .and_then(|mesh| data_by_ptr.get(&mesh.attrs_ptr).map(|attrs| (mesh, attrs)))
+                .is_some_and(|(mesh, attrs)| {
+                    attrs.chunks_exact(24).take(mesh.attrs_count).any(|attr| {
+                        let name_ptr = u64::from_le_bytes(attr[0..8].try_into().unwrap());
+                        data_by_ptr.get(&name_ptr).is_some_and(|name| {
+                            name.split(|&byte| byte == 0).next()
+                                == Some(starbreaker_blend::custom_normals::CUSTOM_NORMAL_ATTRIBUTE.as_bytes())
+                        })
+                    })
+                });
             let mut has_decal_offset_modifier = false;
             let mut modifier_ptr = object.modifier_first_ptr;
             let mut visited_modifiers = HashSet::new();
@@ -2391,6 +2384,7 @@ fn blend_link_data_from_bytes(blend_bytes: &[u8]) -> (Vec<LinkedMeshRef>, Vec<Li
                 object_scale: object.scale,
                 ancestors,
                 has_decal_offset_modifier,
+                has_custom_normals,
             })
         })
         .collect();
@@ -2451,6 +2445,7 @@ fn reusable_native_blend_asset(
             object_scale: [1.0, 1.0, 1.0],
             ancestors: Vec::new(),
             has_decal_offset_modifier: false,
+            has_custom_normals: false,
         });
     }
     Ok(Some(BuiltBlendAsset {
@@ -2465,6 +2460,7 @@ fn build_native_blend_asset(
     job: &BlendAssetJob,
     mesh_data_map: &HashMap<String, MeshDataEntry>,
     mesh_vertex_groups: &HashMap<String, Vec<VertexGroup>>,
+    clips: &[crate::clip::Clip],
     existing_asset_loader: Option<&(dyn Fn(&str) -> Option<Vec<u8>> + Sync)>,
 ) -> Result<BuiltBlendAsset, Error> {
     if let Some(existing) = reusable_native_blend_asset(job, existing_asset_loader)? {
@@ -2495,7 +2491,11 @@ fn build_native_blend_asset(
         &mesh_entry.materials,
         nmc,
         vgroups.as_ref(),
-    );
+        // Linked by scene.blend, which owns the armature (create_scene_blend);
+        // the shape keys animate here, with their mesh.
+        &[],
+        clips,
+    )?;
     // Extract link data from uncompressed bytes before compressing for storage
     let (mut linked_mesh_refs, source_nodes) = blend_link_data_from_bytes(&blend_bytes);
     if linked_mesh_refs.is_empty() {
@@ -2509,6 +2509,7 @@ fn build_native_blend_asset(
             object_scale: [1.0, 1.0, 1.0],
             ancestors: Vec::new(),
             has_decal_offset_modifier: has_decal_offset_vertices(vgroups.as_ref()),
+            has_custom_normals: !mesh_modifiers::writes_normal_modifiers(mesh),
         });
     }
     // Compress for storage (matching Blender 5.x standard zstd format)
@@ -2530,6 +2531,7 @@ fn build_native_blend_assets(
     jobs: &[BlendAssetJob],
     mesh_data_map: &HashMap<String, MeshDataEntry>,
     mesh_vertex_groups: &HashMap<String, Vec<VertexGroup>>,
+    clips: &[crate::clip::Clip],
     threads: usize,
     progress: Option<&Progress>,
     progress_from: f32,
@@ -2543,7 +2545,7 @@ fn build_native_blend_assets(
             .iter()
             .enumerate()
             .map(|(index, job)| {
-                let built = build_native_blend_asset(job, mesh_data_map, mesh_vertex_groups, existing_asset_loader)?;
+                let built = build_native_blend_asset(job, mesh_data_map, mesh_vertex_groups, clips, existing_asset_loader)?;
                 let fraction = (index + 1) as f32 / total_jobs as f32;
                 report_progress(
                     progress,
@@ -2566,7 +2568,7 @@ fn build_native_blend_assets(
         let completed = AtomicUsize::new(0);
         jobs.par_iter()
             .map(|job| {
-                let built = build_native_blend_asset(job, mesh_data_map, mesh_vertex_groups, existing_asset_loader)?;
+                let built = build_native_blend_asset(job, mesh_data_map, mesh_vertex_groups, clips, existing_asset_loader)?;
                 let finished = completed.fetch_add(1, Ordering::Relaxed) + 1;
                 let fraction = finished as f32 / total_jobs as f32;
                 report_progress(
@@ -2652,22 +2654,10 @@ fn scene_axis_convert_vec3(value: [f32; 3]) -> [f32; 3] {
 }
 
 fn convert_mesh_geometry_to_scene_axes(mesh: &mut Mesh) {
-    for position in &mut mesh.positions {
-        *position = scene_axis_convert_vec3(*position);
-    }
-    if let Some(normals) = mesh.normals.as_mut() {
-        for normal in normals {
-            *normal = scene_axis_convert_vec3(*normal);
-        }
-    }
-    if let Some(tangents) = mesh.tangents.as_mut() {
-        for tangent in tangents {
-            let converted = scene_axis_convert_vec3([tangent[0], tangent[1], tangent[2]]);
-            tangent[0] = converted[0];
-            tangent[1] = converted[1];
-            tangent[2] = converted[2];
-        }
-    }
+    // (x, y, z) -> (x, -z, y), as scene_axis_convert_vec3; Mesh::transform
+    // moves every spatial stream (incl. morph deltas).
+    let axes = glam::Mat3::from_cols(glam::Vec3::X, glam::Vec3::Z, -glam::Vec3::Y);
+    mesh.transform(glam::Affine3A::from_mat3(axes));
 
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
@@ -2741,105 +2731,8 @@ fn subset_mesh_for_submeshes(
     submesh_indices: &[usize],
     vertex_groups: Option<&Vec<VertexGroup>>,
 ) -> (Mesh, Option<Vec<VertexGroup>>) {
-    let mut old_to_new: HashMap<u32, u32> = HashMap::new();
-    let mut positions = Vec::new();
-    let mut uvs = mesh.uvs.as_ref().map(|_| Vec::new());
-    let mut secondary_uvs = mesh.secondary_uvs.as_ref().map(|_| Vec::new());
-    let mut normals = mesh.normals.as_ref().map(|_| Vec::new());
-    let mut tangents = mesh.tangents.as_ref().map(|_| Vec::new());
-    let mut colors = mesh.colors.as_ref().map(|_| Vec::new());
-    let mut indices = Vec::new();
-    let mut submeshes = Vec::new();
-
-    for &submesh_index in submesh_indices {
-        let Some(source_submesh) = mesh.submeshes.get(submesh_index) else {
-            continue;
-        };
-        let first_index = indices.len() as u32;
-        let start = source_submesh.first_index as usize;
-        let end = (start + source_submesh.num_indices as usize).min(mesh.indices.len());
-        for &old_index in &mesh.indices[start..end] {
-            let new_index = if let Some(&new_index) = old_to_new.get(&old_index) {
-                new_index
-            } else {
-                let old = old_index as usize;
-                let new_index = positions.len() as u32;
-                positions.push(mesh.positions.get(old).copied().unwrap_or([0.0; 3]));
-                if let (Some(src), Some(dst)) = (mesh.uvs.as_ref(), uvs.as_mut()) {
-                    dst.push(src.get(old).copied().unwrap_or([0.0; 2]));
-                }
-                if let (Some(src), Some(dst)) = (mesh.secondary_uvs.as_ref(), secondary_uvs.as_mut()) {
-                    dst.push(src.get(old).copied().unwrap_or([0.0; 2]));
-                }
-                if let (Some(src), Some(dst)) = (mesh.normals.as_ref(), normals.as_mut()) {
-                    dst.push(src.get(old).copied().unwrap_or([0.0, 0.0, 1.0]));
-                }
-                if let (Some(src), Some(dst)) = (mesh.tangents.as_ref(), tangents.as_mut()) {
-                    dst.push(src.get(old).copied().unwrap_or([1.0, 0.0, 0.0, 1.0]));
-                }
-                if let (Some(src), Some(dst)) = (mesh.colors.as_ref(), colors.as_mut()) {
-                    dst.push(src.get(old).copied().unwrap_or([255, 255, 255, 255]));
-                }
-                old_to_new.insert(old_index, new_index);
-                new_index
-            };
-            indices.push(new_index);
-        }
-        let num_indices = indices.len() as u32 - first_index;
-        if num_indices == 0 {
-            continue;
-        }
-        let mut submesh = SubMesh {
-            material_name: source_submesh.material_name.clone(),
-            material_id: source_submesh.material_id,
-            source_material_id: source_submesh.source_material_id,
-            first_index,
-            num_indices,
-            first_vertex: 0,
-            num_vertices: positions.len() as u32,
-            node_parent_index: source_submesh.node_parent_index,
-        };
-        if let (Some(min), Some(max)) = (
-            old_to_new.values().min().copied(),
-            old_to_new.values().max().copied(),
-        ) {
-            submesh.first_vertex = min;
-            submesh.num_vertices = max.saturating_sub(min) + 1;
-        }
-        submeshes.push(submesh);
-    }
-
-    let (model_min, model_max) = if positions.is_empty() {
-        ([0.0; 3], [0.0; 3])
-    } else {
-        let mut min = [f32::INFINITY; 3];
-        let mut max = [f32::NEG_INFINITY; 3];
-        for position in &positions {
-            for axis in 0..3 {
-                min[axis] = min[axis].min(position[axis]);
-                max[axis] = max[axis].max(position[axis]);
-            }
-        }
-        (min, max)
-    };
-    let vertex_groups = remap_vertex_groups(vertex_groups, &old_to_new);
-    (
-        Mesh {
-            positions,
-            indices,
-            uvs,
-            secondary_uvs,
-            normals,
-            tangents,
-            colors,
-            submeshes,
-            model_min,
-            model_max,
-            scaling_min: mesh.scaling_min,
-            scaling_max: mesh.scaling_max,
-        },
-        vertex_groups,
-    )
+    let (subset, old_to_new) = mesh.subset(submesh_indices);
+    (subset, remap_vertex_groups(vertex_groups, &old_to_new))
 }
 
 fn local_material_slot_map(
@@ -2871,7 +2764,25 @@ fn allocate_mesh_block(
     vertex_groups: Option<&Vec<VertexGroup>>,
     submesh_slot_by_material_id: &HashMap<u32, usize>,
     material_slot_indices: Vec<usize>,
-) -> MeshBlockData {
+) -> Result<MeshBlockData, Error> {
+    // Parity guard (docs/superpowers/plans/2026-10-14-glb-blend-parity.md): no `..` — a new Mesh field must be written
+    // here or named as a gap.
+    let Mesh {
+        positions: _,
+        indices: _,
+        uvs: _,
+        secondary_uvs: _,
+        colors: _,
+        submeshes: _,
+        normals: _,  // custom split normals: the `custom_normal` corner attribute (custom_normals)
+        tangents: _, // not written: Blender derives tangents (MikkTSpace) from normals + UVs
+        model_min: _,
+        model_max: _,
+        scaling_min: _,
+        scaling_max: _,
+        skin: _,          // one vertex group per joint (deform_groups); PARITY GAP (plan D): NMC hierarchy assets get no Armature modifier
+        morph_targets: _, // PARITY GAP (plan D): NMC hierarchy assets get no shape keys
+    } = mesh;
     let totvert = mesh.positions.len();
     let totloop = mesh.indices.len();
     let totpoly = totloop / 3;
@@ -2920,23 +2831,14 @@ fn allocate_mesh_block(
     } else {
         (0, 0, 0)
     };
-    let (vgroup_first_ptr, vgroup_last_ptr, vgroup_count, cdl_ptr, vgroup_ptrs, mdeformvert_ptrs, mdeformweight_ptrs) =
-        if let Some(vgroups) = vertex_groups.filter(|groups| !groups.is_empty()) {
-            let vgroup_ptrs = (0..vgroups.len()).map(|_| ptrs.alloc()).collect::<Vec<_>>();
-            let mdeformvert_ptrs = vec![(ptrs.alloc(), ptrs.alloc())];
-            let mdeformweight_ptrs = (0..totvert).map(|_| ptrs.alloc()).collect::<Vec<_>>();
-            (
-                vgroup_ptrs[0],
-                *vgroup_ptrs.last().unwrap(),
-                vgroups.len() as u64,
-                ptrs.alloc(),
-                vgroup_ptrs,
-                mdeformvert_ptrs,
-                mdeformweight_ptrs,
-            )
-        } else {
-            (0, 0, 0, 0, Vec::new(), Vec::new(), Vec::new())
-        };
+    let custom_normals = custom_normals::CustomNormalLayer::allocate(ptrs, mesh)?;
+    let deform = deform_groups::deform_groups(vertex_groups, mesh.skin.as_ref(), totvert).map(|groups| {
+        let block_ptrs = deform_groups::DeformGroupPtrs::allocate(ptrs, &groups);
+        (groups, block_ptrs)
+    });
+    let (vgroup_first_ptr, vgroup_last_ptr, vgroup_count, cdl_ptr) = deform.as_ref().map_or((0, 0, 0, 0), |(groups, p)| {
+        (p.first(), p.last(), groups.names.len() as u64, p.custom_data_layer)
+    });
 
     let poly_offsets = (0..=totpoly as i32).map(|i| i * 3).collect::<Vec<_>>();
     let raw_poly_offsets = ints_data(&poly_offsets);
@@ -2996,10 +2898,18 @@ fn allocate_mesh_block(
         attr_blob.extend_from_slice(&build_attribute(name_col_ptr, ATTR_TYPE_BYTE_COLOR, ATTR_DOMAIN_CORNER, array_col_ptr));
         num_attrs += 1;
     }
+    if let Some(layer) = &custom_normals {
+        attr_blob.extend_from_slice(&layer.attribute());
+        num_attrs += 1;
+    }
 
-    let has_decal_offset = has_decal_offset_vertices(vertex_groups);
+    let modifiers = mesh_modifiers::MeshModifiers::allocate(
+        ptrs,
+        mesh_modifiers::writes_normal_modifiers(mesh),
+        has_decal_offset_vertices(vertex_groups),
+    );
 
-    MeshBlockData {
+    Ok(MeshBlockData {
         object_ptr,
         mesh_ptr,
         mesh_mat_ptr,
@@ -3037,12 +2947,9 @@ fn allocate_mesh_block(
         vgroup_last_ptr,
         vgroup_count,
         cdl_ptr,
-        vgroup_ptrs,
-        mdeformvert_ptrs,
-        mdeformweight_ptrs,
-        weld_mod_ptr: ptrs.alloc(),
-        wn_mod_ptr: ptrs.alloc(),
-        decal_offset_mod_ptr: if has_decal_offset { ptrs.alloc() } else { 0 },
+        deform,
+        modifiers,
+        custom_normals,
         totvert,
         totedge,
         totpoly,
@@ -3059,7 +2966,7 @@ fn allocate_mesh_block(
         raw_color,
         attr_blob,
         material_slot_indices,
-    }
+    })
 }
 
 fn write_mesh_block(
@@ -3085,12 +2992,7 @@ fn write_mesh_block(
         0,
     );
     patch_object_parent_transform(&mut object_data, parent_ptr, transform.0, transform.1, transform.2);
-    let has_decal_offset = block.decal_offset_mod_ptr != 0;
-    set_object_modifiers_listbase(
-        &mut object_data,
-        block.weld_mod_ptr,
-        if has_decal_offset { block.decal_offset_mod_ptr } else { block.wn_mod_ptr },
-    );
+    set_object_modifiers_listbase(&mut object_data, block.modifiers.first(), block.modifiers.last());
     let mut mesh_data = build_mesh(
         &object.name,
         block.totvert,
@@ -3116,27 +3018,7 @@ fn write_mesh_block(
     write_block(out, b"OB\0\0", SDNA_IDX_OBJECT, block.object_ptr, 1, &object_data);
     write_block(out, b"DATA", 0, block.obj_mat_ptr, 1, &obj_mat_array);
     write_block(out, b"DATA", 0, block.obj_matbits_ptr, 1, &obj_matbits);
-    write_block(out, b"DATA", SDNA_IDX_WELD_MODIFIER, block.weld_mod_ptr, 1,
-        &build_weld_modifier("StarBreaker Weld", block.wn_mod_ptr, 0, 0.0005));
-    write_block(out, b"DATA", SDNA_IDX_WEIGHTED_NORMAL_MODIFIER, block.wn_mod_ptr, 1,
-        &build_weighted_normal_modifier(
-            "StarBreaker Weighted Normal",
-            block.decal_offset_mod_ptr,
-            block.weld_mod_ptr,
-            50,
-            0.01,
-        ));
-    if has_decal_offset {
-        write_block(out, b"DATA", SDNA_IDX_DISPLACE_MODIFIER, block.decal_offset_mod_ptr, 1,
-            &build_displace_modifier(
-                DECAL_OFFSET_MODIFIER_NAME,
-                0,
-                block.wn_mod_ptr,
-                0.005,
-                DECAL_OFFSET_GROUP_NAME,
-                DECAL_OFFSET_MIDLEVEL,
-            ));
-    }
+    block.modifiers.write(out, 0, DECAL_OFFSET_STRENGTH);
     write_block(out, b"ME\0\0", SDNA_IDX_MESH, block.mesh_ptr, 1, &mesh_data);
     write_block(out, b"DATA", 0, block.mesh_mat_ptr, 1, &mesh_mat_array);
     write_block(out, b"DATA", SDNA_IDX_ATTRIBUTE, block.attrs_ptr, block.num_attrs, &block.attr_blob);
@@ -3172,41 +3054,12 @@ fn write_mesh_block(
         write_block(out, b"DATA", SDNA_IDX_ATTRIBUTE_ARRAY, block.array_col_ptr, 1, &build_attribute_array(block.raw_col_ptr, block.totloop as i64));
         write_block(out, b"DATA", 0, block.raw_col_ptr, 1, color_data);
     }
+    if let Some(layer) = &block.custom_normals {
+        layer.write(out);
+    }
     write_block(out, b"DATA", 0, block.poly_offs_ptr, 1, &block.raw_poly_offsets);
-    if let Some(vgroups) = object.vertex_groups.as_ref().filter(|groups| !groups.is_empty()) {
-        for (idx, vgroup) in vgroups.iter().enumerate() {
-            let next_ptr = if idx + 1 < block.vgroup_ptrs.len() { block.vgroup_ptrs[idx + 1] } else { 0 };
-            let prev_ptr = if idx > 0 { block.vgroup_ptrs[idx - 1] } else { 0 };
-            let bdeform_data = build_bdeformgroup(&vgroup.name, next_ptr, prev_ptr);
-            write_block(out, b"DATA", SDNA_IDX_BDEFORMGROUP, block.vgroup_ptrs[idx], 1, &bdeform_data);
-        }
-        if let Some((mdv_array_ptr, mdv_data_ptr)) = block.mdeformvert_ptrs.first().copied() {
-            let mut mdeformvert_data = Vec::with_capacity(block.totvert);
-            let mut weight_payloads = Vec::new();
-            for vert_idx in 0..block.totvert {
-                let weights_for_vert = vgroups
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(group_idx, vgroup)| {
-                        vgroup.vertex_indices.contains(&vert_idx).then_some((group_idx as u32, 1.0f32))
-                    })
-                    .collect::<Vec<_>>();
-                let weight_ptr = if weights_for_vert.is_empty() { 0 } else { block.mdeformweight_ptrs[vert_idx] };
-                mdeformvert_data.push((weight_ptr, weights_for_vert.len() as u32));
-                if !weights_for_vert.is_empty() {
-                    weight_payloads.push((weight_ptr, build_mdeformweight_array(&weights_for_vert)));
-                }
-            }
-            let mdv_array_data = build_mdeformvert_array(&mdeformvert_data);
-            write_block(out, b"DATA", SDNA_IDX_ATTRIBUTE_ARRAY, mdv_array_ptr, 1, &mdv_array_data);
-            for (weight_ptr, weight_data) in weight_payloads {
-                write_block(out, b"DATA", 0, weight_ptr, 1, &weight_data);
-            }
-            write_block(out, b"DATA", SDNA_IDX_MDEFORMVERT, mdv_data_ptr, block.totvert as u32, &mdv_array_data);
-            if block.cdl_ptr != 0 {
-                write_block(out, b"DATA", 0, block.cdl_ptr, 1, &build_custom_data_layer_mdeformvert(mdv_data_ptr));
-            }
-        }
+    if let Some((groups, ptrs)) = block.deform.as_ref() {
+        deform_groups::write_deform_groups(out, groups, ptrs);
     }
 }
 
@@ -3216,7 +3069,7 @@ fn mesh_to_blend_hierarchy(
     materials: &Option<crate::mtl::MtlFile>,
     nmc: &NodeMeshCombo,
     vertex_groups: Option<&Vec<VertexGroup>>,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, Error> {
     let (material_names, full_submesh_slots) = blend_material_slots(name, mesh, materials);
     let mut submesh_slot_by_material_id = HashMap::new();
     for (submesh, slot) in mesh.submeshes.iter().zip(full_submesh_slots.iter().copied()) {
@@ -3274,19 +3127,22 @@ fn mesh_to_blend_hierarchy(
     let mesh_blocks = mesh_objects
         .iter()
         .map(|object| {
-            object.as_ref().map(|object| {
-                let (local_slot_by_material_id, material_slot_indices) =
-                    local_material_slot_map(&object.mesh, &submesh_slot_by_material_id);
-                allocate_mesh_block(
-                    &mut ptrs,
-                    &object.mesh,
-                    object.vertex_groups.as_ref(),
-                    &local_slot_by_material_id,
-                    material_slot_indices,
-                )
-            })
+            object
+                .as_ref()
+                .map(|object| {
+                    let (local_slot_by_material_id, material_slot_indices) =
+                        local_material_slot_map(&object.mesh, &submesh_slot_by_material_id);
+                    allocate_mesh_block(
+                        &mut ptrs,
+                        &object.mesh,
+                        object.vertex_groups.as_ref(),
+                        &local_slot_by_material_id,
+                        material_slot_indices,
+                    )
+                })
+                .transpose()
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, Error>>()?;
     let fallback_anchor = if mesh_objects.iter().all(Option::is_none) {
         let fallback_object = MeshObjectExport {
             name: name.to_string(),
@@ -3301,7 +3157,7 @@ fn mesh_to_blend_hierarchy(
             None,
             &local_slot_by_material_id,
             material_slot_indices,
-        );
+        )?;
         Some((fallback_object, fallback_block))
     } else {
         None
@@ -3471,12 +3327,9 @@ fn mesh_to_blend_hierarchy(
                     vgroup_last_ptr: block.vgroup_last_ptr,
                     vgroup_count: block.vgroup_count,
                     cdl_ptr: block.cdl_ptr,
-                    vgroup_ptrs: block.vgroup_ptrs.clone(),
-                    mdeformvert_ptrs: block.mdeformvert_ptrs.clone(),
-                    mdeformweight_ptrs: block.mdeformweight_ptrs.clone(),
-                    weld_mod_ptr: block.weld_mod_ptr,
-                    wn_mod_ptr: block.wn_mod_ptr,
-                    decal_offset_mod_ptr: block.decal_offset_mod_ptr,
+                    deform: block.deform.clone(),
+                    modifiers: block.modifiers,
+                    custom_normals: block.custom_normals.clone(),
                     totvert: block.totvert,
                     totedge: block.totedge,
                     totpoly: block.totpoly,
@@ -3523,7 +3376,7 @@ fn mesh_to_blend_hierarchy(
 
     write_block(&mut out, b"DNA1", SDNA_IDX_DNA1, 0x01, 1, DNA1_BYTES);
     write_block_header(&mut out, b"ENDB", 0, 0, 0, 0);
-    out
+    Ok(out)
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -3685,7 +3538,20 @@ fn create_scene_blend_package_with_instances(
         lights,
         light_projector_texture_map,
         &HashSet::new(),
+        &HashSet::new(),
+        None,
     )
+}
+
+/// The package skeleton for scene.blend: an armature in the root mesh's space
+/// that every skinned mesh (`skinned_assets`, lowercase mesh asset paths)
+/// binds to by bone name, like the glTF writer binds skins to the one scene
+/// skeleton.
+pub(crate) struct SceneRig<'a> {
+    pub bones: &'a [crate::skeleton::Bone],
+    pub skinned_assets: &'a HashSet<String>,
+    /// Clips whose bone tracks animate the armature.
+    pub clips: &'a [crate::clip::Clip],
 }
 
 fn create_scene_blend_package_with_instances_and_decal_offsets(
@@ -3695,6 +3561,10 @@ fn create_scene_blend_package_with_instances_and_decal_offsets(
     lights: &[ExtractedLight],
     light_projector_texture_map: &HashMap<String, String>,
     decal_mesh_refs: &HashSet<(String, String)>,
+    // (lowercase mesh asset, source object) whose mesh carries `custom_normal`:
+    // their wrappers get no Weld / Weighted Normal (see mesh_modifiers).
+    custom_normal_mesh_refs: &HashSet<(String, String)>,
+    rig: Option<&SceneRig<'_>>,
 ) -> Result<Vec<u8>, Error> {
     let children_count = mesh_instances_input.len();
     let mut used_light_names = HashMap::new();
@@ -3773,9 +3643,9 @@ fn create_scene_blend_package_with_instances_and_decal_offsets(
     let mut interior_coll_obj_ptrs = Vec::new();
     let mut local_mesh_object_entries = Vec::new();
     let mut instance_anchor_entries = Vec::new();
-    // Parallel vec of (weld_mod_ptr, weighted_normal_mod_ptr, optional_decal_offset_mod_ptr)
-    // per local mesh object entry.
-    let mut local_mesh_modifier_ptrs: Vec<(u64, u64, u64)> = Vec::new();
+    // Parallel vec of modifier pointers per local mesh object entry (the
+    // armature modifier is set once the rig exists).
+    let mut local_mesh_modifier_ptrs: Vec<mesh_modifiers::MeshModifiers> = Vec::new();
     let mut scene_source_node_entries = Vec::new();
     let mut source_empty_entries = Vec::new();
     let mut parent_empty_entries = Vec::new();
@@ -3997,17 +3867,51 @@ fn create_scene_blend_package_with_instances_and_decal_offsets(
                 .filter_map(|name| scene_material_ptrs.get(name).copied())
                 .collect::<Vec<_>>(),
         ));
-        let decal_offset_mod_ptr = if mesh_ref_has_decal_offset(instance, decal_mesh_refs) {
-            ptrs.alloc()
-        } else {
-            0
-        };
-        local_mesh_modifier_ptrs.push((ptrs.alloc(), ptrs.alloc(), decal_offset_mod_ptr));
+        local_mesh_modifier_ptrs.push(mesh_modifiers::MeshModifiers::allocate(
+            &mut ptrs,
+            !instance_in_mesh_refs(instance, custom_normal_mesh_refs),
+            mesh_ref_has_decal_offset(instance, decal_mesh_refs),
+        ));
         instance_anchor_entries.push((anchor_ptr, idx, anchor_parent_ptr, anchor_idprops));
         if instance.is_interior {
             interior_coll_obj_ptrs.push((anchor_coll_obj_ptr, anchor_ptr));
         } else {
             package_coll_obj_ptrs.push((anchor_coll_obj_ptr, anchor_ptr));
+        }
+    }
+
+    // The package skeleton: one armature in the root mesh object's space
+    // (same parent and local transform), bound by every skinned mesh object.
+    let is_skinned = |entry_idx: usize| {
+        let instance = &mesh_instances_input[local_mesh_object_entries[entry_idx].3];
+        rig.is_some_and(|rig| rig.skinned_assets.contains(&instance.mesh_asset.to_ascii_lowercase()))
+    };
+    let root_entry = local_mesh_object_entries.iter().position(|entry| {
+        let instance = &mesh_instances_input[entry.3];
+        instance.parent_entity_name.is_none() && !instance.is_interior
+    });
+    let rig_object = match (rig, root_entry) {
+        (Some(rig), Some(root)) if (0..local_mesh_object_entries.len()).any(is_skinned) => {
+            let instance = &mesh_instances_input[local_mesh_object_entries[root].3];
+            rig::RigObject::new(
+                &format!("{root_entity_name}_armature"),
+                rig.bones,
+                rig.clips,
+                local_mesh_object_entries[root].5,
+                instance.source_loc,
+                instance.source_quat,
+                instance.source_scale,
+                &mut ptrs,
+            )?
+        }
+        _ => None,
+    };
+    if let Some(rig_object) = &rig_object {
+        package_coll_obj_ptrs.push((ptrs.alloc(), rig_object.object_ptr));
+    }
+    for (entry_idx, modifiers) in local_mesh_modifier_ptrs.iter_mut().enumerate() {
+        if rig_object.is_some() && is_skinned(entry_idx) {
+            modifiers.armature = ptrs.alloc();
         }
     }
     
@@ -4054,7 +3958,7 @@ fn create_scene_blend_package_with_instances_and_decal_offsets(
     
     // Build scene datablocks
     // Scene must always be named "Scene" for Blender to recognize it as the primary scene
-    let scene_data = build_scene_with_motion_blur_curve_and_properties(
+    let mut scene_data = build_scene_with_motion_blur_curve_and_properties(
         "Scene",
         view_layer_ptr,
         root_collection_ptr,
@@ -4064,6 +3968,9 @@ fn create_scene_blend_package_with_instances_and_decal_offsets(
         world_ptr,
         "CYCLES",
     );
+    if let Some(end) = rig::clips_end_frame(rig.map_or(&[][..], |r| r.clips)) {
+        starbreaker_blend::write_i32(&mut scene_data, 1040, end); // r.efra: play every clip through
+    }
     let motion_blur_curve_points_data = build_motion_blur_shutter_curve_points();
     let tool_settings_data = build_tool_settings();
     let view_layer_data = build_view_layer("ViewLayer", base_ptr, layer_collection_ptr);
@@ -4292,12 +4199,8 @@ fn create_scene_blend_package_with_instances_and_decal_offsets(
         if instance.hidden {
             hide_object_viewport_and_render(&mut object_data);
         }
-        let (weld_mod_ptr, wn_mod_ptr, decal_offset_mod_ptr) = local_mesh_modifier_ptrs[entry_idx];
-        set_object_modifiers_listbase(
-            &mut object_data,
-            weld_mod_ptr,
-            if decal_offset_mod_ptr != 0 { decal_offset_mod_ptr } else { wn_mod_ptr },
-        );
+        let modifiers = local_mesh_modifier_ptrs[entry_idx];
+        set_object_modifiers_listbase(&mut object_data, modifiers.first(), modifiers.last());
         local_mesh_object_data.push((
             *object_ptr,
             object_data,
@@ -4522,29 +4425,17 @@ fn create_scene_blend_package_with_instances_and_decal_offsets(
         write_block(&mut out, b"DATA", 0, local_mesh_object_entries[idx].1, 1, mat_array);
         write_block(&mut out, b"DATA", 0, local_mesh_object_entries[idx].2, 1, matbits);
         // Modifier DATA blocks (part of OB's consecutive data chain).
-        let (weld_mod_ptr, wn_mod_ptr, decal_offset_mod_ptr) = local_mesh_modifier_ptrs[idx];
-        write_block(&mut out, b"DATA", SDNA_IDX_WELD_MODIFIER, weld_mod_ptr, 1,
-            &build_weld_modifier("StarBreaker Weld", wn_mod_ptr, 0, 0.0005));
-        write_block(&mut out, b"DATA", SDNA_IDX_WEIGHTED_NORMAL_MODIFIER, wn_mod_ptr, 1,
-            &build_weighted_normal_modifier(
-                "StarBreaker Weighted Normal",
-                decal_offset_mod_ptr,
-                weld_mod_ptr,
-                50,
-                0.01,
-            ));
-        if decal_offset_mod_ptr != 0 {
-            let instance = &mesh_instances_input[local_mesh_object_entries[idx].3];
-            write_block(&mut out, b"DATA", SDNA_IDX_DISPLACE_MODIFIER, decal_offset_mod_ptr, 1,
-                &build_displace_modifier(
-                    DECAL_OFFSET_MODIFIER_NAME,
-                    0,
-                    wn_mod_ptr,
-                    instance_decal_offset_strength(instance) as f32,
-                    DECAL_OFFSET_GROUP_NAME,
-                    DECAL_OFFSET_MIDLEVEL,
-                ));
-        }
+        let modifiers = local_mesh_modifier_ptrs[idx];
+        let instance = &mesh_instances_input[local_mesh_object_entries[idx].3];
+        modifiers.write(
+            &mut out,
+            rig_object.as_ref().map_or(0, |rig| rig.object_ptr),
+            instance_decal_offset_strength(instance) as f32,
+        );
+    }
+
+    if let Some(rig_object) = &rig_object {
+        rig_object.write(&mut out);
     }
 
     for (material_ptr, material_data) in &scene_material_blocks {
@@ -4655,6 +4546,15 @@ mod tests_package_paths {
         );
     }
 }
+
+mod deform_groups;
+mod rig;
+mod custom_normals;
+mod mesh_modifiers;
+#[cfg(test)]
+mod tests_custom_normals;
+#[cfg(test)]
+mod tests_rig;
 
 #[cfg(test)]
 mod tests_5a_scene_blend;

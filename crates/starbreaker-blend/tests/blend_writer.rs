@@ -534,7 +534,8 @@ fn object_transform_defaults_are_visible_identity() {
     assert_eq!(f32::from_le_bytes(ob[768..772].try_into().unwrap()), 1.0);
     assert_eq!(f32::from_le_bytes(ob[820..824].try_into().unwrap()), 1.0);
     assert_eq!(i16::from_le_bytes(ob[1040..1042].try_into().unwrap()), 1);
-    assert_eq!(i16::from_le_bytes(ob[1042..1044].try_into().unwrap()), -1);
+    assert_eq!(i16::from_le_bytes(ob[1022..1024].try_into().unwrap()), 1 << 10); // protectflag = OB_LOCK_ROT4D
+    assert_eq!(i16::from_le_bytes(ob[1042..1044].try_into().unwrap()), 0); // boundtype = OB_BOUND_BOX
     assert_eq!(ob[1046], 5);
     assert_eq!(f32::from_le_bytes(ob[1048..1052].try_into().unwrap()), 1.0);
     assert_eq!(f32::from_le_bytes(ob[1064..1068].try_into().unwrap()), 1.0);

@@ -101,6 +101,8 @@ from ...templates import (
     template_plan_for_submaterial,
 )
 from ..palette_utils import _hard_surface_palette_iridescence_channel
+from ..hair_utils import is_hair_cap, is_hair_fibre
+from ..skin_utils import HUMAN_SKIN_FAMILY
 from .types import LayerSurfaceSockets
 
 
@@ -706,6 +708,12 @@ class BuildersMixin:
             self._build_hard_surface_material(material, submaterial, palette, plan)
         elif submaterial.shader_family == "Illum":
             self._build_illum_material(material, submaterial, palette, plan)
+        elif submaterial.shader_family == HUMAN_SKIN_FAMILY:
+            self._build_human_skin_material(material, sidecar, submaterial, plan)
+        elif is_hair_cap(submaterial):
+            self._build_hair_cap_material(material, submaterial, plan)
+        elif is_hair_fibre(submaterial):
+            self._build_hair_fibre_material(material, sidecar, submaterial, plan)
         else:
             group_contract = None if plan.template_key == "layered_wear" else self._group_contract_for_submaterial(submaterial)
             if plan.template_key == "screen_hud":

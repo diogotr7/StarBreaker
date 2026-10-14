@@ -46,16 +46,19 @@ mod tests {
                 tag: "male fp".into(),
                 geometry_path: "view.skin".into(),
                 material_path: "view.mtl".into(),
+                deformer_type: String::new(),
             },
             SubGeometryVariant {
                 tag: "male".into(),
                 geometry_path: "body.skin".into(),
                 material_path: String::new(),
+                deformer_type: String::new(),
             },
             SubGeometryVariant {
                 tag: "female".into(),
                 geometry_path: "body2.skin".into(),
                 material_path: "variant.mtl".into(),
+                deformer_type: String::new(),
             },
         ];
         assert_eq!(
