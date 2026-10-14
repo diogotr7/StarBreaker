@@ -5,7 +5,7 @@ use parking_lot::Mutex;
 
 use starbreaker_3d::character::HeadIdentityContext;
 use starbreaker_p4k::MappedP4k;
-use starbreaker_wwise::{AtlIndex, Hierarchy};
+use starbreaker_wwise::{AtlIndex, ExternalSourceIndex, Hierarchy};
 
 use crate::datacore_commands::RecordEntry;
 
@@ -20,6 +20,8 @@ pub struct AppState {
     pub record_index: Mutex<Option<Vec<RecordEntry>>>,
     /// ATL trigger index, built once by audio_init.
     pub atl_index: Mutex<Option<AtlIndex>>,
+    /// ATL external-source index, built once by audio_init.
+    pub external_source_index: Mutex<Option<ExternalSourceIndex>>,
     /// Lazily-loaded bank hierarchies, keyed by bank filename.
     pub bank_cache: Mutex<HashMap<String, Option<Arc<Hierarchy>>>>,
     /// Maps wwise filename (bnk/wem) to full P4k path (e.g. "Data\\Sounds\\wwise\\English(US)\\Foo.bnk").
@@ -38,6 +40,7 @@ impl AppState {
             localization: Mutex::new(HashMap::new()),
             record_index: Mutex::new(None),
             atl_index: Mutex::new(None),
+            external_source_index: Mutex::new(None),
             bank_cache: Mutex::new(HashMap::new()),
             wwise_paths: Mutex::new(HashMap::new()),
             head_contexts: Mutex::new(HashMap::new()),

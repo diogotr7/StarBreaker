@@ -5,7 +5,7 @@ use serde::Serialize;
 use tauri::State;
 
 use starbreaker_p4k::MappedP4k;
-use starbreaker_wwise::{AtlIndex, BnkFile, Hierarchy};
+use starbreaker_wwise::{AtlIndex, BnkFile, ExternalSourceEntry, ExternalSourceIndex, Hierarchy, SoundSource};
 
 use crate::error::AppError;
 use crate::state::AppState;
@@ -16,6 +16,7 @@ use crate::state::AppState;
 pub struct AudioInitResult {
     pub trigger_count: usize,
     pub bank_count: usize,
+    pub external_source_count: usize,
 }
 
 #[derive(Serialize)]
@@ -50,9 +51,12 @@ pub struct TriggerDetail {
 #[derive(Serialize)]
 pub struct SoundResult {
     pub media_id: u32,
+    pub label: String,
     pub source_type: String,
     pub bank_name: String,
     pub path_description: String,
+    pub media_path: Option<String>,
+    pub playable: bool,
 }
 
 #[derive(Serialize)]
@@ -74,6 +78,17 @@ fn ensure_atl(state: &AppState) -> Result<(), AppError> {
 
     // Store (another thread may have beaten us — that's fine, just overwrite)
     *state.atl_index.lock() = Some(atl);
+    Ok(())
+}
+
+fn ensure_external_sources(state: &AppState) -> Result<(), AppError> {
+    if state.external_source_index.lock().is_some() {
+        return Ok(());
+    }
+
+    let p4k = get_p4k(state)?;
+    let external_sources = ExternalSourceIndex::from_p4k(&p4k)?;
+    *state.external_source_index.lock() = Some(external_sources);
     Ok(())
 }
 
@@ -138,16 +153,140 @@ fn build_wwise_path_index(p4k: &MappedP4k) -> HashMap<String, String> {
     index
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MediaSourceInfo {
+    source_type: String,
+    playable: bool,
+    description: String,
+}
+
+fn hirc_source_name(source: SoundSource) -> &'static str {
+    match source {
+        SoundSource::Embedded => "Embedded",
+        SoundSource::PrefetchStream => "PrefetchStream",
+        SoundSource::Stream => "Stream",
+    }
+}
+
+fn has_loose_wem(media_id: u32, wwise_paths: &HashMap<String, String>) -> bool {
+    wwise_paths.contains_key(&format!("{media_id}.wem"))
+}
+
+fn classify_media_source(
+    media_id: u32,
+    hirc_source: Option<SoundSource>,
+    embedded_ids: &HashSet<u32>,
+    wwise_paths: &HashMap<String, String>,
+) -> MediaSourceInfo {
+    if embedded_ids.contains(&media_id) {
+        return MediaSourceInfo {
+            source_type: "Embedded".to_string(),
+            playable: true,
+            description: "embedded WEM data in bank".to_string(),
+        };
+    }
+
+    if has_loose_wem(media_id, wwise_paths) {
+        return MediaSourceInfo {
+            source_type: "MediaFile".to_string(),
+            playable: true,
+            description: format!("Data\\Sounds\\wwise\\Media\\{media_id}.wem"),
+        };
+    }
+
+    let source = hirc_source.map(hirc_source_name).unwrap_or("Embedded");
+    let description = match source {
+        "Embedded" => {
+            "referenced by HIRC as Embedded, but this bank has no embedded DIDX/DATA entry and no loose Media WEM was found"
+        }
+        "PrefetchStream" | "Stream" => {
+            "referenced by HIRC as streamed media, but no loose Media WEM was found"
+        }
+        _ => "referenced by HIRC, but no backing WEM data was found",
+    };
+
+    MediaSourceInfo {
+        source_type: "Unavailable".to_string(),
+        playable: false,
+        description: description.to_string(),
+    }
+}
+
+fn embedded_media_ids(bnk: &BnkFile<'_>) -> HashSet<u32> {
+    bnk.data_index.iter().map(|entry| entry.id).collect()
+}
+
+fn make_sound_result(
+    media_id: u32,
+    hirc_source: Option<SoundSource>,
+    bank_name: &str,
+    path_description: String,
+    embedded_ids: &HashSet<u32>,
+    wwise_paths: &HashMap<String, String>,
+) -> SoundResult {
+    let info = classify_media_source(media_id, hirc_source, embedded_ids, wwise_paths);
+    let path_description = if path_description.is_empty() {
+        info.description
+    } else {
+        format!("{path_description}; {}", info.description)
+    };
+
+    SoundResult {
+        media_id,
+        label: media_id.to_string(),
+        source_type: info.source_type,
+        bank_name: bank_name.to_string(),
+        path_description,
+        media_path: None,
+        playable: info.playable,
+    }
+}
+
+fn make_external_source_result(source: &ExternalSourceEntry, p4k: &MappedP4k) -> SoundResult {
+    let playable = p4k.entry_case_insensitive(&source.p4k_path).is_some();
+    let duration = source
+        .duration_max
+        .map(|duration| format!(" ({duration:.2}s)"))
+        .unwrap_or_default();
+    let description = format!(
+        "{} -> {}{}",
+        source.name, source.p4k_path, duration
+    );
+
+    SoundResult {
+        media_id: 0,
+        label: source.name.clone(),
+        source_type: "ExternalSource".to_string(),
+        bank_name: source.language.clone(),
+        path_description: description,
+        media_path: Some(source.p4k_path.clone()),
+        playable,
+    }
+}
+
+fn read_media_path(p4k: &MappedP4k, path: &str) -> Result<Vec<u8>, AppError> {
+    Ok(p4k.read_file(path)?)
+}
+
 fn read_streamed_wem(
     p4k: &MappedP4k,
     media_id: u32,
     wwise_paths: &HashMap<String, String>,
 ) -> Result<Vec<u8>, AppError> {
     let filename = format!("{media_id}.wem");
-    let path = wwise_paths
-        .get(&filename)
-        .cloned()
-        .unwrap_or_else(|| format!("Data\\Sounds\\wwise\\Media\\{media_id}.wem"));
+    let path = match wwise_paths.get(&filename) {
+        Some(path) => path.clone(),
+        None => {
+            let fallback = format!("Data\\Sounds\\wwise\\Media\\{media_id}.wem");
+            if p4k.entry_case_insensitive(&fallback).is_some() {
+                fallback
+            } else {
+                return Err(AppError::Internal(format!(
+                    "media {media_id} has no loose WEM file under Data\\Sounds\\wwise\\Media"
+                )));
+            }
+        }
+    };
     Ok(p4k.read_file(&path)?)
 }
 
@@ -173,13 +312,24 @@ fn load_media_bytes(
     source_type: &str,
     bank_name: &str,
     wwise_paths: &HashMap<String, String>,
+    media_path: Option<&str>,
 ) -> Result<Vec<u8>, AppError> {
+    if let Some(path) = media_path {
+        return read_media_path(p4k, path);
+    }
+
     match source_type {
-        "Stream" | "PrefetchStream" => read_streamed_wem(p4k, media_id, wwise_paths),
+        "ExternalSource" => Err(AppError::Internal(format!(
+            "external source {bank_name} did not include a WEM path"
+        ))),
+        "MediaFile" | "Stream" | "PrefetchStream" => read_streamed_wem(p4k, media_id, wwise_paths),
         "Embedded" => match read_embedded_wem(p4k, media_id, bank_name, wwise_paths) {
             Ok(bytes) => Ok(bytes),
             Err(_) => read_streamed_wem(p4k, media_id, wwise_paths),
         },
+        "Unavailable" => Err(AppError::Internal(format!(
+            "media {media_id} is referenced by {bank_name}, but no playable WEM data is available"
+        ))),
         other => Err(AppError::Internal(format!("unknown source type: {other}"))),
     }
 }
@@ -189,6 +339,7 @@ fn load_media_bytes(
 #[tauri::command]
 pub fn audio_init(state: State<'_, AppState>) -> Result<AudioInitResult, AppError> {
     ensure_atl(&state)?;
+    ensure_external_sources(&state)?;
 
     // Build bank path index if not already done
     {
@@ -203,9 +354,14 @@ pub fn audio_init(state: State<'_, AppState>) -> Result<AudioInitResult, AppErro
     let atl = atl_guard
         .as_ref()
         .ok_or_else(|| AppError::Internal("audio not initialized".into()))?;
+    let external_guard = state.external_source_index.lock();
+    let external_sources = external_guard
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("audio external sources not initialized".into()))?;
     Ok(AudioInitResult {
         trigger_count: atl.len(),
         bank_count: atl.bank_names().len(),
+        external_source_count: external_sources.len(),
     })
 }
 
@@ -255,6 +411,34 @@ pub fn audio_search_triggers(
             bank_name: t.bank_name.clone(),
             duration_type: t.duration_type.clone(),
             radius_max: t.radius_max,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub fn audio_search_external_sources(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<Vec<TriggerDetail>, AppError> {
+    ensure_external_sources(&state)?;
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let external_guard = state.external_source_index.lock();
+    let external_sources = external_guard
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("audio external sources not initialized".into()))?;
+
+    Ok(external_sources
+        .search(&query)
+        .into_iter()
+        .take(1000)
+        .map(|source| TriggerDetail {
+            trigger_name: source.name.clone(),
+            bank_name: source.language.clone(),
+            duration_type: source.duration_type.clone(),
+            sound_count: 1,
         })
         .collect())
 }
@@ -334,6 +518,7 @@ pub fn audio_bank_media(
         .unwrap_or_else(|| format!("Data\\Sounds\\wwise\\{}", bank_name));
     let bank_data = p4k.read_file(&bank_path)?;
     let bnk = BnkFile::parse(&bank_data)?;
+    let embedded_ids = embedded_media_ids(&bnk);
 
     let mut seen = HashSet::new();
     let mut results = Vec::new();
@@ -343,17 +528,14 @@ pub fn audio_bank_media(
         let hierarchy = Hierarchy::from_section(hirc);
         for s in hierarchy.all_media() {
             if seen.insert(s.media_id) {
-                let source_type = match s.source {
-                    starbreaker_wwise::SoundSource::Embedded => "Embedded",
-                    starbreaker_wwise::SoundSource::PrefetchStream => "PrefetchStream",
-                    starbreaker_wwise::SoundSource::Stream => "Stream",
-                };
-                results.push(SoundResult {
-                    media_id: s.media_id,
-                    source_type: source_type.to_string(),
-                    bank_name: bank_name.clone(),
-                    path_description: String::new(),
-                });
+                results.push(make_sound_result(
+                    s.media_id,
+                    Some(s.source),
+                    &bank_name,
+                    String::new(),
+                    &embedded_ids,
+                    &wp,
+                ));
             }
         }
     }
@@ -362,12 +544,14 @@ pub fn audio_bank_media(
     for entry in &bnk.data_index {
         let id = entry.id;
         if seen.insert(id) {
-            results.push(SoundResult {
-                media_id: id,
-                source_type: "Embedded".to_string(),
-                bank_name: bank_name.clone(),
-                path_description: String::new(),
-            });
+            results.push(make_sound_result(
+                id,
+                None,
+                &bank_name,
+                String::new(),
+                &embedded_ids,
+                &wp,
+            ));
         }
     }
 
@@ -392,34 +576,32 @@ pub fn audio_bank_media(
             };
             match BnkFile::parse(&data) {
                 Ok(cbnk) => {
+                    let companion_embedded_ids = embedded_media_ids(&cbnk);
                     if let Some(hirc) = &cbnk.hirc {
                         let hierarchy = Hierarchy::from_section(hirc);
                         for s in hierarchy.all_media() {
                             if seen.insert(s.media_id) {
-                                let source_type = match s.source {
-                                    starbreaker_wwise::SoundSource::Embedded => "Embedded",
-                                    starbreaker_wwise::SoundSource::PrefetchStream => {
-                                        "PrefetchStream"
-                                    }
-                                    starbreaker_wwise::SoundSource::Stream => "Stream",
-                                };
-                                results.push(SoundResult {
-                                    media_id: s.media_id,
-                                    source_type: source_type.to_string(),
-                                    bank_name: companion_name.clone(),
-                                    path_description: String::new(),
-                                });
+                                results.push(make_sound_result(
+                                    s.media_id,
+                                    Some(s.source),
+                                    &companion_name,
+                                    String::new(),
+                                    &companion_embedded_ids,
+                                    &wp,
+                                ));
                             }
                         }
                     }
                     for entry in &cbnk.data_index {
                         if seen.insert(entry.id) {
-                            results.push(SoundResult {
-                                media_id: entry.id,
-                                source_type: "Embedded".to_string(),
-                                bank_name: companion_name.clone(),
-                                path_description: String::new(),
-                            });
+                            results.push(make_sound_result(
+                                entry.id,
+                                None,
+                                &companion_name,
+                                String::new(),
+                                &companion_embedded_ids,
+                                &wp,
+                            ));
                         }
                     }
                 }
@@ -513,6 +695,13 @@ pub fn audio_resolve_trigger(
     let p4k = get_p4k(&state)?;
     let mut cache_guard = state.bank_cache.lock();
     let wp = state.wwise_paths.lock().clone();
+    let bank_path = wp
+        .get(&bank_name)
+        .cloned()
+        .unwrap_or_else(|| format!("Data\\Sounds\\wwise\\{}", bank_name));
+    let bank_data = p4k.read_file(&bank_path)?;
+    let bnk = BnkFile::parse(&bank_data)?;
+    let embedded_ids = embedded_media_ids(&bnk);
 
     let hierarchy = load_hierarchy(&p4k, &bank_name, &mut cache_guard, &wp)
         .ok_or_else(|| AppError::Internal(format!("failed to load bank '{}'", bank_name)))?;
@@ -524,25 +713,42 @@ pub fn audio_resolve_trigger(
         .iter()
         .filter(|s| seen.insert(s.media_id))
         .map(|s| {
-            let source_type = match s.source {
-                starbreaker_wwise::SoundSource::Embedded => "Embedded",
-                starbreaker_wwise::SoundSource::PrefetchStream => "PrefetchStream",
-                starbreaker_wwise::SoundSource::Stream => "Stream",
-            };
             let path_desc = s
                 .path
                 .iter()
                 .map(|id| format!("{id:#010x}"))
                 .collect::<Vec<_>>()
                 .join(" -> ");
-            SoundResult {
-                media_id: s.media_id,
-                source_type: source_type.to_string(),
-                bank_name: bank_name.clone(),
-                path_description: path_desc,
-            }
+            make_sound_result(
+                s.media_id,
+                Some(s.source),
+                &bank_name,
+                path_desc,
+                &embedded_ids,
+                &wp,
+            )
         })
         .collect())
+}
+
+#[tauri::command]
+pub fn audio_resolve_external_source(
+    state: State<'_, AppState>,
+    source_name: String,
+) -> Result<Vec<SoundResult>, AppError> {
+    ensure_external_sources(&state)?;
+    let p4k = get_p4k(&state)?;
+
+    let external_guard = state.external_source_index.lock();
+    let external_sources = external_guard
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("audio external sources not initialized".into()))?;
+
+    let source = external_sources
+        .get_preferred(&source_name)
+        .ok_or_else(|| AppError::Internal(format!("external source '{}' not found", source_name)))?;
+
+    Ok(vec![make_external_source_result(source, &p4k)])
 }
 
 #[tauri::command]
@@ -551,10 +757,18 @@ pub fn audio_decode_wem(
     media_id: u32,
     source_type: String,
     bank_name: String,
+    media_path: Option<String>,
 ) -> Result<Vec<u8>, AppError> {
     let p4k = get_p4k(&state)?;
     let wp = state.wwise_paths.lock().clone();
-    let wem_bytes = load_media_bytes(&p4k, media_id, &source_type, &bank_name, &wp)?;
+    let wem_bytes = load_media_bytes(
+        &p4k,
+        media_id,
+        &source_type,
+        &bank_name,
+        &wp,
+        media_path.as_deref(),
+    )?;
 
     let wem = starbreaker_wem::WemFile::parse(&wem_bytes)?;
 
@@ -574,10 +788,18 @@ pub fn audio_export_info(
     media_id: u32,
     source_type: String,
     bank_name: String,
+    media_path: Option<String>,
 ) -> Result<AudioExportInfo, AppError> {
     let p4k = get_p4k(&state)?;
     let wp = state.wwise_paths.lock().clone();
-    let wem_bytes = load_media_bytes(&p4k, media_id, &source_type, &bank_name, &wp)?;
+    let wem_bytes = load_media_bytes(
+        &p4k,
+        media_id,
+        &source_type,
+        &bank_name,
+        &wp,
+        media_path.as_deref(),
+    )?;
     let wem = starbreaker_wem::WemFile::parse(&wem_bytes)?;
 
     let extension = match wem.codec_type() {
@@ -596,11 +818,19 @@ pub fn audio_export_media(
     media_id: u32,
     source_type: String,
     bank_name: String,
+    media_path: Option<String>,
     output_path: String,
 ) -> Result<(), AppError> {
     let p4k = get_p4k(&state)?;
     let wp = state.wwise_paths.lock().clone();
-    let wem_bytes = load_media_bytes(&p4k, media_id, &source_type, &bank_name, &wp)?;
+    let wem_bytes = load_media_bytes(
+        &p4k,
+        media_id,
+        &source_type,
+        &bank_name,
+        &wp,
+        media_path.as_deref(),
+    )?;
 
     let wem = starbreaker_wem::WemFile::parse(&wem_bytes)?;
     let bytes = match wem.codec_type() {
@@ -615,4 +845,70 @@ pub fn audio_export_media(
     std::fs::write(out, &bytes)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wwise_paths_with(ids: &[u32]) -> HashMap<String, String> {
+        ids.iter()
+            .map(|id| {
+                (
+                    format!("{id}.wem"),
+                    format!("Data\\Sounds\\wwise\\Media\\{id}.wem"),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hirc_embedded_media_without_backing_wem_is_unavailable() {
+        let embedded_ids = HashSet::new();
+        let wwise_paths = HashMap::new();
+
+        let info = classify_media_source(
+            1_631_820_901,
+            Some(starbreaker_wwise::SoundSource::Embedded),
+            &embedded_ids,
+            &wwise_paths,
+        );
+
+        assert_eq!(info.source_type, "Unavailable");
+        assert!(!info.playable);
+        assert!(info.description.contains("no embedded"));
+        assert!(info.description.contains("no loose"));
+    }
+
+    #[test]
+    fn hirc_embedded_media_with_didx_entry_is_playable_embedded() {
+        let embedded_ids = HashSet::from([1_631_820_901]);
+        let wwise_paths = HashMap::new();
+
+        let info = classify_media_source(
+            1_631_820_901,
+            Some(starbreaker_wwise::SoundSource::Embedded),
+            &embedded_ids,
+            &wwise_paths,
+        );
+
+        assert_eq!(info.source_type, "Embedded");
+        assert!(info.playable);
+    }
+
+    #[test]
+    fn hirc_media_with_loose_wem_is_playable_media_file() {
+        let embedded_ids = HashSet::new();
+        let wwise_paths = wwise_paths_with(&[1_631_820_901]);
+
+        let info = classify_media_source(
+            1_631_820_901,
+            Some(starbreaker_wwise::SoundSource::Embedded),
+            &embedded_ids,
+            &wwise_paths,
+        );
+
+        assert_eq!(info.source_type, "MediaFile");
+        assert!(info.playable);
+    }
 }

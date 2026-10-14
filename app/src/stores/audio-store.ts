@@ -9,15 +9,17 @@ import {
   audioInit,
   audioSearchEntities,
   audioSearchTriggers,
+  audioSearchExternalSources,
   audioListBanks,
   audioBankTriggers,
   audioBankMedia,
   audioEntityTriggers,
   audioResolveTrigger,
+  audioResolveExternalSource,
   audioDecodeWem,
 } from "../lib/commands";
 
-type SearchMode = "trigger" | "entity" | "bank";
+type SearchMode = "trigger" | "entity" | "bank" | "external";
 
 interface AudioState {
   // Init
@@ -25,6 +27,7 @@ interface AudioState {
   isInitializing: boolean;
   triggerCount: number;
   bankCount: number;
+  externalSourceCount: number;
 
   // Search
   searchQuery: string;
@@ -69,6 +72,7 @@ export const useAudioStore = create<AudioState>((set, get) => ({
   isInitializing: false,
   triggerCount: 0,
   bankCount: 0,
+  externalSourceCount: 0,
 
   searchQuery: "",
   searchMode: "bank",
@@ -101,6 +105,7 @@ export const useAudioStore = create<AudioState>((set, get) => ({
         isInitializing: false,
         triggerCount: result.trigger_count,
         bankCount: result.bank_count,
+        externalSourceCount: result.external_source_count,
       });
       // Default mode is bank — load all banks
       const banks = await audioListBanks();
@@ -135,6 +140,8 @@ export const useAudioStore = create<AudioState>((set, get) => ({
           })),
         });
       });
+    } else if (mode === "external") {
+      set({ triggers: [], sounds: [] });
     }
   },
 
@@ -161,6 +168,21 @@ export const useAudioStore = create<AudioState>((set, get) => ({
             duration_type: r.duration_type,
             sound_count: 0,
           })),
+          isSearching: false,
+          entities: [],
+          selectedEntity: null,
+          selectedTrigger: null,
+          sounds: [],
+        });
+      } else if (searchMode === "external") {
+        if (!query.trim()) {
+          set({ isSearching: false, triggers: [], selectedTrigger: null, sounds: [] });
+          return;
+        }
+        const results = await audioSearchExternalSources(query);
+        if (get().searchSeq !== seq) return;
+        set({
+          triggers: results,
           isSearching: false,
           entities: [],
           selectedEntity: null,
@@ -214,6 +236,12 @@ export const useAudioStore = create<AudioState>((set, get) => ({
     const prevSounds = get().sounds;
     set({ selectedTrigger: triggerName, sounds: [], error: null });
     try {
+      if (get().searchMode === "external") {
+        const sounds = await audioResolveExternalSource(triggerName);
+        set({ sounds });
+        return;
+      }
+
       const sounds = await audioResolveTrigger(triggerName);
       if (sounds.length > 0) {
         set({ sounds });
@@ -231,9 +259,26 @@ export const useAudioStore = create<AudioState>((set, get) => ({
     const prev = get().blobUrl;
     if (prev) URL.revokeObjectURL(prev);
 
+    if (!sound.playable) {
+      set({
+        currentSound: null,
+        blobUrl: null,
+        isPlaying: false,
+        progress: 0,
+        duration: 0,
+        error: sound.path_description || `Media ${sound.media_id} has no playable WEM data`,
+      });
+      return;
+    }
+
     set({ currentSound: sound, blobUrl: null, isPlaying: false, progress: 0, duration: 0, error: null });
     try {
-      const bytes = await audioDecodeWem(sound.media_id, sound.source_type, sound.bank_name);
+      const bytes = await audioDecodeWem(
+        sound.media_id,
+        sound.source_type,
+        sound.bank_name,
+        sound.media_path,
+      );
       const blob = new Blob([new Uint8Array(bytes)], { type: "audio/ogg" });
       const url = URL.createObjectURL(blob);
 

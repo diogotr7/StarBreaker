@@ -46,7 +46,16 @@ function SearchBar() {
   const search = useAudioStore((s) => s.search);
   const isSearching = useAudioStore((s) => s.isSearching);
   const triggerCount = useAudioStore((s) => s.triggerCount);
+  const externalSourceCount = useAudioStore((s) => s.externalSourceCount);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
+  const placeholder =
+    searchMode === "entity"
+      ? "Search entities..."
+      : searchMode === "bank"
+        ? "Search banks..."
+        : searchMode === "external"
+          ? "Search external sources..."
+          : "Search triggers...";
 
   const onInput = useCallback(
     (value: string) => {
@@ -61,15 +70,17 @@ function SearchBar() {
       <input
         key={searchMode}
         type="text"
-        placeholder={searchMode === "entity" ? "Search entities..." : searchMode === "bank" ? "Search banks..." : "Search triggers..."}
+        placeholder={placeholder}
         defaultValue={searchQuery}
         onChange={(e) => onInput(e.target.value)}
         className="flex-1 bg-surface rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-faint outline-none focus:ring-1 focus:ring-ring"
       />
       {isSearching && <span className="text-xs text-text-dim shrink-0">Searching...</span>}
-      <span className="text-xs text-text-faint shrink-0">{triggerCount.toLocaleString()} triggers</span>
+      <span className="text-xs text-text-faint shrink-0">
+        {triggerCount.toLocaleString()} triggers / {externalSourceCount.toLocaleString()} external
+      </span>
       <div className="flex gap-1 shrink-0">
-        {(["bank", "trigger", "entity"] as const).map((mode) => (
+        {(["bank", "trigger", "external", "entity"] as const).map((mode) => (
           <button
             key={mode}
             type="button"

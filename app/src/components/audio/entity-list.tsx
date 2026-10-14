@@ -4,6 +4,7 @@ export function EntityList() {
   const searchMode = useAudioStore((s) => s.searchMode);
 
   if (searchMode === "trigger") return null;
+  if (searchMode === "external") return null;
   if (searchMode === "bank") return <BankList />;
   return <EntityListInner />;
 }
