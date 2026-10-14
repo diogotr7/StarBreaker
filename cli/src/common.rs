@@ -18,17 +18,32 @@ pub fn load_dcb_bytes(
     p4k_path: Option<&Path>,
     dcb_path: Option<&Path>,
 ) -> Result<(Option<MappedP4k>, Vec<u8>)> {
+    let (p4k, bytes, _) = load_dcb(p4k_path, dcb_path)?;
+    Ok((p4k, bytes))
+}
+
+/// [`load_dcb_bytes`], plus the file stem of the `.dcb` read (`Game2`, or
+/// `Game` for older builds).
+pub fn load_dcb(
+    p4k_path: Option<&Path>,
+    dcb_path: Option<&Path>,
+) -> Result<(Option<MappedP4k>, Vec<u8>, String)> {
     if let Some(dcb) = dcb_path {
         let bytes = std::fs::read(dcb)
             .map_err(|e| crate::error::CliError::IoPath { source: e, path: dcb.display().to_string() })?;
         let p4k = load_p4k(p4k_path).ok();
-        return Ok((p4k, bytes));
+        let stem = dcb
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .ok_or_else(|| crate::error::CliError::InvalidInput(format!("{}: not a .dcb file path", dcb.display())))?;
+        return Ok((p4k, bytes, stem));
     }
     let p4k = load_p4k(p4k_path)?;
-    let bytes = p4k
-        .read_file("Data\\Game2.dcb")
-        .or_else(|_| p4k.read_file("Data\\Game.dcb"))?;
-    Ok((Some(p4k), bytes))
+    let (bytes, stem) = match p4k.read_file("Data\\Game2.dcb") {
+        Ok(bytes) => (bytes, "Game2"),
+        Err(_) => (p4k.read_file("Data\\Game.dcb")?, "Game"),
+    };
+    Ok((Some(p4k), bytes, stem.to_owned()))
 }
 
 /// Shared glTF export options.

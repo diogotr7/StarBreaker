@@ -6,7 +6,7 @@ use rayon::prelude::*;
 use starbreaker_datacore::database::Database;
 use starbreaker_datacore::query::value::Value;
 
-use crate::common::{load_dcb_bytes, matches_filter};
+use crate::common::{load_dcb, load_dcb_bytes, matches_filter};
 use crate::error::{CliError, Result};
 
 #[derive(Clone, ValueEnum)]
@@ -39,6 +39,12 @@ pub enum DcbCommand {
         /// non-main records); written as <stem>.<record-name>.<guid>.<ext>
         #[arg(long)]
         all: bool,
+        /// With --format unp4k: also write classic unforge's combined
+        /// document, <output>/Game2.xml (named after the .dcb): every record,
+        /// main and non-main, under one <DataForge> root. Large (the whole
+        /// DataCore, ~3 GB).
+        #[arg(long)]
+        combined: bool,
     },
     /// Query DataCore records by property path
     Query {
@@ -80,7 +86,8 @@ impl DcbCommand {
                 format,
                 filter,
                 all,
-            } => extract(p4k, dcb, output, format, filter, all),
+                combined,
+            } => extract(p4k, dcb, output, format, filter, all, combined),
             Self::Query {
                 p4k,
                 dcb,
@@ -98,8 +105,12 @@ fn extract(
     format: DcbFormat,
     filter: Option<String>,
     all: bool,
+    combined: bool,
 ) -> Result<()> {
-    let (_p4k, dcb_bytes) = load_dcb_bytes(p4k_path.as_deref(), dcb_path.as_deref())?;
+    if combined && !matches!(format, DcbFormat::Unp4k) {
+        return Err(CliError::InvalidInput("--combined writes unforge's combined document: it needs --format unp4k".into()));
+    }
+    let (_p4k, dcb_bytes, dcb_stem) = load_dcb(p4k_path.as_deref(), dcb_path.as_deref())?;
     let db = Database::from_bytes(&dcb_bytes)?;
 
     eprintln!("DataCore loaded.");
@@ -180,6 +191,23 @@ fn extract(
     });
 
     pb.finish_and_clear();
+
+    if combined {
+        // Every record (non-main too), in record-table order, as classic unforge wrote it.
+        let all_records: Vec<_> = db
+            .records()
+            .iter()
+            .filter(|r| matches_filter(db.resolve_string(r.file_name_offset), filter.as_deref(), None))
+            .collect();
+        let path = output.join(format!("{dcb_stem}.xml"));
+        eprintln!("Writing {} records to {}...", all_records.len(), path.display());
+        let file = std::fs::File::create(&path)
+            .map_err(|e| CliError::IoPath { source: e, path: path.display().to_string() })?;
+        let mut writer = std::io::BufWriter::new(file);
+        starbreaker_datacore::export::write_unp4k_combined(&db, &all_records, &mut writer)?;
+        std::io::Write::flush(&mut writer)?;
+    }
+
     eprintln!("Done.");
     Ok(())
 }

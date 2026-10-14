@@ -1,6 +1,9 @@
 pub mod json;
+pub mod unp4k_combined;
 pub mod unp4k_xml;
 pub mod xml;
+
+pub use unp4k_combined::write_unp4k_combined;
 
 use crate::database::Database;
 use crate::error::ExportError;

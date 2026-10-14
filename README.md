@@ -259,6 +259,10 @@ starbreaker dcb extract --format json -o ./dcb_out --filter '**/*gladius*'
 
 # Use a .dcb file directly instead of extracting from P4k
 starbreaker dcb extract --dcb Game2.dcb --format json -o ./dcb_out
+
+# unp4k/unforge-compatible output, plus unforge's combined Game2.xml
+# (every record, ~3 GB) for tools that read it, e.g. ScDataDumper
+starbreaker dcb extract --format unp4k --combined -o ./import/Data
 ```
 
 </details>
