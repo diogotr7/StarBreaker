@@ -14,13 +14,30 @@ on:
       - crates/starbreaker-ui/docs/ui-matching-workflow.md
       - .github/workflows/starbreaker-ui-tests.yml
 
+# Same as ci.yml: a new push cancels the stale run, except on main.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
 jobs:
   test-starbreaker-ui:
+    # Same-repo branches are covered by the push run; pull_request runs only
+    # for forks (see ci.yml).
+    if: |
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: UI hardcoding guard
         run: bash .github/scripts/check_ui_hardcoding.sh
       - name: Validate regression manifest and freeze lockfile (quick)

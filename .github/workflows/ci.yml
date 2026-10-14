@@ -1,10 +1,11 @@
 name: CI
 
-# Per-ref concurrency: a new push to a PR cancels its previous run; main pushes
-# don't cancel each other.
+# Per-ref concurrency: a new push to a branch or PR cancels its previous,
+# now-stale run (instead of queueing behind it); main pushes don't cancel each
+# other.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 on:
   # Run on every branch push so feature branches get CI without needing an
@@ -18,6 +19,8 @@ on:
       - "cli/**"
       - "mcp/**"
       - "app/**"
+      - ".github/workflows/ci.yml"
+      - ".github/scripts/**"
   # Triggers for both same-repo and fork PRs targeting main. Fork PRs run
   # with a read-only GITHUB_TOKEN; `swatinem/rust-cache` will read but not
   # save the cache (GitHub restricts cache writes from forks).
@@ -30,23 +33,35 @@ on:
       - "cli/**"
       - "mcp/**"
       - "app/**"
+      - ".github/workflows/ci.yml"
+      - ".github/scripts/**"
   workflow_dispatch:
+
+env:
+  # CI builds are throwaway: no incremental state, no debuginfo (the workspace
+  # dev profile carries full debuginfo for local debugging, which mostly costs
+  # link time here, worst on Windows) and a smaller cache.
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
   test:
-    # Dedup internal-PR runs: a push to a same-repo branch with an open PR
-    # triggers BOTH push and pull_request events. We let `push` handle
-    # same-repo branches and only run `pull_request` for forks (whose pushes
-    # don't reach the upstream repo).
-    if: |
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name != github.repository
+    # Platforms per event. Ubuntu is the fast check on every branch push;
+    # Windows (where the game and most users are, and the slow job) gates
+    # PRs and main:
+    #   push to main           -> ubuntu + windows
+    #   push to another branch -> ubuntu
+    #   PR from this repo      -> windows (its branch push already ran ubuntu)
+    #   PR from a fork         -> ubuntu + windows (fork pushes don't run here)
+    #   manual dispatch        -> ubuntu + windows
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: windows-latest
-          - platform: ubuntu-22.04
+        platform: ${{ fromJSON(
+          (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && '["windows-latest"]')
+          || (github.event_name == 'push' && github.ref != 'refs/heads/main' && '["ubuntu-22.04"]')
+          || '["windows-latest", "ubuntu-22.04"]') }}
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -61,13 +76,16 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      # Test-only cache — separate slot so PRs don't fight the release cache
-      # populated by .github/workflows/cache-warm.yml and consumed by release.yml.
+      # Test-only cache — a separate slot from release.yml's `cache-<platform>`.
+      # Only main writes the cache; branches restore main's. Saves the
+      # post-job upload on every branch push and stops branches from evicting
+      # each other under the repo's cache quota.
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
           shared-key: cache-test-${{ matrix.platform }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: UI hardcoding guard
         shell: bash
