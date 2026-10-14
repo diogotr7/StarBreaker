@@ -83,7 +83,7 @@ impl<'a> P4kArchive<'a> {
     /// Parse a P4k archive from a byte slice.
     pub fn from_bytes(data: &'a [u8]) -> Result<Self, P4kError> {
         let (entries, path_index, sorted_index, lowercase_names, sorted_lower_index) =
-            match parse_central_directory(data, None) {
+            match parse_central_directory(data, &starbreaker_common::Progress::silent()) {
                 Ok(parsed) => parsed,
                 Err(P4kError::EocdNotFound) => parse_local_file_entries(data)?,
                 Err(err) => return Err(err),
@@ -458,7 +458,7 @@ fn parse_entries(
     cd_data: &[u8],
     total_entries: u64,
     is_zip64: bool,
-    progress: Option<&starbreaker_common::Progress>,
+    progress: &starbreaker_common::Progress,
 ) -> Result<CentralDirectory, P4kError> {
     let mut cd_reader = SpanReader::new(cd_data);
     let mut entries = Vec::with_capacity(total_entries as usize);
@@ -466,8 +466,7 @@ fn parse_entries(
     for i in 0..total_entries {
         entries.push(read_entry(&mut cd_reader, is_zip64)?);
         if i % 10_000 == 0 {
-            starbreaker_common::progress::report(
-                progress,
+            progress.report(
                 i as f32 / total_entries.max(1) as f32,
                 &format!("Parsing entries ({i}/{total_entries})"),
             );
@@ -593,7 +592,7 @@ fn parse_local_file_entries(data: &[u8]) -> Result<CentralDirectory, P4kError> {
 /// Returns (entries, path_index, sorted_index, lowercase_names, sorted_lower_index).
 pub(crate) fn parse_central_directory(
     data: &[u8],
-    progress: Option<&starbreaker_common::Progress>,
+    progress: &starbreaker_common::Progress,
 ) -> Result<CentralDirectory, P4kError> {
     if crate::v2::is_v2(data) {
         let entries = crate::v2::read_entries(
@@ -614,7 +613,7 @@ pub(crate) fn parse_central_directory(
 /// Reads only the EOCD tail and central directory — avoids mapping the entire file.
 pub(crate) fn parse_central_directory_from_file(
     file: &mut (impl Read + Seek),
-    progress: Option<&starbreaker_common::Progress>,
+    progress: &starbreaker_common::Progress,
 ) -> Result<CentralDirectory, P4kError> {
     let file_len = file.seek(SeekFrom::End(0))?;
 

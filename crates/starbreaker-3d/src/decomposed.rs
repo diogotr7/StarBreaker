@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use gltf_json as json;
 use rayon::prelude::*;
-use starbreaker_common::progress::{Progress, report as report_progress};
+use starbreaker_common::Progress;
 use starbreaker_dds;
 use starbreaker_datacore::Database;
 use starbreaker_p4k::MappedP4k;
@@ -1002,7 +1002,7 @@ pub(crate) fn write_decomposed_export(
     p4k: &MappedP4k,
     input: DecomposedInput,
     opts: &ExportOptions,
-    progress: Option<&Progress>,
+    progress: &Progress,
     existing_asset_paths: Option<&HashSet<String>>,
     existing_interior_assets: Option<&ExistingInteriorAssetMap>,
     png_cache: PngCache,
@@ -1121,7 +1121,7 @@ pub(crate) fn write_decomposed_export(
     let liveries_manifest_path = package_relative_path(&package_name, "liveries.json");
     let total_start = Instant::now();
     let mut phase_start = Instant::now();
-    report_progress(progress, ROOT_ASSETS_START, "Writing root assets");
+    progress.report(ROOT_ASSETS_START, "Writing root assets");
     let root_palette_id = input
         .root_palette
         .as_ref()
@@ -1270,7 +1270,7 @@ pub(crate) fn write_decomposed_export(
     );
     phase_start = Instant::now();
 
-    report_progress(progress, CHILD_ASSETS_START, "Writing child assets");
+    progress.report(CHILD_ASSETS_START, "Writing child assets");
 
     let resolved_child_transforms = resolve_child_instance_transforms(&input);
     let mut child_instances = Vec::with_capacity(input.children.len());
@@ -1447,8 +1447,7 @@ pub(crate) fn write_decomposed_export(
 
         if child_count > 0 {
             let fraction = (index + 1) as f32 / child_count as f32;
-            report_progress(
-                progress,
+            progress.report(
                 CHILD_ASSETS_START + (CHILD_ASSETS_END - CHILD_ASSETS_START) * fraction,
                 "Writing child assets",
             );
@@ -1470,7 +1469,7 @@ pub(crate) fn write_decomposed_export(
             .then(a.source_material_index.cmp(&b.source_material_index))
     });
     if child_count == 0 {
-        report_progress(progress, CHILD_ASSETS_END, "Writing interior assets");
+        progress.report(CHILD_ASSETS_END, "Writing interior assets");
     }
     log::info!(
         "[timing][decomposed] child_assets: {:.2}s ({} children, parallel ui render {:.2}s)",
@@ -1622,8 +1621,7 @@ pub(crate) fn write_decomposed_export(
                 if total_interior_placements > 0 {
                     let fraction =
                         processed_interior_placements as f32 / total_interior_placements as f32;
-                    report_progress(
-                        progress,
+                    progress.report(
                         CHILD_ASSETS_END + (INTERIOR_ASSETS_END - CHILD_ASSETS_END) * fraction,
                         "Writing interior assets",
                     );
@@ -1663,8 +1661,7 @@ pub(crate) fn write_decomposed_export(
                         if total_interior_placements > 0 {
                             let fraction =
                                 processed_interior_placements as f32 / total_interior_placements as f32;
-                            report_progress(
-                                progress,
+                            progress.report(
                                 CHILD_ASSETS_END + (INTERIOR_ASSETS_END - CHILD_ASSETS_END) * fraction,
                                 "Writing interior assets",
                             );
@@ -1792,8 +1789,7 @@ pub(crate) fn write_decomposed_export(
             if total_interior_placements > 0 {
                 let fraction =
                     processed_interior_placements as f32 / total_interior_placements as f32;
-                report_progress(
-                    progress,
+                progress.report(
                     CHILD_ASSETS_END + (INTERIOR_ASSETS_END - CHILD_ASSETS_END) * fraction,
                     "Writing interior assets",
                 );
@@ -1912,15 +1908,14 @@ pub(crate) fn write_decomposed_export(
 
         if container_count > 0 && total_interior_placements == 0 {
             let fraction = (index + 1) as f32 / container_count as f32;
-            report_progress(
-                progress,
+            progress.report(
                 CHILD_ASSETS_END + (INTERIOR_ASSETS_END - CHILD_ASSETS_END) * fraction,
                 "Writing interior assets",
             );
         }
     }
     if container_count == 0 {
-        report_progress(progress, INTERIOR_ASSETS_END, "Writing manifests");
+        progress.report(INTERIOR_ASSETS_END, "Writing manifests");
     }
     log::info!(
         "[timing][decomposed] interior_placements: {:.2}s",
@@ -2135,7 +2130,7 @@ pub(crate) fn write_decomposed_export(
         input.weapon_assembly.as_ref(),
         opts,
     );
-    report_progress(progress, INTERIOR_ASSETS_END, "Writing manifests");
+    progress.report(INTERIOR_ASSETS_END, "Writing manifests");
     insert_ui_export_stamp(&mut files);
     insert_json_file(&mut files, scene_manifest_path, scene_manifest);
     if !opts.ui_only_files {

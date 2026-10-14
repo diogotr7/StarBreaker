@@ -131,7 +131,7 @@ pub fn export_character_package(
         paint_variants: Vec::new(),
         animations: rig.animations.clone(),
     };
-    let mut export = write_decomposed_export_blend(db, p4k, input, opts, None, None, None, None)
+    let mut export = write_decomposed_export_blend(db, p4k, input, opts, &starbreaker_common::Progress::silent(), None, None, None)
         .map_err(|e| CharacterError::Customization(format!("package export: {e}")))?;
 
     // CHF override textures → package PNGs, mapped per submaterial.

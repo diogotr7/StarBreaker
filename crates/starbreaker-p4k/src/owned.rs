@@ -27,13 +27,13 @@ pub struct MappedP4k {
 impl MappedP4k {
     /// Open a P4k file.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, P4kError> {
-        Self::open_with_progress(path, None)
+        Self::open_with_progress(path, &starbreaker_common::Progress::silent())
     }
 
     /// Open a P4k file with progress reporting.
     pub fn open_with_progress(
         path: impl AsRef<Path>,
-        progress: Option<&starbreaker_common::Progress>,
+        progress: &starbreaker_common::Progress,
     ) -> Result<Self, P4kError> {
         let path_buf = path.as_ref().to_path_buf();
         let mut file = File::open(&path_buf)?;

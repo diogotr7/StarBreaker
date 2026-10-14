@@ -572,7 +572,7 @@ where
         animations: Vec::new(),
     };
 
-    write_decomposed_export_blend(db, p4k, input, opts, None, None, None, None)
+    write_decomposed_export_blend(db, p4k, input, opts, &starbreaker_common::Progress::silent(), None, None, None)
 }
 
 fn empty_socpak_scene_root_mesh() -> crate::types::Mesh {

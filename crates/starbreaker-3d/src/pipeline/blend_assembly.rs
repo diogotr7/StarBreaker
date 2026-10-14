@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use rayon::prelude::*;
-use starbreaker_common::progress::{report as report_progress, Progress};
+use starbreaker_common::Progress;
 use starbreaker_datacore::Database;
 use starbreaker_p4k::MappedP4k;
 use starbreaker_blend::{
@@ -835,7 +835,7 @@ pub fn write_decomposed_export_blend(
     p4k: &MappedP4k,
     input: DecomposedInput,
     opts: &ExportOptions,
-    progress: Option<&Progress>,
+    progress: &Progress,
     existing_asset_paths: Option<&HashSet<String>>,
     existing_interior_assets: Option<&crate::decomposed::ExistingInteriorAssetMap>,
     existing_asset_loader: Option<&(dyn Fn(&str) -> Option<Vec<u8>> + Sync)>,
@@ -1037,8 +1037,8 @@ pub fn write_decomposed_export_blend(
         Some(loaded)
     };
 
-    report_progress(progress, 0.0, "Generating decomposed export with .blend mesh files");
-    let base_progress = progress.map(|progress| progress.sub(0.0, BASE_DECOMPOSED_END));
+    progress.report(0.0, "Generating decomposed export with .blend mesh files");
+    let base_progress = progress.sub(0.0, BASE_DECOMPOSED_END);
 
     // Generate package manifests, sidecars, textures, palettes, and the reusable
     // native .blend asset list with the shared decomposed exporter. Mesh asset
@@ -1048,7 +1048,7 @@ pub fn write_decomposed_export_blend(
         p4k,
         input,
         opts,
-        base_progress.as_ref(),
+        &base_progress,
         existing_asset_paths,
         existing_interior_assets,
         prewarmed_png_cache,
@@ -1099,7 +1099,7 @@ pub fn write_decomposed_export_blend(
     log::info!("[blend-debug] Extracted {} light projector texture paths", light_projector_texture_map.len());
 
     // Phase 4: Collect vertex groups for all meshes BEFORE creating .blend files
-    report_progress(progress, DECAL_GROUPS_START, "Collecting decal vertex groups from meshes");
+    progress.report(DECAL_GROUPS_START, "Collecting decal vertex groups from meshes");
     
     let mut mesh_vertex_groups: HashMap<String, Vec<VertexGroup>> = HashMap::new();
     
@@ -1143,7 +1143,7 @@ pub fn write_decomposed_export_blend(
     log::info!("[timing][blend] collect_decal_vertex_groups: {:.2}s", phase_start.elapsed().as_secs_f32());
     phase_start = Instant::now();
 
-    report_progress(progress, NATIVE_BLEND_ASSETS_START, "Writing native .blend mesh assets with real geometry");
+    progress.report(NATIVE_BLEND_ASSETS_START, "Writing native .blend mesh assets with real geometry");
 
     // Populate native .blend mesh asset payloads with real geometry.
     let mut blend_files = Vec::new();
@@ -1471,7 +1471,7 @@ pub fn write_decomposed_export_blend(
     let custom_normal_mesh_refs = mesh_refs_where(|mesh_ref| mesh_ref.has_custom_normals);
 
     // Phase 3: Create scene.blend with lights and empties
-    report_progress(progress, SCENE_BLEND_START, "Creating scene.blend with linked mesh instances");
+    progress.report(SCENE_BLEND_START, "Creating scene.blend with linked mesh instances");
     
     // Create scene.blend with properly linked mesh instances and lights
     // Library paths are relative to scene.blend location, which is in Packages/{package}/
@@ -1520,7 +1520,7 @@ pub fn write_decomposed_export_blend(
     log::info!("[timing][blend] final_file_assembly: {:.2}s", phase_start.elapsed().as_secs_f32());
     log::info!("[timing][blend] total: {:.2}s", total_start.elapsed().as_secs_f32());
 
-    report_progress(progress, 1.0, "Export complete");
+    progress.report(1.0, "Export complete");
 
     Ok(DecomposedExport { files: all_files })
 }
@@ -2533,7 +2533,7 @@ fn build_native_blend_assets(
     mesh_vertex_groups: &HashMap<String, Vec<VertexGroup>>,
     clips: &[crate::clip::Clip],
     threads: usize,
-    progress: Option<&Progress>,
+    progress: &Progress,
     progress_from: f32,
     progress_to: f32,
     existing_asset_loader: Option<&(dyn Fn(&str) -> Option<Vec<u8>> + Sync)>,
@@ -2547,8 +2547,7 @@ fn build_native_blend_assets(
             .map(|(index, job)| {
                 let built = build_native_blend_asset(job, mesh_data_map, mesh_vertex_groups, clips, existing_asset_loader)?;
                 let fraction = (index + 1) as f32 / total_jobs as f32;
-                report_progress(
-                    progress,
+                progress.report(
                     progress_from + progress_range * fraction,
                     "Writing native .blend mesh assets with real geometry",
                 );
@@ -2571,8 +2570,7 @@ fn build_native_blend_assets(
                 let built = build_native_blend_asset(job, mesh_data_map, mesh_vertex_groups, clips, existing_asset_loader)?;
                 let finished = completed.fetch_add(1, Ordering::Relaxed) + 1;
                 let fraction = finished as f32 / total_jobs as f32;
-                report_progress(
-                    progress,
+                progress.report(
                     progress_from + progress_range * fraction,
                     "Writing native .blend mesh assets with real geometry",
                 );

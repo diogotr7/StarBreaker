@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use starbreaker_common::progress::{Progress, report as report_progress};
+use starbreaker_common::Progress;
 use starbreaker_datacore::database::Database;
 use starbreaker_datacore::types::Record;
 use starbreaker_p4k::MappedP4k;
@@ -28,7 +28,7 @@ pub fn assemble_glb_with_loadout(
     tree: &starbreaker_datacore::loadout::LoadoutTree,
     opts: &ExportOptions,
 ) -> Result<ExportResult, Error> {
-    assemble_glb_with_loadout_with_progress(db, p4k, record, tree, opts, None, None, None, None)
+    assemble_glb_with_loadout_with_progress(db, p4k, record, tree, opts, &Progress::silent(), None, None, None)
 }
 
 pub fn assemble_glb_with_loadout_with_progress(
@@ -37,7 +37,7 @@ pub fn assemble_glb_with_loadout_with_progress(
     record: &Record,
     tree: &starbreaker_datacore::loadout::LoadoutTree,
     opts: &ExportOptions,
-    progress: Option<&Progress>,
+    progress: &Progress,
     existing_asset_paths: Option<&HashSet<String>>,
     existing_interior_assets: Option<&crate::decomposed::ExistingInteriorAssetMap>,
     existing_asset_loader: Option<&(dyn Fn(&str) -> Option<Vec<u8>> + Sync)>,
@@ -57,7 +57,7 @@ pub fn assemble_glb_with_loadout_with_progress(
     let assembly_kind = classify_entity_kind(db, record);
     let is_fps_weapon = assembly_kind == EntityAssemblyKind::FpsWeapon;
 
-    report_progress(progress, LOADOUT_STAGE_START, "Resolving loadout");
+    progress.report(LOADOUT_STAGE_START, "Resolving loadout");
     let phase_start = Instant::now();
     let payload_material_mode = if opts.kind == ExportKind::Decomposed && !is_fps_weapon {
         MaterialMode::Colors
@@ -80,7 +80,7 @@ pub fn assemble_glb_with_loadout_with_progress(
         phase_start.elapsed().as_secs_f32()
     );
 
-    report_progress(progress, ROOT_EXPORT_STAGE_START, "Exporting root mesh");
+    progress.report(ROOT_EXPORT_STAGE_START, "Exporting root mesh");
     let phase_start = Instant::now();
     let localization = load_localization_map(p4k);
     let paint_display_names = build_paint_display_name_map(db, &localization);
@@ -156,7 +156,7 @@ pub fn assemble_glb_with_loadout_with_progress(
     };
     let gear_parts = query_landing_gear(db, record);
     let mut child_payloads: Vec<EntityPayload> = Vec::new();
-    report_progress(progress, FLATTEN_STAGE_START, "Flattening attachments");
+    progress.report(FLATTEN_STAGE_START, "Flattening attachments");
     let phase_start = Instant::now();
     if opts.include_attachments {
         let mut gear_cache: HashMap<String, LandingGearAsset> = HashMap::new();
@@ -288,7 +288,7 @@ pub fn assemble_glb_with_loadout_with_progress(
     } else {
         None
     };
-    report_progress(progress, ASSEMBLY_STAGE_START, "Discovering interiors");
+    progress.report(ASSEMBLY_STAGE_START, "Discovering interiors");
 
     // Interior discovery (no mesh loading — JIT during GLB packing).
     let phase_start = Instant::now();
@@ -361,8 +361,7 @@ pub fn assemble_glb_with_loadout_with_progress(
             preloaded_interior_textures.len()
         );
     }
-    report_progress(
-        progress,
+    progress.report(
         ASSEMBLY_STAGE_START,
         if opts.kind == ExportKind::Decomposed {
             "Building structured package"
@@ -449,8 +448,7 @@ pub fn assemble_glb_with_loadout_with_progress(
         }
         let paint_variants =
             enumerate_paint_variants_for_entity(db, p4k, record, &paint_display_names);
-        let decomposed_progress =
-            progress.map(|progress| progress.sub(ASSEMBLY_STAGE_START, ASSEMBLY_STAGE_END));
+        let decomposed_progress = progress.sub(ASSEMBLY_STAGE_START, ASSEMBLY_STAGE_END);
 
         let decomposed_input = crate::decomposed::DecomposedInput {
             entity_name: resolved.entity_name.clone(),
@@ -483,7 +481,7 @@ pub fn assemble_glb_with_loadout_with_progress(
             p4k,
             decomposed_input,
             opts,
-            decomposed_progress.as_ref(),
+            &decomposed_progress,
             existing_asset_paths,
             existing_interior_assets,
             existing_asset_loader,
@@ -493,7 +491,7 @@ pub fn assemble_glb_with_loadout_with_progress(
             phase_start.elapsed().as_secs_f32()
         );
 
-        report_progress(progress, ASSEMBLY_STAGE_END, "Writing structured package");
+        progress.report(ASSEMBLY_STAGE_END, "Writing structured package");
 
         return Ok(ExportResult {
             kind: opts.kind,
@@ -505,8 +503,7 @@ pub fn assemble_glb_with_loadout_with_progress(
         });
     }
 
-    let glb_progress =
-        progress.map(|progress| progress.sub(ASSEMBLY_STAGE_START, ASSEMBLY_STAGE_END));
+    let glb_progress = progress.sub(ASSEMBLY_STAGE_START, ASSEMBLY_STAGE_END);
     let phase_start = Instant::now();
     let glb = crate::gltf::write_glb_with_progress(
         crate::gltf::GlbInput {
@@ -543,14 +540,14 @@ pub fn assemble_glb_with_loadout_with_progress(
             },
             fallback_palette: root_palette,
         },
-        glb_progress.as_ref(),
+        &glb_progress,
     )?;
     log::info!(
         "[timing] write_glb_with_progress: {:.2}s",
         phase_start.elapsed().as_secs_f32()
     );
 
-    report_progress(progress, ASSEMBLY_STAGE_END, "Writing bundled file");
+    progress.report(ASSEMBLY_STAGE_END, "Writing bundled file");
 
     log::info!(
         "[timing] TOTAL export time: {:.2}s",

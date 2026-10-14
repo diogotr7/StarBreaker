@@ -185,7 +185,7 @@ pub async fn open_p4k(
 
     // Run the heavy open on a blocking thread with progress polling
     let (mapped, dcb_bytes, loc_map, record_index) = tokio::task::spawn_blocking(move || {
-        let progress = std::sync::Arc::new(Progress::new());
+        let progress = Progress::new();
 
         // Poll progress and emit events to the frontend
         let progress_poll = progress.clone();
@@ -200,7 +200,7 @@ pub async fn open_p4k(
             }
         });
 
-        let mapped = MappedP4k::open_with_progress(&path_clone, Some(&*progress));
+        let mapped = MappedP4k::open_with_progress(&path_clone, &progress);
 
         progress.report(1.0, "Done");
         let _ = poll_thread.join();
@@ -1142,7 +1142,7 @@ pub struct SocpakExportProgress {
 struct ExportProgressSlot {
     entity_name: String,
     entity_id: String,
-    progress: Arc<Progress>,
+    progress: Progress,
     done: Arc<AtomicBool>,
 }
 
@@ -1914,7 +1914,7 @@ pub async fn start_export(
         .map(|(entity_name, entity_id)| ExportProgressSlot {
             entity_name: entity_name.clone(),
             entity_id: entity_id.clone(),
-            progress: Arc::new(Progress::new()),
+            progress: Progress::new(),
             done: Arc::new(AtomicBool::new(false)),
         })
         .collect();
@@ -2090,7 +2090,7 @@ pub async fn start_export(
                         export_name,
                         overwrite_existing_assets,
                         object_type_dir,
-                        Some(progress_slot.progress.as_ref()),
+                        &progress_slot.progress,
                         existing_asset_paths.as_ref(),
                         existing_interior_assets.as_ref(),
                         export_session_asset_paths.as_ref(),
@@ -2149,7 +2149,7 @@ fn export_single(
     export_name: &str,
     overwrite_existing_assets: bool,
     object_type_dir: Option<&str>,
-    progress: Option<&Progress>,
+    progress: &Progress,
     existing_asset_paths: &HashSet<String>,
     existing_interior_assets: &HashMap<String, (String, Option<String>)>,
     export_session_asset_paths: &Mutex<HashSet<String>>,
@@ -2207,13 +2207,9 @@ fn export_single(
                     result.kind,
                 ))
             })?;
-            if let Some(progress) = progress {
-                progress.report(EXPORT_FINAL_WRITE_START, "Writing bundled file");
-            }
+            progress.report(EXPORT_FINAL_WRITE_START, "Writing bundled file");
             std::fs::write(output_path, bundled_bytes)?;
-            if let Some(progress) = progress {
-                progress.report(1.0, "Done");
-            }
+            progress.report(1.0, "Done");
         }
         starbreaker_3d::ExportKind::Decomposed => {
             let decomposed = result.decomposed.as_ref().ok_or_else(|| {
@@ -2234,21 +2230,17 @@ fn export_single(
                     Some(export_session_asset_paths),
                     p4k,
                 )?;
-                if let Some(progress) = progress {
-                    let fraction = (index + 1) as f32 / total_files as f32;
-                    let stage = match outcome {
-                        DecomposedWriteOutcome::Written => "Writing package files",
-                        DecomposedWriteOutcome::SkippedExisting => "Skipping existing assets",
-                    };
-                    progress.report(
-                        EXPORT_FINAL_WRITE_START + (1.0 - EXPORT_FINAL_WRITE_START) * fraction,
-                        stage,
-                    );
-                }
+                let fraction = (index + 1) as f32 / total_files as f32;
+                let stage = match outcome {
+                    DecomposedWriteOutcome::Written => "Writing package files",
+                    DecomposedWriteOutcome::SkippedExisting => "Skipping existing assets",
+                };
+                progress.report(
+                    EXPORT_FINAL_WRITE_START + (1.0 - EXPORT_FINAL_WRITE_START) * fraction,
+                    stage,
+                );
             }
-            if let Some(progress) = progress {
-                progress.report(1.0, "Done");
-            }
+            progress.report(1.0, "Done");
         }
     }
     Ok(())
@@ -2409,7 +2401,7 @@ mod tests {
 
     #[test]
     fn export_progress_stays_below_complete_until_slot_done() {
-        let progress = Arc::new(Progress::new());
+        let progress = Progress::new();
         progress.report(1.0, "Done");
         let done = Arc::new(AtomicBool::new(false));
         let slots = vec![ExportProgressSlot {

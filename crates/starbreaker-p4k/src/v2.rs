@@ -37,7 +37,7 @@ pub(crate) fn read_entries(
     file: &mut (impl Read + Seek),
     tail: &[u8],
     file_len: u64,
-    progress: Option<&starbreaker_common::Progress>,
+    progress: &starbreaker_common::Progress,
 ) -> Result<Vec<P4kEntry>, P4kError> {
     let mut footer = SpanReader::new(&tail[tail.len() - FOOTER_SIZE..]);
     let count = footer.read_u64()?;
@@ -104,8 +104,7 @@ pub(crate) fn read_entries(
             has_local_header: false,
         });
         if index % 10_000 == 0 {
-            starbreaker_common::progress::report(
-                progress,
+            progress.report(
                 index as f32 / count.max(1) as f32,
                 "Reading P4K v2 directory",
             );

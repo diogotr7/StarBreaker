@@ -1,81 +1,107 @@
 //! Shared progress reporting for long-running operations.
+//!
+//! [`Progress`] is a cheap, cloneable handle onto shared state: an
+//! `Arc<Inner>` holding the reported fraction (an `AtomicU32` in 0.01%
+//! units, only ever raised) and the current stage message, plus the
+//! `base`/`range` slice of the root's 0..1 range this handle writes into.
+//! [`Progress::new`] creates a root that the UI polls with [`Progress::get`];
+//! [`Progress::silent`] creates a no-op handle for callers that don't want
+//! reporting. [`Progress::sub`] returns a child that shares the parent's
+//! `Arc` and maps its own 0..1 range onto a slice of the parent's, so a
+//! child can outlive its parent handle or move to another thread without any
+//! `unsafe`. Children of a silent handle are silent. Heavy functions take
+//! `&Progress`.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+
 use parking_lot::Mutex;
 
-/// Thread-safe progress state. Pass `Option<&Progress>` to heavy functions.
-/// `None` means no reporting (zero cost). The UI creates one and polls it.
-pub struct Progress {
-    /// 0–10000 for 0.00%–100.00%
-    value: AtomicU32,
+/// Units stored in [`Inner::fraction`] for a fraction of 1.0 (0.01% steps).
+const UNITS_PER_ONE: f32 = 10000.0;
+
+struct Inner {
+    /// 0–10000 for 0.00%–100.00% of the root progress.
+    fraction: AtomicU32,
     stage: Mutex<String>,
-    /// If set, this progress writes scaled values into a parent.
-    parent: Option<(*const Progress, f32, f32)>,  // (parent_ptr, base, range)
 }
 
-// SAFETY: parent is only read, never written after construction, and points to
-// data that outlives this Progress (enforced by SubProgress lifetime).
-unsafe impl Send for Progress {}
-unsafe impl Sync for Progress {}
+/// Thread-safe progress handle. Clones and [`sub`](Progress::sub) children
+/// share the same underlying state.
+#[derive(Clone)]
+pub struct Progress {
+    /// `None` for a silent handle: every report is a no-op.
+    inner: Option<Arc<Inner>>,
+    /// Where this handle's 0.0 lands on the root's 0..1 range.
+    base: f32,
+    /// How much of the root's 0..1 range this handle's 0..1 spans.
+    range: f32,
+}
 
 impl Progress {
+    /// A root progress the UI can poll.
     pub fn new() -> Self {
         Self {
-            value: AtomicU32::new(0),
-            stage: Mutex::new(String::new()),
-            parent: None,
+            inner: Some(Arc::new(Inner {
+                fraction: AtomicU32::new(0),
+                stage: Mutex::new(String::new()),
+            })),
+            base: 0.0,
+            range: 1.0,
         }
     }
 
-    /// Update progress. `fraction` is 0.0–1.0.
+    /// A progress that discards every report.
+    pub fn silent() -> Self {
+        Self { inner: None, base: 0.0, range: 1.0 }
+    }
+
+    /// Update progress. `fraction` is 0.0–1.0 within this handle's slice.
+    /// Reports never move the root backwards: a lower value is ignored,
+    /// along with its message.
     pub fn report(&self, fraction: f32, message: &str) {
-        let clamped = fraction.clamp(0.0, 1.0);
-
-        if let Some((parent_ptr, base, range)) = self.parent {
-            let scaled = base + clamped * range;
-            // SAFETY: parent outlives self (enforced by SubProgress).
-            let parent = unsafe { &*parent_ptr };
-            parent.report(scaled, message);
-        } else {
-            let units = (clamped * 10000.0) as u32;
-            let previous = self.value.fetch_max(units, Ordering::Relaxed);
-            if units >= previous {
-                *self.stage.lock() = message.to_string();
-            }
+        let Some(inner) = &self.inner else { return };
+        let absolute = self.base + fraction.clamp(0.0, 1.0) * self.range;
+        let units = (absolute * UNITS_PER_ONE) as u32;
+        let previous = inner.fraction.fetch_max(units, Ordering::Relaxed);
+        if units >= previous {
+            *inner.stage.lock() = message.to_string();
         }
     }
 
-    /// Read current progress.
+    /// Read the root progress: its fraction and current stage message.
+    /// A silent progress always reads `(0.0, "")`.
     pub fn get(&self) -> (f32, String) {
-        let v = self.value.load(Ordering::Relaxed) as f32 / 10000.0;
-        let s = self.stage.lock().clone();
-        (v, s)
+        match &self.inner {
+            Some(inner) => {
+                let fraction = inner.fraction.load(Ordering::Relaxed) as f32 / UNITS_PER_ONE;
+                (fraction, inner.stage.lock().clone())
+            }
+            None => (0.0, String::new()),
+        }
     }
 
+    /// Whether the root progress has reached 100%.
     pub fn is_done(&self) -> bool {
-        self.value.load(Ordering::Relaxed) >= 10000
+        self.inner
+            .as_ref()
+            .is_some_and(|inner| inner.fraction.load(Ordering::Relaxed) >= UNITS_PER_ONE as u32)
     }
 
-    /// Create a sub-progress that maps 0.0–1.0 to `from..to` on this progress.
-    /// The returned `Progress` can be passed anywhere `&Progress` is accepted.
+    /// Create a child that maps its 0.0–1.0 to `from..to` on this progress.
+    /// The child shares this progress's state, so it stays valid however long
+    /// it lives; children of a silent progress are silent.
     pub fn sub(&self, from: f32, to: f32) -> Progress {
         Progress {
-            value: AtomicU32::new(0),
-            stage: Mutex::new(String::new()),
-            parent: Some((self as *const Progress, from, to - from)),
+            inner: self.inner.clone(),
+            base: self.base + from * self.range,
+            range: (to - from) * self.range,
         }
     }
 }
 
 impl Default for Progress {
     fn default() -> Self { Self::new() }
-}
-
-/// Helper: report on an `Option<&Progress>`, noop if None.
-pub fn report(progress: Option<&Progress>, fraction: f32, message: &str) {
-    if let Some(p) = progress {
-        p.report(fraction, message);
-    }
 }
 
 #[cfg(test)]
@@ -128,5 +154,35 @@ mod tests {
         let (fraction, stage) = progress.get();
         assert!((fraction - 0.438).abs() < 0.0001);
         assert_eq!(stage, "Writing child assets");
+    }
+
+    #[test]
+    fn subprogress_outliving_its_parent_still_reaches_root() {
+        let root = Progress::new();
+        let child = {
+            let parent = root.sub(0.5, 1.0);
+            parent.sub(0.0, 0.5)
+        };
+
+        std::thread::spawn(move || child.report(1.0, "child on another thread"))
+            .join()
+            .unwrap();
+
+        let (fraction, stage) = root.get();
+        assert!((fraction - 0.75).abs() < 0.0001);
+        assert_eq!(stage, "child on another thread");
+    }
+
+    #[test]
+    fn silent_progress_and_its_children_report_nothing() {
+        let silent = Progress::silent();
+        let child = silent.sub(0.0, 0.5);
+
+        silent.report(0.5, "ignored");
+        child.report(1.0, "ignored");
+
+        assert_eq!(silent.get(), (0.0, String::new()));
+        assert_eq!(child.get(), (0.0, String::new()));
+        assert!(!child.is_done());
     }
 }
