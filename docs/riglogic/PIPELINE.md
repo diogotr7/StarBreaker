@@ -108,8 +108,10 @@ below is driven by this matrix.
   CHF's hair and facial hair). `CharacterRig::dress` adds the body and
   garments as parts.
 - **Picked pieces** (`wear`): items given by name go on the free port that
-  accepts their `AttachDef.Type`, searching the body's ports and those of
+  accepts them (their `AttachDef.Type` and subtype, and the port's
+  `RequiredPortTags` on the item), searching the body's ports and those of
   items already worn, producing the same `LoadoutEntry` tree as a loadout.
+  A piece the wearer's gender has no mesh for is reported, not worn.
 - **Body clip**: `clips::load_body_clip` (a `.caf`, or one clip of a `.dba`
   picked by name), merged with a face clip into one clip
   (`CharacterRig::add_body_clip`).

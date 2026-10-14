@@ -1,5 +1,6 @@
 //! Dressing a character in hand-picked items, the way the engine equips
-//! them: each item goes on a free port that accepts its `AttachDef.Type`,
+//! them: each item goes on a free port that accepts it ([`PortDef::accepts`]:
+//! its `AttachDef.Type` and subtype, and the tags the port requires),
 //! searched over the body's ports and those of the items already worn
 //! (`Char_Armor_Arms` → an undersuit's `Armor_Arms`, `Char_Clothing_Torso_0`
 //! → the body's `Clothing_Torso_0`). Only ports that skin their item to the
@@ -11,7 +12,8 @@
 //! - [`place_items`]: the placement (pure) onto what is already worn
 //!   ([`Seed`]); [`wearable`]: an item's type and ports from DataCore;
 //!   [`dress_entries`]: picked item names on a CHF character (its own items —
-//!   body, head — and a loadout's are the worn items).
+//!   body, head — and a loadout's are the worn items); a pick the wearer's
+//!   gender has no mesh for is reported, not worn.
 
 use starbreaker_chf::{ChfData, ItemPort};
 use starbreaker_datacore::Database;
@@ -19,21 +21,52 @@ use starbreaker_datacore::loadout::EntityIndex;
 use starbreaker_datacore::query::value::Value;
 use starbreaker_datacore::types::Record;
 
-use super::loadout::LoadoutEntry;
+use super::CharacterError;
+use super::loadout::{LoadoutEntry, worn_geometry};
 
-/// An item port: its name and the item types it accepts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// An item port: its name, the item types it accepts and the tags an item
+/// must have to go on it (`RequiredPortTags`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PortDef {
     pub name: String,
-    pub types: Vec<String>,
+    pub types: Vec<PortType>,
+    pub required_tags: Vec<String>,
 }
 
-/// An item to wear: its entity class name, `AttachDef.Type` and own ports.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// An item type a port accepts; `sub_types` empty accepts any subtype.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PortType {
+    pub name: String,
+    pub sub_types: Vec<String>,
+}
+
+/// An item to wear: its entity class name, `AttachDef` type, subtype and
+/// tags, and its own ports.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Wearable {
     pub item: String,
     pub item_type: String,
+    pub sub_type: String,
+    pub tags: Vec<String>,
     pub ports: Vec<PortDef>,
+}
+
+impl PortDef {
+    /// Whether `item` fits this port: one of its types (any case) with a
+    /// matching subtype when it lists any, and every tag the port requires
+    /// on the item.
+    ///
+    /// Not checked: `MinSize` / `MaxSize`, which do not gate wear (the
+    /// undersuit's necksock port is size 0..0 and takes a size-1 necksock),
+    /// and the item's own `RequiredTags`, which the engine matches against
+    /// tags from up the hierarchy, not just the port's (`ctl_hat_01_01_01`
+    /// requires `Protos`, which neither the head's hat port nor the head has).
+    pub fn accepts(&self, item: &Wearable) -> bool {
+        self.types.iter().any(|t| {
+            t.name.eq_ignore_ascii_case(&item.item_type)
+                && (t.sub_types.is_empty() || t.sub_types.iter().any(|s| s.eq_ignore_ascii_case(&item.sub_type)))
+        }) && self.required_tags.iter().all(|tag| item.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)))
+    }
 }
 
 /// Where the items went: one root entry (the body's port, item kept) with
@@ -91,7 +124,7 @@ pub fn place_items(worn: &Seed, items: &[Wearable]) -> Placement {
     loop {
         let mut placed = None;
         for (i, w) in pending.iter().enumerate() {
-            let accepts = |s: &Slot| !s.taken && s.port.types.iter().any(|t| t.eq_ignore_ascii_case(&w.item_type));
+            let accepts = |s: &Slot| !s.taken && s.port.accepts(w);
             if let Some(slot) = slots.iter().position(accepts) {
                 placed = Some((i, slot));
                 break;
@@ -117,25 +150,35 @@ pub fn place_items(worn: &Seed, items: &[Wearable]) -> Placement {
     }
 }
 
-/// An item's `AttachDef.Type` and its item ports, by exact entity class
-/// name (any case); `None` for unknown names or items without an attach type.
-pub fn wearable(db: &Database, index: &EntityIndex, name: &str) -> Option<Wearable> {
-    let record = index.find_record(name)?;
-    let item_type = first_text(db, record, "Components[SAttachableComponentParams].AttachDef.Type")?;
-    Some(Wearable { item: name.to_owned(), item_type, ports: ports(db, record) })
+/// An item's `AttachDef` (type, subtype, tags) and its item
+/// ports, by exact entity class name (any case); `None` for unknown names or
+/// items without an attach type.
+pub fn wearable(db: &Database, index: &EntityIndex, name: &str) -> Result<Option<Wearable>, CharacterError> {
+    let Some(record) = index.find_record(name) else { return Ok(None) };
+    let attach = |field: &str| first_text(db, record, &format!("Components[SAttachableComponentParams].AttachDef.{field}"));
+    let Some(item_type) = attach("Type") else { return Ok(None) };
+    Ok(Some(Wearable {
+        item: name.to_owned(),
+        item_type,
+        sub_type: attach("SubType").unwrap_or_default(),
+        tags: words(attach("Tags").as_deref()),
+        ports: ports(db, record)?,
+    }))
 }
 
 /// The ports of `record` that items are worn on
 /// (`SItemPortContainerComponentParams.Ports` whose attachment is a skin:
 /// the item is skinned to the character). Carry ports (hands attach to a
 /// bone, pockets hold an entity) accept armour too, but nothing is worn
-/// there.
-fn ports(db: &Database, record: &Record) -> Vec<PortDef> {
+/// there. A record type without item ports has none.
+fn ports(db: &Database, record: &Record) -> Result<Vec<PortDef>, CharacterError> {
     let Ok(path) = db.compile_path::<Value>(record.struct_id(), "Components[SItemPortContainerComponentParams].Ports") else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    let values = db.query::<Value>(&path, record).unwrap_or_default();
-    values
+    let values = db
+        .query::<Value>(&path, record)
+        .map_err(|e| CharacterError::Loadout(format!("item ports of {}: {e}", record.id)))?;
+    Ok(values
         .iter()
         .flat_map(|ports| match ports {
             Value::Array(items) => items.iter().collect::<Vec<_>>(),
@@ -147,12 +190,27 @@ fn ports(db: &Database, record: &Record) -> Vec<PortDef> {
         .filter_map(|port| {
             let name = text(field(port, "Name")?)?;
             let types = match field(port, "Types") {
-                Some(Value::Array(types)) => types.iter().filter_map(|t| text(field(t, "Type")?)).collect(),
+                Some(Value::Array(types)) => types
+                    .iter()
+                    .filter_map(|t| {
+                        let sub_types = match field(t, "SubTypes") {
+                            Some(Value::Array(subs)) => subs.iter().filter_map(text).collect(),
+                            _ => Vec::new(),
+                        };
+                        Some(PortType { name: text(field(t, "Type")?)?, sub_types })
+                    })
+                    .collect(),
                 _ => Vec::new(),
             };
-            Some(PortDef { name, types })
+            let required_tags = words(field(port, "RequiredPortTags").and_then(text).as_deref());
+            Some(PortDef { name, types, required_tags })
         })
-        .collect()
+        .collect())
+}
+
+/// A DataCore tag string's tags (space-separated).
+fn words(s: Option<&str>) -> Vec<String> {
+    s.map(|s| s.split_whitespace().map(str::to_owned).collect()).unwrap_or_default()
 }
 
 /// The port attachment that skins the attached item to the character.
@@ -181,48 +239,62 @@ fn field<'v, 'a>(v: &'v Value<'a>, name: &str) -> Option<&'v Value<'a>> {
 /// `loadout`: they go on the ports of the character's own items (its body,
 /// its head's hat and eyewear ports) and of the loadout's, as the engine
 /// equips them. The result is the whole tree (CHF items kept as they are,
-/// the loadout's and the placed items by name). Unknown names are reported
-/// in `unplaced`.
-pub fn dress_entries(db: &Database, chf: &ChfData, loadout: &[LoadoutEntry], items: &[String]) -> Placement {
+/// the loadout's and the placed items by name). Unknown names, and items
+/// with no mesh for the character's gender, are reported in `unplaced`.
+/// Errors when DataCore lacks the CHF's body record or a query fails.
+pub fn dress_entries(db: &Database, chf: &ChfData, loadout: &[LoadoutEntry], items: &[String]) -> Result<Placement, CharacterError> {
     let index = EntityIndex::new(db);
-    let mut worn = chf_seed(db, &chf.itemport);
+    let gender = super::gender_tag(chf.dna.gender_hash);
+    if db.record_by_id(&chf.itemport.id).is_none() {
+        return Err(CharacterError::Loadout(format!("the CHF's body record {} is not in DataCore", chf.itemport.id)));
+    }
+    let mut worn = chf_seed(db, &chf.itemport)?;
     let mut other_roots = Vec::new();
     for entry in loadout {
         if entry.port.eq_ignore_ascii_case(&worn.port) {
-            merge_entries(db, &index, &mut worn, &entry.children);
+            merge_entries(db, &index, &mut worn, &entry.children)?;
         } else {
             other_roots.push(entry.clone());
         }
     }
     let mut wearables = Vec::new();
-    let mut unknown = Vec::new();
+    let mut unwearable = Vec::new();
     for name in items {
-        match wearable(db, &index, name) {
-            Some(w) => wearables.push(w),
-            None => unknown.push(format!("{name}: no such wearable item")),
+        match wearable(db, &index, name)? {
+            None => unwearable.push(format!("{name}: no such wearable item")),
+            Some(w) => {
+                let record = index.find_record(name).expect("wearable found it");
+                match worn_geometry(db, record, gender, &[gender.to_owned()]) {
+                    Some(g) if !g.other_gender => wearables.push(w),
+                    _ => unwearable.push(format!("{name}: no {gender} mesh")),
+                }
+            }
         }
     }
     let mut placement = place_items(&worn, &wearables);
     placement.entries.extend(other_roots);
-    placement.unplaced.extend(unknown);
-    placement
+    placement.unplaced.extend(unwearable);
+    Ok(placement)
 }
 
-/// The CHF's item tree as worn items (kept: `item` empty) with their ports.
-fn chf_seed(db: &Database, port: &ItemPort) -> Seed {
-    Seed {
+/// The CHF's item tree as worn items (kept: `item` empty) with their ports;
+/// a port with no item has none.
+fn chf_seed(db: &Database, port: &ItemPort) -> Result<Seed, CharacterError> {
+    Ok(Seed {
         port: port.name.to_string(),
         item: String::new(),
-        ports: db.record_by_id(&port.id).map(|r| ports(db, r)).unwrap_or_default(),
-        children: port.children.iter().map(|c| chf_seed(db, c)).collect(),
-    }
+        ports: match db.record_by_id(&port.id) {
+            Some(record) => ports(db, record)?,
+            None => Vec::new(),
+        },
+        children: port.children.iter().map(|c| chf_seed(db, c)).collect::<Result<_, _>>()?,
+    })
 }
 
 /// Lay a loadout's `entries` over `worn`: an entry on a port something is
 /// worn on replaces it (a named item, with its own ports and nothing under
 /// it yet) or keeps it (empty name); other entries are added.
-fn merge_entries(db: &Database, index: &EntityIndex, worn: &mut Seed, entries: &[LoadoutEntry]) {
-    let item_ports = |name: &str| index.find_record(name).map(|r| ports(db, r)).unwrap_or_default();
+fn merge_entries(db: &Database, index: &EntityIndex, worn: &mut Seed, entries: &[LoadoutEntry]) -> Result<(), CharacterError> {
     for entry in entries {
         let slot = match worn.children.iter().position(|c| c.port.eq_ignore_ascii_case(&entry.port)) {
             Some(i) => i,
@@ -234,11 +306,16 @@ fn merge_entries(db: &Database, index: &EntityIndex, worn: &mut Seed, entries: &
         let child = &mut worn.children[slot];
         if !entry.item.is_empty() {
             child.item = entry.item.clone();
-            child.ports = item_ports(&entry.item);
+            // An item DataCore lacks is reported when the outfit is built.
+            child.ports = match index.find_record(&entry.item) {
+                Some(record) => ports(db, record)?,
+                None => Vec::new(),
+            };
             child.children.clear();
         }
-        merge_entries(db, index, child, &entry.children);
+        merge_entries(db, index, child, &entry.children)?;
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -246,10 +323,10 @@ mod tests {
     use super::*;
 
     fn port(name: &str, ty: &str) -> PortDef {
-        PortDef { name: name.into(), types: vec![ty.into()] }
+        PortDef { name: name.into(), types: vec![PortType { name: ty.into(), sub_types: Vec::new() }], ..Default::default() }
     }
     fn item(name: &str, ty: &str, ports: Vec<PortDef>) -> Wearable {
-        Wearable { item: name.into(), item_type: ty.into(), ports }
+        Wearable { item: name.into(), item_type: ty.into(), ports, ..Default::default() }
     }
     fn body_ports() -> Vec<PortDef> {
         vec![port("Armor_Undersuit", "Char_Armor_Undersuit"), port("Clothing_Torso_0", "Char_Clothing_Torso_0")]
@@ -316,6 +393,34 @@ mod tests {
         let p = place_items(&body("body", body_ports()), &[item("arms", "Char_Armor_Arms", vec![])]);
         assert!(p.entries[0].children.is_empty());
         assert!(p.unplaced[0].contains("Char_Armor_Arms"), "{:?}", p.unplaced);
+    }
+
+    /// A port's `RequiredPortTags` must all be on the item (any case): the
+    /// undersuit's necksock port takes the undersuit necksock, not the
+    /// helmet's.
+    #[test]
+    fn ports_take_only_items_with_their_required_tags() {
+        let necksock_port = PortDef { required_tags: vec!["necksock_undersuit".into()], ..port("universal_necksock_undersuit", "Char_Flair") };
+        let sock = |name: &str, tags: &[&str]| Wearable { tags: tags.iter().map(|t| t.to_string()).collect(), ..item(name, "Char_Flair", vec![]) };
+        let p = place_items(
+            &body("body", vec![necksock_port]),
+            &[sock("helmet_sock", &["necksock", "uneditable"]), sock("suit_sock", &["Necksock_Undersuit", "uneditable"])],
+        );
+        assert_eq!(p.entries[0].children.iter().map(|c| c.item.as_str()).collect::<Vec<_>>(), ["suit_sock"]);
+        assert!(p.unplaced[0].starts_with("helmet_sock:"), "{:?}", p.unplaced);
+    }
+
+    /// A port listing subtypes takes only items of one of them; one listing
+    /// none takes any.
+    #[test]
+    fn port_subtypes_restrict_items() {
+        let typed = PortDef { types: vec![PortType { name: "Char_Flair".into(), sub_types: vec!["Badge".into()] }], ..port("flair", "") };
+        let of = |sub: &str| Wearable { sub_type: sub.into(), ..item(sub, "Char_Flair", vec![]) };
+        let p = place_items(&body("body", vec![typed]), &[of("Patch"), of("badge")]);
+        assert_eq!(p.entries[0].children[0].item, "badge");
+        assert_eq!(p.unplaced.len(), 1);
+        let p = place_items(&body("body", vec![port("flair", "Char_Flair")]), &[of("Patch")]);
+        assert!(p.unplaced.is_empty());
     }
 
     #[test]

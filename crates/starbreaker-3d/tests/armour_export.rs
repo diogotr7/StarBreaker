@@ -102,7 +102,7 @@ fn picked_pieces_dress_like_the_loadout() {
         .iter()
         .map(|s| s.to_string())
         .collect();
-    let placed = dress_entries(&db, &chf, &[], &picked);
+    let placed = dress_entries(&db, &chf, &[], &picked).unwrap();
     assert!(placed.unplaced.is_empty(), "{:?}", placed.unplaced);
     let worn = |entries| {
         let mut g: Vec<(String, String)> =
@@ -127,7 +127,7 @@ fn undersuits_hide_picked_clothing_and_unknown_names_are_reported() {
     let db = Database::from_bytes(&dcb).unwrap();
     let chf = chf(&p4k, "masculinedefault");
     let picked: Vec<String> = ["cds_undersuit_01_01_01", "ctl_shirt_06_01_01", "cds_armor_heavy"].iter().map(|s| s.to_string()).collect();
-    let placed = dress_entries(&db, &chf, &[], &picked);
+    let placed = dress_entries(&db, &chf, &[], &picked).unwrap();
     assert_eq!(placed.unplaced.len(), 1, "{:?}", placed.unplaced);
     assert!(placed.unplaced[0].starts_with("cds_armor_heavy:"), "a partial name is not an item: {:?}", placed.unplaced);
     let shirt_port = placed.entries[0].children.iter().find(|e| e.item == "ctl_shirt_06_01_01").map(|e| e.port.clone());
@@ -165,14 +165,14 @@ fn picked_pieces_join_a_loadout() {
     let db = Database::from_bytes(&dcb).unwrap();
     let chf = chf(&p4k, "masculinedefault");
     let suit = loadout(&p4k, r"Data\Scripts\Loadouts\Character\Human\Armor\NPC\UEE\marine_Undersuit.xml");
-    let placed = dress_entries(&db, &chf, &suit, &["cds_armor_heavy_arms_01_01_01".to_string()]);
+    let placed = dress_entries(&db, &chf, &suit, &["cds_armor_heavy_arms_01_01_01".to_string()]).unwrap();
     assert!(placed.unplaced.is_empty(), "{:?}", placed.unplaced);
     let worn = resolve_garments(&db, &placed.entries, "Male", "body_itemport");
     let ports: Vec<&str> = worn.garments.iter().map(|g| g.port.as_str()).collect();
     assert!(ports.contains(&"Armor_Undersuit") && ports.contains(&"Armor_Arms"), "{ports:?}");
 
     let pirate = loadout(&p4k, r"Data\Scripts\Loadouts\Character\Human\Armor\NPC\Pirate\Pirate_Heavy_01.xml");
-    let placed = dress_entries(&db, &chf, &pirate, &["slaver_armor_heavy_helmet_01_01_01".to_string()]);
+    let placed = dress_entries(&db, &chf, &pirate, &["slaver_armor_heavy_helmet_01_01_01".to_string()]).unwrap();
     assert_eq!(placed.unplaced.len(), 1, "the loadout's helmet keeps its port: {:?}", placed.unplaced);
     let helmets = resolve_garments(&db, &placed.entries, "Male", "body_itemport").garments.iter().filter(|g| g.port == "Armor_Helmet").count();
     assert_eq!(helmets, 1);
@@ -188,8 +188,36 @@ fn hats_go_on_the_heads_port() {
     let dcb = db_bytes(&p4k);
     let db = Database::from_bytes(&dcb).unwrap();
     let chf = chf(&p4k, "masculinedefault");
-    let placed = dress_entries(&db, &chf, &[], &["ctl_hat_01_01_01".to_string()]);
+    let placed = dress_entries(&db, &chf, &[], &["ctl_hat_01_01_01".to_string()]).unwrap();
     assert!(placed.unplaced.is_empty(), "{:?}", placed.unplaced);
     let worn = resolve_garments(&db, &placed.entries, "Male", "body_itemport");
     assert_eq!(worn.garments.iter().map(|g| g.item.as_str()).collect::<Vec<_>>(), ["ctl_hat_01_01_01"], "only the hat: the CHF's own items are kept, not worn again");
+}
+
+/// A picked piece the wearer's gender has no mesh for is reported, not
+/// placed and then silently dropped when the outfit is built.
+#[test]
+fn pieces_without_the_wearers_mesh_are_reported() {
+    use starbreaker_3d::character::wear::dress_entries;
+    let Some(p4k) = p4k() else { return };
+    let dcb = db_bytes(&p4k);
+    let db = Database::from_bytes(&dcb).unwrap();
+    let chf = chf(&p4k, "masculinedefault");
+    let placed = dress_entries(&db, &chf, &[], &["srvl_helmet_01_01_01_hair_extension".to_string()]).unwrap();
+    assert_eq!(placed.unplaced.len(), 1, "{:?}", placed.unplaced);
+    assert!(placed.unplaced[0].contains("no Male mesh"), "{:?}", placed.unplaced);
+}
+
+/// A CHF whose body record DataCore lacks is an error, not a body without
+/// ports (every pick then "no free port").
+#[test]
+fn a_missing_body_record_is_an_error() {
+    use starbreaker_3d::character::wear::dress_entries;
+    let Some(p4k) = p4k() else { return };
+    let dcb = db_bytes(&p4k);
+    let db = Database::from_bytes(&dcb).unwrap();
+    let mut chf = chf(&p4k, "masculinedefault");
+    chf.itemport.id = "00000000-0000-0000-0000-000000000001".parse().unwrap();
+    let err = dress_entries(&db, &chf, &[], &[ARMS.to_string()]).unwrap_err();
+    assert!(err.to_string().contains("body"), "{err}");
 }

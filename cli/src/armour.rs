@@ -67,7 +67,8 @@ impl ArmourCommand {
         let mut entries = load_loadout(&p4k, &character)?;
         if !wear.is_empty() {
             // Picked pieces go on the character's and the loadout's items.
-            let placed = starbreaker_3d::character::wear::dress_entries(&db, &parsed, &entries, &wear);
+            let placed = starbreaker_3d::character::wear::dress_entries(&db, &parsed, &entries, &wear)
+                .map_err(|e| CliError::InvalidInput(e.to_string()))?;
             for problem in &placed.unplaced {
                 eprintln!("not worn: {problem}");
             }

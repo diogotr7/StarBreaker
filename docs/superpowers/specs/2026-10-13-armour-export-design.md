@@ -94,7 +94,10 @@ Success:
   `Data\Libs\CharacterCustomizer\{masculine,feminine}default.chf`, read
   from the p4k.
 - **Ports for `--wear` items.** Each item is worn on the port that accepts
-  its `AttachDef.Type`. The ports searched are those of the body and of the
+  its `AttachDef.Type` (and subtype, when the port lists any) and carries
+  the tags the port requires (`RequiredPortTags`). Sizes and the item's own
+  `RequiredTags` are not checked (`wear::PortDef::accepts` says why). A
+  piece with no mesh for the wearer's gender is reported. The ports searched are those of the body and of the
   items already worn, the way the engine equips. For example,
   `Char_Armor_Arms` goes on an undersuit's `Armor_Arms`, and
   `Char_Clothing_Torso_0` on the body's `Clothing_Torso_0`. With real
