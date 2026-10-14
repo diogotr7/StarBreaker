@@ -10,16 +10,23 @@
 //! `node_parent_index` indexes the mesh's extra-word table, each word a
 //! [`zone_hash`] (FNV-1a-32 of the UPPERCASE zone name with its NUL).
 //!
-//! [`hidden_zones`]: a submesh of item A in zone Z is hidden when another
-//! worn item claims Z at a higher layer that A's chunk for Z does not list
-//! in `VisibleLayers`. (`VisibilityConditions` — state-dependent, e.g. a
-//! helmet's visor — are not evaluated: every chunk counts as worn.)
+//! [`hidden_zones`] is the engine's rule (client
+//! `ItemPortContainer::RefreshMeshChunkVisibility` over the predicates
+//! `CSCItemClothing::EnableOverlay` registers per chunk): per zone, the
+//! layers that claim it from the top down. The top layer's chunks are
+//! evaluated; every lower layer is hidden unless an evaluated, visible
+//! chunk above lists it in its `VisibleLayers` (then its chunks are
+//! evaluated too). A chunk is visible when its `VisibilityConditions`
+//! hold ([`chunk_visible`]). A hidden chunk lists nothing, so it still
+//! covers the layers below.
 //!
-//! - [`Clothing`] / [`ClothingChunk`]: an item's layers, from
-//!   [`clothing_params`].
+//! - [`Clothing`] / [`ClothingChunk`] / [`VisibilityCondition`] /
+//!   [`PortVisibility`]: an item's layers, tags and ports, from
+//!   [`clothing_params`]; [`Worn`]: an item on its port.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
+use starbreaker_common::CigGuid;
 use starbreaker_datacore::Database;
 use starbreaker_datacore::query::value::Value;
 use starbreaker_datacore::types::Record;
@@ -32,56 +39,190 @@ pub fn zone_hash(name: &str) -> u32 {
         .fold(0x811c_9dc5u32, |h, b| (h ^ b as u32).wrapping_mul(0x0100_0193))
 }
 
+/// One test of a [`VisibilityCondition`] (`SCItemClothingPortVisibilityConditionParams`).
+/// Each tag list matches a tag set holding all of its tags; an empty list
+/// matches nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PortVisibility {
+    /// The ports whose items are tested; none: the tags of everything worn.
+    pub ports: Vec<String>,
+    /// Matching hides the chunk outright.
+    pub disable: Vec<CigGuid>,
+    /// Matching fails the condition.
+    pub skip: Vec<CigGuid>,
+    /// Must match for the condition to hold.
+    pub active: Vec<CigGuid>,
+}
+
+/// One of a chunk's `VisibilityConditions`: holds when every entry does.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VisibilityCondition {
+    pub port_visibility: Vec<PortVisibility>,
+}
+
 /// One zone an item claims.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClothingChunk {
     /// `EMeshChunks` name (`l_hand_zone`).
     pub zone: String,
     pub layer: i32,
-    /// Higher layers that do not hide this item's part of the zone.
+    /// Lower layers that stay visible under this chunk (while it is visible).
     pub visible_layers: Vec<i32>,
+    /// When the chunk is visible (none: always).
+    pub conditions: Vec<VisibilityCondition>,
 }
 
-/// An item's `SCItemClothingParams`.
+/// An item's `SCItemClothingParams`, tags and ports.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Clothing {
     pub chunks: Vec<ClothingChunk>,
     /// Item ports this item hides (`Head_ItemPort`, …).
     pub hidden_ports: Vec<String>,
+    /// The item's tags: the entity's `tags` and the clothing's `OverlayTags`.
+    pub tags: Vec<CigGuid>,
+    /// The item ports it defines (`SItemPortContainerComponentParams`).
+    pub ports: Vec<String>,
 }
 
-/// For each of the worn `items`, the [`zone_hash`]es of its zones the other
-/// items cover (see the module docs).
-pub fn hidden_zones(items: &[&Clothing]) -> Vec<HashSet<u32>> {
-    items
-        .iter()
-        .enumerate()
-        .map(|(i, item)| {
-            item.chunks
-                .iter()
-                .filter(|chunk| {
-                    items.iter().enumerate().any(|(j, other)| {
-                        j != i
-                            && other.chunks.iter().any(|c| {
-                                c.zone.eq_ignore_ascii_case(&chunk.zone)
-                                    && c.layer > chunk.layer
-                                    && !chunk.visible_layers.contains(&c.layer)
-                            })
-                    })
-                })
-                .map(|chunk| zone_hash(&chunk.zone))
-                .collect()
-        })
-        .collect()
+/// A worn item: its clothing on the port it is attached to.
+#[derive(Debug, Clone, Copy)]
+pub struct Worn<'a> {
+    pub port: &'a str,
+    pub clothing: &'a Clothing,
 }
 
-/// The `SCItemClothingParams` of an item record (empty when it has none).
-pub fn clothing_params(db: &Database, record: &Record) -> Clothing {
-    let Ok(path) = db.compile_path::<Value>(record.struct_id(), "Components[SCItemClothingParams]") else {
-        return Clothing::default();
+/// What the conditions test: the worn items by port, the ports that
+/// exist, and every worn item's tags.
+struct Wearing<'a> {
+    occupied: HashMap<String, &'a [CigGuid]>,
+    existing: HashSet<String>,
+    all_tags: HashSet<CigGuid>,
+}
+
+impl<'a> Wearing<'a> {
+    fn new(items: &[Worn<'a>]) -> Self {
+        let occupied = items.iter().map(|w| (w.port.to_ascii_lowercase(), w.clothing.tags.as_slice())).collect();
+        let existing = items
+            .iter()
+            .flat_map(|w| w.clothing.ports.iter().map(|p| p.to_ascii_lowercase()).chain([w.port.to_ascii_lowercase()]))
+            .collect();
+        let all_tags = items.iter().flat_map(|w| w.clothing.tags.iter().copied()).collect();
+        Self { occupied, existing, all_tags }
+    }
+}
+
+fn matches(required: &[CigGuid], tags: &dyn Fn(&CigGuid) -> bool) -> bool {
+    !required.is_empty() && required.iter().all(tags)
+}
+
+/// `(disable, skip, active)` of one entry against what is worn.
+fn entry_matches(entry: &PortVisibility, wearing: &Wearing<'_>) -> (bool, bool, bool) {
+    let against = |tags: &dyn Fn(&CigGuid) -> bool| {
+        (matches(&entry.disable, tags), matches(&entry.skip, tags), matches(&entry.active, tags))
     };
-    let mut clothing = Clothing::default();
-    for params in db.query::<Value>(&path, record).unwrap_or_default() {
+    if entry.ports.is_empty() {
+        return against(&|t| wearing.all_tags.contains(t));
+    }
+    let mut all = (true, true, true);
+    for port in &entry.ports {
+        let port = port.to_ascii_lowercase();
+        let (disable, skip, active) = match wearing.occupied.get(&port) {
+            Some(tags) => against(&|t| tags.contains(t)),
+            // An empty port (without skip tags): no active tags hold, any
+            // others skip; nothing is there to disable.
+            None if wearing.existing.contains(&port) && entry.skip.is_empty() => {
+                (false, !entry.active.is_empty(), entry.active.is_empty())
+            }
+            None => (false, false, false),
+        };
+        all = (all.0 && disable, all.1 && skip, all.2 && active);
+        if !all.0 && !all.2 {
+            break;
+        }
+    }
+    all
+}
+
+/// Whether a chunk is visible: no conditions, or a condition whose
+/// entries all match `active` and not all `skip` (any condition whose
+/// entries all match `disable` hides it; so does an empty condition).
+#[cfg(test)]
+fn chunk_visible(chunk: &ClothingChunk, wearing_items: &[Worn<'_>]) -> bool {
+    visible(chunk, &Wearing::new(wearing_items))
+}
+
+fn visible(chunk: &ClothingChunk, wearing: &Wearing<'_>) -> bool {
+    if chunk.conditions.is_empty() {
+        return true;
+    }
+    for condition in &chunk.conditions {
+        if condition.port_visibility.is_empty() {
+            return false;
+        }
+        let (mut disable, mut skip, mut active) = (true, true, true);
+        for entry in &condition.port_visibility {
+            let (d, s, a) = entry_matches(entry, wearing);
+            (disable, skip, active) = (disable && d, skip && s, active && a);
+            if !disable && !active {
+                break;
+            }
+        }
+        if disable {
+            return false;
+        }
+        if active && !skip {
+            return true;
+        }
+    }
+    false
+}
+
+/// For each worn item, the [`zone_hash`]es of its zones that are not
+/// drawn (see the module docs).
+pub fn hidden_zones(items: &[Worn<'_>]) -> Vec<HashSet<u32>> {
+    let wearing = Wearing::new(items);
+    // zone -> layer -> (item, chunk)
+    let mut zones: HashMap<u32, BTreeMap<i32, Vec<(usize, &ClothingChunk)>>> = HashMap::new();
+    for (i, item) in items.iter().enumerate() {
+        for chunk in &item.clothing.chunks {
+            zones.entry(zone_hash(&chunk.zone)).or_default().entry(chunk.layer).or_default().push((i, chunk));
+        }
+    }
+    let mut hidden = vec![HashSet::new(); items.len()];
+    for (zone, layers) in zones {
+        let mut kept: HashSet<i32> = HashSet::new();
+        let mut evaluated = false;
+        for (layer, chunks) in layers.iter().rev() {
+            let shown = !evaluated || kept.contains(layer);
+            for (i, chunk) in chunks {
+                if shown && visible(chunk, &wearing) {
+                    kept.extend(&chunk.visible_layers);
+                } else {
+                    hidden[*i].insert(zone);
+                }
+            }
+            evaluated = true;
+        }
+    }
+    hidden
+}
+
+/// The clothing of an item record: its `SCItemClothingParams` (none when
+/// it has no such component), tags and ports.
+pub fn clothing_params(db: &Database, record: &Record) -> Clothing {
+    let mut clothing = Clothing {
+        tags: query(db, record, "tags").iter().flat_map(values).filter_map(tag_id).collect(),
+        ports: query(db, record, "Components[SItemPortContainerComponentParams].Ports.Name")
+            .iter()
+            .flat_map(values)
+            .filter_map(|v| if let Value::String(s) = v { Some((*s).to_owned()) } else { None })
+            .collect(),
+        ..Clothing::default()
+    };
+    for params in query(db, record, "Components[SCItemClothingParams]") {
+        if let Some(overlay) = field(&params, "OverlayTags") {
+            clothing.tags.extend(array(overlay, "tags").iter().filter_map(tag_id));
+        }
         for part in array(&params, "HiddenParts") {
             if let Some(Value::String(port)) = field(part, "PortName") {
                 clothing.hidden_ports.push((*port).to_owned());
@@ -98,13 +239,50 @@ pub fn clothing_params(db: &Database, record: &Record) -> Clothing {
             };
             let visible_layers =
                 array(chunk, "VisibleLayers").iter().filter_map(|v| if let Value::Int32(l) = v { Some(*l) } else { None }).collect();
-            if !array(chunk, "VisibilityConditions").is_empty() {
-                log::debug!("clothing chunk {zone}: visibility conditions not evaluated");
-            }
-            clothing.chunks.push(ClothingChunk { zone, layer, visible_layers });
+            let conditions = array(chunk, "VisibilityConditions").iter().map(condition).collect();
+            clothing.chunks.push(ClothingChunk { zone, layer, visible_layers, conditions });
         }
     }
     clothing
+}
+
+fn condition(v: &Value<'_>) -> VisibilityCondition {
+    let tags = |entry: &Value<'_>, name: &str| array(entry, name).iter().filter_map(tag_id).collect();
+    VisibilityCondition {
+        port_visibility: array(v, "PortVisibility")
+            .iter()
+            .map(|entry| PortVisibility {
+                ports: array(entry, "Ports").iter().filter_map(|p| if let Value::String(s) = p { Some((*s).to_owned()) } else { None }).collect(),
+                disable: tags(entry, "DisableTags"),
+                skip: tags(entry, "SkipTags"),
+                active: tags(entry, "ActiveTags"),
+            })
+            .collect(),
+    }
+}
+
+/// A `Tag` reference: its record id (materialized or not).
+fn tag_id(v: &Value<'_>) -> Option<CigGuid> {
+    match v {
+        Value::Guid(g) => Some(*g),
+        Value::Object { record_id, .. } => *record_id,
+        _ => None,
+    }
+}
+
+fn query<'a>(db: &'a Database, record: &Record, path: &str) -> Vec<Value<'a>> {
+    db.compile_path::<Value>(record.struct_id(), path)
+        .ok()
+        .and_then(|compiled| db.query::<Value>(&compiled, record).ok())
+        .unwrap_or_default()
+}
+
+/// A query result's values: an array's items, or the value itself.
+fn values<'v, 'a>(v: &'v Value<'a>) -> Vec<&'v Value<'a>> {
+    match v {
+        Value::Array(items) => items.iter().collect(),
+        other => vec![other],
+    }
 }
 
 fn field<'v, 'a>(v: &'v Value<'a>, name: &str) -> Option<&'v Value<'a>> {
@@ -122,46 +300,4 @@ fn array<'v, 'a>(v: &'v Value<'a>, name: &str) -> &'v [Value<'a>] {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn item(layer: i32, zones: &[&str]) -> Clothing {
-        Clothing {
-            chunks: zones.iter().map(|z| ClothingChunk { zone: (*z).into(), layer, visible_layers: Vec::new() }).collect(),
-            hidden_ports: Vec::new(),
-        }
-    }
-
-    /// Hashes as `m_body.skinm` / the undersuit store them.
-    #[test]
-    fn zone_hashes_match_the_meshes() {
-        assert_eq!(zone_hash("l_hand_zone"), 3335329176);
-        assert_eq!(zone_hash("r_hand_zone"), 998859158);
-        assert_eq!(zone_hash("torso01_zone"), zone_hash("TORSO01_ZONE"), "case-insensitive");
-    }
-
-    /// An undersuit (3) covers the body (0) where both claim a zone; armour
-    /// (4) on the hands covers the undersuit's gloves and the body's hands.
-    #[test]
-    fn higher_layers_hide_lower_ones_per_zone() {
-        let body = item(0, &["torso01_zone", "l_hand_zone", "head_zone"]);
-        let suit = item(3, &["torso01_zone", "l_hand_zone"]);
-        let arms = item(4, &["l_hand_zone", "omega_arms_zone"]);
-        let hidden = hidden_zones(&[&body, &suit, &arms]);
-        let set = |zones: &[&str]| zones.iter().map(|z| zone_hash(z)).collect::<HashSet<u32>>();
-        assert_eq!(hidden[0], set(&["torso01_zone", "l_hand_zone"]), "the head zone stays");
-        assert_eq!(hidden[1], set(&["l_hand_zone"]));
-        assert!(hidden[2].is_empty(), "nothing covers the top layer");
-    }
-
-    #[test]
-    fn same_layers_and_visible_layers_do_not_hide() {
-        let mut shirt = item(1, &["torso01_zone"]);
-        let jacket = item(1, &["torso01_zone"]);
-        let vest = item(2, &["torso01_zone"]);
-        shirt.chunks[0].visible_layers = vec![2];
-        let hidden = hidden_zones(&[&shirt, &jacket, &vest]);
-        assert!(hidden[0].is_empty(), "layer 2 is in the shirt's VisibleLayers; layer 1 is its own");
-        assert_eq!(hidden[1], [zone_hash("torso01_zone")].into(), "the jacket has no exception");
-    }
-}
+mod tests;

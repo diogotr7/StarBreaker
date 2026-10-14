@@ -149,8 +149,7 @@ every step.
   undersuit's gloves (40,314 of 44,488 vertices written), mobiGlas worn;
   `Pirate_Heavy_01`'s helmet hides hair/brows/lashes/beard/scalp; parity
   fixture `armoured` (marine + body clip) green; Blender renders both
-  outfits animated. Open: (1) ✅ (below); (2) `VisibilityConditions` are
-  not evaluated; (3) ✅ (below).
+  outfits animated. Open: (1) ✅, (2) ✅, (3) ✅ (below).
   (1) ✅ Full helmets hide the DNA head. Rule from data: the DNA head is the
   CHF item on `Head_ItemPort` (`PU_Protos_Head`, the head rig's own `.skin`;
   eyes on `eyes_itemport` under it), and a full helmet's
@@ -176,6 +175,26 @@ every step.
   variant of the shared sidecar path). Parity allowlist entry removed;
   `helmeted` asserts the sidecar's `material_default`; Blender builds the
   slot as Illum.
+  (2) ✅ Clothing visibility, RE'd from the client (Ghidra,
+  `ItemPortContainer::RefreshMeshChunkVisibility` + the per-chunk predicate
+  `CSCItemClothing::EnableOverlay::$_0`, cross-checked in the cig-scgs
+  decompile). Per zone, layers top-down: the top layer's chunks are
+  evaluated; a lower layer is drawn only if a visible chunk above lists it
+  in `VisibleLayers` — which names LOWER layers (608/608 entries in data;
+  the earlier rule read it upside down, so short sleeves hid the body's
+  forearms). A chunk is visible when it has no `VisibilityConditions`, or
+  one condition whose `PortVisibility` entries all match `ActiveTags` and
+  not all `SkipTags`; all matching `DisableTags` hides it; an empty
+  condition hides. An entry tests the items on its `Ports` (an empty
+  existing port without `SkipTags` matches an empty `ActiveTags`; a missing
+  port matches nothing) or, with no ports, every worn item's tags. A tag
+  list matches when all its Tag records (by GUID) are among the item's
+  entity `tags` + `OverlayTags`. `clothing::hidden_zones(&[Worn])`. Found on
+  the way: `starbreaker-datacore` returned `Null` for query paths ending in
+  a reference array (an entity's `tags`); now the record ids. Verified:
+  `a_short_sleeved_shirt_keeps_the_body_forearms`,
+  `an_armour_core_shows_its_backpack_mount_without_a_backpack`; Blender
+  render of Shipjacker_Medium_01.
 - **Armour export** (spec `docs/superpowers/specs/2026-10-13-armour-export-design.md`):
   a single wearable piece exports as worn with
   `entity export <item> --geometry-tag Male|Female` (the record's

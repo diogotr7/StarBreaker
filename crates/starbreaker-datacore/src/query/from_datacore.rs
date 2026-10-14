@@ -239,6 +239,11 @@ impl<'a> FromDataCore<'a> for Value<'a> {
             DataType::Locale => Ok(Value::Locale(db.resolve_string(db.locale_values[index]))),
             DataType::EnumChoice => Ok(Value::Enum(db.resolve_string(db.enum_values[index]))),
             DataType::Guid => Ok(Value::Guid(db.guid_values[index])),
+            // A reference array element: the referenced record's id.
+            DataType::Reference => {
+                let reference = db.reference_values[index];
+                Ok(if reference.is_null() { Value::Null } else { Value::Guid(reference.record_id) })
+            }
             _ => Ok(Value::Null),
         }
     }

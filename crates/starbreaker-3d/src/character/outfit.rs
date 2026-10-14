@@ -4,9 +4,9 @@
 //! - [`Outfit::load`]: the CHF's body ([`super::body`]), the loadout's
 //!   garments ([`super::loadout::resolve_garments`], each loaded like a head
 //!   item: head-parser shape + skeleton, pipeline mesh + `.mtl`) and, from
-//!   every worn item's `SCItemClothingParams`, the zones each one has
-//!   covered ([`super::clothing::hidden_zones`]: an undersuit covers the
-//!   body) and the CHF ports hidden with everything under them (a full
+//!   every worn item's `SCItemClothingParams` on its port, the zones not
+//!   drawn ([`super::clothing::hidden_zones`]: an undersuit covers the
+//!   body; visibility conditions test what is worn on other ports) and the CHF ports hidden with everything under them (a full
 //!   helmet hides `Head_ItemPort`: the head itself, its eyes, hair, brows, …).
 //! - [`Outfit::with_body`]: just a body, nothing covered.
 //! - [`Outfit::wears`]: whether a CHF head item is worn (not on a hidden
@@ -23,7 +23,7 @@ use starbreaker_datacore::Database;
 use starbreaker_p4k::MappedP4k;
 
 use super::body::{Body, load_chf_body};
-use super::clothing::{Clothing, clothing_params, hidden_zones};
+use super::clothing::{Worn, clothing_params, hidden_zones};
 use super::head_skin::{BindPoseSkeleton, HeadMesh};
 use super::items::{HeadItemMesh, load_skin_part};
 use super::loadout::{Garment, LoadoutEntry, pick_worn_variant, resolve_garments};
@@ -69,7 +69,8 @@ impl Outfit {
         if loadout.is_empty() {
             return Self::with_body(body);
         }
-        let worn = resolve_garments(db, loadout, gender_tag(chf.dna.gender_hash), &chf.itemport.name.to_string());
+        let root_port = chf.itemport.name.to_string();
+        let worn = resolve_garments(db, loadout, gender_tag(chf.dna.gender_hash), &root_port);
         let garments: Vec<(Garment, HeadMesh, BindPoseSkeleton, PartSource)> = worn
             .garments
             .into_iter()
@@ -87,8 +88,8 @@ impl Outfit {
             .and_then(|b| db.record_by_id(&b.item.record))
             .map(|record| clothing_params(db, record))
             .unwrap_or_default();
-        let mut layers: Vec<&Clothing> = vec![&body_clothing];
-        layers.extend(garments.iter().map(|(g, ..)| &g.clothing));
+        let mut layers = vec![Worn { port: &root_port, clothing: &body_clothing }];
+        layers.extend(garments.iter().map(|(g, ..)| Worn { port: &g.port, clothing: &g.clothing }));
         let mut hidden = hidden_zones(&layers).into_iter();
         let body_hidden_zones = hidden.next().unwrap_or_default();
         let garments = garments
