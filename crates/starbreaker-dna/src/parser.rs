@@ -760,25 +760,17 @@ mod tests {
         }
     }
 
-    /// LOD1 fixture test gated on the `DNA_FIXTURE_PATH` env var. The
-    /// LOD1 fixture is `protos_human_male_face_t1_pu_head_lod1.dna`
+    /// LOD1 fixture test (read from Data.p4k): the LOD1 fixture is `protos_human_male_face_t1_pu_head_lod1.dna`
     /// — the lowest-detail LOD, which has slot 31 (the per-variant
     /// delta-records array) **null**. The Phase 4a extension confirmed
     /// (via Ghidra + master `.dna` byte inspection) that LOD `.dna`
     /// files only carry a small subset of the master's pointer-table
     /// slots; this test pins that observation.
     ///
-    /// Skipped when the env var is unset or points at a missing file.
+    /// Skipped without a Data.p4k.
     #[test]
     fn fixture_dna_parses() {
-        let path = match std::env::var("DNA_FIXTURE_PATH") {
-            Ok(p) if std::path::Path::new(&p).exists() => p,
-            _ => {
-                eprintln!("Skipping fixture_dna_parses: DNA_FIXTURE_PATH not set or missing");
-                return;
-            }
-        };
-        let bytes = std::fs::read(&path).expect("fixture readable");
+        let Some(bytes) = crate::test_p4k::read(crate::test_p4k::MALE_DNA_LOD1) else { return };
         let dna = DnaFile::read(&bytes).expect("LOD1 .dna should parse");
 
         // Header sanity.
@@ -862,24 +854,16 @@ mod tests {
         );
     }
 
-    /// Master `.dna` fixture test gated on the `DNA_MASTER_PATH` env
-    /// var. The master file is the highest-detail LOD0 file
+    /// Master `.dna` fixture test (read from Data.p4k). The master file is the highest-detail LOD0 file
     /// (`protos_human_male_face_t1_pu_head.dna`, ~72 MB) and is the
     /// **only** LOD that carries slot 31 (the per-variant delta-records
     /// array). This test pins the variant-record layout decoded from
     /// it.
     ///
-    /// Skipped when the env var is unset or points at a missing file.
+    /// Skipped without a Data.p4k.
     #[test]
     fn master_dna_parses() {
-        let path = match std::env::var("DNA_MASTER_PATH") {
-            Ok(p) if std::path::Path::new(&p).exists() => p,
-            _ => {
-                eprintln!("Skipping master_dna_parses: DNA_MASTER_PATH not set or missing");
-                return;
-            }
-        };
-        let bytes = std::fs::read(&path).expect("master .dna readable");
+        let Some(bytes) = crate::test_p4k::read(crate::test_p4k::MALE_DNA) else { return };
         let dna = DnaFile::read(&bytes).expect("master .dna should parse");
 
         // Header sanity — should match the LOD1 file's identity fields

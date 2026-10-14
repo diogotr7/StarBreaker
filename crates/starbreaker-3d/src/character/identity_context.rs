@@ -509,9 +509,7 @@ mod tests {
     #[test]
     fn asymmetric_dna_edit_stays_one_sided() {
         use starbreaker_chf::{DnaBlend, FacePart};
-        let Some(p4k) = open_p4k_or_skip() else {
-            return;
-        };
+        let Some(p4k) = crate::test_p4k::p4k() else { return };
         let chf_bytes = p4k
             .read_file(r"Data\Libs\CharacterCustomizer\masculinedefault.chf")
             .expect("masculinedefault.chf");
@@ -569,9 +567,7 @@ mod tests {
     /// visual gate.
     #[test]
     fn expression_glb_has_one_animation_male_and_female() {
-        let Some(p4k) = open_p4k_or_skip() else {
-            return;
-        };
+        let Some(p4k) = crate::test_p4k::p4k() else { return };
         let cases = [
             ("masculinedefault.chf", "male"),
             ("femininedefault.chf", "female"),
@@ -605,25 +601,6 @@ mod tests {
                 1,
                 "{head_folder} GLB must carry exactly one animation"
             );
-        }
-    }
-
-    /// Open Data.p4k (`SC_DATA_P4K` env var, falling back to the default LIVE install path),
-    /// returning `None` with an eprintln skip note if it can't be opened.
-    fn open_p4k_or_skip() -> Option<starbreaker_p4k::MappedP4k> {
-        const DEFAULT_P4K: &str =
-            r"C:\Program Files\Roberts Space Industries\StarCitizen\LIVE\Data.p4k";
-        let path = std::env::var("SC_DATA_P4K").unwrap_or_else(|_| DEFAULT_P4K.to_string());
-        if !std::path::Path::new(&path).exists() {
-            eprintln!("skip: Data.p4k not found at {path}");
-            return None;
-        }
-        match starbreaker_p4k::MappedP4k::open(&path) {
-            Ok(p4k) => Some(p4k),
-            Err(e) => {
-                eprintln!("skip: failed to open Data.p4k at {path}: {e}");
-                None
-            }
         }
     }
 }

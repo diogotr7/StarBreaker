@@ -278,12 +278,7 @@ mod tests {
     /// [`PartSource::reshaped`]. Skipped unless Data.p4k is accessible.
     #[test]
     fn pipeline_mesh_matches_head_parser_vertex_order() {
-        let path = std::env::var("SC_DATA_P4K")
-            .unwrap_or_else(|_| r"C:\Program Files\Roberts Space Industries\StarCitizen\LIVE\Data.p4k".into());
-        if !std::path::Path::new(&path).exists() {
-            return;
-        }
-        let p4k = MappedP4k::open(&path).unwrap();
+        let Some(p4k) = crate::test_p4k::p4k() else { return };
         let base = r"Data\Objects\Characters\Human\heads\male\pu\protos_human_male_face_t1_pu\protos_human_male_face_t1_pu";
         for part in ["head", "eyes", "teeth"] {
             let skin = format!("{base}_{part}.skin");

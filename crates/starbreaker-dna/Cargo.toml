@@ -9,6 +9,9 @@ zerocopy = { version = "0.8", features = ["derive"] }
 thiserror = "2"
 serde = { version = "1", features = ["derive"], optional = true }
 
+[dev-dependencies]
+starbreaker-p4k = { path = "../starbreaker-p4k" }
+
 [features]
 default = []
 serde = ["dep:serde"]
