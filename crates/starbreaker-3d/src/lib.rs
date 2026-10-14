@@ -8,6 +8,7 @@ pub mod clip;
 pub mod mesh_rig;
 pub mod parity;
 pub mod mtl;
+pub mod material_slots;
 pub mod nmc;
 pub(crate) mod pipeline;
 pub mod skeleton;

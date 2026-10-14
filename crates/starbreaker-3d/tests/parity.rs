@@ -139,6 +139,15 @@ fn helmeted(p4k: &MappedP4k) -> Vec<String> {
     assert!(blend.meshes.keys().any(|m| m.starts_with("m_slaver_heavy_armor_helmet_01")), "{:?}", blend.meshes.keys());
     let clip = &blend.clips["char_customizer_stand_idle_01"];
     assert!(clip.channels.keys().any(|c| c.contains("FACIAL_")), "the face clip still moves the facial bones");
+    // The helmet mesh has a slot past its .mtl: it draws with the engine
+    // default material, which its sidecar carries at that slot.
+    let (_, sidecar) = files
+        .iter()
+        .find(|(p, _)| p.to_lowercase().contains("m_slaver_heavy_armor_helmet_01_01_01_tex") && p.ends_with(".materials.json"))
+        .unwrap_or_else(|| panic!("helmet sidecar: {:?}", files.keys().filter(|p| p.contains("helmet")).collect::<Vec<_>>()));
+    let sidecar: serde_json::Value = serde_json::from_slice(sidecar).unwrap();
+    let names: Vec<&str> = sidecar["submaterials"].as_array().unwrap().iter().filter_map(|s| s["submaterial_name"].as_str()).collect();
+    assert_eq!(names.last(), Some(&"material_default"), "{names:?}");
     diff("helmeted", &from_glb(&glb).unwrap(), &blend)
 }
 

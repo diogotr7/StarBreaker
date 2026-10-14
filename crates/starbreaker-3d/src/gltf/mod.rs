@@ -597,6 +597,7 @@ mod tests {
                 material_path: Some("Data/Objects/layered_variant.mtl".into()),
             }),
             material_set: crate::mtl::MaterialSetAuthoredData {
+                sub_materials: true,
                 attributes: vec![crate::mtl::AuthoredAttribute {
                     name: "DefaultPalette".into(),
                     value: "vehicle.palette.rsi_zeus_cl".into(),

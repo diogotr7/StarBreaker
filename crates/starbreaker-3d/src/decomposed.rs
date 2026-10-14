@@ -2508,9 +2508,6 @@ fn write_material_sidecar(
     );
     let relative_path =
         material_sidecar_relative_path(p4k, &source_material_path, fallback_name, texture_mip);
-    if files.contains_key(&relative_path) {
-        return relative_path;
-    }
     let (sidecar_materials, sidecar_original_indices) = canonical_sidecar_materials_from_source(
         p4k,
         &source_material_path,
@@ -2518,6 +2515,14 @@ fn write_material_sidecar(
         original_indices,
         mtl_cache,
     );
+    // Every mesh of a source .mtl shares its sidecar, unless the mesh has
+    // slots past it (engine default material): that content differs, and
+    // `insert_canonical` gives it its own path.
+    let past_source = load_mtl_cached(p4k, mtl_cache, &source_material_path)
+        .is_some_and(|source| sidecar_original_indices.iter().any(|&i| i as usize >= source.materials.len()));
+    if files.contains_key(&relative_path) && !past_source {
+        return relative_path;
+    }
     let extracted = sidecar_materials
         .materials
         .iter()
@@ -2558,12 +2563,21 @@ fn canonical_sidecar_materials_from_source(
     if let Some(parsed) = load_mtl_cached(p4k, mtl_cache, source_material_path) {
         let mut original_indices = Vec::new();
         let mut non_hidden = Vec::new();
+        let source_count = parsed.materials.len() as u32;
         for (idx, material) in parsed.materials.into_iter().enumerate() {
             if material.should_hide() {
                 continue;
             }
             original_indices.push(idx as u32);
             non_hidden.push(material);
+        }
+        // Slots past the source's submaterials draw with the engine default
+        // (`crate::material_slots`), appended to the loaded set after them.
+        for (material, &idx) in fallback_materials.materials.iter().zip(fallback_indices) {
+            if idx >= source_count {
+                original_indices.push(idx);
+                non_hidden.push(material.clone());
+            }
         }
         let canonical = MtlFile {
             materials: non_hidden,
@@ -6149,6 +6163,7 @@ mod tests {
                 material_path: Some("Data/Objects/Ships/Test/hull_variant.mtl".into()),
             }),
             material_set: crate::mtl::MaterialSetAuthoredData {
+                sub_materials: true,
                 attributes: vec![crate::mtl::AuthoredAttribute {
                     name: "DefaultPalette".into(),
                     value: "vehicle_palette_test".into(),

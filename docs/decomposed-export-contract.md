@@ -203,6 +203,14 @@ Current retained compatibility aliases and fallbacks:
 
 ## Material Sidecars
 
+A sidecar is shared by every mesh of its source `.mtl`. Submesh slots
+follow the engine (`crates/starbreaker-3d/src/material_slots.rs`, CryEngine
+`GetSafeSubMtl`): a `.mtl` without `<SubMaterials>` serves every slot, and a
+slot past a multi-material's submaterials (a mesh compiled against an older
+`.mtl`) draws with the engine default `Materials/material_default.mtl`. Such
+a mesh's sidecar appends that material at the slot's `index`, so its content
+differs and it is written under a hashed variant of the shared path.
+
 Each `*.materials.json` sidecar preserves:
 
 - source material path and geometry path

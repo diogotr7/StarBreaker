@@ -150,9 +150,7 @@ every step.
   `Pirate_Heavy_01`'s helmet hides hair/brows/lashes/beard/scalp; parity
   fixture `armoured` (marine + body clip) green; Blender renders both
   outfits animated. Open: (1) ✅ (below); (2) `VisibilityConditions` are
-  not evaluated; (3) the two writers disagree on submeshes whose material id
-  is past their `.mtl` (helmet: GLB keeps, package drops) — parity fixture
-  `helmeted` allowlists it.
+  not evaluated; (3) ✅ (below).
   (1) ✅ Full helmets hide the DNA head. Rule from data: the DNA head is the
   CHF item on `Head_ItemPort` (`PU_Protos_Head`, the head rig's own `.skin`;
   eyes on `eyes_itemport` under it), and a full helmet's
@@ -165,6 +163,19 @@ every step.
   geometry is a mesh-less GLB node, and in the package `mesh_asset: null`
   with the armature at the entity root. Verified: `full_helmets_hide_the_dna_head`;
   parity fixture `helmeted` (Pirate_Heavy_01, face + body clip).
+  (3) ✅ Material slots past the `.mtl`. The Pirate helmet `.skin`'s
+  `MtlName` chunk records 7 slots of `m_slaver_heavy_armor_helmet_01_01_01`
+  but the shipped `.mtl` has 6 (the mesh was compiled against an older
+  `.mtl`); the GLB kept slot 6, the package dropped it. Engine rule
+  (CryEngine `CMatInfo::GetSafeSubMtl`): a `.mtl` without `<SubMaterials>`
+  serves every slot; a slot past a multi-material draws with the engine
+  default `Materials/material_default.mtl` — drawn, not dropped.
+  `material_slots::resolve_material_slots` applies it where a mesh meets its
+  `.mtl` (`load_single_mesh`, and again after a paint override swaps the
+  root `.mtl`); the sidecar carries the default at that slot (a hashed
+  variant of the shared sidecar path). Parity allowlist entry removed;
+  `helmeted` asserts the sidecar's `material_default`; Blender builds the
+  slot as Illum.
 - **Armour export** (spec `docs/superpowers/specs/2026-10-13-armour-export-design.md`):
   a single wearable piece exports as worn with
   `entity export <item> --geometry-tag Male|Female` (the record's

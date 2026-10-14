@@ -705,7 +705,7 @@ pub(crate) fn load_single_mesh(
     let (nmc, mut mtl_file) = load_nmc_and_material(p4k, geometry_path, material_path);
     // The metadata file (.skin / .cgf) holds the bone table naming the skin's joints.
     let metadata_bytes = crate::socpak::read_geometry_file(p4k, &p4k_geom_path);
-    let mesh = crate::parse_skin_pair_with_options(&mesh_bytes, metadata_bytes.as_deref(), use_model_bbox)?;
+    let mut mesh = crate::parse_skin_pair_with_options(&mesh_bytes, metadata_bytes.as_deref(), use_model_bbox)?;
     if material_path_is_incompatible_with_mesh(&mesh, mtl_file.as_ref()) {
         if let Some(fallback_mtl) = resolve_material(p4k, "", &p4k_geom_path, metadata_bytes.as_deref()) {
             if !material_path_is_incompatible_with_mesh(&mesh, Some(&fallback_mtl)) {
@@ -718,6 +718,12 @@ pub(crate) fn load_single_mesh(
                 mtl_file = Some(fallback_mtl);
             }
         }
+    }
+    // Every submesh draws with the material the engine resolves for its slot.
+    if let Some(mtl) = mtl_file.as_mut() {
+        crate::material_slots::resolve_material_slots(&mut mesh, mtl, || {
+            crate::material_slots::load_default_material(p4k)
+        })?;
     }
 
     let textures = if !opts.material_mode.include_textures() {
