@@ -64,7 +64,7 @@ fn armour_pieces_export_as_worn() {
         let opts = ExportOptions { geometry_tag: Some(tag.into()), lod_level: 0, ..ExportOptions::default() };
         let result = export(&p4k, &db, ARMS, &opts);
         assert!(result.geometry_path.to_lowercase().ends_with(file), "{tag}: {}", result.geometry_path);
-        let (doc, _) = starbreaker_3d::parity::import_glb(result.bundled_bytes().unwrap()).unwrap();
+        let (doc, _, _) = gltf::import_slice(result.bundled_bytes().unwrap()).unwrap();
         assert!(doc.skins().any(|s| s.joints().count() > 20), "{tag}: skinned to its bones");
     }
     let opts = ExportOptions {

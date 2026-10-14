@@ -539,7 +539,7 @@ pub fn validate_ui_ir_document(document: &UiIrDocument) -> Result<(), Vec<String
 pub fn stable_hash_ui_ir(document: &UiIrDocument) -> Result<String, serde_json::Error> {
     let bytes = serde_json::to_vec(document)?;
     let digest = Sha256::digest(bytes);
-    Ok(format!("{:x}", digest))
+    Ok(hex::encode(digest))
 }
 
 /// Compile a canonical UI IR document from a resolved scene.

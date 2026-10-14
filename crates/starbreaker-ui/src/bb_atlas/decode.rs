@@ -2,7 +2,6 @@
 
 use image::{GenericImageView, RgbaImage, imageops};
 use log::{debug, warn};
-use tiny_skia_011 as tiny_skia;
 
 pub(super) fn decode_bytes(bytes: &[u8], ext: &str, target_w: u32, target_h: u32) -> Option<RgbaImage> {
     let img = match ext {

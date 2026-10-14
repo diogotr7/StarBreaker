@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 use rmcp::{
     ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{ServerCapabilities, ServerInfo},
+    model::{ServerCapabilities, ServerConfig},
     schemars, tool, tool_router,
 };
 use starbreaker_datacore::database::Database;
@@ -2203,7 +2203,7 @@ impl StarBreakerMcp {
     }
 
     #[tool(description = "Preview an image from the P4k archive. Supports DDS (with mip selection), PNG, JPG, and other formats. Returns the image for visual inspection. For DDS files, .tif extension is auto-converted to .dds.")]
-    fn image_preview(&self, Parameters(req): Parameters<ImagePreviewRequest>) -> rmcp::model::Content {
+    fn image_preview(&self, Parameters(req): Parameters<ImagePreviewRequest>) -> rmcp::model::ContentBlock {
         let data = match self.read_p4k_file(&req.path) {
             Ok(d) => d,
             Err(e) => return content_text(e),
@@ -3590,8 +3590,8 @@ impl StarBreakerMcp {
 }
 #[rmcp::tool_handler]
 impl ServerHandler for StarBreakerMcp {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "Star Citizen game data server. Query DataCore records, entity loadouts, and P4k archive files.",
         )
     }
@@ -4538,14 +4538,14 @@ fn truncate_string(value: &str) -> String {
         + "…"
 }
 
-/// Create a Content::Text item.
-fn content_text(text: impl Into<String>) -> rmcp::model::Content {
-    rmcp::model::Content::new(rmcp::model::RawContent::text(text), None)
+/// Create a ContentBlock::Text item.
+fn content_text(text: impl Into<String>) -> rmcp::model::ContentBlock {
+    rmcp::model::ContentBlock::text(text)
 }
 
-/// Create a Content::Image item.
-fn content_image(data: impl Into<String>, mime_type: impl Into<String>) -> rmcp::model::Content {
-    rmcp::model::Content::new(rmcp::model::RawContent::image(data, mime_type), None)
+/// Create a ContentBlock::Image item.
+fn content_image(data: impl Into<String>, mime_type: impl Into<String>) -> rmcp::model::ContentBlock {
+    rmcp::model::ContentBlock::image(data, mime_type)
 }
 
 /// P4k-backed sibling reader for split DDS mip files.

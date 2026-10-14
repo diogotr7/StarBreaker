@@ -542,7 +542,7 @@ mod tests {
         let edit = ctx.build_glb(&edited_dna, false, false).expect("edited glb");
 
         let positions = |glb: &[u8]| -> Vec<[f32; 3]> {
-            let (doc, buffers) = crate::parity::import_glb(glb).expect("parse glb");
+            let (doc, buffers, _) = gltf::import_slice(glb).expect("parse glb");
             let prim = doc.meshes().next().unwrap().primitives().next().unwrap();
             let reader = prim.reader(|b| Some(&buffers[b.index()]));
             reader.read_positions().unwrap().collect()

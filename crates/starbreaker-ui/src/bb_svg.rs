@@ -12,7 +12,6 @@
 
 use image::{imageops, RgbaImage};
 use log::warn;
-use tiny_skia_011 as tiny_skia;
 
 /// Rasterise `svg_bytes` into an RGBA image of `target_w × target_h` pixels.
 ///

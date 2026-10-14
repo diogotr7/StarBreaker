@@ -75,7 +75,7 @@ fn make_exported_rect_swf() -> Vec<u8> {
     }];
 
     let tags = [
-        Tag::DefineShape(shape),
+        Tag::DefineShape(Box::new(shape)),
         Tag::ExportAssets(export),
         Tag::ShowFrame,
     ];
@@ -191,7 +191,7 @@ fn white_fill_is_tinted_when_tint_is_not_white() {
         name: swf::SwfStr::from_utf8_str("white_rect"),
     }];
     let tags = [
-        Tag::DefineShape(shape),
+        Tag::DefineShape(Box::new(shape)),
         Tag::ExportAssets(export),
         Tag::ShowFrame,
     ];

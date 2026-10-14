@@ -273,16 +273,16 @@ fn parse_atl_xml(xml: &str) -> Result<Vec<AtlTrigger>, BnkError> {
             Ok(Event::End(ref e)) => {
                 let tag = e.local_name();
                 match tag.as_ref() {
-                    b"AudioTriggers" => inside_triggers = false,
-                    b"ATLTrigger" => {
+                    "AudioTriggers" => inside_triggers = false,
+                    "ATLTrigger" => {
                         if let Some(trigger) = current_trigger.take() {
                             if !trigger.trigger_name.is_empty() {
                                 raw_triggers.push(trigger);
                             }
                         }
                     }
-                    b"AudioPreloads" | b"ATLPreloads" => inside_preloads = false,
-                    b"ATLPreloadRequest" => {
+                    "AudioPreloads" | "ATLPreloads" => inside_preloads = false,
+                    "ATLPreloadRequest" => {
                         current_preload_name = None;
                     }
                     _ => {}
@@ -329,12 +329,12 @@ fn handle_open_tag(
 ) {
     let tag = e.local_name();
     match tag.as_ref() {
-        b"AudioTriggers" => {
+        "AudioTriggers" => {
             *inside_triggers = true;
         }
-        b"ATLTrigger" => {
+        "ATLTrigger" => {
             if *inside_triggers {
-                if let Some(name) = get_attr(e, b"atl_name") {
+                if let Some(name) = get_attr(e, "atl_name") {
                     let trigger = RawTrigger {
                         trigger_name: name,
                         wwise_event_name: String::new(),
@@ -351,37 +351,37 @@ fn handle_open_tag(
                 }
             }
         }
-        b"WwiseEvent" => {
+        "WwiseEvent" => {
             if let Some(trigger) = current_trigger {
-                if let Some(name) = get_attr(e, b"wwise_name") {
+                if let Some(name) = get_attr(e, "wwise_name") {
                     trigger.wwise_event_name = name;
                 }
-                if let Some(dur) = get_attr(e, b"wwise_duration_type") {
+                if let Some(dur) = get_attr(e, "wwise_duration_type") {
                     trigger.duration_type = dur;
                 }
-                if let Some(radius) = get_attr(e, b"wwise_radius_max") {
+                if let Some(radius) = get_attr(e, "wwise_radius_max") {
                     trigger.radius_max = radius.parse::<f32>().ok();
                 }
             }
         }
-        b"ATLPreload" => {
+        "ATLPreload" => {
             if let Some(trigger) = current_trigger {
-                if let Some(preload_name) = get_attr(e, b"atl_name") {
+                if let Some(preload_name) = get_attr(e, "atl_name") {
                     trigger.preload_name = preload_name;
                 }
             }
         }
-        b"AudioPreloads" | b"ATLPreloads" => {
+        "AudioPreloads" | "ATLPreloads" => {
             *inside_preloads = true;
         }
-        b"ATLPreloadRequest" => {
+        "ATLPreloadRequest" => {
             if *inside_preloads {
-                *current_preload_name = get_attr(e, b"atl_name");
+                *current_preload_name = get_attr(e, "atl_name");
             }
         }
-        b"WwiseFile" => {
+        "WwiseFile" => {
             if let Some(preload_name) = current_preload_name {
-                if let Some(wwise_name) = get_attr(e, b"wwise_name") {
+                if let Some(wwise_name) = get_attr(e, "wwise_name") {
                     preload_banks.insert(preload_name.clone(), wwise_name);
                 }
             }

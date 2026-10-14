@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::included_objects::IncludedObjects;
-use quick_xml::Reader;
+use quick_xml::{Reader, XmlVersion};
 use quick_xml::events::Event;
 use starbreaker_chunks::ChunkFile;
 use starbreaker_chunks::known_types::crch;
@@ -576,11 +576,11 @@ pub(crate) fn parse_transit_destinations(data: &[u8]) -> Vec<TransitDestination>
     let mut destinations = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().as_ref() == b"Entity" => {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().as_ref() == "Entity" => {
                 let mut attrs: HashMap<String, String> = HashMap::new();
                 for attr in e.attributes().flatten() {
-                    let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
-                    if let Ok(value) = attr.decode_and_unescape_value(reader.decoder()) {
+                    let key = attr.key.as_ref().to_owned();
+                    if let Ok(value) = attr.normalized_value(XmlVersion::Implicit1_0) {
                         attrs.insert(key, value.into_owned());
                     }
                 }
@@ -915,11 +915,11 @@ fn extract_item_port_meshes_from_text_xml(
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().as_ref() == b"ItemPort" => {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().as_ref() == "ItemPort" => {
                 let mut attrs: HashMap<String, String> = HashMap::new();
                 for attr in e.attributes().flatten() {
-                    let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
-                    if let Ok(value) = attr.decode_and_unescape_value(reader.decoder()) {
+                    let key = attr.key.as_ref().to_owned();
+                    if let Ok(value) = attr.normalized_value(XmlVersion::Implicit1_0) {
                         attrs.insert(key, value.into_owned());
                     }
                 }
@@ -1158,17 +1158,17 @@ fn parse_editor_bounds(data: &[u8]) -> Option<([f32; 3], [f32; 3])> {
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().as_ref() == b"ObjectContainer" => {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().as_ref() == "ObjectContainer" => {
                 let mut min_bounds = None;
                 let mut max_bounds = None;
                 for attr in e.attributes().flatten() {
                     let key = attr.key.as_ref();
-                    let Ok(value) = attr.decode_and_unescape_value(reader.decoder()) else {
+                    let Ok(value) = attr.normalized_value(XmlVersion::Implicit1_0) else {
                         continue;
                     };
-                    if key == b"minBounds" {
+                    if key == "minBounds" {
                         min_bounds = Some(parse_vec3_csv(value.as_ref()));
-                    } else if key == b"maxBounds" {
+                    } else if key == "maxBounds" {
                         max_bounds = Some(parse_vec3_csv(value.as_ref()));
                     }
                 }
@@ -2701,19 +2701,19 @@ fn parse_child_socpak_refs_from_text_xml(text: &str) -> Vec<ChildSocpakRef> {
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().as_ref() == b"ChildObjectContainers" => {
+            Ok(Event::Start(e)) if e.name().as_ref() == "ChildObjectContainers" => {
                 inside_children = true;
             }
-            Ok(Event::End(e)) if e.name().as_ref() == b"ChildObjectContainers" => {
+            Ok(Event::End(e)) if e.name().as_ref() == "ChildObjectContainers" => {
                 inside_children = false;
             }
             Ok(Event::Start(e)) | Ok(Event::Empty(e))
-                if inside_children && e.name().as_ref() == b"Child" =>
+                if inside_children && e.name().as_ref() == "Child" =>
             {
                 let mut attrs = HashMap::new();
                 for attr in e.attributes().flatten() {
-                    let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
-                    if let Ok(value) = attr.decode_and_unescape_value(reader.decoder()) {
+                    let key = attr.key.as_ref().to_owned();
+                    if let Ok(value) = attr.normalized_value(XmlVersion::Implicit1_0) {
                         attrs.insert(key, value.into_owned());
                     }
                 }

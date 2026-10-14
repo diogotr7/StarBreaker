@@ -162,7 +162,9 @@ pub(crate) fn extract_fonts_from_tags(
                     .iter()
                     .map(|g| FontGlyph {
                         code: Some(g.code),
-                        advance: Some(g.advance),
+                        // swf 0.3 reads the advance table as u16; the format stores SI16, so
+                        // reinterpret the bits as before.
+                        advance: Some(g.advance as i16),
                         shape_records: g.shape_records.clone(),
                     })
                     .collect();

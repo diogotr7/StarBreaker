@@ -9,7 +9,7 @@ starbreaker-datacore = { path = "../starbreaker-datacore" }
 starbreaker-cryxml = { path = "../starbreaker-cryxml" }
 starbreaker-p4k = { path = "../starbreaker-p4k" }
 starbreaker-wem = { path = "../starbreaker-wem" }
-quick-xml = "0.37"
+quick-xml = "0.42"
 zerocopy = { version = "0.8", features = ["derive"] }
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

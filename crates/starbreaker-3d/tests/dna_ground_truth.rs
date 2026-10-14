@@ -213,7 +213,7 @@ fn load_rig(
 /// Joint world transforms (from the node hierarchy) of the first skin, paired
 /// with its inverse bind matrices, and the joints' names and positions.
 fn skin_rest_products(glb: &[u8]) -> (Vec<glam::Mat4>, Vec<(String, glam::Vec3)>) {
-    let (doc, buffers) = starbreaker_3d::parity::import_glb(glb).expect("import glb");
+    let (doc, buffers, _) = gltf::import_slice(glb).expect("import glb");
     let mut global = vec![glam::Mat4::IDENTITY; doc.nodes().len()];
     fn walk(n: gltf::Node, parent: glam::Mat4, out: &mut [glam::Mat4]) {
         let m = parent * glam::Mat4::from_cols_array_2d(&n.transform().matrix());
@@ -462,7 +462,7 @@ fn pure_archetype_dna(gender_hash: starbreaker_common::NameHash, head_id: u16) -
 /// World-space (glTF scene) positions of every mesh primitive: each through
 /// its node's global transform (at rest a skinned mesh renders there too).
 fn glb_positions(glb: &[u8]) -> Vec<Vec<[f32; 3]>> {
-    let (doc, buffers) = starbreaker_3d::parity::import_glb(glb).expect("import glb");
+    let (doc, buffers, _) = gltf::import_slice(glb).expect("import glb");
     let mut global = vec![glam::Mat4::IDENTITY; doc.nodes().len()];
     fn walk(n: gltf::Node, parent: glam::Mat4, out: &mut [glam::Mat4]) {
         let m = parent * glam::Mat4::from_cols_array_2d(&n.transform().matrix());

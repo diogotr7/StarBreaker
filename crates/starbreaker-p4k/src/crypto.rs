@@ -1,4 +1,4 @@
-use aes::cipher::{BlockDecryptMut, KeyIvInit};
+use aes::cipher::{BlockModeDecrypt, KeyIvInit};
 use cbc::Decryptor;
 
 use crate::error::P4kError;
@@ -28,7 +28,7 @@ pub fn decrypt(data: &[u8]) -> Result<Vec<u8>, P4kError> {
     let decryptor = Aes128CbcDec::new(&AES_KEY.into(), &AES_IV.into());
 
     decryptor
-        .decrypt_padded_mut::<aes::cipher::block_padding::NoPadding>(&mut buf)
+        .decrypt_padded::<aes::cipher::block_padding::NoPadding>(&mut buf)
         .map_err(|e| P4kError::Decryption(e.to_string()))?;
 
     // Trim trailing zero bytes (CIG uses zero-padding, not PKCS7)

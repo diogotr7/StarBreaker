@@ -6,22 +6,6 @@
 
 use super::{Channel, ClipSummary, MeshSummary, Summary, insert_unique, normalize_name, position_hash};
 
-/// Parse a GLB into its document and buffers, reading every buffer from the
-/// GLB's binary chunk (the exporter never writes external or data-URI
-/// buffers). Stands in for `gltf::import_slice`, whose image decoding the
-/// readers here never need.
-pub fn import_glb(glb: &[u8]) -> Result<(gltf::Document, Vec<Vec<u8>>), String> {
-    let gltf::Gltf { document, blob } = gltf::Gltf::from_slice(glb).map_err(|e| e.to_string())?;
-    let buffers = document
-        .buffers()
-        .map(|b| match (b.source(), &blob) {
-            (gltf::buffer::Source::Bin, Some(blob)) => Ok(blob.clone()),
-            _ => Err(format!("buffer {} is not in the GLB binary chunk", b.index())),
-        })
-        .collect::<Result<_, _>>()?;
-    Ok((document, buffers))
-}
-
 fn json_chunk(glb: &[u8]) -> Result<serde_json::Value, String> {
     if glb.len() < 20 || &glb[..4] != b"glTF" {
         return Err("not a GLB".into());
@@ -32,7 +16,7 @@ fn json_chunk(glb: &[u8]) -> Result<serde_json::Value, String> {
 
 /// Summarise a GLB (see the module docs).
 pub fn from_glb(glb: &[u8]) -> Result<Summary, String> {
-    let (doc, buffers) = import_glb(glb)?;
+    let (doc, buffers, _) = gltf::import_slice(glb).map_err(|e| e.to_string())?;
     let json = json_chunk(glb)?;
     let buffer = |b: gltf::Buffer| Some(&buffers[b.index()][..]);
 

@@ -46,6 +46,15 @@ fn parse_html_empty_returns_empty() {
     assert!(parse_swf_html("   ").is_empty(), "whitespace-only should give no runs");
 }
 
+/// Entity and character references stay inside the run they appear in.
+#[test]
+fn parse_html_entities_stay_in_one_run() {
+    let html = r##"<p align="left"><font face="$Furore" size="8" color="#ffffff" letterSpacing="0">A &amp; B &lt;3&gt; &#169;</font></p>"##;
+    let runs = parse_swf_html(html);
+    assert_eq!(runs.len(), 1, "expected 1 run, got {runs:?}");
+    assert_eq!(runs[0].text, "A & B <3> \u{a9}");
+}
+
 /// `is_loc_key` / `loc_key` helpers.
 #[test]
 fn text_run_loc_key_detection() {

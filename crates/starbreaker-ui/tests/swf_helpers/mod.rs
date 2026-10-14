@@ -158,8 +158,8 @@ pub fn make_labeled_frames_swf() -> Vec<u8> {
     let green = Color { r: 50, g: 200, b: 80, a: 255 };
 
     let tags: Vec<Tag<'_>> = vec![
-        Tag::DefineShape(filled_rect_shape(1, 100.0, 100.0, red)),
-        Tag::DefineShape(filled_rect_shape(2, 100.0, 100.0, green)),
+        Tag::DefineShape(Box::new(filled_rect_shape(1, 100.0, 100.0, red))),
+        Tag::DefineShape(Box::new(filled_rect_shape(2, 100.0, 100.0, green))),
         Tag::ExportAssets(vec![
             ExportedAsset { id: 1, name: SwfStr::from_utf8_str("shape_a") },
             ExportedAsset { id: 2, name: SwfStr::from_utf8_str("shape_b") },
@@ -224,8 +224,8 @@ pub fn make_state_sprites_swf() -> Vec<u8> {
 
     let tags: Vec<Tag<'_>> = vec![
         // Shapes used by the state sprites
-        Tag::DefineShape(filled_rect_shape(1, 80.0, 80.0, red)),
-        Tag::DefineShape(filled_rect_shape(2, 80.0, 80.0, blue)),
+        Tag::DefineShape(Box::new(filled_rect_shape(1, 80.0, 80.0, red))),
+        Tag::DefineShape(Box::new(filled_rect_shape(2, 80.0, 80.0, blue))),
         // State sprites
         Tag::DefineSprite(Sprite {
             id: 3,
@@ -372,7 +372,7 @@ pub fn make_doubly_nested_sprite_swf() -> Vec<u8> {
 
     let red = Color { r: 220, g: 50, b: 50, a: 255 };
     let tags: Vec<Tag<'_>> = vec![
-        Tag::DefineShape(filled_rect_shape(1, 30.0, 30.0, red)),
+        Tag::DefineShape(Box::new(filled_rect_shape(1, 30.0, 30.0, red))),
         Tag::DefineSprite(Sprite {
             id: 2,
             num_frames: 1,
@@ -415,7 +415,7 @@ pub fn make_scaled_nested_sprite_swf() -> Vec<u8> {
 
     // Inner sprite places shape at identity; outer places inner at 2×.
     let tags: Vec<Tag<'_>> = vec![
-        Tag::DefineShape(filled_rect_shape(1, 20.0, 20.0, red)),
+        Tag::DefineShape(Box::new(filled_rect_shape(1, 20.0, 20.0, red))),
         Tag::DefineSprite(Sprite {
             id: 2,
             num_frames: 1,
@@ -531,7 +531,7 @@ pub fn make_stage_color_transform_swf() -> Vec<u8> {
 
     let white = Color { r: 255, g: 255, b: 255, a: 255 };
     let tags: Vec<Tag<'_>> = vec![
-        Tag::DefineShape(filled_rect_shape(1, 40.0, 40.0, white)),
+        Tag::DefineShape(Box::new(filled_rect_shape(1, 40.0, 40.0, white))),
         place_with_ct(1, 1, Matrix::IDENTITY, color_mult(0.5, 1.0, 1.0, 1.0)),
         Tag::ShowFrame,
     ];
@@ -565,7 +565,7 @@ pub fn make_nested_color_transform_swf() -> Vec<u8> {
 
     let white = Color { r: 255, g: 255, b: 255, a: 255 };
     let tags: Vec<Tag<'_>> = vec![
-        Tag::DefineShape(filled_rect_shape(1, 20.0, 20.0, white)),
+        Tag::DefineShape(Box::new(filled_rect_shape(1, 20.0, 20.0, white))),
         // spriteB places the shape at its origin (no transform).
         Tag::DefineSprite(Sprite {
             id: 2,
@@ -693,9 +693,9 @@ pub fn make_mixed_state_swf() -> Vec<u8> {
 
     let tags: Vec<Tag<'_>> = vec![
         // Leaf shapes
-        Tag::DefineShape(filled_rect_shape(1, 30.0, 30.0, orange)),
-        Tag::DefineShape(filled_rect_shape(2, 30.0, 30.0, red)),
-        Tag::DefineShape(filled_rect_shape(3, 30.0, 30.0, blue)),
+        Tag::DefineShape(Box::new(filled_rect_shape(1, 30.0, 30.0, orange))),
+        Tag::DefineShape(Box::new(filled_rect_shape(2, 30.0, 30.0, red))),
+        Tag::DefineShape(Box::new(filled_rect_shape(3, 30.0, 30.0, blue))),
         // State sprites — each wraps one leaf shape at identity
         Tag::DefineSprite(Sprite {
             id: 4,
@@ -854,7 +854,7 @@ pub fn make_sample_data_swf() -> Vec<u8> {
     let loc_html = r##"<p align="center"><font face="$Furore" size="6" color="#ffffff" letterSpacing="0.0">@hud_NoTarget</font></p>"##;
 
     let tags: Vec<Tag<'_>> = vec![
-        Tag::DefineShape(filled_rect_shape(1, 50.0, 50.0, red)),
+        Tag::DefineShape(Box::new(filled_rect_shape(1, 50.0, 50.0, red))),
         Tag::DefineEditText(Box::new(
             swf::EditText::new()
                 .with_id(2)

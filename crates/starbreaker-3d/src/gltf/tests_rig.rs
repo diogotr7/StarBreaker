@@ -137,7 +137,7 @@ fn attribute_names(primitive: &gltf::Primitive) -> Vec<String> {
 fn nmc_hierarchy_primitives_keep_every_vertex_attribute() {
     let mode = crate::pipeline::MaterialMode::Textures;
     let flat = export(quad_mesh(), None, Vec::new(), mode);
-    let (flat_doc, _) = crate::parity::import_glb(&flat).expect("flat glb");
+    let (flat_doc, _, _) = gltf::import_slice(&flat).expect("flat glb");
     let flat_attrs = attribute_names(&flat_doc.meshes().next().unwrap().primitives().next().unwrap());
     assert!(flat_attrs.contains(&"Tangents".to_string()), "{flat_attrs:?}");
 
@@ -145,7 +145,7 @@ fn nmc_hierarchy_primitives_keep_every_vertex_attribute() {
     split.submeshes = vec![submesh(0, 0), submesh(3, 1)];
     let nmc = NodeMeshCombo { nodes: vec![nmc_node("Root", None, 0.0), nmc_node("Child", Some(0), 5.0)], material_indices: vec![0, 0] };
     let glb = export(split, Some(nmc), Vec::new(), mode);
-    let (doc, _) = crate::parity::import_glb(&glb).expect("nmc glb");
+    let (doc, _, _) = gltf::import_slice(&glb).expect("nmc glb");
     for mesh in doc.meshes() {
         for primitive in mesh.primitives() {
             assert_eq!(attribute_names(&primitive), flat_attrs, "mesh {:?}", mesh.name());
@@ -163,7 +163,7 @@ fn skinned_mesh_emits_a_skin_bound_to_the_named_bones() {
     mesh.skin = Some(skin(&["Root", "Hand"], &[both; 6]));
     let bones = vec![bone("root", None, [0.0, 0.0, 0.0]), bone("hand", Some(0), [5.0, 0.0, 0.0])];
     let glb = export(mesh, None, bones, crate::pipeline::MaterialMode::None);
-    let (doc, buffers) = crate::parity::import_glb(&glb).expect("glb");
+    let (doc, buffers, _) = gltf::import_slice(&glb).expect("glb");
 
     let node = doc.nodes().find(|n| n.mesh().is_some()).expect("mesh node");
     let skin = node.skin().expect("mesh node is skinned");
@@ -192,7 +192,7 @@ fn more_than_four_influences_use_a_second_set_strongest_first() {
     mesh.skin = Some(skin(&names, &[six; 6]));
     let bones = names.iter().enumerate().map(|(i, n)| bone(n, None, [i as f32, 0.0, 0.0])).collect();
     let glb = export(mesh, None, bones, crate::pipeline::MaterialMode::None);
-    let (doc, buffers) = crate::parity::import_glb(&glb).expect("glb");
+    let (doc, buffers, _) = gltf::import_slice(&glb).expect("glb");
     let primitive = doc.meshes().next().unwrap().primitives().next().unwrap();
     let reader = primitive.reader(|b| Some(&buffers[b.index()]));
     let j0: Vec<[u16; 4]> = reader.read_joints(0).unwrap().into_u16().collect();
@@ -217,7 +217,7 @@ fn unweighted_vertices_and_unknown_joints_bind_to_an_anchor() {
     let root: &[(u16, f32)] = &[(0, 1.0)];
     mesh.skin = Some(skin(&["root", "ghost"], &[root, root, root, none, none, ghost]));
     let glb = export(mesh, None, vec![bone("root", None, [0.0; 3])], crate::pipeline::MaterialMode::None);
-    let (doc, buffers) = crate::parity::import_glb(&glb).expect("glb");
+    let (doc, buffers, _) = gltf::import_slice(&glb).expect("glb");
     let node = doc.nodes().find(|n| n.mesh().is_some()).unwrap();
     let skin = node.skin().expect("skin");
     let joints: Vec<_> = skin.joints().collect();
@@ -250,7 +250,7 @@ fn morph_targets_emit_named_targets() {
         MorphTarget { name: "frown".into(), position_deltas: vec![[0.0, -0.1, 0.0]; 6], normal_deltas: Some(vec![[0.0, 0.0, 0.0]; 6]) },
     ];
     let glb = export(mesh, None, Vec::new(), crate::pipeline::MaterialMode::None);
-    let (doc, buffers) = crate::parity::import_glb(&glb).expect("glb");
+    let (doc, buffers, _) = gltf::import_slice(&glb).expect("glb");
     let gl_mesh = doc.meshes().next().unwrap();
     assert_eq!(gl_mesh.weights(), Some(&[0.0f32, 0.0][..]));
     let json_len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
@@ -295,7 +295,7 @@ fn skeleton_is_a_joint_hierarchy() {
         bone_under("hand", Some(1), [5.0, 0.0, 1.0], [2.0, 0.0, 0.0]),
     ];
     let glb = export(mesh, None, bones, crate::pipeline::MaterialMode::None);
-    let (doc, _) = crate::parity::import_glb(&glb).expect("glb");
+    let (doc, _, _) = gltf::import_slice(&glb).expect("glb");
     let find = |name: &str| doc.nodes().find(|n| n.name() == Some(name)).expect(name);
     let (root, arm, hand) = (find("root"), find("arm"), find("hand"));
     assert!(root.children().any(|c| c.index() == arm.index()), "arm under root");
@@ -318,7 +318,7 @@ fn posed_skeleton_skins_from_the_bind_pose() {
     hand.local_position = [5.0, 2.0, 0.0];
     hand.world_position = [5.0, 2.0, 0.0];
     let glb = export(mesh, None, vec![bone_under("root", None, [0.0; 3], [0.0; 3]), hand], crate::pipeline::MaterialMode::None);
-    let (doc, buffers) = crate::parity::import_glb(&glb).expect("glb");
+    let (doc, buffers, _) = gltf::import_slice(&glb).expect("glb");
     let node = doc.nodes().find(|n| n.skin().is_some()).unwrap();
     let skin = node.skin().unwrap();
     let ibms: Vec<[[f32; 4]; 4]> = skin.reader(|b| Some(&buffers[b.index()])).read_inverse_bind_matrices().unwrap().collect();

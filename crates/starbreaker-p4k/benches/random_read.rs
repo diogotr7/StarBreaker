@@ -1,7 +1,8 @@
 //! Random-read benchmarks. Auto-discovers Data.p4k via starbreaker-common;
 //! respects SC_DATA_P4K override. Skips silently if no archive can be found.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use std::hint::black_box;
+use criterion::{Criterion, criterion_group, criterion_main};
 use starbreaker_common::discover::find_p4k;
 use starbreaker_p4k::MappedP4k;
 

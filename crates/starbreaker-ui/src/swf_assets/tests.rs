@@ -72,7 +72,7 @@ fn make_minimal_swf() -> Vec<u8> {
             b: 0,
             a: 255,
         }),
-        Tag::DefineShape(shape),
+        Tag::DefineShape(Box::new(shape)),
         Tag::ShowFrame,
     ];
 

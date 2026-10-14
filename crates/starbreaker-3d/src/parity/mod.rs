@@ -16,7 +16,7 @@ mod glb;
 use std::collections::BTreeMap;
 
 pub use blend::from_blend;
-pub use glb::{from_glb, import_glb};
+pub use glb::from_glb;
 
 /// One mesh's comparable facts.
 #[derive(Debug, Clone, Default, PartialEq)]

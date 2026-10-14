@@ -75,7 +75,7 @@ fn chf(p4k: &MappedP4k, name: &str) -> starbreaker_chf::ChfData {
 
 /// Mesh names → vertex counts of a GLB (shared vertex buffers counted once).
 fn mesh_vertices(glb: &[u8]) -> std::collections::HashMap<String, usize> {
-    let (doc, _) = starbreaker_3d::parity::import_glb(glb).unwrap();
+    let (doc, _, _) = gltf::import_slice(glb).unwrap();
     doc.meshes()
         .map(|m| {
             let mut seen = std::collections::HashSet::new();
@@ -166,7 +166,7 @@ fn full_helmets_hide_the_dna_head() {
         assert!(!meshes.contains_key(part), "{part} is under the helmet: {:?}", meshes.keys());
     }
     assert!(meshes.keys().any(|m| m.starts_with("m_slaver_heavy_armor_helmet")), "{:?}", meshes.keys());
-    let (doc, _) = starbreaker_3d::parity::import_glb(&glb).unwrap();
+    let (doc, ..) = gltf::import_slice(&glb).unwrap();
     let joints: std::collections::HashSet<String> = doc.skins().flat_map(|s| s.joints().filter_map(|j| j.name().map(str::to_owned)).collect::<Vec<_>>()).collect();
     let facial = doc.nodes().filter(|n| n.name().is_some_and(|m| m.starts_with("FACIAL_"))).count();
     assert!(joints.len() > 50 && facial > 100, "the character skeleton stays: {} skinned joints, {facial} facial bones", joints.len());
