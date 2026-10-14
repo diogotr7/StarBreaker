@@ -300,7 +300,9 @@ fn decode_base64(input: &str) -> Vec<u8> {
 
 pub fn startup_ui_prefix_bytes() -> Vec<u8> {
     let compressed = decode_base64(STARTUP_UI_PREFIX_ZSTD_BASE64);
-    let mut bytes = zstd::stream::decode_all(&compressed[..])
+    let mut decoder = structured_zstd::decoding::StreamingDecoder::new(&compressed[..]);
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut decoder, &mut bytes)
         .expect("embedded Blender startup UI prefix must decompress");
     patch_startup_view3d_lens(&mut bytes);
     bytes

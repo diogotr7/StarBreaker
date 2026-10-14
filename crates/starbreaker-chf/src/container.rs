@@ -59,8 +59,7 @@ impl ChfFile {
 
         // Decompress zstd data
         let compressed = &bytes[16..16 + compressed_size];
-        let mut decoder = ruzstd::decoding::StreamingDecoder::new(std::io::Cursor::new(compressed))
-            .map_err(|e| ChfError::Compression(e.to_string()))?;
+        let mut decoder = structured_zstd::decoding::StreamingDecoder::new(compressed);
         let mut data = Vec::new();
         decoder
             .read_to_end(&mut data)
@@ -79,9 +78,9 @@ impl ChfFile {
 
     /// Re-pack into a 4096-byte CHF container.
     pub fn to_chf(&self) -> Result<Vec<u8>, ChfError> {
-        let compressed = ruzstd::encoding::compress_to_vec(
+        let compressed = structured_zstd::encoding::compress_to_vec(
             std::io::Cursor::new(&self.data),
-            ruzstd::encoding::CompressionLevel::Fastest,
+            structured_zstd::encoding::CompressionLevel::Fastest,
         );
 
         if 16 + compressed.len() > CHF_SIZE {

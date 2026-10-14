@@ -5,6 +5,6 @@ edition = "2024"
 
 [dependencies]
 rustc-hash = { workspace = true }
-zstd = { workspace = true }
+structured-zstd = { workspace = true }
 
 [dev-dependencies]

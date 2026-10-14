@@ -824,10 +824,11 @@ fn read_entry(reader: &mut SpanReader, is_zip64: bool) -> Result<P4kEntry, P4kEr
     })
 }
 
-/// Decompress zstd data with a pre-allocation hint.
+/// Decompress zstd data into a buffer of the entry's uncompressed size.
 fn zstd_decompress(data: &[u8], size_hint: usize) -> Result<Vec<u8>, P4kError> {
     let mut output = Vec::with_capacity(size_hint);
-    zstd::stream::copy_decode(std::io::Cursor::new(data), &mut output)
+    structured_zstd::decoding::FrameDecoder::new()
+        .decode_all_to_vec(data, &mut output)
         .map_err(|e| P4kError::Decompression(format!("zstd: {e}")))?;
     Ok(output)
 }

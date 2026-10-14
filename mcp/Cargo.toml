@@ -20,7 +20,7 @@ base64 = "0.23"
 anyhow = { workspace = true }
 
 image = { workspace = true, features = ["png", "jpeg", "tiff", "gif", "bmp", "tga"] }
-zstd = { workspace = true }
+structured-zstd = { workspace = true }
 
 starbreaker-p4k = { workspace = true }
 starbreaker-datacore = { workspace = true }

@@ -8,10 +8,11 @@
 //! from a live Blender 5.1.1 instance and cross-checked against the bundled DNA1
 //! block (`dna1_blender501.bin`).
 
-use std::io::Write;
+use std::io::{Read, Write};
 
 use rustc_hash::FxHashMap;
-use zstd::Encoder;
+use structured_zstd::decoding::StreamingDecoder;
+use structured_zstd::encoding::{CompressionLevel, StreamingEncoder};
 
 pub mod action;
 pub mod armature;
@@ -234,16 +235,13 @@ pub fn write_block(
 ///
 /// Magic bytes: 0x28 0xB5 0x2F 0xFD (Zstd frame header)
 pub fn compress_blend_bytes(raw_blend: &[u8]) -> Vec<u8> {
-    match Encoder::new(Vec::new(), BLEND_ZSTD_LEVEL) {
-        Ok(mut encoder) => {
-            if encoder.write_all(raw_blend).is_err() {
-                return raw_blend.to_vec();
-            }
-            match encoder.finish() {
-                Ok(compressed) => compressed,
-                Err(_) => raw_blend.to_vec(),
-            }
-        }
+    let mut encoder =
+        StreamingEncoder::new(Vec::new(), CompressionLevel::from_level(BLEND_ZSTD_LEVEL));
+    if encoder.write_all(raw_blend).is_err() {
+        return raw_blend.to_vec();
+    }
+    match encoder.finish() {
+        Ok(compressed) => compressed,
         Err(_) => raw_blend.to_vec(),
     }
 }
@@ -258,7 +256,9 @@ pub fn decompress_blend_bytes_if_needed(bytes: &[u8]) -> Result<Vec<u8>, std::io
         return Ok(bytes.to_vec());
     }
     if bytes.starts_with(&ZSTD_MAGIC) {
-        return zstd::stream::decode_all(bytes);
+        let mut out = Vec::new();
+        StreamingDecoder::new(bytes).read_to_end(&mut out)?;
+        return Ok(out);
     }
     Ok(bytes.to_vec())
 }
@@ -2345,8 +2345,7 @@ mod tests {
         assert!(!compressed.is_empty(), "Compression produced empty result");
         assert_eq!(&compressed[..4], &[0x28, 0xB5, 0x2F, 0xFD]);
 
-        let mut decoder = zstd::Decoder::new(compressed.as_slice())
-            .expect("compressed blend bytes should be a valid zstd frame");
+        let mut decoder = StreamingDecoder::new(compressed.as_slice());
         let mut decompressed = Vec::new();
         decoder
             .read_to_end(&mut decompressed)

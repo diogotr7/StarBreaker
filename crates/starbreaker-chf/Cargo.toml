@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 starbreaker-common = { workspace = true }
 zerocopy = { workspace = true }
-ruzstd = "0.9"
+structured-zstd = { workspace = true }
 crc32c = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }

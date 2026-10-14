@@ -4448,15 +4448,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
-name = "ruzstd"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
-dependencies = [
- "twox-hash",
-]
-
-[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5047,7 +5038,7 @@ name = "starbreaker-blend"
 version = "0.3.2"
 dependencies = [
  "rustc-hash",
- "zstd",
+ "structured-zstd",
 ]
 
 [[package]]
@@ -5057,10 +5048,10 @@ dependencies = [
  "crc32c",
  "hex",
  "reqwest",
- "ruzstd",
  "serde",
  "serde_json",
  "starbreaker-common",
+ "structured-zstd",
  "thiserror 2.0.21",
  "zerocopy",
 ]
@@ -5165,8 +5156,8 @@ dependencies = [
  "starbreaker-dds",
  "starbreaker-p4k",
  "starbreaker-ui",
+ "structured-zstd",
  "tokio",
- "zstd",
 ]
 
 [[package]]
@@ -5183,9 +5174,9 @@ dependencies = [
  "rustc-hash",
  "smallvec",
  "starbreaker-common",
+ "structured-zstd",
  "thiserror 2.0.21",
  "zerocopy",
- "zstd",
 ]
 
 [[package]]
@@ -5274,6 +5265,16 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+
+[[package]]
+name = "structured-zstd"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5f2e9c350831d8501dd14d2b7aeb750f23c04e5ddcc8cc2f506cbd9b9a337f4"
+dependencies = [
+ "fastrand",
+ "twox-hash",
+]
 
 [[package]]
 name = "subtle"
@@ -7420,34 +7421,6 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
-
-[[package]]
-name = "zstd"
-version = "0.14.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "057cfd910cfac363a0ada849592624b4c9ff2e10bef504c3433810d78ed96f93"
-dependencies = [
- "zstd-safe",
-]
-
-[[package]]
-name = "zstd-safe"
-version = "8.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdd44c6a7284e91f3717755b24315a302edd9153a01f753c3cba3d765e8eafac"
-dependencies = [
- "zstd-sys",
-]
-
-[[package]]
-name = "zstd-sys"
-version = "2.1.1+zstd.1.5.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aeec9eaf2dffbbd09201e23bd0ffcbaa33bb8e9266a10734fd7ed90a85eca078"
-dependencies = [
- "cc",
- "pkg-config",
-]
 
 [[package]]
 name = "zune-core"
