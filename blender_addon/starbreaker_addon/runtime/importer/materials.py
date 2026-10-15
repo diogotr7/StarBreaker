@@ -56,6 +56,7 @@ from ..constants import (
     PROP_MATERIAL_IDENTITY,
     PROP_TEMPLATE_KEY,
 )
+from ..image_paths import same_image_file, store_host_relative
 from ..node_utils import _input_socket, _output_socket, _refresh_group_node_sockets
 from ..record_utils import (
     _float_authored_attribute,
@@ -1450,7 +1451,7 @@ class MaterialsMixin:
                 image = getattr(existing, "image", None)
                 if image is None:
                     continue
-                if bpy.path.abspath(image.filepath, library=image.library) != resolved_str:
+                if not same_image_file(image, resolved_str):
                     continue
                 if reuse_any_existing:
                     existing.location = (x, y)
@@ -1465,6 +1466,7 @@ class MaterialsMixin:
             node = nodes.new("ShaderNodeTexImage")
             node.location = (x, y)
             node.image = bpy.data.images.load(resolved_str, check_existing=True)
+            store_host_relative(node.image)
             self._refresh_image_source(node.image, resolved_str)
             if not is_color and node.image is not None and hasattr(node.image, "colorspace_settings"):
                 node.image.colorspace_settings.name = "Non-Color"
@@ -1476,7 +1478,7 @@ class MaterialsMixin:
             image = getattr(existing, "image", None)
             if image is None:
                 continue
-            if bpy.path.abspath(image.filepath, library=image.library) != resolved_str:
+            if not same_image_file(image, resolved_str):
                 continue
             if reuse_any_existing:
                 existing.location = (x, y)
@@ -1498,13 +1500,6 @@ class MaterialsMixin:
         color_space = getattr(getattr(image, "colorspace_settings", None), "name", "")
         return color_space != "Non-Color" if is_color else color_space == "Non-Color"
 
-
-    @staticmethod
-    def _image_file_path(image: Any) -> str:
-        try:
-            return bpy.path.abspath(image.filepath, library=image.library)
-        except Exception:
-            return str(getattr(image, "filepath", "") or "")
 
     @staticmethod
     def _refresh_image_source(image: Any, resolved_path: str) -> None:
@@ -1533,13 +1528,15 @@ class MaterialsMixin:
     @classmethod
     def _load_image_for_color_space(cls, resolved_path: str, *, is_color: bool) -> Any:
         for image in getattr(bpy.data, "images", []) or []:
-            if cls._image_file_path(image) != resolved_path:
+            if not same_image_file(image, resolved_path):
                 continue
             if cls._image_matches_color_space(image, is_color=is_color):
+                store_host_relative(image)
                 cls._refresh_image_source(image, resolved_path)
                 return image
 
         image = bpy.data.images.load(resolved_path, check_existing=False)
+        store_host_relative(image)
         cls._refresh_image_source(image, resolved_path)
         color_settings = getattr(image, "colorspace_settings", None)
         if color_settings is not None:

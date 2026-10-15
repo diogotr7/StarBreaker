@@ -22,6 +22,14 @@ prefer a one-liner or a compact code block over prose.
   checking only for linked materials is insufficient.
 - VIEW_3D `Region.active_panel_category` may revert during load-post; reapply
   the `StarBreaker` tab from a short deferred timer after the first load callback.
+- No absolute paths in user .blend files. Every `bpy.data.libraries.load` append
+  passes `relative=True`: each appended ID keeps a read-only
+  `library_weak_reference` to its source, which is absolute without it. Store
+  loaded textures with `image_paths.store_host_relative`, and compare images via
+  `same_image_file` (never by the raw `filepath` string).
+- Never derive the export root from the host .blend folder. `package_location`
+  derives it from the linked mesh libraries; `PackageLocationError` means there
+  are no linked meshes, or they come from more than one export root.
 
 ## Target Blender
 
@@ -216,11 +224,16 @@ and shared meshes/textures/materials land in `ships/Data/...` for reuse
 across ships. Passing a package folder as the root produces a
 double-nested `Packages/.../Packages/...` layout.
 
-The exporter also assembles `scene.blend` next to `scene.json`. There is
-no import operator: open that file (`bpy.ops.wm.open_mainfile`), and with
-the addon enabled its load-post handler rebuilds the package materials
-(preference "Refresh unloaded materials after file load", on by default;
-the N-panel's **Refresh Materials** does the same on demand).
+The exporter also assembles `scene.blend` next to `scene.json`. Either open
+that file (`bpy.ops.wm.open_mainfile`), and the load-post handler rebuilds
+the package materials (preference "Refresh unloaded materials after file
+load", on by default; the N-panel's **Refresh Materials** does the same on
+demand), or add it to any scene with **File > Import > StarBreaker Package**
+/ the N-panel's **Add Package to Scene** (`bpy.ops.starbreaker.add_package(filepath=...)`).
+That operator appends the package collections and refreshes their materials;
+adding a package again gives another copy that shares the linked meshes.
+`scripts/check_package_append.py` is the headless end-to-end check (host
+saved outside the export root, no absolute paths in the saved file).
 
 **Default test target: LOD 0, TEX0.** Validate against the
 `<entity>_LOD0_TEX0` package; TEX0 is the canonical test baseline, not
