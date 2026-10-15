@@ -1147,7 +1147,7 @@ class GroupsMixin:
                 continue
             if not _SCREEN_EFFECTS_LIBRARY_PATH.is_file():
                 continue
-            with bpy.data.libraries.load(str(_SCREEN_EFFECTS_LIBRARY_PATH), link=False) as (src, dst):
+            with bpy.data.libraries.load(str(_SCREEN_EFFECTS_LIBRARY_PATH), link=False, relative=True) as (src, dst):
                 if group_name not in src.node_groups:
                     continue
                 dst.node_groups = [group_name]
@@ -2199,7 +2199,7 @@ class GroupsMixin:
         # Snapshot existing group names so we can tell which ones were
         # created by this append (Blender auto-suffixes duplicates).
         before = {g.name for g in bpy.data.node_groups}
-        with bpy.data.libraries.load(str(library_path), link=False) as (src, dst):
+        with bpy.data.libraries.load(str(library_path), link=False, relative=True) as (src, dst):
             # Appending the root also pulls in every group it references
             # transitively; request the full set explicitly so the
             # reference graph stays intact even when ``POM_Vector`` has

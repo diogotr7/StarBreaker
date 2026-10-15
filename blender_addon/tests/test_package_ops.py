@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -10,6 +11,10 @@ import unittest
 
 
 ADDON_ROOT = Path(__file__).resolve().parent.parent / "starbreaker_addon"
+# Absolute on every OS ("/tmp/..." alone is drive-relative on Windows), so these
+# refresh fixtures skip export-root lookup from linked libraries.
+AURORA_SCENE_PATH = str(Path("/tmp/aurora/scene.json").absolute())
+TEST_SCENE_PATH = str(Path("/tmp/test/scene.json").absolute())
 
 
 class FakeObject(dict):
@@ -176,6 +181,19 @@ def _load_package_ops() -> tuple[types.ModuleType, types.ModuleType]:
         sys.modules["bpy"] = bpy
     bpy.types = types.SimpleNamespace(Context=object, Object=object, ID=object, Light=object)
     bpy.data = types.SimpleNamespace(objects=FakeObjects(), lights=[], filepath="")
+
+    def _abspath(path: str, *, start=None, library=None) -> str:
+        # Mirrors bpy.path.abspath: "//" is the host .blend folder (or the
+        # parent library's folder); the result is joined, not normalised.
+        if not path.startswith("//"):
+            return path
+        if library is not None:
+            base = os.path.dirname(_abspath(library.filepath, library=library.parent))
+        else:
+            base = start if start is not None else os.path.dirname(bpy.data.filepath)
+        return os.path.join(base, path[2:])
+
+    bpy.path = types.SimpleNamespace(abspath=_abspath)
 
     mathutils = sys.modules.get("mathutils")
     if mathutils is None:
@@ -394,7 +412,7 @@ class PackageOpsTests(unittest.TestCase):
         package_root = FakeObject(
             "StarBreaker RSI Aurora",
             starbreaker_package_root=True,
-            starbreaker_scene_path="/tmp/aurora/scene.json",
+            starbreaker_scene_path=AURORA_SCENE_PATH,
         )
         mesh = FakeObject("hull", starbreaker_material_sidecar="hull.materials.json")
         mesh.type = "MESH"
@@ -437,7 +455,7 @@ class PackageOpsTests(unittest.TestCase):
         package_root = FakeObject(
             "StarBreaker RSI Aurora",
             starbreaker_package_root=True,
-            starbreaker_scene_path="/tmp/aurora/scene.json",
+            starbreaker_scene_path=AURORA_SCENE_PATH,
         )
         mesh_a = FakeObject("hull", starbreaker_material_sidecar="hull.materials.json")
         mesh_b = FakeObject("wing", starbreaker_material_sidecar="wing.materials.json")
@@ -561,7 +579,7 @@ class PackageOpsTests(unittest.TestCase):
         package_root = FakeObject(
             "StarBreaker RSI Aurora",
             starbreaker_package_root=True,
-            starbreaker_scene_path="/tmp/aurora/scene.json",
+            starbreaker_scene_path=AURORA_SCENE_PATH,
         )
         mesh = FakeObject("hull", starbreaker_material_sidecar="hull.materials.json")
         mesh.type = "MESH"
@@ -638,7 +656,7 @@ class PackageOpsTests(unittest.TestCase):
         package_root = FakeObject(
             "StarBreaker RSI Aurora",
             starbreaker_package_root=True,
-            starbreaker_scene_path="/tmp/aurora/scene.json",
+            starbreaker_scene_path=AURORA_SCENE_PATH,
         )
 
         original_suspend = self.package_ops._suspend_heavy_viewports
@@ -674,7 +692,7 @@ class PackageOpsTests(unittest.TestCase):
         package_root = FakeObject(
             "StarBreaker RSI Aurora",
             starbreaker_package_root=True,
-            starbreaker_scene_path="/tmp/aurora/scene.json",
+            starbreaker_scene_path=AURORA_SCENE_PATH,
             starbreaker_palette_id="palette/root",
         )
         mesh = FakeObject(
@@ -715,7 +733,7 @@ class PackageOpsTests(unittest.TestCase):
         package_root = FakeObject(
             "StarBreaker RSI Aurora",
             starbreaker_package_root=True,
-            starbreaker_scene_path="/tmp/aurora/scene.json",
+            starbreaker_scene_path=AURORA_SCENE_PATH,
         )
         mesh = FakeObject(
             "interior_panel",
@@ -772,7 +790,7 @@ class PackageOpsTests(unittest.TestCase):
         package_root = FakeObject(
             "StarBreaker RSI Aurora",
             starbreaker_package_root=True,
-            starbreaker_scene_path="/tmp/aurora/scene.json",
+            starbreaker_scene_path=AURORA_SCENE_PATH,
         )
         mesh = FakeObject("wing", starbreaker_material_sidecar="wing.materials.json")
         mesh.type = "MESH"
@@ -871,7 +889,7 @@ class PackageOpsTests(unittest.TestCase):
         package_root = FakeObject(
             "StarBreaker Test",
             starbreaker_package_root=True,
-            starbreaker_scene_path="/tmp/test/scene.json",
+            starbreaker_scene_path=TEST_SCENE_PATH,
         )
         dirty_mesh = FakeObject("dirty", starbreaker_material_sidecar="mesh.materials.json")
         dirty_mesh.type = "MESH"
@@ -931,7 +949,7 @@ class PackageOpsTests(unittest.TestCase):
         package_root = FakeObject(
             "StarBreaker Test",
             starbreaker_package_root=True,
-            starbreaker_scene_path="/tmp/test/scene.json",
+            starbreaker_scene_path=TEST_SCENE_PATH,
         )
         meshes = []
         for name in ("mesh_a", "mesh_b", "mesh_c"):
@@ -1282,6 +1300,20 @@ class PackageOpsTests(unittest.TestCase):
 
         self.assertEqual(shared_glow_calls, [(package_root, 2.5)])
 
+    def _aurora_root_linked_from(self, library_path: str) -> FakeObject:
+        package_root = FakeObject(
+            "StarBreaker RSI Aurora",
+            starbreaker_package_root=True,
+            starbreaker_scene_path="Packages/RSI Aurora Mk2_LOD0_TEX0/scene.json",
+            starbreaker_export_root="",
+        )
+        hull = FakeObject("hull", starbreaker_mesh_asset="Data/Objects/Ships/aurora.blend")
+        hull.type = "MESH"
+        hull.data = types.SimpleNamespace(library=types.SimpleNamespace(filepath=library_path, parent=None))
+        hull.parent = package_root
+        package_root.children.append(hull)
+        return package_root
+
     def test_resolve_package_relative_scene_path_from_opened_blend_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1289,16 +1321,41 @@ class PackageOpsTests(unittest.TestCase):
             scene_path.parent.mkdir(parents=True)
             scene_path.write_text("{}", encoding="utf-8")
             self.bpy.data.filepath = str(scene_path.with_suffix(".blend"))
-            package_root = FakeObject(
-                "StarBreaker RSI Aurora",
-                starbreaker_package_root=True,
-                starbreaker_scene_path="Packages/RSI Aurora Mk2_LOD0_TEX0/scene.json",
-            )
+            package_root = self._aurora_root_linked_from("//../../Data/Objects/Ships/aurora.blend")
 
             resolved = self.package_ops.resolve_package_scene_path(package_root)
 
             self.assertEqual(resolved, scene_path)
         self.bpy.data.filepath = ""
+
+    def test_resolve_package_scene_path_for_host_blend_outside_export_root(self) -> None:
+        # A package appended into a scene saved elsewhere: the export root comes
+        # from the linked mesh libraries, not from the host file's folder.
+        with tempfile.TemporaryDirectory() as tmp:
+            export_root = Path(tmp) / "exports" / "ships"
+            scene_path = export_root / "Packages" / "RSI Aurora Mk2_LOD0_TEX0" / "scene.json"
+            scene_path.parent.mkdir(parents=True)
+            scene_path.write_text("{}", encoding="utf-8")
+            self.bpy.data.filepath = str(Path(tmp) / "scenes" / "hangar.blend")
+            package_root = self._aurora_root_linked_from("//../exports/ships/Data/Objects/Ships/aurora.blend")
+
+            resolved = self.package_ops.resolve_package_scene_path(package_root)
+
+            self.assertEqual(resolved, scene_path)
+            self.assertEqual(package_root["starbreaker_export_root"], "")
+        self.bpy.data.filepath = ""
+
+    def test_resolve_package_scene_path_without_linked_meshes_fails(self) -> None:
+        package_root = FakeObject(
+            "StarBreaker RSI Aurora",
+            starbreaker_package_root=True,
+            starbreaker_scene_path="Packages/RSI Aurora Mk2_LOD0_TEX0/scene.json",
+        )
+
+        with self.assertRaises(RuntimeError) as raised:
+            self.package_ops.resolve_package_scene_path(package_root)
+
+        self.assertIn("no mesh linked from a StarBreaker export", str(raised.exception))
 
     def test_apply_paint_to_package_root_restores_base_sidecar_when_leaving_variant(self) -> None:
         @contextmanager

@@ -10,6 +10,7 @@ import gpu
 from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 from bpy.types import Operator, Panel
+from bpy_extras.io_utils import ImportHelper
 from gpu_extras.batch import batch_for_shader
 
 from .manifest import PackageBundle
@@ -36,6 +37,7 @@ from .runtime import (
     apply_pom_detail_mode,
     SCENE_WEAR_STRENGTH_PROP,
     animation_overlap_warnings,
+    append_package,
     apply_animation_mode_to_package_root,
     apply_decal_offsets_to_package_root,
     apply_engine_glow_to_package_root,
@@ -815,6 +817,65 @@ class STARBREAKER_OT_refresh_materials(Operator):
         return self.execute(context)
 
 
+class STARBREAKER_OT_add_package(Operator, ImportHelper):
+    bl_idname = "starbreaker.add_package"
+    bl_label = "Add StarBreaker Package to Scene"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = (
+        "Append a package's scene.blend (Packages/<package>/scene.blend) into the current scene "
+        "and refresh its materials. Adding a package again gives another copy sharing its meshes"
+    )
+
+    filename_ext = ".blend"
+    filter_glob: StringProperty(default="*.blend", options={"HIDDEN"})  # type: ignore[assignment]
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        try:
+            package_roots = append_package(context, self.filepath)
+        except Exception as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+
+        applied = 0
+        failures: list[str] = []
+        for package_root in package_roots:
+            palette_id = package_root.get(PROP_PALETTE_ID, "")
+            _begin_import_progress(context, "Loading materials, please wait", indeterminate=True, text_only=True)
+            try:
+                applied += refresh_materials_for_package_root(
+                    context,
+                    package_root,
+                    palette_id if isinstance(palette_id, str) and palette_id else None,
+                    progress_callback=lambda fraction, _description: _update_import_progress(
+                        context, fraction, "Loading materials, please wait", force=True, redraw=False
+                    ),
+                    progress_interval_seconds=5.0,
+                )
+            except Exception as exc:
+                failures.append(f"{package_root.name}: {exc}")
+            finally:
+                _end_import_progress(context, f"Added {package_root.name}")
+
+        for obj in context.selected_objects:
+            obj.select_set(False)
+        for package_root in package_roots:
+            package_root.select_set(True)
+        if package_roots:
+            context.view_layer.objects.active = package_roots[0]
+
+        names = ", ".join(package_root.name for package_root in package_roots)
+        if failures:
+            # The geometry is in the scene; report the refresh failure but keep it (Ctrl+Z removes it).
+            self.report({"ERROR"}, f"Added {names}, but materials failed to refresh: " + "; ".join(failures))
+        else:
+            self.report({"INFO"}, f"Added {names}; refreshed {applied} material slot group(s)")
+        return {"FINISHED"}
+
+
+def _menu_add_package(self: bpy.types.Menu, _context: bpy.types.Context) -> None:
+    self.layout.operator(STARBREAKER_OT_add_package.bl_idname, text="StarBreaker Package (scene.blend)")
+
+
 class STARBREAKER_OT_apply_paint(Operator):
     bl_idname = "starbreaker.apply_paint"
     bl_label = "Apply Paint"
@@ -1304,9 +1365,9 @@ class STARBREAKER_PT_tools(Panel):
 
         obj = context.active_object
         package_root = _package_root_from_context(context)
+        layout.operator(STARBREAKER_OT_add_package.bl_idname, text="Add Package to Scene", icon="IMPORT")
         if package_root is None:
-            layout.label(text="Open scene.blend or other")
-            layout.label(text="StarBreaker exported .blend file")
+            layout.label(text="Add or open a package's scene.blend")
             layout.label(text="for more options")
             return
         _sync_scene_package_controls(context, package_root)
@@ -1617,6 +1678,7 @@ def _starbreaker_load_post(_dummy: object) -> None:
 CLASSES = [
     STARBREAKER_AP_preferences,
     STARBREAKER_OT_refresh_materials,
+    STARBREAKER_OT_add_package,
     STARBREAKER_OT_apply_paint,
     STARBREAKER_OT_apply_palette,
     STARBREAKER_OT_apply_livery,
@@ -1786,9 +1848,11 @@ def register() -> None:
             bpy.app.handlers.load_post.remove(handler)
     if _starbreaker_load_post not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(_starbreaker_load_post)
+    bpy.types.TOPBAR_MT_file_import.append(_menu_add_package)
 
 
 def unregister() -> None:
+    bpy.types.TOPBAR_MT_file_import.remove(_menu_add_package)
     if _starbreaker_load_post in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_starbreaker_load_post)
     for cls in reversed(CLASSES):

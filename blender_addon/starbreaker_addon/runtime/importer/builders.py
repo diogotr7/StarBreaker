@@ -21,6 +21,7 @@ import uuid
 from typing import Any
 
 import bpy
+from ..image_paths import same_image_file
 from .layer_blend_gloss import build_layer_blend_roughness
 from .layer_blend_color import apply_layer_blend_color
 from .layer_blend_decals import apply_layer_blend_decals
@@ -801,7 +802,7 @@ class BuildersMixin:
             library_path = bundled_template_library_path()
             if not library_path.is_file():
                 return None
-            with bpy.data.libraries.load(str(library_path), link=False) as (data_from, data_to):
+            with bpy.data.libraries.load(str(library_path), link=False, relative=True) as (data_from, data_to):
                 if group_contract.name not in data_from.node_groups:
                     return None
                 data_to.node_groups = [group_contract.name]
@@ -1807,10 +1808,7 @@ class BuildersMixin:
                             if node is layer_height_node:
                                 continue
                             if (
-                                bpy.path.abspath(
-                                    node.image.filepath, library=node.image.library
-                                )
-                                == resolved_str
+                                same_image_file(node.image, resolved_str)
                                 and node not in layer_targets
                             ):
                                 # Collect every sampler that resolves to this layer

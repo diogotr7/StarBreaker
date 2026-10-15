@@ -14,6 +14,7 @@ Within that export root:
 - `Packages/<package name>/animations/<clip>.json` holds per-clip animation bodies (see [Animation Records](#animation-records)).
 - `Packages/<package name>/weapon_assembly_diagnostics.json` is written only for FPS weapon assemblies that produced diagnostics.
 - `Data/...` contains reusable mesh assets, material sidecars, and exported textures using canonical P4k-style paths rooted at `Data/`. Mesh assets are `.glb` with the Glb format and `.blend` with the Blend format (`mesh_asset_extension`); the Blend format also writes `Packages/<package name>/scene.blend`, which links the mesh `.blend` files.
+- `scene.blend` records no absolute path. Its mesh libraries are `//`-relative, the package root's `starbreaker_scene_path` is export-root relative (`Packages/<package name>/scene.json`), and `starbreaker_export_root` is always empty. Each linked instance carries `starbreaker_mesh_asset`, the export-root-relative path of its mesh `.blend`. The addon finds the export root at run time by stripping that suffix from the library's absolute path, so a package appended into a `.blend` saved anywhere still finds its `scene.json`.
 - exporting another ship to the same root reuses matching `Data/...` assets instead of duplicating category-specific copies.
 
 ## Scene Manifest
