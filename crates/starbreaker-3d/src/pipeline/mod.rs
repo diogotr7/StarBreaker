@@ -44,6 +44,8 @@ mod palette;
 pub use self::palette::*;
 mod interior_animation;
 pub(crate) use self::interior_animation::*;
+pub(crate) mod engine_glow;
+mod vehicle_xml;
 mod vehicle;
 pub use self::vehicle::*;
 mod vehicle_lights;

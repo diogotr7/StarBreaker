@@ -447,5 +447,25 @@ class ManifestTests(unittest.TestCase):
             self.assertIsNone(bundle._path_index)
 
 
+
+
+
+class EntityLightsTests(unittest.TestCase):
+    def test_root_and_child_light_arrays_and_legacy_absence(self):
+        scene = SceneManifest.from_value({"root_entity": {"lights": [{"name": "root"}]},
+            "children": [{"lights": [{"name": "child"}]}], "interiors": [{"lights": [{"name": "interior"}]}]})
+        self.assertEqual([x.name for x in scene.root_entity.lights], ["root"])
+        self.assertEqual([x.name for x in scene.children[0].lights], ["child"])
+        self.assertEqual([x.name for x in scene.interiors[0].lights], ["interior"])
+        self.assertEqual(SceneInstanceRecord.from_value({}).lights, [])
+
+    def test_helper_local_light_frame_is_retained(self):
+        light = LightRecord.from_value({"parent_node_name": "joint", "parent_local_position": [1,2,3],
+                                       "parent_local_rotation": [1,0,0,0]})
+        self.assertEqual(light.parent_node_name, "joint")
+        self.assertEqual(light.parent_local_position, (1,2,3))
+        self.assertEqual(light.parent_local_rotation, (1,0,0,0))
+
+
 if __name__ == "__main__":
     unittest.main()

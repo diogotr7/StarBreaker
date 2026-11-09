@@ -613,12 +613,36 @@ impl SubMaterial {
         }
     }
 
-    /// Emissive factor for glTF.
-    ///
-    /// CryEngine's Emissive colour is multiplied by authored Glow. Missing Glow
-    /// parses as zero: a neutral Emissive triplet alone is not emission.
+    /// A shader permutation selects emittance independently of texture filenames.
+    pub fn has_emittance_map(&self) -> bool {
+        self.decoded_string_gen_mask().tokens.iter().any(|token| {
+            matches!(token.as_str(), "EMITTANCE_MAP" | "MACRO_EMISSIVE_MAP")
+        })
+    }
+
+    /// Black Emissive is an untinted surface, not a black emission multiplier.
+    pub fn emissive_tint(&self) -> [f32; 3] {
+        if self.emissive.iter().any(|component| *component != 0.0) {
+            self.emissive
+        } else {
+            [1.0; 3]
+        }
+    }
+
+    pub fn emissive_strength(&self) -> f32 {
+        if self.glow > 0.0 {
+            self.glow
+        } else if self.has_emittance_map() {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Tint times authored emission strength, used by bundled glTF and screen
+    /// back-colour generation too. Surface colour is applied by the texture path.
     pub fn emissive_factor(&self) -> [f32; 3] {
-        self.emissive.map(|component| component * self.glow)
+        self.emissive_tint().map(|component| component * self.emissive_strength())
     }
 
     pub fn is_double_sided(&self) -> bool {
@@ -1008,6 +1032,8 @@ fn classify_texture_role(
     let has_stencil_semantics = flags.has_stencil_map || has_public_param(&["stencil"]);
     let has_height_semantics = flags.has_parallax_occlusion_mapping
         || has_public_param(&["pom", "height", "displacement"]);
+    // TODO(upstream): replace name-derived texture roles with shader/slot semantics;
+    // the MeshDecal classifier indirectly consumes these roles.
     let is_normal_like = texture_path_looks_normal_gloss(&binding.path);
     let is_breakup_like = has_name(&["breakup", "grime", "rust", "bleed", "dirt"]);
     let is_height_like = has_name(&["disp", "height", "pom"]);

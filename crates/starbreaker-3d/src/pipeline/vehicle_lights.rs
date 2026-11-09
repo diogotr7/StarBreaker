@@ -17,33 +17,10 @@ pub fn load_vehicle_light_ports(
     p4k: &MappedP4k,
     record: &Record,
 ) -> Result<Vec<VehicleLightPort>, Error> {
-    let query = |field: &str| -> Result<Option<String>, Error> {
-        let path = db.compile_path::<String>(
-            record.struct_id(),
-            &format!("Components[VehicleComponentParams].{field}"),
-        )?;
-        Ok(db.query_single::<String>(&path, record)?)
-    };
-    let Some(base) = query("vehicleDefinition")?.filter(|s| !s.is_empty()) else {
-        return Ok(Vec::new());
-    };
-    let mut paths = vec![base.clone()];
-    if let Some(modification) = query("modification")?.filter(|s| !s.is_empty()) {
-        let normalized = base.replace('\\', "/");
-        if let Some((dir, filename)) = normalized.rsplit_once('/') {
-            let stem = filename.rsplit_once('.').map_or(filename, |(stem, _)| stem);
-            paths.push(format!("{dir}/Modifications/{stem}_{modification}.xml"));
-        }
-    }
     let mut ports = BTreeMap::new();
-    for path in paths {
-        let path = super::datacore_path_to_p4k(&path);
-        let bytes = p4k
-            .read_file(&path)
-            .map_err(|e| Error::P4kRead(format!("{path}: {e}")))?;
-        let xml = starbreaker_cryxml::from_bytes(&bytes)?;
-        collect(&xml, xml.root(), &mut ports);
-    }
+    super::vehicle_xml::visit_vehicle_xml(db, p4k, record, |xml, _| {
+        collect(xml, xml.root(), &mut ports);
+    });
     Ok(ports.into_values().collect())
 }
 

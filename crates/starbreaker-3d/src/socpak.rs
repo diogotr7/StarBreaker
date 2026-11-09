@@ -1423,7 +1423,7 @@ fn process_entity_children(
             let parsed_lights =
                 parse_light_entities(xml, entity, &attrs, &pos, &rot, &scale, entity_class);
             lights.extend(parsed_lights);
-            continue;
+            // Light components and geometry may coexist on the same entity.
         }
 
         // Try to extract geometry path from inline PropertiesDataCore
@@ -1745,6 +1745,16 @@ fn parse_light_group(
 
 #[cfg(test)]
 mod light_regressions {
+    #[test]
+    fn entity_with_light_and_geometry_preserves_both() {
+        let bytes = crate::test_xml::encode(r#"<Entities><Entity EntityClass="SyntheticProp" Name="mixed"><PropertiesDataCore><EntityGeometryResource><Geometry><Geometry><Geometry path="objects/synthetic.cgf"/></Geometry></Geometry></EntityGeometryResource><EntityComponentLight lightType="Omni"><defaultState intensity="0.25"/><sizeParams lightRadius="3"/></EntityComponentLight></PropertiesDataCore></Entity></Entities>"#);
+        let xml = starbreaker_cryxml::from_bytes(&bytes).unwrap();
+        let (meshes, lights) = super::extract_cryxml_entities(&xml);
+        assert_eq!(lights.len(), 1);
+        assert_eq!(meshes.len(), 1);
+        assert_eq!(meshes[0].cgf_path, "objects/synthetic.cgf");
+    }
+
     #[test]
     fn empty_light_group_does_not_invent_energy() {
         let bytes = crate::test_xml::encode(r#"<Entities><Entity EntityClass="LightGroup" Name="synthetic"><EntityComponentLightGroup><BakedInLights/></EntityComponentLightGroup></Entity></Entities>"#);

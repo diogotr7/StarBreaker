@@ -117,8 +117,16 @@ importers:
 - target records come only from child entities whose DataCore
   `Category` is `Thruster` **and** whose `SAttachableComponentParams.AttachDef.Type`
   is `MainThruster` (`should_export_engine_glow_targets`), and only from
-  Illum/HardSurface submaterials with positive authored `Emissive × Glow`
-  energy (`is_engine_glow_material`); texture names are not emission evidence
+  Illum/HardSurface submaterials with positive static emission or an enabled
+  DataCore `SEntityComponentEffects.entityEffects.materialEffects` link writing
+  `materialProperty = Glow`. The latter joins authored `subMeshName` exactly
+  (case-insensitive) to the owning entity's NMC node, then to source material IDs.
+  Both enabled `tagEffects` and `triggerEffects` are supported. A link addresses
+  the entire named submesh, so all its compatible material slots are control
+  targets; the exporter does not guess a narrower slot from its name or texture.
+  These dynamic bindings do not change static sidecar emission strength. Effect
+  tags/modifiers remain game runtime behaviour; this control is manual tuning.
+  Texture names are not emission evidence
 
 ### Importer-only decal-host fields
 
@@ -307,15 +315,33 @@ Each `*.materials.json` sidecar preserves:
 
 Every submaterial has `emissive`:
 
-- `color`: linear `Emissive × Glow × Diffuse` RGB, before texture modulation.
-- `glow`: parsed raw scalar (`Glow`/`GlowAmount`); absent is zero. Nonzero
-  `Emissive` alone, including a neutral white triplet, does not emit.
-- `uses_base_texture`: true unless an authored emittance texture is present.
-- `emittance_texture`: slot reference or null. Explicit `Emittance`/`Emissive`
-  bindings and HardSurface's documented `TexSlot14` identify emittance maps.
-  Importers multiply by that map when present, otherwise the base-colour texture.
-- `alpha_glow_cutoff`: authored scalar from PublicParams/attributes, or null
-  when absent. Importers need not parse authored-attribute strings.
+- `color`: tint-only linear RGB factor. Nonzero `Emissive` is the tint; an all-zero
+  triplet means no tint and exports `[1,1,1]`.
+- `strength`: positive `Glow`, otherwise `1` when a shader emittance-map token is
+  present, otherwise `0`. Emissive RGB alone never enables emission.
+- `glow`: parsed raw scalar (`Glow`/`GlowAmount`); absent is zero.
+- `uses_base_texture`: false for `%EMITTANCE_MAP` or `%MACRO_EMISSIVE_MAP`, true
+  otherwise. These are exact decoded permutation tokens, not slot/asset names.
+- `emittance_texture`: original slot reference or null. With the corresponding
+  token enabled, explicit `Emittance`/`Emissive` bindings or HardSurface's
+  documented `TexSlot14` locate the map. A token without a resolvable binding
+  still enables strength but leaves this reference null; no texture is invented.
+- `alpha_glow_cutoff`: authored scalar from PublicParams/attributes, or null.
+
+Final emission is `surface × color × strength`, where surface is
+`Diffuse × base-colour texture` when `uses_base_texture` is true, or the emittance
+map otherwise. Black Emissive with positive Glow therefore emits its surface
+colour. Neutral white Emissive with no Glow/map stays off.
+
+`SubMaterial::emissive_factor()` returns `color × strength`. This shared fix also
+changes bundled GLB emissive factors and the emissive-texture/screen-back-colour
+paths in `pipeline/textures.rs`; it is not confined to sidecars. Bundled texture
+baking remains an approximation of the source shader.
+
+Scene and material sidecars remain schema **v2** after these corrections. The
+validator continues to accept both v1 and v2; raw authored fields are preserved.
+The viewer cache format is independently bumped to v5 to invalidate earlier
+v2 packages with the superseded emission semantics.
 
 `decal` is null outside MeshDecal. MeshDecal entries carry:
 
@@ -686,3 +712,14 @@ union. This can replace an old wildcard index record with a concrete source name
 The catalogue's additive `contributors: Vec<String>` lists contributing owners
 and resolved rig node names. Existing `id`/`owner_entity` semantics remain intact;
 this does not yet make merged ship door clips independently addressable.
+
+### Blender entity-light consumption
+
+The addon consumes `root_entity.lights`, every `children[].lights`, and
+`interiors[].lights`. Older scenes with absent entity arrays default to empty
+lists. Resolved entity lights attach to the exact helper in their own instance
+using `parent_local_position`/`parent_local_rotation`; if the helper is missing,
+they use the exported entity-local frame under that instance anchor. Interior
+lights retain their container-local frame. The entity-local `direction_sc` is
+not reused after switching to a helper-local rotation. Source IDs occur once
+across the three locations, preventing duplicate light creation.

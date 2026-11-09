@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import math
 import uuid
+
+from .entity_lights import import_entity_lights
 from pathlib import Path
 from typing import Any, Callable
 
@@ -557,6 +559,7 @@ class OrchestrationMixin:
         self._advance_progress(f"Importing {self.package.scene.root_entity.entity_name}")
         root_anchor, root_nodes = self.instantiate_scene_instance(self.package.scene.root_entity, parent=package_root)
         self.node_index_by_entity_name[self.package.scene.root_entity.entity_name] = self._index_nodes(root_nodes)
+        import_entity_lights(self, self.package.scene.root_entity, root_anchor, root_nodes)
         root_anchor.parent = package_root
         scene_root_parent = self._scene_root_parent(root_nodes) or package_root
 
@@ -567,6 +570,7 @@ class OrchestrationMixin:
                 parent_node = self.node_index_by_entity_name.get(child.parent_entity_name, {}).get(child.parent_node_name or "")
             anchor, child_nodes = self.instantiate_scene_instance(child, parent=scene_root_parent, parent_node=parent_node)
             self.node_index_by_entity_name.setdefault(child.entity_name, {}).update(self._index_nodes(child_nodes))
+            import_entity_lights(self, child, anchor, child_nodes)
 
         for interior in self.package.scene.interiors:
             self._advance_progress(f"Preparing {interior.name}")

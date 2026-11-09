@@ -94,18 +94,10 @@ pub fn entity_light_catalogue(
 }
 
 fn find_helper(nmc: &nmc::NodeMeshCombo, name: &str) -> Option<(String, glam::Mat4)> {
-    let exact = nmc
+    let index = nmc
         .nodes
         .iter()
-        .position(|n| n.name.eq_ignore_ascii_case(name));
-    let suffix = format!("_{}", name.to_ascii_lowercase());
-    let candidates: Vec<_> = nmc
-        .nodes
-        .iter()
-        .enumerate()
-        .filter(|(_, n)| n.name.to_ascii_lowercase().ends_with(&suffix))
-        .collect();
-    let index = exact.or_else(|| (candidates.len() == 1).then(|| candidates[0].0))?;
+        .position(|n| n.name.eq_ignore_ascii_case(name))?;
     Some((
         nmc.nodes[index].name.clone(),
         compute_nmc_world_transforms(nmc)[index],
@@ -196,7 +188,7 @@ mod tests {
         let rig = nmc::NodeMeshCombo {
             material_indices: vec![],
             nodes: vec![nmc::NmcNode {
-                name: "mesh_joint".into(),
+                name: "joint".into(),
                 parent_index: None,
                 bone_to_world: std::array::from_fn(|r| std::array::from_fn(|c| cols[c][r])),
                 world_to_bone: [[0.0; 4]; 3],
@@ -233,7 +225,7 @@ mod tests {
         let rigs = HashMap::from([("owner".into(), &rig)]);
         let result = collect_entity_lights("owner", &rigs, &HashMap::new(), &interiors);
         let record = &result[0];
-        assert_eq!(record.parent_node_name.as_deref(), Some("mesh_joint"));
+        assert_eq!(record.parent_node_name.as_deref(), Some("joint"));
         let position = glam::Vec3::from_array(record.light.position.map(|x| x as f32));
         assert!((position - transform.transform_point3(glam::vec3(1.0, 2.0, 3.0))).length() < 1e-5);
         let local = glam::Vec3::from_array(record.parent_local_position.unwrap().map(|x| x as f32));
@@ -243,7 +235,7 @@ mod tests {
         assert_eq!(record.light.color, [0.5, 0.25, 0.75]);
     }
     #[test]
-    fn ambiguous_suffix_helpers_do_not_bind_arbitrarily() {
+    fn suffix_helpers_do_not_bind_even_when_unique() {
         let node = |name: &str| nmc::NmcNode {
             name: name.into(),
             parent_index: None,
@@ -254,7 +246,7 @@ mod tests {
             properties: HashMap::new(),
         };
         let nmc = nmc::NodeMeshCombo {
-            nodes: vec![node("a_tip"), node("b_tip")],
+            nodes: vec![node("a_tip")],
             material_indices: vec![],
         };
         assert!(find_helper(&nmc, "tip").is_none());

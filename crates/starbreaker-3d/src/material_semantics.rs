@@ -4,14 +4,17 @@ use crate::mtl::{ShaderFamily, SubMaterial, TextureSemanticRole};
 use serde_json::{Value, json};
 
 pub(crate) fn emissive(material: &SubMaterial) -> Value {
-    let emittance = material.texture_slots.iter().find(|slot| {
-        slot.slot.eq_ignore_ascii_case("Emittance")
-            || slot.slot.eq_ignore_ascii_case("Emissive")
-            || (material.shader_family() == ShaderFamily::HardSurface
-                && slot.slot.eq_ignore_ascii_case("TexSlot14"))
-    });
-    let factor = material.emissive_factor();
-    let color = std::array::from_fn::<_, 3, _>(|i| factor[i] * material.diffuse[i]);
+    let emittance = material
+        .texture_slots
+        .iter()
+        .filter(|_| material.has_emittance_map())
+        .find(|slot| {
+            slot.slot.eq_ignore_ascii_case("Emittance")
+                || slot.slot.eq_ignore_ascii_case("Emissive")
+                || (material.shader_family() == ShaderFamily::HardSurface
+                    && slot.slot.eq_ignore_ascii_case("TexSlot14"))
+        });
+    let color = material.emissive_tint();
     let cutoff = material
         .public_params
         .iter()
@@ -24,7 +27,8 @@ pub(crate) fn emissive(material: &SubMaterial) -> Value {
         )
         .find(|(name, _)| name.eq_ignore_ascii_case("AlphaGlowCutoff"))
         .map(|(_, value)| super::decomposed::string_value_to_json(value));
-    json!({"color": color, "uses_base_texture": emittance.is_none(),
+    json!({"color": color, "strength": material.emissive_strength(),
+        "uses_base_texture": !material.has_emittance_map(),
         "emittance_texture": emittance.map(|s| &s.slot),
         "alpha_glow_cutoff": cutoff, "glow": material.glow})
 }
@@ -127,21 +131,71 @@ mod tests {
             .materials
             .remove(0)
     }
-    #[test]
-    fn curated_emission_retains_authored_scalars_and_map_selection() {
-        let m = material(
-            r#"<Material Shader="Illum" Emissive="0.5,1,0.25" Glow="0.5" Diffuse="0.5,0.25,1"><PublicParams AlphaGlowCutoff="0.4"/></Material>"#,
-        );
-        assert_eq!(emissive(&m)["color"], json!([0.125, 0.125, 0.125]));
-        assert_eq!(emissive(&m)["uses_base_texture"], true);
-        assert_eq!(emissive(&m)["alpha_glow_cutoff"], json!(0.4));
-        let m = material(
-            r#"<Material Shader="HardSurface"><Textures><Texture Map="TexSlot14" File="synthetic.tif"/></Textures></Material>"#,
-        );
-        assert_eq!(emissive(&m)["color"], json!([0.0, 0.0, 0.0]));
-        assert_eq!(emissive(&m)["emittance_texture"], "TexSlot14");
-        assert_eq!(emissive(&m)["uses_base_texture"], false);
+    // Synthetic colours/scalars; these reproduce the four authored categories.
+    fn check_emission(xml: &str, tint: [f32; 3], strength: f32) {
+        let m = material(xml);
+        let e = emissive(&m);
+        assert_eq!(e["color"], json!(tint));
+        assert_eq!(e["strength"], json!(strength));
+        assert_eq!(m.emissive_factor(), tint.map(|v| v * strength));
     }
+    #[test]
+    fn black_emissive_with_glow_is_untinted_surface_emission() {
+        check_emission(
+            r#"<Material Shader="Illum" Emissive="0,0,0" Glow="0.25" Diffuse="1,0.5,0"/>"#,
+            [1.0; 3],
+            0.25,
+        );
+    }
+    #[test]
+    fn white_emissive_with_glow_keeps_surface_colour() {
+        check_emission(
+            r#"<Material Shader="Illum" Emissive="1,1,1" Glow="0.5" Diffuse="0.25,0.5,1"/>"#,
+            [1.0; 3],
+            0.5,
+        );
+    }
+    #[test]
+    fn illum_neutral_emissive_without_signal_stays_off() {
+        check_emission(
+            r#"<Material Shader="Illum" Emissive="1,1,1"/>"#,
+            [1.0; 3],
+            0.0,
+        );
+    }
+    #[test]
+    fn layer_neutral_emissive_without_signal_stays_off() {
+        check_emission(
+            r#"<Material Shader="LayerBlend_V2" Emissive="1,1,1"/>"#,
+            [1.0; 3],
+            0.0,
+        );
+    }
+    #[test]
+    fn emittance_token_is_a_signal_without_a_named_slot_or_glow() {
+        let m = material(
+            r#"<Material Shader="Illum" Emissive="0.5,1,0.25" StringGenMask="%EMITTANCE_MAP"><PublicParams AlphaGlowCutoff="0.4"/></Material>"#,
+        );
+        assert_eq!(emissive(&m)["strength"], json!(1.0));
+        assert_eq!(emissive(&m)["color"], json!([0.5, 1.0, 0.25]));
+        assert_eq!(emissive(&m)["uses_base_texture"], false);
+        assert_eq!(emissive(&m)["alpha_glow_cutoff"], json!(0.4));
+        assert_eq!(m.emissive_factor(), [0.5, 1.0, 0.25]);
+    }
+    #[test]
+    fn macro_emittance_uses_shader_token_and_slot_binding() {
+        let m = material(
+            r#"<Material Shader="HardSurface" Emissive="0,0,0" StringGenMask="%MACRO_EMISSIVE_MAP"><Textures><Texture Map="TexSlot14" File="arbitrary.tif"/></Textures></Material>"#,
+        );
+        assert_eq!(emissive(&m)["strength"], json!(1.0));
+        assert_eq!(emissive(&m)["emittance_texture"], "TexSlot14");
+        assert_eq!(m.emissive_factor(), [1.0; 3]);
+        let m = material(
+            r#"<Material Shader="HardSurface"><Textures><Texture Map="TexSlot14" File="emissive_name.tif"/></Textures></Material>"#,
+        );
+        assert_eq!(m.emissive_strength(), 0.0);
+    }
+
     #[test]
     fn decal_classification_uses_structure_not_asset_names() {
         for (flags, extra, expected) in [

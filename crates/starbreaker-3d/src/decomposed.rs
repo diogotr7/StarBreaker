@@ -504,6 +504,7 @@ fn build_thruster_engine_glow_targets(
     materials: Option<&MtlFile>,
     material_sidecar: Option<&str>,
     sidecar_original_indices: &[u32],
+    glow_effect_materials: &HashSet<u32>,
     entity_name: &str,
     geometry_path: &str,
     mesh_asset: &str,
@@ -545,7 +546,7 @@ fn build_thruster_engine_glow_targets(
             if !source_indices.contains(&source_index) {
                 return None;
             }
-            if !is_engine_glow_material(material) {
+            if !is_engine_glow_material(material, glow_effect_materials.contains(&source_index)) {
                 return None;
             }
             Some(EngineGlowTargetRecord {
@@ -564,14 +565,15 @@ fn build_thruster_engine_glow_targets(
         .collect()
 }
 
-fn is_engine_glow_material(material: &SubMaterial) -> bool {
+fn is_engine_glow_material(material: &SubMaterial, has_glow_effect: bool) -> bool {
     if !matches!(
         material.shader_family(),
         ShaderFamily::Illum | ShaderFamily::HardSurface
     ) {
         return false;
     }
-    material.emissive_factor().iter().any(|component| *component > 0.0)
+    has_glow_effect
+        || material.emissive_factor().iter().any(|component| *component > 0.0)
 }
 
 fn should_export_engine_glow_targets(child: &crate::types::EntityPayload) -> bool {
@@ -1394,6 +1396,9 @@ pub(crate) fn write_decomposed_export(
                 child_material_view.sidecar_materials.as_ref(),
                 material_sidecar.as_deref(),
                 &child_material_view.sidecar_original_indices,
+                &crate::pipeline::engine_glow::glow_effect_materials(
+                    db, &child.entity_name, &child.mesh, child.nmc.as_ref(),
+                ),
                 &child.entity_name,
                 &child.geometry_path,
                 &mesh_asset,
@@ -7770,6 +7775,7 @@ mod tests {
             Some(&materials),
             Some("Data/Objects/Ships/Test/root.materials.json"),
             &[5],
+            &HashSet::new(),
             "DRAK_Test_Thruster_Main",
             "Objects/Spaceships/Thrusters/DRAK/test_thruster.cga",
             "Data/Objects/Spaceships/Thrusters/DRAK/test_thruster_LOD0.blend",
@@ -7787,6 +7793,39 @@ mod tests {
         );
         assert_eq!(targets[0].source_material_index, 5);
         assert_eq!(targets[0].submaterial_name, "Glow_Thrusters");
+    }
+
+    #[test]
+    fn authored_glow_effect_enables_zero_static_emission_on_bound_material_only() {
+        let mut material = sample_submaterial();
+        material.name = "arbitrary".into();
+        material.shader = "Illum".into();
+        material.emissive = [0.0; 3];
+        material.glow = 0.0;
+        assert_eq!(material.emissive_factor(), [0.0; 3]);
+        let materials = MtlFile {
+            materials: vec![material],
+            source_path: None,
+            paint_override: None,
+            material_set: Default::default(),
+        };
+        let mesh = sample_mesh(vec![crate::types::SubMesh {
+            material_name: None,
+            material_id: 0,
+            source_material_id: Some(7),
+            first_index: 0,
+            num_indices: 3,
+            first_vertex: 0,
+            num_vertices: 3,
+            node_parent_index: 0,
+        }]);
+        for (ids, expected) in [(HashSet::from([7]), 1), (HashSet::from([9]), 0), (HashSet::new(), 0)] {
+            let targets = build_thruster_engine_glow_targets(
+                &mesh, Some(&materials), Some("synthetic.materials.json"),
+                &[7], &ids, "synthetic", "synthetic.cga", "synthetic.glb",
+            );
+            assert_eq!(targets.len(), expected);
+        }
     }
 
     #[test]

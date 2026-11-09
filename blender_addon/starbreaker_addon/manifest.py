@@ -499,6 +499,9 @@ class LightRecord:
     active_state: str | None
     states: dict[str, LightState]
     raw: JsonDict
+    parent_node_name: str | None = None
+    parent_local_position: Vec3 | None = None
+    parent_local_rotation: Vec4 | None = None
 
     @classmethod
     def from_value(cls, value: Any) -> LightRecord:
@@ -529,6 +532,11 @@ class LightRecord:
             active_state=_as_str(data.get("active_state")),
             states=states,
             raw=data,
+            parent_node_name=_as_str(data.get("parent_node_name")),
+            parent_local_position=_float_tuple(data["parent_local_position"], 3)
+            if data.get("parent_local_position") is not None else None,
+            parent_local_rotation=_float_tuple(data["parent_local_rotation"], 4)
+            if data.get("parent_local_rotation") is not None else None,
         )
 
 
@@ -592,6 +600,7 @@ class SceneInstanceRecord:
     material_sidecar: str | None
     mesh_asset: str | None
     palette_id: str | None
+    lights: list[LightRecord] = field(default_factory=list)
     ui_bindings: list[JsonDict] = field(default_factory=list)
     decal_host_channel: str | None = None
     decal_host_rgb: Color3 | None = None
@@ -617,6 +626,7 @@ class SceneInstanceRecord:
             material_sidecar=_normalize_relative_path(_as_str(data.get("material_sidecar"))),
             mesh_asset=_normalize_relative_path(_as_str(data.get("mesh_asset"))),
             palette_id=_as_str(data.get("palette_id")),
+            lights=[LightRecord.from_value(item) for item in data.get("lights", [])],
             ui_bindings=[_as_dict(item) for item in data.get("ui_bindings", []) if _as_dict(item)],
             decal_host_channel=_as_str(data.get("decal_host_channel")),
             decal_host_rgb=_float_tuple(data.get("decal_host_rgb"), 3)
