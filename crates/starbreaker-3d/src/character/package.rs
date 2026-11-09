@@ -1,4 +1,4 @@
-//! CHF character → decomposed package (the Blender import path).
+//! CHF character → decomposed GLB or Blender package.
 //!
 //! [`export_character_package`] writes the same `Packages/<name>/scene.json`
 //! + `Data/...` package as entity exports (`.blend` mesh assets, material
@@ -59,7 +59,7 @@ fn character_geometry_path(character: &str, p4k_path: &str) -> String {
 /// Export a CHF character as a decomposed package (in memory; the caller
 /// writes [`DecomposedExport::files`] under its export root). `name` is the
 /// root scene instance (and so the package directory) name. `opts.kind`
-/// must be `Decomposed` with `format: Blend`. `animation` is what the
+/// must be `Decomposed` with `format: Blend` or `Glb`. `animation` is what the
 /// package plays (`CharacterAnimation::default()`: the rest pose);
 /// `loadout` what the character wears over its body (empty: nothing).
 pub fn export_character_package(
@@ -96,9 +96,25 @@ pub fn export_character_package(
     if !head_mtl.is_empty() {
         rig.head_source = Arc::new(PartSource::load(p4k, assets.head_skin_path(), &head_mtl)?);
     }
-    let root_mesh = rig.head_mesh()?;
-    let (root_mtl, root_nmc) = (rig.head_materials(), rig.head_source.nmc.clone().filter(|_| !rig.head_hidden));
-    let children = rig.part_payloads(name, |source| character_geometry_path(name, &source.skin_path))?;
+    let mut root_mesh = rig.head_mesh()?;
+    let (mut root_mtl, mut root_nmc) = (rig.head_materials(), rig.head_source.nmc.clone().filter(|_| !rig.head_hidden));
+    let mut children = rig.part_payloads(name, |source| character_geometry_path(name, &source.skin_path))?;
+
+    // GLB parts carry their own complete bind rig and follow the package leader.
+    // Promote a visible skinned part when clothing hides the head: a skeleton-only
+    // root is otherwise omitted by the decomposed writer.
+    let glb = opts.format == crate::pipeline::ExportFormat::Glb;
+    let mut root_geometry = character_geometry_path(name, assets.head_skin_path());
+    if glb {
+        for child in &mut children { child.bones = rig.bones(); child.nmc = None; }
+        root_nmc = None;
+        if root_mesh.positions.is_empty() {
+            let first = children.iter().position(|p| p.mesh.skin.is_some())
+                .ok_or_else(|| CharacterError::Loadout("character has no visible skinned part".into()))?;
+            let part = children.remove(first);
+            root_mesh = part.mesh; root_mtl = part.materials; root_geometry = part.geometry_path;
+        }
+    }
 
     // (port, effective .mtl) per item and the body, for binding the CHF
     // material slots.
@@ -113,8 +129,8 @@ pub fn export_character_package(
 
     let input = DecomposedInput {
         entity_name: name.to_owned(),
-        geometry_path: character_geometry_path(name, assets.head_skin_path()),
-        assembly_kind: None,
+        geometry_path: root_geometry,
+        assembly_kind: glb.then(|| "character".into()),
         weapon_assembly: None,
         weapon_assembly_diagnostics: None,
         material_path: root_mtl.as_ref().and_then(|m| m.source_path.clone()).unwrap_or_default(),
@@ -124,17 +140,21 @@ pub fn export_character_package(
         root_palette: None,
         available_palettes: Vec::new(),
         root_bones: rig.bones(),
-        animation_sources: crate::animation::rig_sources::rig_sources(None, children.iter().filter_map(|child| {
+        animation_sources: if glb { Vec::new() } else { crate::animation::rig_sources::rig_sources(None, children.iter().filter_map(|child| {
             child.skeleton_source_path.as_ref().map(|path| (child.entity_name.clone(), path.clone()))
-        })),
+        })) },
         root_animation_controller: None,
         children,
         interiors: Default::default(),
         paint_variants: Vec::new(),
         animations: rig.animations.clone(),
     };
-    let mut export = write_decomposed_export_blend(db, p4k, input, opts, None, None, None, None)
-        .map_err(|e| CharacterError::Customization(format!("package export: {e}")))?;
+    let mut export = if glb {
+        crate::decomposed::write_decomposed_export(db, p4k, input, opts, None, None, None,
+            PngCache::new(), Default::default(), Default::default(), &mut |_| None)
+    } else {
+        write_decomposed_export_blend(db, p4k, input, opts, None, None, None, None)
+    }.map_err(|e| CharacterError::Customization(format!("package export: {e}")))?;
 
     // CHF override textures → package PNGs, mapped per submaterial.
     let mut customization_json = serde_json::to_value(&customization).expect("serialize customization");

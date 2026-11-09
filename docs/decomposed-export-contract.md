@@ -904,3 +904,114 @@ does not consume this auxiliary file. UI visual regression accepts v2 by checkin
 exporter source identity and compared PNG content hashes; it retains the legacy
 timestamp guard for v1 exports. No timestamp exceptions are needed in package
 byte comparisons. This provenance file is not a signature for untrusted input.
+
+## Player kits (WP-P2a)
+
+`character::player::export_player` writes the GLB flavour of contract v2 with
+`assembly_kind: "character"`. The default CHF of the requested gender supplies
+identity and the body; the loadout XML supplies equipment. Visible skinned parts
+carry the complete bind rig, including socket-only joints, and follow the root
+rig by joint name. A visible skinned part becomes the root mesh when clothing
+hides the head. No animation is baked into the bind pose. The CHF supplies head identity; the
+loadout head subtree is excluded from the clothing pass to avoid duplicate heads.
+
+`children[].port` (and the root part's `port`) describes its authored item port:
+`{name, owner_entity, flags: string[], types: [{Type, SubTypes}], attachment:
+"bone"|"skin", attach_bone, offset: {position: [x,y,z], rotation_degrees:
+[x,y,z]}, item_offset_helper, select_tag}`. Offsets use native SC axes, metres and
+Euler degrees. Skin attachments follow the leader pose, not the helper transform.
+For bone attachments, align the item's named offset helper with the body joint
+plus the port offset. Port flags, including `invis_p1` and `HeadWear`, are retained.
+Logical items without geometry remain metadata-only children.
+
+A personal weapon child nests its existing `fps_weapon` assembly: root asset
+fields, `weapon_assembly`, `children`, and `animations`. Its `package_dir` resolves
+its own animation sidecars; those are NOT body clips. Nested assets use `Data/PlayerItems/<child_id>/...` and nested manifests use
+`Packages/PlayerItems/<child_id>/...`, all export-root-relative. This preserves
+independent material/livery views of repeated items. References in their JSON
+sidecars are rebased; original `geometry_path` and clip source paths stay intact.
+Each nested provenance stamp lives under its own `package_dir`. `id` is instance-specific, even for duplicate items.
+
+The additive top-level `player` object is:
+
+```text
+{
+  gender, loadout, skeleton, camera_bone, root_motion_bone,
+  hand_ports: [port],
+  weapons: [{entity, child_id, stow_port: port, mannequin_tags: [string],
+             grip_data: SGripContainer, size, subtype}],
+  motion: {unavailable_tag_definitions: [string],
+    states: [{weapon_child_id: string|null, stance, move_speed_tag: string|null, first_person, tags,
+    fragments: [{fragment, guid, source, tags, frag_tags, query_frag_tags, scopes: [string],
+      layers: [{clip OR blend_space, layer, additive: bool|null, missing?: true, loop, speed,
+                blend_in, blend_out, exit_time, start_time, weight, joint_mask}]}]}]},
+  blend_spaces: [{id, source, dimensions: [{name, min, max, authored_min,
+    authored_max, cells}], examples: [{clip, alias, params, authored_params,
+    playback_scale, direct_delta_motion, component?, missing?: true}], faces: [[example_index, ...]],
+    components?: [id], selectors?: [{name, choose_blend_space, locked}]}],
+  diagnostics: [{kind: "missing_clip", clip, fragment, tags, frag_tags, gender}]
+}
+```
+
+The camera binding is the `HeadCam` literal in StarCitizen.exe; the Player entity's
+DataCore audio-listener bones corroborate the joint but do not define a camera
+binding. The exporter keeps this in one named constant and validates the joint.
+Root motion uses the skeleton's parentless joint, not a copied bone name.
+
+Body animation sidecars retain the existing `bones`, CRC keys, time arrays and
+Blender-axis sample convention. New fields are `additive`, `cyclic`, `asset_flags`,
+`duration` (seconds), `source_skeleton_path`, and `root_motion: {bone, space:
+"sc_local", start, end}`, where each endpoint is `{position: [x,y,z], rotation:
+[w,x,y,z]}` in native SC local axes/metres. Asset flags come from IvoAnimInfo (CAF)
+or the embedded AnimInfo in DBA metadata: bit 0 additive, bit 1 cyclic. Controller
+compression flags and clip filename suffixes are not additive signals.
+
+The Mannequin resolver selects the first ordered fragment whose global and
+fragment tags are subsets of the query, following ADB sub-database routing.
+Fragment names come from imported FragmentDefs; locomotion/selection categories
+come from their fragment-tag group schemas. Each resolved layer retains its source
+layer index and sequencing times. Empty animation entries are omitted. A zero
+speed or weight remains zero. `loop` is the Mannequin request; `cyclic` is the asset
+flag, and the two are distinct.
+
+Blend-space examples keep authored SetPara values; absent parameters come from
+root displacement/duration and direction in the initial root frame, including
+PlaybackScale for speed. Dimensions expose both authored grid bounds and bounds
+expanded to include the actual samples. LIVE data has samples outside its grid
+(e.g. ±pi samples with ±3.141 bounds); clamping them would corrupt interpolation.
+
+Default selection is alphabetical among DefaultLoadouts that contain a personal
+weapon on a bone stow port. In LIVE 4.10.2 this selects `Brightsky.xml`, not the P4-AR
+PVE loadout named in the brief. Request the PVE loadout explicitly to verify that
+weapon; no entity/loadout-name special case selects it.
+
+Unarmed queries include authored `moveSpeed` tag variants. Body locomotion
+fragments must have their own motion schema and animate the actor root scope;
+fragments requiring an external item's animation scope are excluded. Stow queries
+use the port selection tag independently of the carry locomotion base. `scopes`
+retains the controller's resolved scope binding, including first-person overrides.
+Missing imports for unrelated tag definitions are reported in
+`motion.unavailable_tag_definitions`; missing registered body clips are diagnosed as described below. Malformed assets
+and decode errors remain fatal.
+Combined `.comb` spaces retain component topology, component IDs and selector
+dimensions; consumers must evaluate selectors before interpolating each component.
+
+Missing clips do not alter fragment resolution. A selected layer retains its
+authored `clip` and gets `missing: true`, `additive: null`; it has no sidecar or
+root animation index entry. Each affected fragment contributes a deduplicated
+`player.diagnostics` entry with its authored tags, fragment tags and gender.
+For blend spaces, a missing example is marked `missing: true`; its unavailable
+root-derived parameters remain null, and layers referencing that space are marked
+missing. Authored sample parameters, faces and all fragment timing are retained.
+Consumers must not attempt to play missing layers.
+
+Source resolution follows recursive chrparams `$Include`, `#filepath` wildcard
+chains and every registered `$TracksDatabase`, without filtering DBA clip names
+by gender directory. This allows authored cross-rig source sharing. Inspection of
+LIVE 4.10.2 female chrparams found no includes or male search roots; its registered
+female DBAs contain no male_v7 entries. The shared selection ADB references
+`pistol_alerted_stand_select_01_fp_add`, but only the male loose CAF exists and the
+female remap list supplies no mapping. It is therefore reported as missing,
+without borrowing a male clip or substituting another fragment. The verifier
+prints this sidearm diagnostic; missing clips in required stand FP/3P unarmed or
+stocked-rifle idle, movement, select or deselect states fail verification.

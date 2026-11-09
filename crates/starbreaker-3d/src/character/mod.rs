@@ -37,6 +37,7 @@ mod identity_context;
 pub(crate) mod part_source;
 pub mod morphing;
 pub mod package;
+pub mod player;
 pub(crate) mod shared;
 pub mod normals;
 
