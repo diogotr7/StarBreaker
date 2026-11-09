@@ -84,7 +84,7 @@ pub(crate) struct PreloadedTextureKey {
 }
 
 /// How materials are represented in the export.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum MaterialMode {
     /// No material data. Plain white surfaces.
     None,
@@ -101,7 +101,7 @@ pub enum MaterialMode {
 }
 
 /// Top-level export kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ExportKind {
     /// Bundled scene export using a single-file artifact such as GLB.
     Bundled,
@@ -110,7 +110,7 @@ pub enum ExportKind {
 }
 
 /// Output format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ExportFormat {
     /// Standard render export (GLB with materials).
     Glb,
@@ -121,7 +121,7 @@ pub enum ExportFormat {
 }
 
 /// Options for controlling the export pipeline.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ExportOptions {
     /// Top-level export kind.
     pub kind: ExportKind,
@@ -163,6 +163,7 @@ pub struct ExportOptions {
     pub ui_only_files: bool,
     /// Optional normalized lowercase socpak paths to include during inherited
     /// interior discovery. `None` exports every discovered container.
+    #[serde(serialize_with = "crate::export_stamp::serialize_socpak_filter")]
     pub socpak_path_filter: Option<HashSet<String>>,
     pub geometry_tag: Option<String>,
 }

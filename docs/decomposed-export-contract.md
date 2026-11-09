@@ -781,3 +781,24 @@ they use the exported entity-local frame under that instance anchor. Interior
 lights retain their container-local frame. The entity-local `direction_sc` is
 not reused after switching to a helper-local rotation. Source IDs occur once
 across the three locations, preventing duplicate light creation.
+
+## Deterministic generated-UI provenance
+
+When an export contains generated UI files, `Data/UI/Generated/.export_stamp.json`
+uses schema version 2. It records `archive_build_id` from the adjacent install
+`build_manifest.id` (`Data.BuildId`), or a SHA-256 of sorted archive-directory
+entries when the manifest is absent; `exporter` (crate name/version and a
+compile-time source SHA-256); `entity`; every serialized export `options` field;
+and `generated_files` mapping generated paths to SHA-256 payload digests. Set-valued
+options are sorted before serialization. Malformed build manifests are errors.
+
+The source digest includes workspace manifests/lockfile and crate source/build
+inputs, with workspace-relative names. It contains no checkout path, hostname,
+Git working-directory state, wall clock or executable timestamp. Identical inputs
+produce identical stamp bytes across independent exports and executable consumers.
+
+The Blender `PackageBundle` reader loads scene/palette/livery/paint manifests and
+does not consume this auxiliary file. UI visual regression accepts v2 by checking
+exporter source identity and compared PNG content hashes; it retains the legacy
+timestamp guard for v1 exports. No timestamp exceptions are needed in package
+byte comparisons. This provenance file is not a signature for untrusted input.

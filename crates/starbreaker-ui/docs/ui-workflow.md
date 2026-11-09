@@ -490,3 +490,13 @@ Flows (commands in the reference doc §2/§7):
   fill-branch screen with `target_h>target_w`, 1.0 elsewhere) is self-scoping — only the portrait screen
   changes, every frozen baseline byte-identical, no re-freeze. Keep `--full` to confirm the no-op on the
   square-mesh gauges (same canvas, aspect-1.0 target).
+
+### Deterministic export stamps (schema v2)
+
+Generated UI exports now identify the archive build, exporter sources/version,
+entity, options and generated payload hashes in `.export_stamp.json`, without
+wall-clock or executable timestamps. The visual regression guard checks the
+current source digest and each compared PNG hash. Re-export after source changes
+or replaced PNGs. Legacy stamps still use the existing timestamp checks; the
+`ui_check.sh --full` age hint applies only to those legacy stamps. The Blender
+package reader does not consume the auxiliary stamp.

@@ -2068,7 +2068,8 @@ pub(crate) fn write_decomposed_export(
         return Err(Error::Other("resolved light owner is absent from the scene instances".into()));
     }
     report_progress(progress, INTERIOR_ASSETS_END, "Writing manifests")?;
-    insert_ui_export_stamp(&mut files);
+    insert_ui_export_stamp(&mut files, &crate::export_stamp::archive_build_id(p4k)?,
+        &input.entity_name, opts)?;
     insert_json_file(&mut files, scene_manifest_path, scene_manifest);
     if !opts.ui_only_files {
         finalize_palette_records(
@@ -4128,52 +4129,20 @@ pub(crate) fn sanitize_identifier(value: &str) -> String {
         .collect()
 }
 
-/// Marker written next to the generated UI PNGs on every export that produced
-/// them. The starbreaker-ui visual guard reads it to hard-fail comparisons
-/// against PNGs that predate the current build (the stale-export trap —
-/// `crates/starbreaker-ui/docs/ui-process-improvements.md` ledger item 20).
+/// Content provenance next to generated UI PNGs. The Blender importer ignores
+/// this auxiliary file; the UI visual guard verifies source and payload hashes.
 const UI_EXPORT_STAMP_PATH: &str = "Data/UI/Generated/.export_stamp.json";
 
-/// Insert `.export_stamp.json` when this export produced any generated UI
-/// file. Skipped otherwise so an export without UI screens cannot pass off
-/// another ship's stale PNGs as fresh. Never fails: every field degrades to a
-/// sentinel ("unknown" / 0) rather than erroring the export.
-fn insert_ui_export_stamp(files: &mut OutputFiles) {
-    let has_generated_ui = files
-        .iter()
-        .any(|(path, _)| path.starts_with("Data/UI/Generated/"));
-    if !has_generated_ui {
-        return;
-    }
-    let written_at_epoch_s = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let git_describe = std::process::Command::new("git")
-        .args(["describe", "--always", "--dirty"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".to_string());
-    let binary_built_at_epoch_s = std::env::current_exe()
-        .and_then(|path| path.metadata())
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|mtime| mtime.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    insert_json_file(
-        files,
-        UI_EXPORT_STAMP_PATH.to_string(),
-        serde_json::json!({
-            "written_at_epoch_s": written_at_epoch_s,
-            "git_describe": git_describe,
-            "binary_built_at_epoch_s": binary_built_at_epoch_s,
-        }),
-    );
+fn insert_ui_export_stamp(
+    files: &mut OutputFiles, build_id: &str, entity: &str, opts: &ExportOptions,
+) -> Result<(), Error> {
+    let generated: Vec<_> = files.iter()
+        .filter(|(path, _)| path.starts_with("Data/UI/Generated/"))
+        .map(|(path, bytes)| (path.as_str(), bytes.as_slice())).collect();
+    if generated.is_empty() { return Ok(()); }
+    let stamp = crate::export_stamp::stamp(build_id, entity, opts, generated.into_iter())?;
+    insert_json_file(files, UI_EXPORT_STAMP_PATH.to_owned(), stamp);
+    Ok(())
 }
 
 /// The export's output file map plus an index that makes per-segment case
@@ -7522,14 +7491,16 @@ mod tests {
             "Data/UI/Generated/ship/test/Test/screen.png".to_string(),
             vec![0u8],
         );
-        insert_ui_export_stamp(&mut files);
+        insert_ui_export_stamp(&mut files, "synthetic-build", "synthetic-entity", &ExportOptions::default()).unwrap();
         let stamp = files
             .get(UI_EXPORT_STAMP_PATH)
             .expect("stamp written alongside generated UI files");
         let value: serde_json::Value = serde_json::from_slice(stamp).expect("stamp parses");
-        assert!(value["written_at_epoch_s"].as_u64().is_some_and(|s| s > 0));
-        assert!(value["git_describe"].as_str().is_some_and(|s| !s.is_empty()));
-        assert!(value["binary_built_at_epoch_s"].is_u64());
+        assert_eq!(value["schema_version"], 2);
+        assert_eq!(value["archive_build_id"], "synthetic-build");
+        assert_eq!(value["exporter"]["source_sha256"], crate::export_stamp::SOURCE_SHA256);
+        assert!(value["generated_files"]["Data/UI/Generated/ship/test/Test/screen.png"].is_string());
+        assert!(value.get("written_at_epoch_s").is_none());
     }
 
     #[test]
@@ -7540,7 +7511,7 @@ mod tests {
             "Packages/Test/scene.json".to_string(),
             b"{}".to_vec(),
         );
-        insert_ui_export_stamp(&mut files);
+        insert_ui_export_stamp(&mut files, "synthetic-build", "synthetic-entity", &ExportOptions::default()).unwrap();
         assert!(!files.contains_key(UI_EXPORT_STAMP_PATH));
     }
 

@@ -4981,6 +4981,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "starbreaker-blend",
  "starbreaker-chf",
  "starbreaker-chunks",

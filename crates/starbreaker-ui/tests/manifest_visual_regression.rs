@@ -1,4 +1,8 @@
+//! UI visual baselines and stale-export guards for legacy and deterministic provenance.
 use sha2::{Digest, Sha256};
+#[path = "support/deterministic_stamp.rs"]
+mod deterministic_stamp;
+
 use std::path::PathBuf;
 use starbreaker_ui::{
     UiIrDocument, UiRegressionManifest, UiScreenSnapshot, compare_manifest_targets_with_loader,
@@ -670,12 +674,12 @@ fn manifest_targets_whole_image_colour_regression_guard() {
 
     // Staleness hard-fail (ledger item 20): the generated PNGs only refresh on
     // a full export, so before trusting any comparison verify the export stamp
-    // exists and postdates neither the compared PNGs nor (by >30min) this test
-    // binary. Targets skipped above for missing game data stay skipped — a
+    // matches exporter sources and PNG bytes (v2), or passes the legacy time
+    // guard (v1). Targets skipped above for missing game data stay skipped — a
     // repo-only environment never reaches this check.
     if let Some((_, first_render_path, _)) = compared.first() {
-        let stamp_bytes = export_stamp_path(first_render_path)
-            .and_then(|path| std::fs::read(path).ok());
+        let stamp_path = export_stamp_path(first_render_path).expect("generated UI stamp path");
+        let stamp_bytes = std::fs::read(&stamp_path).ok();
         let png_mtimes = compared
             .iter()
             .map(|(target, render_path, _)| {
@@ -686,9 +690,18 @@ fn manifest_targets_whole_image_colour_regression_guard() {
             .ok()
             .and_then(|exe| mtime_epoch_s(&exe))
             .unwrap_or(0);
-        if let Some(failure) =
+        let stamp: Option<serde_json::Value> = stamp_bytes.as_deref()
+            .and_then(|bytes| serde_json::from_slice(bytes).ok());
+        let failure = if stamp.as_ref().is_some_and(|s| s["schema_version"] == 2) {
+            let export_root = stamp_path.parent().and_then(|p| p.parent())
+                .and_then(|p| p.parent()).and_then(|p| p.parent()).expect("export root");
+            let sources: Vec<_> = compared.iter().map(|(_, path, _)| path.clone()).collect();
+            deterministic_stamp::check(stamp.as_ref().unwrap(), export_root, &sources)
+                .err().map(|message| format!("{STALE_EXPORT_MESSAGE} ({message})"))
+        } else {
             stale_export_failure(stamp_bytes.as_deref(), &png_mtimes, test_binary_mtime)
-        {
+        };
+        if let Some(failure) = failure {
             if std::env::var("UI_ALLOW_STALE_EXPORT").as_deref() == Ok("1") {
                 eprintln!("warning (UI_ALLOW_STALE_EXPORT=1): {failure}");
             } else {
