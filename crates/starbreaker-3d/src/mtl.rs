@@ -629,9 +629,42 @@ impl SubMaterial {
         }
     }
 
+    /// Authored CryEngine material flags, independent of shader/mesh names.
+    pub fn material_flags(&self) -> u64 {
+        let Some(attr) = self.authored_attributes.iter().find(|a| a.name == "MtlFlags") else {
+            return 0; // An absent flag bitset has no enabled flags.
+        };
+        let value = attr.value.trim();
+        let parsed = if let Some(hex) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
+            u64::from_str_radix(hex, 16)
+        } else {
+            value.parse::<u64>()
+        };
+        parsed.unwrap_or_else(|error| {
+            log::warn!("Invalid authored MtlFlags {:?}: {error}", attr.value);
+            0
+        })
+    }
+
+    /// CryEngine MTL_FLAG_REQUIRE_FORWARD_RENDERING.
+    pub fn is_forward_rendered(&self) -> bool {
+        self.material_flags() & 0x8000 != 0
+    }
+
+    /// Authored MTL_FLAG_2SIDED, separate from the legacy decal-sidedness policy.
+    pub fn authored_two_sided(&self) -> bool {
+        self.material_flags() & 0x2 != 0
+    }
+
+    /// Glow overrides forward Illum cards, which override emittance-map strength.
     pub fn emissive_strength(&self) -> f32 {
         if self.glow > 0.0 {
             self.glow
+        } else if matches!(self.shader_family(), ShaderFamily::Illum | ShaderFamily::HardSurface)
+            && self.is_forward_rendered()
+            && self.emissive.iter().any(|component| *component != 0.0)
+        {
+            self.emissive.iter().sum::<f32>() / 3.0
         } else if self.has_emittance_map() {
             1.0
         } else {

@@ -317,8 +317,15 @@ Every submaterial has `emissive`:
 
 - `color`: tint-only linear RGB factor. Nonzero `Emissive` is the tint; an all-zero
   triplet means no tint and exports `[1,1,1]`.
-- `strength`: positive `Glow`, otherwise `1` when a shader emittance-map token is
-  present, otherwise `0`. Emissive RGB alone never enables emission.
+- `strength`, in priority order: positive `Glow`; otherwise mean(`Emissive`)
+  for Illum/HardSurface with `MtlFlags & 0x8000` and non-black Emissive;
+  otherwise `1` for an enabled emittance-map token; otherwise `0`.
+  The forward flag is CryEngine `MTL_FLAG_REQUIRE_FORWARD_RENDERING`. This rule
+  identifies forward glow cards without using material or texture names.
+  LayerBlend_V2 and non-forward materials never emit from Emissive alone.
+- `forward_rendering`: the authored `MtlFlags & 0x8000` decision, also present
+  in `alpha_config`. The flag alone does not imply emission (runtime-driven
+  thruster surfaces and glass can also have it).
 - `glow`: parsed raw scalar (`Glow`/`GlowAmount`); absent is zero.
 - `uses_base_texture`: false for `%EMITTANCE_MAP` or `%MACRO_EMISSIVE_MAP`, true
   otherwise. These are exact decoded permutation tokens, not slot/asset names.
@@ -331,7 +338,9 @@ Every submaterial has `emissive`:
 Final emission is `surface × color × strength`, where surface is
 `Diffuse × base-colour texture` when `uses_base_texture` is true, or the emittance
 map otherwise. Black Emissive with positive Glow therefore emits its surface
-colour. Neutral white Emissive with no Glow/map stays off.
+colour. Neutral white Emissive with no Glow/map stays off unless it is an
+authored forward Illum/HardSurface card. Colour remains tint only; importers must
+not apply strength or Diffuse twice.
 
 `SubMaterial::emissive_factor()` returns `color × strength`. This shared fix also
 changes bundled GLB emissive factors and the emissive-texture/screen-back-colour
@@ -340,8 +349,23 @@ baking remains an approximation of the source shader.
 
 Scene and material sidecars remain schema **v2** after these corrections. The
 validator continues to accept both v1 and v2; raw authored fields are preserved.
-The viewer cache format is independently bumped to v5 to invalidate earlier
+The viewer cache format is independently bumped to v6 to invalidate earlier
 v2 packages with the superseded emission semantics.
+
+Every submaterial also carries `alpha_config`:
+
+- `forward_rendering`: authored `MTL_FLAG_REQUIRE_FORWARD_RENDERING` (0x8000).
+- `two_sided`: authored `MTL_FLAG_2SIDED` (0x2), independent of shader inference.
+- `alpha_test` and `opacity`: parsed authored `AlphaTest` and `Opacity`, with the
+  existing parser defaults 0 and 1 respectively when absent. Raw attribute
+  presence remains available in `authored_attributes`.
+
+Forward emissive cards need soft coverage: reconstruct them as additive or
+translucent unlit surfaces, without imposing a host's default mask threshold.
+The flags and authored thresholds are provided independently so a forward flag
+on a non-emissive material is not mistaken for a glow-card blend decision.
+This metadata does not change the legacy bundled glTF `alpha_config()` or
+`is_double_sided()` approximation (the latter treats decals as double-sided).
 
 `decal` is null outside MeshDecal. MeshDecal entries carry:
 

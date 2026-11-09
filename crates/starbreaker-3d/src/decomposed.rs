@@ -3016,6 +3016,7 @@ fn build_submaterial_json(
         },
     });
     value["emissive"] = crate::material_semantics::emissive(material);
+    value["alpha_config"] = crate::material_semantics::alpha_config(material);
     value["decal"] = crate::material_semantics::decal(material).unwrap_or(serde_json::Value::Null);
     value
 }

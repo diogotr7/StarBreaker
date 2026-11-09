@@ -28,9 +28,21 @@ pub(crate) fn emissive(material: &SubMaterial) -> Value {
         .find(|(name, _)| name.eq_ignore_ascii_case("AlphaGlowCutoff"))
         .map(|(_, value)| super::decomposed::string_value_to_json(value));
     json!({"color": color, "strength": material.emissive_strength(),
+        "forward_rendering": material.is_forward_rendered(),
         "uses_base_texture": !material.has_emittance_map(),
         "emittance_texture": emittance.map(|s| &s.slot),
         "alpha_glow_cutoff": cutoff, "glow": material.glow})
+}
+
+/// Raw coverage controls; forward cards need soft alpha in the host renderer.
+/// This does not replace the bundled glTF alpha approximation in SubMaterial.
+pub(crate) fn alpha_config(material: &SubMaterial) -> Value {
+    json!({
+        "forward_rendering": material.is_forward_rendered(),
+        "two_sided": material.authored_two_sided(),
+        "alpha_test": material.alpha_test,
+        "opacity": material.opacity,
+    })
 }
 
 pub(crate) fn decal(material: &SubMaterial) -> Option<Value> {
@@ -170,6 +182,74 @@ mod tests {
             [1.0; 3],
             0.0,
         );
+    }
+    #[test]
+    fn authored_alpha_controls_are_independent_of_decal_inference() {
+        for flags in ["32770", "0x8002"] {
+            let m = material(&format!(
+                r#"<Material Shader="Illum" MtlFlags="{flags}" AlphaTest="0.125" Opacity="0.625"/>"#
+            ));
+            assert_eq!(
+                alpha_config(&m),
+                json!({"forward_rendering":true,
+                "two_sided":true, "alpha_test":0.125, "opacity":0.625})
+            );
+        }
+        let m = material(r#"<Material Shader="MeshDecal" MtlFlags="0"/>"#);
+        assert!(m.is_double_sided()); // Existing glTF policy is deliberately separate.
+        assert_eq!(
+            alpha_config(&m),
+            json!({"forward_rendering":false,
+            "two_sided":false, "alpha_test":0.0, "opacity":1.0})
+        );
+    }
+    #[test]
+    fn forward_illum_cards_emit_without_glow_but_other_families_do_not() {
+        // Synthetic authored categories; names are deliberately irrelevant.
+        for shader in ["Illum", "HardSurface"] {
+            check_emission(
+                &format!(r#"<Material Shader="{shader}" MtlFlags="32768" Emissive="1,1,1"/>"#),
+                [1.0; 3],
+                1.0,
+            );
+            check_emission(
+                &format!(
+                    r#"<Material Shader="{shader}" MtlFlags="32768" Emissive="0.25,0.5,0.75"/>"#
+                ),
+                [0.25, 0.5, 0.75],
+                0.5,
+            );
+            check_emission(
+                &format!(r#"<Material Shader="{shader}" MtlFlags="32768" Emissive="0,0,0"/>"#),
+                [1.0; 3],
+                0.0,
+            );
+            check_emission(
+                &format!(
+                    r#"<Material Shader="{shader}" MtlFlags="32768" Emissive="0.25,0.5,0.75" Glow="0.125"/>"#
+                ),
+                [0.25, 0.5, 0.75],
+                0.125,
+            );
+            check_emission(
+                &format!(
+                    r#"<Material Shader="{shader}" MtlFlags="32768" Emissive="0.25,0.5,0.75" StringGenMask="%EMITTANCE_MAP"/>"#
+                ),
+                [0.25, 0.5, 0.75],
+                0.5,
+            );
+        }
+        for flags in ["0", "32768"] {
+            check_emission(
+                &format!(
+                    r#"<Material Shader="LayerBlend_V2" MtlFlags="{flags}" Emissive="1,1,1"/>"#
+                ),
+                [1.0; 3],
+                0.0,
+            );
+        }
+        let m = material(r#"<Material Shader="Illum" MtlFlags="32768" Emissive="1,1,1"/>"#);
+        assert_eq!(emissive(&m)["forward_rendering"], true);
     }
     #[test]
     fn emittance_token_is_a_signal_without_a_named_slot_or_glow() {

@@ -136,7 +136,7 @@ mod tests {
         assert!(glow_submeshes(&object(vec![("enabled", Value::Bool(false))])).is_empty());
     }
     #[test]
-    fn submesh_binding_is_exact_and_retains_source_material_ids() {
+    fn enabled_glow_link_includes_markings_and_retains_exact_source_ids() {
         let node = |name: &str| crate::nmc::NmcNode {
             name: name.into(),
             parent_index: None,
@@ -170,7 +170,10 @@ mod tests {
             colors: None,
             submeshes: vec![
                 submesh(0, 0, Some(7)),
-                submesh(0, 2, None),
+                crate::types::SubMesh {
+                    material_name: Some("synthetic_markings".into()),
+                    ..submesh(0, 2, None)
+                },
                 submesh(1, 3, Some(9)),
             ],
             model_min: [0.0; 3],
@@ -186,5 +189,32 @@ mod tests {
         );
         assert!(bound_materials(&mesh, None, &HashSet::from(["part"])).is_empty());
         assert!(bound_materials(&mesh, Some(&rig), &HashSet::from(["missing"])).is_empty());
+
+        // Synthetic end-to-end regression: an enabled node-level Glow write also
+        // binds the marking section. Material labels cannot narrow an authored link.
+        let category = object(vec![
+            ("enabled", Value::Bool(true)),
+            (
+                "tagEffects",
+                Value::Array(vec![object(vec![
+                    ("enabled", Value::Bool(true)),
+                    (
+                        "propertyLinks",
+                        Value::Array(vec![object(vec![
+                            ("materialProperty", Value::Enum("Glow")),
+                            ("subMeshName", Value::String("part")),
+                        ])]),
+                    ),
+                ])]),
+            ),
+        ]);
+        let names = glow_submeshes(&category).into_iter().collect();
+        let bound = bound_materials(&mesh, Some(&rig), &names);
+        assert!(
+            bound.contains(&2),
+            "markings on the addressed node must participate"
+        );
+        assert_eq!(bound, HashSet::from([7, 2]));
+        assert!(!bound.contains(&9), "a suffixed node must not be joined");
     }
 }
