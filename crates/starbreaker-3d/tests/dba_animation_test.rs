@@ -150,7 +150,10 @@ fn find_block_for_skeleton_picks_right_gear_deploy() {
     let pose = clip_final_pose(clip);
     let foot = pose.get(&FOOT_BONE_HASH).expect("foot pose");
     let target = [-0.53890413, 0.40817448, 0.5782322, 0.45675313];
-    let angle = quat_angle_deg(foot.rotation, target);
+    // The reference above is Blender Z-up; baked skeleton poses are native
+    // Y-up wxyz, so convert only for comparison with this recorded target.
+    let [w, x, y, z] = foot.rotation.expect("foot has rotation keys");
+    let angle = quat_angle_deg(cry_xyzw_to_blender_wxyz([x, y, z, w]), target);
     assert!(
         angle < 5.0,
         "matcher selected wrong clip — foot off by {angle:.3}°"

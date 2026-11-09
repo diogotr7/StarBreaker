@@ -482,6 +482,16 @@ The exporter-side contract gaps are now mostly closed. The remaining work is pri
 
 ## Animation Records
 
+Default-pose GLB exports bake only the selected clip's keyed components at
+their final sample. An unkeyed rotation or position keeps its bind value;
+entirely unkeyed bones remain at bind locally. Cached world transforms are
+recomputed through the hierarchy, while inverse-bind transforms remain intact.
+The bake uses the skeleton's native CryEngine Y-up basis (quaternions reordered
+from `xyzw` to `wxyz`, positions unchanged), before normal glTF emission and its
+`CryEngine_Z_up` wrapper. The per-sample Blender Z-up conversion below belongs
+only to animation sidecars and is unchanged by default-pose baking. Decomposed
+viewer exports default to bind pose with sidecars rather than a baked pose.
+
 Only the root entity carries animations: `root_entity.animations` is an
 optional array holding every discoverable clip for the root skeleton and the
 attached children's skeletons, merged by clip name (`decomposed.rs`).

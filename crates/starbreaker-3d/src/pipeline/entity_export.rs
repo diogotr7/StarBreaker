@@ -371,7 +371,9 @@ pub(crate) fn load_skeleton(
 
 /// Look up a `.chrparams` for the given skeleton path, find an animation
 /// matching one of `opts.default_animation_tags`, and bake its final-frame
-/// pose into `bones`. Returns the number of bones updated (0 = nothing
+/// pose into `bones` in native CryEngine Y-up, preserving unkeyed bind
+/// components. Sidecar axis conversion is not part of this bake.
+/// Returns the number of bones updated (0 = nothing
 /// applied / chrparams missing / animation missing).
 fn apply_default_animation_pose_for_skel(
     p4k: &MappedP4k,
