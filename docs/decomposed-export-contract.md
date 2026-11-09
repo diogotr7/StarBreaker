@@ -220,7 +220,10 @@ Each light record (built in `decomposed.rs` from the `LightInfo` parsed in
 - `intensity_raw` (the authored CryEngine intensity of the active state),
   `intensity_unit` (`"cryengine_authored_intensity"`), and
   `intensity_candela_proxy` (the exporter's candela-style scaled value);
-  `intensity` is a legacy alias of `intensity_candela_proxy`
+  `intensity` is a legacy alias of `intensity_candela_proxy`.
+  `intensity_candela_proxy_model = "raw_x1500"` labels the retained compatibility
+  recipe, **not physical candelas**. Ambient proxies still apply the existing
+  `glow_multiplier × 0.25` gain after ×1500; this change does not recalibrate it.
 - `radius` and its explicit metric duplicate `radius_m` (attenuation radius in
   metres)
 - `inner_angle` / `outer_angle` for projectors: **half-angles** in degrees
@@ -231,18 +234,69 @@ Each light record (built in `decomposed.rs` from the `LightInfo` parsed in
 - `light_style`, the active state's authored style (also retained per state)
 - `active_state` and a `states` map capturing every authored CryEngine state
   (`offState`, `defaultState`, `auxiliaryState`, `emergencyState`,
-  `cinematicState`; missing states are absent). The active state is the first
-  state with non-zero intensity in priority order
-  `default → auxiliary → emergency → cinematic`; the flat `color` / intensity
-  fields come from it. The full map lets the Blender addon switch between
+  `cinematicState`; missing states are absent). An authored `defaultState` is
+  always active, including intensity **0**; its colour, style and intensity
+  populate the flat fields. Only when defaultState is absent, select the first
+  positive-intensity state in `auxiliary → emergency → cinematic` order.
+  If none qualifies, `active_state` is empty and the flat intensity is zero. The full map lets the Blender addon switch between
   states at runtime without re-exporting.
 
 Each `states` entry carries `intensity_raw`, `intensity_unit`, `intensity_cd`,
-`intensity_candela_proxy`, `temperature` (Kelvin), `use_temperature`, `color`,
+`intensity_candela_proxy`, `intensity_candela_proxy_model` (`"raw_x1500"`),
+`temperature` (Kelvin), `use_temperature`, `color`,
 `light_style` (the authored CryEngine light-style id, e.g. strobe patterns),
 and `preset_tag` (an optional authored preset tag such as `fast` / `slow`).
 `temperature` and `use_temperature` exist only per state, not on the flat
 record. Background on the light data: `docs/star-citizen-lighting-research.md`.
+
+WP-R5b adds the following component fields to all three scene light arrays,
+the metadata-only light catalogue (`scviewer lights` / `sc_lights`), and each
+bundled GLB `KHR_lights_punctual.lights[].extras` record:
+
+| JSON field | Authored source | Missing attribute |
+| --- | --- | --- |
+| `bulb_radius_m` | `sizeParams.bulbRadius` | 0.05 m (CryEngine Light.lua default) |
+| `plane_width_m`, `plane_height_m` | `sizeParams.planeWidth`, `planeHeight` | null |
+| `shadow_casting` | `shadowParams.shadowCasting` | false (flag absent) |
+| `max_shadow_cast_distance_m` | `shadowParams.maxShadowCastDist` | null |
+| `affects_this_area_only`, `affect_gi` | component `affectsThisAreaOnly`, resolved `affectGI` | false (flag absent) |
+| `attenuation_tweak` | `miscParams.attenuationTweak` | 1.0 |
+| `plane_softness` | `miscParams.planeSoftness` | null |
+| `fade_min_distance_m`, `fade_max_distance_m` | `fadeParams.minDistance`, `maxDistance` | null |
+| `importance` | component `importance` (integer or DataCore enum option index) | null |
+| `glow_multiplier` | `miscParams.glowMultiplier` | existing multiplier identity 1.0 |
+
+LIVE authors `importance` as a named enum. `importance_name` preserves that name,
+while `importance` is the zero-based option index read from DataCore's
+`LightComponentParams.importance` property enum at run time; no ordinal table is
+copied into the exporter. Numeric XML importance is kept directly. Low-level SOC
+parsing without a database (or an unknown enum name) preserves the name and
+leaves the index null; the shared interior-building path resolves it for scene,
+catalogue and bundled exports.
+
+`affect_gi_mode` preserves the original `affectGI` spelling. `affect_gi` resolves
+`On` / `Off` or boolean spellings directly, and `InheritAffectsObjects` from the
+same component's `affectsObjects` flag. Unknown modes warn and retain their raw
+spelling. These two extra source-name fields prevent enum information loss in
+the required integer/boolean API.
+
+All dimensions/distances are source metres; explicit zeroes remain zero.
+No bulb-size or attenuation hypothesis is baked into the proxy. Optional numeric
+fields serialize as null rather than invented dimensions or distances.
+GLB extras preserve the entire LightInfo, including all states and source fields;
+the standard glTF intensity/range remain compatibility values.
+
+The Blender addon maps `shadow_casting` to `use_shadow`, `bulb_radius_m` to
+`shadow_soft_size`, and plane width/height to rectangular AREA `size`/`size_y`.
+Missing/null dimensions preserve the older package's import behavior. Zeroes and
+false flags are applied, not mistaken for missing data. The active state is used
+as exported; an off default is not replaced with a lit auxiliary state.
+
+Scene and material schema versions remain **2** (additive fields). The viewer's
+`scviewer-core::CACHE_FORMAT_VERSION` changes **10 → 11**, invalidating layer-1
+packages even for unchanged vendored revision/dirty identifiers. UE
+`SCPackageReader` must continue accepting scene v1/v2, including these v2 fields;
+11 is a cache identity, not a scene version.
 
 ### Cross-DCC Semantic Fields
 

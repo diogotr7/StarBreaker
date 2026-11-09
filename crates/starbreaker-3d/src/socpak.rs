@@ -21,6 +21,15 @@ use starbreaker_p4k::{MappedP4k, P4kArchive};
 use crate::error::Error;
 use crate::types::{InteriorMesh, InteriorPayload, LightInfo, LightStateInfo};
 
+#[cfg(test)]
+#[path = "socpak_light_tests.rs"]
+mod light_field_tests;
+
+#[path = "socpak_light_fields.rs"]
+pub(crate) mod light_fields;
+
+// TODO(WP-R5b): retain compatibility until the UE-side measurement in
+// ue/verification/WP-U3b.md §11.2–11.3 establishes the physical bulb-size mapping.
 const LIGHT_AUTHORED_INTENSITY_SCALE: f32 = 1500.0;
 const AMBIENT_PROXY_DIRECT_FACTOR: f32 = 0.25;
 
@@ -1778,10 +1787,12 @@ mod light_regressions {
 ///
 /// Expected structure:
 /// ```xml
-/// <EntityComponentLight lightType="..." intensity="..." radius="..." color="r,g,b" ...>
-///   <projectorParams texture="..." fov="..." nearPlane="..." />
-///   <colorParams colorTemperature="..." />
-///   <optionalParams .../>
+/// <EntityComponentLight lightType="..." useTemperature="..." affectGI="...">
+///   <sizeParams lightRadius="..." bulbRadius="..." planeWidth="..." planeHeight="..."/>
+///   <defaultState intensity="..." temperature="..."><color r="..." g="..." b="..."/></defaultState>
+///   <shadowParams shadowCasting="..." maxShadowCastDist="..."/>
+///   <fadeParams minDistance="..." maxDistance="..."/>
+///   <miscParams glowMultiplier="..." attenuationTweak="..." planeSoftness="..."/>
 /// </EntityComponentLight>
 /// ```
 fn build_light_info_from_component(
@@ -1796,7 +1807,7 @@ fn build_light_info_from_component(
     // temperature, and the <color r g b> child element) live on dedicated
     // state children: offState / defaultState / auxiliaryState /
     // emergencyState / cinematicState. Star Citizen renders the "default"
-    // state for baked-in lights, so we read from <defaultState> only.
+    // state for baked-in lights, even when that state is authored off.
     let component_attrs: HashMap<&str, &str> = xml
         .node_attributes(component)
         .filter(|(k, _)| *k != "__type")
@@ -1818,9 +1829,8 @@ fn build_light_info_from_component(
     // (`offState` / `defaultState` / `auxiliaryState` / `emergencyState` /
     // `cinematicState`). Each carries its own intensity, temperature, and
     // <color r g b> child. Collect every authored state so downstream
-    // tools can switch between them; then pick the first with
-    // intensity > 0 (in fallback order) as the active state to expose on
-    // the flat `color` / `intensity` fields.
+    // tools can switch between them. Use defaultState if present; the positive
+    // priority fallback applies only to components without an authored default.
     const ALL_STATES: &[&str] = &[
         "offState",
         "defaultState",
@@ -1835,15 +1845,16 @@ fn build_light_info_from_component(
         "cinematicState",
     ];
 
-    let glow_multiplier = xml
-        .node_children(component)
-        .find(|c| xml.node_tag(c) == "miscParams")
-        .and_then(|misc| {
-            xml.node_attributes(misc)
-                .find(|(k, _)| *k == "glowMultiplier")
-                .and_then(|(_, v)| v.parse::<f32>().ok())
-        })
-        .unwrap_or(1.0);
+    let child_attr = |tag: &str, key: &str| {
+        xml.node_children(component)
+            .find(|c| xml.node_tag(c) == tag)
+            .and_then(|node| xml.node_attributes(node).find(|(k, _)| *k == key))
+            .map(|(_, value)| value)
+    };
+    let child_float =
+        |tag: &str, key: &str| child_attr(tag, key).and_then(|v| v.parse::<f32>().ok());
+    let glow_multiplier = child_float("miscParams", "glowMultiplier")
+        .unwrap_or_else(crate::types::light_unit_multiplier);
 
     let read_state = |tag: &str| -> Option<LightStateInfo> {
         let node = xml
@@ -1884,6 +1895,7 @@ fn build_light_info_from_component(
             })
             .unwrap_or((1.0, 1.0, 1.0));
         Some(LightStateInfo {
+            intensity_candela_proxy_model: crate::types::light_proxy_model(),
             intensity_raw,
             intensity_unit: "cryengine_authored_intensity".to_string(),
             intensity_cd: authored_light_intensity_to_candela_semantic(
@@ -1912,17 +1924,21 @@ fn build_light_info_from_component(
         }
     }
 
-    // Pick the active state via priority order.
-    let active_state_name = STATE_PRIORITY
-        .iter()
-        .find(|tag| {
-            states
-                .get(**tag)
-                .map(|s| s.intensity_raw > 0.0)
-                .unwrap_or(false)
-        })
-        .copied()
-        .unwrap_or("");
+    // An authored zero default is off, not permission to activate another state.
+    let active_state_name = if states.contains_key("defaultState") {
+        "defaultState"
+    } else {
+        STATE_PRIORITY
+            .iter()
+            .find(|tag| {
+                states
+                    .get(**tag)
+                    .map(|s| s.intensity_raw > 0.0)
+                    .unwrap_or(false)
+            })
+            .copied()
+            .unwrap_or("")
+    };
     let active = states.get(active_state_name);
     let intensity_raw = active.map(|s| s.intensity_raw).unwrap_or(0.0);
     let temperature = active.map(|s| s.temperature).unwrap_or(6500.0);
@@ -1993,6 +2009,32 @@ fn build_light_info_from_component(
     );
 
     Some(LightInfo {
+        bulb_radius_m: child_float("sizeParams", "bulbRadius")
+            .unwrap_or_else(crate::types::default_bulb_radius),
+        plane_width_m: child_float("sizeParams", "planeWidth"),
+        plane_height_m: child_float("sizeParams", "planeHeight"),
+        shadow_casting: child_attr("shadowParams", "shadowCasting").is_some_and(bool_truthy),
+        max_shadow_cast_distance_m: child_float("shadowParams", "maxShadowCastDist"),
+        affects_this_area_only: component_attrs
+            .get("affectsThisAreaOnly")
+            .is_some_and(|s| bool_truthy(s)),
+        affect_gi: light_fields::affect_gi(
+            component_attrs.get("affectGI").copied(),
+            component_attrs.get("affectsObjects").is_some_and(|s| bool_truthy(s)),
+        ),
+        affect_gi_mode: component_attrs.get("affectGI").map(|s| (*s).to_owned()),
+        attenuation_tweak: child_float("miscParams", "attenuationTweak")
+            .unwrap_or_else(crate::types::light_unit_multiplier),
+        plane_softness: child_float("miscParams", "planeSoftness"),
+        fade_min_distance_m: child_float("fadeParams", "minDistance"),
+        fade_max_distance_m: child_float("fadeParams", "maxDistance"),
+        importance: component_attrs
+            .get("importance")
+            .and_then(|s| s.parse().ok()),
+        importance_name: component_attrs.get("importance")
+            .filter(|s| s.parse::<i32>().is_err()).map(|s| (*s).to_owned()),
+        glow_multiplier,
+        intensity_candela_proxy_model: crate::types::light_proxy_model(),
         attachment: None,
         light_style: active.map_or(0, |state| state.light_style),
         name: name.to_string(),

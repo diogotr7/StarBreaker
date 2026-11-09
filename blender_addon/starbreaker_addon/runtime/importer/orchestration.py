@@ -1151,6 +1151,11 @@ class OrchestrationMixin:
             light_data.shadow_soft_size = (max(float(light.radius or 0.0), 0.0) * 0.05)
             light_data.shadow_soft_size = min(max(light_data.shadow_soft_size, 0.01), 0.5)
 
+        # TODO(WP-R5b): retire legacy radius-based sizing above once old packages
+        # are no longer supported. Authored dimensions (including zero) take priority.
+        from .entity_lights import apply_authored_light_fields
+        apply_authored_light_fields(light_data, light)
+
         self._wire_light_gobo(light_data, light)
 
         # Phase 28: stash the full state map + active state name on the Light

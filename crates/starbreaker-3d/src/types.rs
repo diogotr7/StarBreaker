@@ -921,11 +921,40 @@ pub struct LightInfo {
     pub intensity_unit: String,
     /// Explicit label for the exporter's candela-style proxy value.
     pub intensity_candela_proxy: f32,
+    /// Compatibility proxy recipe, not a physical candela calibration.
+    #[serde(default = "light_proxy_model")]
+    pub intensity_candela_proxy_model: String,
     pub intensity: f32,
     /// Attenuation radius in meters.
     pub radius: f32,
     /// Explicit metric label duplicate for downstream consumers.
     pub radius_m: f32,
+    /// CryEngine attenuation bulb radius (metres); documented engine default 0.05.
+    #[serde(default = "default_bulb_radius")]
+    pub bulb_radius_m: f32,
+    pub plane_width_m: Option<f32>,
+    pub plane_height_m: Option<f32>,
+    #[serde(default)]
+    pub shadow_casting: bool,
+    pub max_shadow_cast_distance_m: Option<f32>,
+    #[serde(default)]
+    pub affects_this_area_only: bool,
+    #[serde(default)]
+    pub affect_gi: bool,
+    /// Original boolean/enum spelling; affect_gi resolves InheritAffectsObjects.
+    pub affect_gi_mode: Option<String>,
+    #[serde(default = "light_unit_multiplier")]
+    pub attenuation_tweak: f32,
+    pub plane_softness: Option<f32>,
+    pub fade_min_distance_m: Option<f32>,
+    pub fade_max_distance_m: Option<f32>,
+    pub importance: Option<i32>,
+    /// Original named enum, when authored; importance is its DataCore option index.
+    /// Low-level SOC parsing without a database preserves the name and leaves the index null.
+    pub importance_name: Option<String>,
+    /// Authored miscParams multiplier, retained separately from the legacy proxy.
+    #[serde(default = "light_unit_multiplier")]
+    pub glow_multiplier: f32,
     /// For spot lights: inner cone angle in degrees.
     pub inner_angle: Option<f32>,
     /// For spot lights: outer cone angle in degrees.
@@ -934,8 +963,9 @@ pub struct LightInfo {
     /// projector texture (authored under `<projectorParams texture="...">`).
     pub projector_texture: Option<String>,
     /// Name of the authored state whose values currently populate
-    /// `color` / `intensity` (first-non-zero of default → auxiliary →
-    /// emergency → cinematic). Empty if the component had no usable state.
+    /// `color` / `intensity`: defaultState whenever authored, including intensity 0.
+    /// Only if absent, use the first positive auxiliary → emergency → cinematic
+    /// state. Empty if no default or positive fallback is authored.
     pub active_state: String,
     /// All authored CryEngine light states keyed by state name
     /// (`offState`, `defaultState`, `auxiliaryState`, `emergencyState`,
@@ -959,10 +989,13 @@ pub struct LightStateInfo {
     pub intensity_raw: f32,
     /// Explicit unit label for ``intensity_raw``.
     pub intensity_unit: String,
-    /// Same value scaled by the glTF candela multiplier (× 200).
+    /// Compatibility alias of intensity_candela_proxy, not measured candelas.
     pub intensity_cd: f32,
     /// Explicit alias for the exporter-scaled candela-style proxy.
     pub intensity_candela_proxy: f32,
+    /// Compatibility recipe; ambient proxies additionally retain their legacy gain.
+    #[serde(default = "light_proxy_model")]
+    pub intensity_candela_proxy_model: String,
     /// Authored colour temperature in Kelvin.
     pub temperature: f32,
     /// Mirrors the `useTemperature` flag on the parent component.
@@ -976,6 +1009,18 @@ pub struct LightStateInfo {
     pub light_style: i32,
     /// Optional authored preset tag (e.g. ``fast`` / ``slow``).
     pub preset_tag: String,
+}
+
+pub(crate) fn default_bulb_radius() -> f32 {
+    0.05 // CryEngine Light.lua fAttenuationBulbSize default; WP-U3b §11.2.
+}
+
+pub(crate) fn light_unit_multiplier() -> f32 {
+    1.0
+}
+
+pub(crate) fn light_proxy_model() -> String {
+    "raw_x1500".into()
 }
 
 /// A geometry placement from a .soc interior container.

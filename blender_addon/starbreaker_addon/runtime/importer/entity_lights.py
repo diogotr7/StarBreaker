@@ -1,5 +1,22 @@
-"""Import resolved entity lights in their owning instance or animated helper frame."""
+"""Import entity light frames and apply authored dimensions/shadows for all lights."""
 from dataclasses import replace
+
+
+def apply_authored_light_fields(light_data, light):
+    """Override legacy sizing only when the package supplies the authored field."""
+    raw = getattr(light, "raw", {})
+    shadow = raw.get("shadow_casting")
+    if shadow is not None and hasattr(light_data, "use_shadow"):
+        light_data.use_shadow = bool(shadow)
+    bulb = raw.get("bulb_radius_m")
+    if bulb is not None and hasattr(light_data, "shadow_soft_size"):
+        light_data.shadow_soft_size = float(bulb)
+    if light_data.type == "AREA":
+        for key, attribute in (("plane_width_m", "size"), ("plane_height_m", "size_y")):
+            value = raw.get(key)
+            if value is not None and hasattr(light_data, attribute):
+                light_data.shape = "RECTANGLE"
+                setattr(light_data, attribute, float(value))
 
 
 def import_entity_lights(importer, record, anchor, nodes):

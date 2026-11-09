@@ -611,6 +611,7 @@ pub(crate) fn build_interiors_from_payloads(
     let mut cgf_cache: HashMap<String, Option<usize>> = HashMap::new();
     let mut unique_cgfs = Vec::new();
     let mut container_data = Vec::new();
+    let light_importance_options = crate::socpak::light_fields::importance_options(db);
     // Cache of parent CGF NMC node tables for helper-bone resolution during
     // loadout expansion. Keyed by lowercase CGF path. Value of None means we
     // tried to load it and failed.
@@ -758,7 +759,12 @@ pub(crate) fn build_interiors_from_payloads(
             parent_node_name: payload.parent_node_name.clone(),
             container_transform: payload.container_transform,
             placements,
-            lights: if include_lights { payload.lights.clone() } else { Vec::new() },
+            lights: if include_lights {
+                payload.lights.iter().cloned().map(|mut light| {
+                    crate::socpak::light_fields::resolve_importance(&mut light, &light_importance_options);
+                    light
+                }).collect()
+            } else { Vec::new() },
             // Tint palettes are resolved per object placement above (each socpak
             // object indexes its own palette); there is no single container-wide
             // palette. The previous `tint_palette_names.first()` fallback wrongly
@@ -1997,6 +2003,23 @@ mod tests {
             parent_node_name: None,
             meshes: Vec::new(),
             lights: vec![crate::types::LightInfo {
+                // Synthetic fixture dimensions and flags.
+                bulb_radius_m: 0.25,
+                plane_width_m: None,
+                plane_height_m: None,
+                shadow_casting: false,
+                max_shadow_cast_distance_m: None,
+                affects_this_area_only: false,
+                affect_gi: false,
+                affect_gi_mode: None,
+                attenuation_tweak: 1.0,
+                plane_softness: None,
+                fade_min_distance_m: None,
+                fade_max_distance_m: None,
+                importance: None,
+                importance_name: None,
+                glow_multiplier: 1.0,
+                intensity_candela_proxy_model: crate::types::light_proxy_model(),
                 attachment: None,
                 light_style: 0,
                 name: "Light".to_string(),
@@ -2042,6 +2065,23 @@ mod tests {
             parent_node_name: None,
             meshes: Vec::new(),
             lights: vec![crate::types::LightInfo {
+                // Synthetic fixture dimensions and flags.
+                bulb_radius_m: 0.25,
+                plane_width_m: None,
+                plane_height_m: None,
+                shadow_casting: false,
+                max_shadow_cast_distance_m: None,
+                affects_this_area_only: false,
+                affect_gi: false,
+                affect_gi_mode: None,
+                attenuation_tweak: 1.0,
+                plane_softness: None,
+                fade_min_distance_m: None,
+                fade_max_distance_m: None,
+                importance: None,
+                importance_name: None,
+                glow_multiplier: 1.0,
+                intensity_candela_proxy_model: crate::types::light_proxy_model(),
                 attachment: None,
                 light_style: 0,
                 name: "Light".to_string(),

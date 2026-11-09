@@ -1682,7 +1682,7 @@ impl GlbBuilder {
                         } else {
                             (Checked::Valid(klp::Type::Point), None)
                         };
-                    klp::Light {
+                    Ok::<_, serde_json::Error>(klp::Light {
                         color: l.color,
                         intensity: l.intensity,
                         name: Some(l.name.clone()),
@@ -1690,10 +1690,10 @@ impl GlbBuilder {
                         type_,
                         spot,
                         extensions: None,
-                        extras: Default::default(),
-                    }
+                        extras: Some(serde_json::value::to_raw_value(l)?),
+                    })
                 })
-                .collect();
+                .collect::<Result<_, _>>()?;
             Some(json::extensions::root::Root {
                 khr_lights_punctual: Some(json::extensions::root::KhrLightsPunctual {
                     lights: gltf_lights,
