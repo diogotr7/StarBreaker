@@ -284,6 +284,26 @@ class ManifestTests(unittest.TestCase):
         )
         self.assertEqual(manifest.engine_glow_control.targets[0].source_material_index, 4)
 
+    def test_light_state_preserves_unknown_source_values(self) -> None:
+        light = LightRecord.from_value({"color": None, "radius": None, "intensity": None,
+                                       "intensity_raw": None, "affect_gi": None,
+                                       "affect_gi_mode": "FutureMode"})
+        self.assertIsNone(light.color)
+        self.assertIsNone(light.radius)
+        self.assertIsNone(light.intensity)
+        self.assertIsNone(light.intensity_raw)
+        self.assertIsNone(light.raw["affect_gi"])
+        self.assertEqual(light.raw["affect_gi_mode"], "FutureMode")
+        state = LightState.from_value({"intensity_raw": None, "temperature": None,
+                                       "intensity_cd": None, "intensity_candela_proxy": None})
+        self.assertIsNone(state.intensity_raw)
+        self.assertIsNone(state.intensity_cd)
+        self.assertIsNone(state.intensity_candela_proxy)
+        self.assertIsNone(state.temperature)
+        self.assertIsNone(state.use_temperature)
+        self.assertIsNone(state.light_style)
+        self.assertIsNone(state.color)
+
     def test_light_state_parses_explicit_intensity_semantics(self) -> None:
         state = LightState.from_value(
             {

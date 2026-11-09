@@ -11,6 +11,13 @@ SPEC.loader.exec_module(MODULE)
 
 
 class AuthoredLightFieldsTests(unittest.TestCase):
+    def test_area_containment_requires_shadows(self):
+        for shadow in (False, True, None):
+            data = SimpleNamespace(type="POINT", use_shadow=False)
+            MODULE.apply_authored_light_fields(data, SimpleNamespace(raw={
+                "affects_this_area_only": True, "shadow_casting": shadow}))
+            self.assertTrue(data.use_shadow)
+
     def test_point_authored_zero_radius_and_disabled_shadow(self):
         data = SimpleNamespace(type="POINT", use_shadow=True, shadow_soft_size=0.4)
         MODULE.apply_authored_light_fields(data, SimpleNamespace(raw={

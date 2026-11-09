@@ -297,8 +297,9 @@ pub fn assemble_glb_with_loadout_with_progress(
 
     // Interior discovery (no mesh loading — JIT during GLB packing).
     let phase_start = Instant::now();
+    let mut light_resolver = crate::socpak::light_component::LightResolver::new(db);
     let mut loaded_interiors = if opts.include_interior && !opts.format.is_stl() {
-        load_interiors(db, p4k, record, opts)
+        load_interiors(db, p4k, record, opts, &mut light_resolver)
     } else {
         LoadedInteriors::default()
     };
@@ -315,6 +316,7 @@ pub fn assemble_glb_with_loadout_with_progress(
             &resolved.children,
             &root_container_names,
             opts,
+            &mut light_resolver,
         );
         merge_interiors(&mut loaded_interiors, child_interiors);
     }

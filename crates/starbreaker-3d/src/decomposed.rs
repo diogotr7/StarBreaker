@@ -1836,7 +1836,7 @@ pub(crate) fn write_decomposed_export(
             // ONLY for Projector lights (spot lights). Point lights (Omni) should never have gobos.
             // Priority: EXR (for HDR formats like BC6H) -> PNG (for SDR formats) -> white PNG fallback
             // EXR preserves float values >1.0, allowing Blender to sample full HDR energy.
-            let projector_texture_export = if light.light_type == "Projector" {
+            let projector_texture_export = if light.light_type.as_deref() == Some("Projector") {
                 light.projector_texture.as_deref().and_then(|src| {
                     let normalized = normalize_source_path(p4k, src);
                     let exr_path = replace_extension(&normalized, ".exr");

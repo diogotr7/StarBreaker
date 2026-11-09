@@ -58,14 +58,22 @@ pub fn entity_light_catalogue(
     let children = root
         .as_ref()
         .map_or(fallback.as_slice(), |r| r.children.as_slice());
-    let mut interiors = load_interiors(db, p4k, record, &opts);
+    let mut light_resolver = crate::socpak::light_component::LightResolver::new(db);
+    let mut interiors = load_interiors(db, p4k, record, &opts, &mut light_resolver);
     let names = interiors
         .containers
         .iter()
         .map(|c| c.name.to_ascii_lowercase())
         .collect();
-    let child_interiors =
-        load_child_interiors(db, p4k, &tree.root.entity_name, &children, &names, &opts);
+    let child_interiors = load_child_interiors(
+        db,
+        p4k,
+        &tree.root.entity_name,
+        &children,
+        &names,
+        &opts,
+        &mut light_resolver,
+    );
     merge_interiors(&mut interiors, child_interiors);
     let mut rigs = HashMap::new();
     if let Some(nmc) = root.as_ref().and_then(|r| r.nmc.as_ref()) {
@@ -232,7 +240,7 @@ mod tests {
         assert!((position - joint.transform_point3(local)).length() < 1e-5);
         let direction = glam::Vec3::from_array(record.light.direction_sc.map(|x| x as f32));
         assert!((direction.length() - 1.0).abs() < 1e-5);
-        assert_eq!(record.light.color, [0.5, 0.25, 0.75]);
+        assert_eq!(record.light.color, Some([0.5, 0.25, 0.75]));
     }
     #[test]
     fn suffix_helpers_do_not_bind_even_when_unique() {

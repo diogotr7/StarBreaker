@@ -1127,9 +1127,10 @@ class OrchestrationMixin:
             intensity_raw=active_intensity_raw,
             semantic_light_kind=semantic_light_kind,
         )
-        light_data.color = light.color
+        if light.color is not None:
+            light_data.color = light.color
         light_data["starbreaker_light_semantic_kind"] = semantic_light_kind
-        if blender_light_type != "SUN" and hasattr(light_data, "cutoff_distance"):
+        if blender_light_type != "SUN" and light.radius is not None and hasattr(light_data, "cutoff_distance"):
             light_data.cutoff_distance = light.radius
         if blender_light_type == "AREA":
             light_data.shape = "RECTANGLE"
@@ -1172,7 +1173,7 @@ class OrchestrationMixin:
                         "intensity_candela_proxy": s.intensity_candela_proxy,
                         "temperature": s.temperature,
                         "use_temperature": s.use_temperature,
-                        "color": list(s.color),
+                        "color": list(s.color) if s.color is not None else None,
                         "light_style": int(getattr(s, "light_style", 0) or 0),
                         "preset_tag": getattr(s, "preset_tag", None),
                     }

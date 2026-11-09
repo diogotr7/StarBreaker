@@ -1683,10 +1683,32 @@ impl GlbBuilder {
                             (Checked::Valid(klp::Type::Point), None)
                         };
                     Ok::<_, serde_json::Error>(klp::Light {
-                        color: l.color,
-                        intensity: l.intensity,
+                        // Neutral renderer colour when the source is unknown;
+                        // extras preserve null instead of inventing an authored RGB.
+                        color: match l.color {
+                            Some(color) => color,
+                            None => {
+                                log::warn!(
+                                    "Light {:?} has unknown colour; glTF uses neutral white",
+                                    l.name
+                                );
+                                [1.0; 3]
+                            }
+                        },
+                        // glTF requires a numeric intensity. Leave an unresolved source
+                        // dark in the renderer; extras retain the unknown value.
+                        intensity: match l.intensity {
+                            Some(value) => value,
+                            None => {
+                                log::warn!(
+                                    "Light {:?} has unknown intensity; glTF proxy disabled",
+                                    l.name
+                                );
+                                0.0
+                            }
+                        },
                         name: Some(l.name.clone()),
-                        range: Some(l.radius),
+                        range: l.radius.filter(|r| *r > 0.0),
                         type_,
                         spot,
                         extensions: None,

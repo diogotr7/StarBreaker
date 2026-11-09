@@ -25,11 +25,12 @@ use crate::types::{InteriorMesh, InteriorPayload, LightInfo, LightStateInfo};
 #[path = "socpak_light_tests.rs"]
 mod light_field_tests;
 
+pub(crate) mod light_component;
 #[path = "socpak_light_fields.rs"]
 pub(crate) mod light_fields;
 
-// TODO(WP-R5b): retain compatibility until the UE-side measurement in
-// ue/verification/WP-U3b.md §11.2–11.3 establishes the physical bulb-size mapping.
+// TODO: retain the compatibility proxy until physical intensity calibration
+// establishes the relationship between authored intensity and bulb size.
 const LIGHT_AUTHORED_INTENSITY_SCALE: f32 = 1500.0;
 const AMBIENT_PROXY_DIRECT_FACTOR: f32 = 0.25;
 
@@ -1602,9 +1603,12 @@ fn parse_light_entities(
 
     // Single Light: PropertiesDataCore > EntityComponentLight
     if let Some(lc) = find_entity_component_light(xml, entity) {
-        if let Some(light) =
+        if let Some(mut light) =
             build_light_info_from_component(xml, &lc, &base_name, &base_pos, &base_rot)
         {
+            if let Some(source) = &mut light.source_component {
+                source.class = Some(entity_class.to_owned());
+            }
             return vec![light];
         }
     }
@@ -1777,9 +1781,9 @@ mod light_regressions {
         let xml = starbreaker_cryxml::from_bytes(&bytes).unwrap();
         let lights = super::extract_cryxml_entities(&xml).1;
         assert_eq!(lights.len(), 1);
-        assert_eq!(lights[0].color, [0.5, 0.25, 0.75]);
-        assert_eq!(lights[0].radius_m, 7.0);
-        assert_eq!(lights[0].states["defaultState"].light_style, 3);
+        assert_eq!(lights[0].color, Some([0.5, 0.25, 0.75]));
+        assert_eq!(lights[0].radius_m, Some(7.0));
+        assert_eq!(lights[0].states["defaultState"].light_style, Some(3));
     }
 }
 
@@ -1802,251 +1806,146 @@ fn build_light_info_from_component(
     pos: &[f64; 3],
     rot: &[f64; 4],
 ) -> Option<LightInfo> {
-    // The EntityComponentLight carries top-level fields (lightType,
-    // useTemperature, etc.) directly. State-specific values (intensity,
-    // temperature, and the <color r g b> child element) live on dedicated
-    // state children: offState / defaultState / auxiliaryState /
-    // emergencyState / cinematicState. Star Citizen renders the "default"
-    // state for baked-in lights, even when that state is authored off.
-    let component_attrs: HashMap<&str, &str> = xml
-        .node_attributes(component)
-        .filter(|(k, _)| *k != "__type")
-        .collect();
+    let source = light_component::LightComponent::from_xml(xml, component);
+    Some(build_light_info_from_fields(&source, name, pos, rot))
+}
 
-    let bool_truthy = |s: &str| matches!(s, "1" | "true" | "True" | "TRUE");
-    let use_temperature = component_attrs
-        .get("useTemperature")
-        .map(|s| bool_truthy(s))
-        .unwrap_or(false);
-    let light_type = component_attrs
-        .get("lightType")
-        .copied()
-        .unwrap_or("Omni")
-        .to_string();
-    let semantic_light_kind = semantic_light_kind_for_light(&light_type, None, None);
-
-    // CryEngine light components expose several runtime states
-    // (`offState` / `defaultState` / `auxiliaryState` / `emergencyState` /
-    // `cinematicState`). Each carries its own intensity, temperature, and
-    // <color r g b> child. Collect every authored state so downstream
-    // tools can switch between them. Use defaultState if present; the positive
-    // priority fallback applies only to components without an authored default.
-    const ALL_STATES: &[&str] = &[
+fn build_light_info_from_fields(
+    source: &light_component::LightComponent,
+    name: &str,
+    pos: &[f64; 3],
+    rot: &[f64; 4],
+) -> LightInfo {
+    let use_temperature = source.boolean("useTemperature");
+    let light_type = source.attr("lightType").map(str::to_owned);
+    let semantic_light_kind =
+        semantic_light_kind_for_light(light_type.as_deref().unwrap_or(""), None, None);
+    let glow_multiplier = source.float("miscParams.glowMultiplier");
+    // Non-ambient lights do not use the glow multiplier in the compatibility proxy.
+    let proxy = |raw: Option<f32>| {
+        raw.and_then(|raw| {
+            if semantic_light_kind.eq_ignore_ascii_case("ambient_proxy") {
+                glow_multiplier.map(|glow| {
+                    authored_light_intensity_to_candela_semantic(raw, semantic_light_kind, glow)
+                })
+            } else {
+                Some(authored_light_intensity_to_candela(raw))
+            }
+        })
+    };
+    let mut states = std::collections::BTreeMap::new();
+    for tag in [
         "offState",
         "defaultState",
         "auxiliaryState",
         "emergencyState",
         "cinematicState",
-    ];
-    const STATE_PRIORITY: &[&str] = &[
-        "defaultState",
-        "auxiliaryState",
-        "emergencyState",
-        "cinematicState",
-    ];
-
-    let child_attr = |tag: &str, key: &str| {
-        xml.node_children(component)
-            .find(|c| xml.node_tag(c) == tag)
-            .and_then(|node| xml.node_attributes(node).find(|(k, _)| *k == key))
-            .map(|(_, value)| value)
-    };
-    let child_float =
-        |tag: &str, key: &str| child_attr(tag, key).and_then(|v| v.parse::<f32>().ok());
-    let glow_multiplier = child_float("miscParams", "glowMultiplier")
-        .unwrap_or_else(crate::types::light_unit_multiplier);
-
-    let read_state = |tag: &str| -> Option<LightStateInfo> {
-        let node = xml
-            .node_children(component)
-            .find(|c| xml.node_tag(c) == tag)?;
-        let a: HashMap<&str, &str> = xml
-            .node_attributes(node)
-            .filter(|(k, _)| *k != "__type")
-            .collect();
-        let intensity_raw = a
-            .get("intensity")
-            .and_then(|s| s.parse::<f32>().ok())
-            .unwrap_or(0.0);
-        let temperature = a
-            .get("temperature")
-            .and_then(|s| s.parse::<f32>().ok())
-            .unwrap_or(6500.0);
-        let light_style = a
-            .get("lightStyle")
-            .and_then(|s| s.parse::<i32>().ok())
-            .unwrap_or(0);
-        let preset_tag = a.get("presetTag").copied().unwrap_or("").to_string();
-        let (cr, cg, cb) = xml
-            .node_children(node)
-            .find(|c| xml.node_tag(c) == "color")
-            .map(|c| {
-                let ca: HashMap<&str, &str> = xml
-                    .node_attributes(c)
-                    .filter(|(k, _)| *k != "__type")
-                    .collect();
-                let f = |k: &str| {
-                    ca.get(k)
-                        .and_then(|s| s.parse::<f32>().ok())
-                        .unwrap_or(1.0)
-                        .clamp(0.0, 1.0)
-                };
-                (f("r"), f("g"), f("b"))
-            })
-            .unwrap_or((1.0, 1.0, 1.0));
-        Some(LightStateInfo {
-            intensity_candela_proxy_model: crate::types::light_proxy_model(),
-            intensity_raw,
-            intensity_unit: "cryengine_authored_intensity".to_string(),
-            intensity_cd: authored_light_intensity_to_candela_semantic(
-                intensity_raw,
-                semantic_light_kind,
-                glow_multiplier,
-            ),
-            intensity_candela_proxy: authored_light_intensity_to_candela_semantic(
-                intensity_raw,
-                semantic_light_kind,
-                glow_multiplier,
-            ),
-            temperature,
-            use_temperature,
-            color: [cr, cg, cb],
-            light_style,
-            preset_tag,
-        })
-    };
-
-    let mut states: std::collections::BTreeMap<String, LightStateInfo> =
-        std::collections::BTreeMap::new();
-    for tag in ALL_STATES {
-        if let Some(s) = read_state(tag) {
-            states.insert((*tag).to_string(), s);
+    ] {
+        if !source.nodes.contains(&format!("{tag}.")) {
+            continue;
         }
+        let intensity_raw = source.float(&format!("{tag}.intensity"));
+        let temperature = source.float(&format!("{tag}.temperature"));
+        let color =
+            match ["r", "g", "b"].map(|channel| source.float(&format!("{tag}.color.{channel}"))) {
+                [Some(r), Some(g), Some(b)] => Some([r, g, b]),
+                _ => None,
+            };
+        states.insert(
+            tag.to_owned(),
+            LightStateInfo {
+                intensity_candela_proxy_model: crate::types::light_proxy_model(),
+                intensity_raw,
+                intensity_unit: "cryengine_authored_intensity".to_owned(),
+                intensity_cd: proxy(intensity_raw),
+                intensity_candela_proxy: proxy(intensity_raw),
+                temperature,
+                use_temperature,
+                color,
+                light_style: source
+                    .attr(&format!("{tag}.lightStyle"))
+                    .and_then(|v| v.parse().ok()),
+                preset_tag: source.attr(&format!("{tag}.presetTag")).map(str::to_owned),
+            },
+        );
     }
-
-    // An authored zero default is off, not permission to activate another state.
+    // Class states participate after merging. Explicit zero always wins.
     let active_state_name = if states.contains_key("defaultState") {
         "defaultState"
     } else {
-        STATE_PRIORITY
-            .iter()
+        ["auxiliaryState", "emergencyState", "cinematicState"]
+            .into_iter()
             .find(|tag| {
                 states
-                    .get(**tag)
-                    .map(|s| s.intensity_raw > 0.0)
-                    .unwrap_or(false)
+                    .get(*tag)
+                    .is_some_and(|s| s.intensity_raw.is_some_and(|v| v > 0.0))
             })
-            .copied()
             .unwrap_or("")
     };
     let active = states.get(active_state_name);
-    let intensity_raw = active.map(|s| s.intensity_raw).unwrap_or(0.0);
-    let temperature = active.map(|s| s.temperature).unwrap_or(6500.0);
-    let (color_r, color_g, color_b) = active
-        .map(|s| (s.color[0], s.color[1], s.color[2]))
-        .unwrap_or((1.0, 1.0, 1.0));
-
-    let color = if use_temperature {
-        kelvin_to_rgb(temperature.clamp(1000.0, 40000.0))
-    } else {
-        [color_r, color_g, color_b]
+    let intensity_raw = active.and_then(|s| s.intensity_raw);
+    let temperature = active.and_then(|s| s.temperature);
+    let color = match (use_temperature, temperature) {
+        (Some(true), Some(temperature)) => Some(kelvin_to_rgb(temperature.clamp(1000.0, 40000.0))),
+        _ => active.and_then(|s| s.color),
     };
-
-    // sizeParams > lightRadius (attenuation radius).
-    let radius = xml
-        .node_children(component)
-        .find(|c| xml.node_tag(c) == "sizeParams")
-        .and_then(|sp| {
-            xml.node_attributes(sp)
-                .find(|(k, _)| *k == "lightRadius")
-                .and_then(|(_, v)| v.parse::<f32>().ok())
-        })
-        .filter(|r| *r > 0.0)
-        .unwrap_or(5.0);
-
-    // projectorParams > texture, FOV
-    let (projector_texture, fov) = xml
-        .node_children(component)
-        .find(|c| xml.node_tag(c) == "projectorParams")
-        .map(|pp| {
-            let a: HashMap<&str, &str> = xml
-                .node_attributes(pp)
-                .filter(|(k, _)| *k != "__type")
-                .collect();
-            let tex = a
-                .get("texture")
-                .map(|s| s.to_string())
-                .filter(|s| !s.is_empty());
-            let fov = a
-                .get("FOV")
-                .and_then(|s| s.parse::<f32>().ok())
-                .unwrap_or(0.0);
-            (tex, fov)
-        })
-        .unwrap_or((None, 0.0));
-
-    // Spot light half-angles
-    let (inner_angle, outer_angle) = if light_type == "Projector" && fov > 0.0 {
-        let outer = fov * 0.5;
-        let inner = outer * 0.8;
-        (Some(inner), Some(outer))
-    } else {
-        (None, None)
+    let radius = source.float("sizeParams.lightRadius");
+    let projector_texture = source
+        .attr("projectorParams.texture")
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    let (inner_angle, outer_angle) = match source.float("projectorParams.FOV") {
+        Some(fov) if light_type.as_deref() == Some("Projector") && fov > 0.0 => {
+            (Some(fov * 0.5 * 0.8), Some(fov * 0.5))
+        }
+        _ => (None, None),
     };
-
-    // CryEngine authored intensity → exported candela proxy.
-    let semantic_light_kind = semantic_light_kind_for_light(&light_type, inner_angle, outer_angle);
-    let candela = authored_light_intensity_to_candela_semantic(
-        intensity_raw,
-        semantic_light_kind,
-        glow_multiplier,
-    );
-    let direction_sc = quat_rotate_vec(rot, &[1.0, 0.0, 0.0]);
-
-    log::debug!(
-        "  Light '{name}' type={light_type} useTemp={use_temperature} \
-         temperature={temperature} intensity={intensity_raw} radius={radius} color={color:?}"
-    );
-
-    Some(LightInfo {
-        bulb_radius_m: child_float("sizeParams", "bulbRadius")
+    let candela = proxy(intensity_raw);
+    LightInfo {
+        source_component: Some(source.clone()),
+        bulb_radius_m: source
+            .float("sizeParams.bulbRadius")
             .unwrap_or_else(crate::types::default_bulb_radius),
-        plane_width_m: child_float("sizeParams", "planeWidth"),
-        plane_height_m: child_float("sizeParams", "planeHeight"),
-        shadow_casting: child_attr("shadowParams", "shadowCasting").is_some_and(bool_truthy),
-        max_shadow_cast_distance_m: child_float("shadowParams", "maxShadowCastDist"),
-        affects_this_area_only: component_attrs
-            .get("affectsThisAreaOnly")
-            .is_some_and(|s| bool_truthy(s)),
+        plane_width_m: source.float("sizeParams.planeWidth"),
+        plane_height_m: source.float("sizeParams.planeHeight"),
+        shadow_casting: source.boolean("shadowParams.shadowCasting"),
+        max_shadow_cast_distance_m: source.float("shadowParams.maxShadowCastDist"),
+        affects_this_area_only: source.boolean("affectsThisAreaOnly"),
         affect_gi: light_fields::affect_gi(
-            component_attrs.get("affectGI").copied(),
-            component_attrs.get("affectsObjects").is_some_and(|s| bool_truthy(s)),
+            source.attr("affectGI"),
+            source.boolean("affectsObjects"),
         ),
-        affect_gi_mode: component_attrs.get("affectGI").map(|s| (*s).to_owned()),
-        attenuation_tweak: child_float("miscParams", "attenuationTweak")
+        affect_gi_mode: source.attr("affectGI").map(str::to_owned),
+        attenuation_tweak: source
+            .float("miscParams.attenuationTweak")
             .unwrap_or_else(crate::types::light_unit_multiplier),
-        plane_softness: child_float("miscParams", "planeSoftness"),
-        fade_min_distance_m: child_float("fadeParams", "minDistance"),
-        fade_max_distance_m: child_float("fadeParams", "maxDistance"),
-        importance: component_attrs
-            .get("importance")
-            .and_then(|s| s.parse().ok()),
-        importance_name: component_attrs.get("importance")
-            .filter(|s| s.parse::<i32>().is_err()).map(|s| (*s).to_owned()),
+        plane_softness: source.float("miscParams.planeSoftness"),
+        fade_min_distance_m: source.float("fadeParams.minDistance"),
+        fade_max_distance_m: source.float("fadeParams.maxDistance"),
+        importance: source.attr("importance").and_then(|s| s.parse().ok()),
+        importance_name: source
+            .attr("importance")
+            .filter(|s| s.parse::<i32>().is_err())
+            .map(str::to_owned),
         glow_multiplier,
         intensity_candela_proxy_model: crate::types::light_proxy_model(),
         attachment: None,
-        light_style: active.map_or(0, |state| state.light_style),
-        name: name.to_string(),
+        light_style: active.and_then(|s| s.light_style),
+        name: name.to_owned(),
         position: *pos,
-        transform_basis: "cryengine_z_up".to_string(),
+        transform_basis: "cryengine_z_up".to_owned(),
         rotation: *rot,
-        direction_sc,
+        direction_sc: quat_rotate_vec(rot, &[1.0, 0.0, 0.0]),
         color,
+        semantic_light_kind: semantic_light_kind_for_light(
+            light_type.as_deref().unwrap_or(""),
+            inner_angle,
+            outer_angle,
+        )
+        .to_owned(),
         light_type,
-        semantic_light_kind: semantic_light_kind.to_string(),
         intensity_raw,
-        intensity_unit: "cryengine_authored_intensity".to_string(),
+        intensity_unit: "cryengine_authored_intensity".to_owned(),
         intensity_candela_proxy: candela,
         intensity: candela,
         radius,
@@ -2054,9 +1953,9 @@ fn build_light_info_from_component(
         inner_angle,
         outer_angle,
         projector_texture,
-        active_state: active_state_name.to_string(),
+        active_state: active_state_name.to_owned(),
         states,
-    })
+    }
 }
 
 fn semantic_light_kind_for_light(

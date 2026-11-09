@@ -4799,14 +4799,33 @@ pub fn extract_lights_from_interiors(
         let parent_empty_parent_entity_name = container.parent_entity_name.clone();
         let parent_empty_parent_node_name = container.parent_node_name.clone();
         for light_info in &container.lights {
+            let (Some(intensity_proxy), Some(intensity_raw), Some(radius)) = (
+                light_info.intensity_candela_proxy,
+                light_info.intensity_raw,
+                light_info.radius,
+            ) else {
+                log::warn!(
+                    "Skipping Blender lamp {:?}: unresolved intensity or radius; source remains in scene metadata",
+                    light_info.name
+                );
+                continue;
+            };
+            let (Some(color), Some(light_type)) =
+                (light_info.color, light_info.light_type.as_deref())
+            else {
+                log::warn!(
+                    "Skipping Blender lamp {:?}: unresolved colour or type; source remains in scene metadata",
+                    light_info.name
+                );
+                continue;
+            };
             let (parent_empty_loc, parent_empty_quat, parent_empty_scale) =
                 sc_matrix_to_scene_transform(mat4_from_sc_rows(container.container_transform));
             let (parent_empty_loc, parent_empty_quat, parent_empty_scale) =
                 apply_reference_root_conversion(parent_empty_loc, parent_empty_quat, parent_empty_scale);
             let position_blend = convert_position_sc_to_blender(light_info.position);
             
-            let lamp_type =
-                lamp_type_for_light(&light_info.light_type, &light_info.semantic_light_kind);
+            let lamp_type = lamp_type_for_light(light_type, &light_info.semantic_light_kind);
             
             // Convert quaternion rotation with basis correction for spotlights
             let is_spotlight = lamp_type == 2;  // SPOT type
@@ -4815,8 +4834,8 @@ pub fn extract_lights_from_interiors(
             let energy_watts = light_energy_to_blender(
                 lamp_type,
                 &light_info.semantic_light_kind,
-                light_info.intensity_candela_proxy,
-                light_info.intensity_raw,
+                intensity_proxy,
+                intensity_raw,
             );
             
             // Spot angles (if present)
@@ -4838,8 +4857,12 @@ pub fn extract_lights_from_interiors(
             // Get active state info for temperature
             let (temperature_k, use_temperature) = light_info.states
                 .get(&light_info.active_state)
-                .map(|s| (s.temperature, s.use_temperature))
-                .unwrap_or((6500.0, false));
+                .and_then(|s| {
+                    s.temperature
+                        .map(|temperature| (temperature, s.use_temperature == Some(true)))
+                })
+                // Temperature is unused when disabled; no source temperature is invented.
+                .unwrap_or((0.0, false));
             let states_json = if light_info.states.is_empty() {
                 None
             } else {
@@ -4864,11 +4887,11 @@ pub fn extract_lights_from_interiors(
             };
             
             let blender_radius = if matches!(lamp_type, 0 | 2) {
-                soft_shadow_radius_from_source(light_info.radius)
+                soft_shadow_radius_from_source(radius)
             } else {
-                light_info.radius
+                radius
             };
-            let cutoff_distance = if lamp_type == 1 { 0.0 } else { light_info.radius };
+            let cutoff_distance = if lamp_type == 1 { 0.0 } else { radius };
             lights.push(ExtractedLight {
                 name: light_info.name.clone(),
                 parent_empty_name: Some(interior_parent_empty_name(
@@ -4883,15 +4906,15 @@ pub fn extract_lights_from_interiors(
                 parent_empty_scale,
                 position_blend,
                 rotation_blend,
-                color: light_info.color,
+                color,
                 lamp_type,
                 energy_watts,
                 radius: blender_radius,
                 cutoff_distance,
-                radius_source: light_info.radius,
+                radius_source: radius,
                 spot_size,
                 spot_blend,
-                intensity_candela: light_info.intensity_candela_proxy,
+                intensity_candela: intensity_proxy,
                 temperature_k,
                 use_temperature,
                 gobo_path: light_info.projector_texture.clone(),

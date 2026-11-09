@@ -8,6 +8,7 @@
 //! `expand_loadout_into_placements` (loadout→interior placement expansion).
 //! Public types: `LoadedInteriors`, `InteriorCgfEntry`, `InteriorContainerData`.
 
+use crate::socpak::light_component::LightResolver;
 use std::str::FromStr;
 
 use starbreaker_datacore::database::Database;
@@ -70,6 +71,7 @@ pub(crate) fn load_interiors(
     p4k: &MappedP4k,
     record: &Record,
     opts: &ExportOptions,
+    light_resolver: &mut LightResolver<'_, '_>,
 ) -> LoadedInteriors {
     use crate::socpak;
 
@@ -160,8 +162,14 @@ pub(crate) fn load_interiors(
         }
     }
 
-    let mut loaded =
-        build_interiors_from_payloads(db, p4k, &payloads, opts.include_lights, opts.lod_level);
+    let mut loaded = build_interiors_from_payloads(
+        db,
+        p4k,
+        &payloads,
+        opts.include_lights,
+        opts.lod_level,
+        light_resolver,
+    );
     let removed = remove_root_geometry_duplicate_interior_placements(
         &mut loaded,
         &root_entity_name,
@@ -416,6 +424,7 @@ pub(crate) fn load_child_interiors(
     children: &[crate::types::ResolvedNode],
     root_container_names: &std::collections::HashSet<String>,
     opts: &ExportOptions,
+    light_resolver: &mut LightResolver<'_, '_>,
 ) -> LoadedInteriors {
     use crate::socpak;
 
@@ -525,7 +534,14 @@ pub(crate) fn load_child_interiors(
         );
     }
 
-    build_interiors_from_payloads(db, p4k, &payloads, opts.include_lights, opts.lod_level)
+    build_interiors_from_payloads(
+        db,
+        p4k,
+        &payloads,
+        opts.include_lights,
+        opts.lod_level,
+        light_resolver,
+    )
 }
 
 fn socpak_included(opts: &ExportOptions, path: &str) -> bool {
@@ -597,6 +613,7 @@ pub(crate) fn build_interiors_from_payloads(
     payloads: &[crate::types::InteriorPayload],
     include_lights: bool,
     lod_level: u32,
+    light_resolver: &mut LightResolver<'_, '_>,
 ) -> LoadedInteriors {
     use std::collections::{HashMap, HashSet};
     use starbreaker_common::CigGuid;
@@ -611,7 +628,6 @@ pub(crate) fn build_interiors_from_payloads(
     let mut cgf_cache: HashMap<String, Option<usize>> = HashMap::new();
     let mut unique_cgfs = Vec::new();
     let mut container_data = Vec::new();
-    let light_importance_options = crate::socpak::light_fields::importance_options(db);
     // Cache of parent CGF NMC node tables for helper-bone resolution during
     // loadout expansion. Keyed by lowercase CGF path. Value of None means we
     // tried to load it and failed.
@@ -760,11 +776,15 @@ pub(crate) fn build_interiors_from_payloads(
             container_transform: payload.container_transform,
             placements,
             lights: if include_lights {
-                payload.lights.iter().cloned().map(|mut light| {
-                    crate::socpak::light_fields::resolve_importance(&mut light, &light_importance_options);
-                    light
-                }).collect()
-            } else { Vec::new() },
+                payload
+                    .lights
+                    .iter()
+                    .cloned()
+                    .map(|light| light_resolver.resolve(light))
+                    .collect()
+            } else {
+                Vec::new()
+            },
             // Tint palettes are resolved per object placement above (each socpak
             // object indexes its own palette); there is no single container-wide
             // palette. The previous `tint_palette_names.first()` fallback wrongly
@@ -1514,7 +1534,14 @@ mod tests {
             &[],
         )
         .expect("elevators.socpak should load");
-        let interiors = build_interiors_from_payloads(&db, &p4k, &[payload], false, 0);
+        let interiors = build_interiors_from_payloads(
+            &db,
+            &p4k,
+            &[payload],
+            false,
+            0,
+            &mut crate::socpak::light_component::LightResolver::new(&db),
+        );
         let binding = interiors
             .containers
             .iter()
@@ -2003,14 +2030,15 @@ mod tests {
             parent_node_name: None,
             meshes: Vec::new(),
             lights: vec![crate::types::LightInfo {
+                source_component: None,
                 // Synthetic fixture dimensions and flags.
                 bulb_radius_m: 0.25,
                 plane_width_m: None,
                 plane_height_m: None,
-                shadow_casting: false,
+                shadow_casting: Some(false),
                 max_shadow_cast_distance_m: None,
-                affects_this_area_only: false,
-                affect_gi: false,
+                affects_this_area_only: Some(false),
+                affect_gi: Some(false),
                 affect_gi_mode: None,
                 attenuation_tweak: 1.0,
                 plane_softness: None,
@@ -2018,24 +2046,24 @@ mod tests {
                 fade_max_distance_m: None,
                 importance: None,
                 importance_name: None,
-                glow_multiplier: 1.0,
+                glow_multiplier: Some(1.0),
                 intensity_candela_proxy_model: crate::types::light_proxy_model(),
                 attachment: None,
-                light_style: 0,
+                light_style: Some(0),
                 name: "Light".to_string(),
                 position: [0.0, 0.0, 0.0],
                 transform_basis: "cryengine_z_up".to_string(),
                 rotation: [1.0, 0.0, 0.0, 0.0],
                 direction_sc: [1.0, 0.0, 0.0],
-                color: [1.0, 1.0, 1.0],
-                light_type: "Omni".to_string(),
+                color: Some([1.0, 1.0, 1.0]),
+                light_type: Some("Omni".to_string()),
                 semantic_light_kind: "point".to_string(),
-                intensity_raw: 1.0,
+                intensity_raw: Some(1.0),
                 intensity_unit: "cryengine_authored_intensity".to_string(),
-                intensity_candela_proxy: 1.0,
-                intensity: 1.0,
-                radius: 1.0,
-                radius_m: 1.0,
+                intensity_candela_proxy: Some(1.0),
+                intensity: Some(1.0),
+                radius: Some(1.0),
+                radius_m: Some(1.0),
                 inner_angle: None,
                 outer_angle: None,
                 projector_texture: None,
@@ -2065,14 +2093,15 @@ mod tests {
             parent_node_name: None,
             meshes: Vec::new(),
             lights: vec![crate::types::LightInfo {
+                source_component: None,
                 // Synthetic fixture dimensions and flags.
                 bulb_radius_m: 0.25,
                 plane_width_m: None,
                 plane_height_m: None,
-                shadow_casting: false,
+                shadow_casting: Some(false),
                 max_shadow_cast_distance_m: None,
-                affects_this_area_only: false,
-                affect_gi: false,
+                affects_this_area_only: Some(false),
+                affect_gi: Some(false),
                 affect_gi_mode: None,
                 attenuation_tweak: 1.0,
                 plane_softness: None,
@@ -2080,24 +2109,24 @@ mod tests {
                 fade_max_distance_m: None,
                 importance: None,
                 importance_name: None,
-                glow_multiplier: 1.0,
+                glow_multiplier: Some(1.0),
                 intensity_candela_proxy_model: crate::types::light_proxy_model(),
                 attachment: None,
-                light_style: 0,
+                light_style: Some(0),
                 name: "Light".to_string(),
                 position: [0.0, 0.0, 0.0],
                 transform_basis: "cryengine_z_up".to_string(),
                 rotation: [1.0, 0.0, 0.0, 0.0],
                 direction_sc: [1.0, 0.0, 0.0],
-                color: [1.0, 1.0, 1.0],
-                light_type: "Omni".to_string(),
+                color: Some([1.0, 1.0, 1.0]),
+                light_type: Some("Omni".to_string()),
                 semantic_light_kind: "point".to_string(),
-                intensity_raw: 1.0,
+                intensity_raw: Some(1.0),
                 intensity_unit: "cryengine_authored_intensity".to_string(),
-                intensity_candela_proxy: 1.0,
-                intensity: 1.0,
-                radius: 1.0,
-                radius_m: 1.0,
+                intensity_candela_proxy: Some(1.0),
+                intensity: Some(1.0),
+                radius: Some(1.0),
+                radius_m: Some(1.0),
                 inner_angle: None,
                 outer_angle: None,
                 projector_texture: None,

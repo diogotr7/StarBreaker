@@ -249,22 +249,34 @@ and `preset_tag` (an optional authored preset tag such as `fast` / `slow`).
 `temperature` and `use_temperature` exist only per state, not on the flat
 record. Background on the light data: `docs/star-citizen-lighting-research.md`.
 
-WP-R5b adds the following component fields to all three scene light arrays,
-the metadata-only light catalogue (`scviewer lights` / `sc_lights`), and each
+The following component fields appear in all three scene light arrays,
+the metadata-only light catalogue, and each
 bundled GLB `KHR_lights_punctual.lights[].extras` record:
+
+Sparse entity components are overrides of their `EntityClassDefinition` record.
+At export time, the `LightComponentParams` record is read from DataCore and
+merged attribute by attribute, including nested state, size, shadow, fade and
+miscellaneous parameters. Explicit zeroes, false flags and empty strings override
+class values. Missing state intensity inherits the matching class state; it is
+never interpreted as an authored zero. Class states also participate in default
+state selection. Low-level SOC parsing without DataCore retains the unresolved
+source for the export pass.
+
+The final column below applies only when both the component and class lack the
+attribute.
 
 | JSON field | Authored source | Missing attribute |
 | --- | --- | --- |
 | `bulb_radius_m` | `sizeParams.bulbRadius` | 0.05 m (CryEngine Light.lua default) |
 | `plane_width_m`, `plane_height_m` | `sizeParams.planeWidth`, `planeHeight` | null |
-| `shadow_casting` | `shadowParams.shadowCasting` | false (flag absent) |
+| `shadow_casting` | `shadowParams.shadowCasting` | null |
 | `max_shadow_cast_distance_m` | `shadowParams.maxShadowCastDist` | null |
-| `affects_this_area_only`, `affect_gi` | component `affectsThisAreaOnly`, resolved `affectGI` | false (flag absent) |
+| `affects_this_area_only`, `affect_gi` | component `affectsThisAreaOnly`, resolved `affectGI` | null |
 | `attenuation_tweak` | `miscParams.attenuationTweak` | 1.0 |
 | `plane_softness` | `miscParams.planeSoftness` | null |
 | `fade_min_distance_m`, `fade_max_distance_m` | `fadeParams.minDistance`, `maxDistance` | null |
 | `importance` | component `importance` (integer or DataCore enum option index) | null |
-| `glow_multiplier` | `miscParams.glowMultiplier` | existing multiplier identity 1.0 |
+| `glow_multiplier` | `miscParams.glowMultiplier` | null |
 
 LIVE authors `importance` as a named enum. `importance_name` preserves that name,
 while `importance` is the zero-based option index read from DataCore's
@@ -276,9 +288,10 @@ catalogue and bundled exports.
 
 `affect_gi_mode` preserves the original `affectGI` spelling. `affect_gi` resolves
 `On` / `Off` or boolean spellings directly, and `InheritAffectsObjects` from the
-same component's `affectsObjects` flag. Unknown modes warn and retain their raw
-spelling. These two extra source-name fields prevent enum information loss in
-the required integer/boolean API.
+merged component's `affectsObjects` flag. `affect_gi` is nullable: unknown modes
+or a missing inherited objects flag remain null, preserving the raw mode.
+Unresolved GI warns once per export. Missing importance enum metadata also
+warns once per export; ordinals remain null and source names are preserved.
 
 All dimensions/distances are source metres; explicit zeroes remain zero.
 No bulb-size or attenuation hypothesis is baked into the proxy. Optional numeric
@@ -286,17 +299,29 @@ fields serialize as null rather than invented dimensions or distances.
 GLB extras preserve the entire LightInfo, including all states and source fields;
 the standard glTF intensity/range remain compatibility values.
 
-The Blender addon maps `shadow_casting` to `use_shadow`, `bulb_radius_m` to
+The Blender addon enables `use_shadow` whenever `affects_this_area_only` is true
+to substitute for unavailable vis-area containment; otherwise it honours
+`shadow_casting`. It maps `bulb_radius_m` to
 `shadow_soft_size`, and plane width/height to rectangular AREA `size`/`size_y`.
 Missing/null dimensions preserve the older package's import behavior. Zeroes and
 false flags are applied, not mistaken for missing data. The active state is used
 as exported; an off default is not replaced with a lit auxiliary state.
 
-Scene and material schema versions remain **2** (additive fields). The viewer's
-`scviewer-core::CACHE_FORMAT_VERSION` changes **10 → 11**, invalidating layer-1
-packages even for unchanged vendored revision/dirty identifiers. UE
-`SCPackageReader` must continue accepting scene v1/v2, including these v2 fields;
-11 is a cache identity, not a scene version.
+Scene and material schema versions remain **2**. Consumers must accept null
+for unresolved flags, radius, glow multiplier, light type, colour, style, state
+intensity, temperature, temperature-use flag and preset tag.
+The intensity aliases/proxies are null if their source inputs are unknown.
+The documented engine defaults apply only to bulb radius (0.05 m) and attenuation
+tweak (1.0), after class inheritance. Bundled glTF leaves unresolved intensity
+dark because its standard light object requires a number; its extras retain
+null, an unknown/nonpositive range is omitted, and an unknown colour uses neutral
+white only in the renderer (with a diagnostic). Native Blender lamp assembly
+skips lights whose intensity, radius, colour or type cannot be resolved, with a diagnostic;
+scene metadata retains them. A missing temperature does not enable blackbody
+colour conversion. The addon preserves null state values during manifest parsing
+and state serialization; switching to a state without a temperature keeps authored
+RGB and clears any stale temperature property. Package caches must include the exporter revision/format
+identity so changes to inheritance or field semantics invalidate older exports.
 
 ### Cross-DCC Semantic Fields
 

@@ -5,7 +5,8 @@ from dataclasses import replace
 def apply_authored_light_fields(light_data, light):
     """Override legacy sizing only when the package supplies the authored field."""
     raw = getattr(light, "raw", {})
-    shadow = raw.get("shadow_casting")
+    # Shadows substitute for CryEngine vis-area containment in Blender.
+    shadow = True if raw.get("affects_this_area_only") else raw.get("shadow_casting")
     if shadow is not None and hasattr(light_data, "use_shadow"):
         light_data.use_shadow = bool(shadow)
     bulb = raw.get("bulb_radius_m")

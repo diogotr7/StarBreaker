@@ -370,8 +370,14 @@ pub fn socpaks_to_glb(
         }
     }
 
-    let interiors =
-        build_interiors_from_payloads(db, p4k, &payloads, opts.include_lights, opts.lod_level);
+    let interiors = build_interiors_from_payloads(
+        db,
+        p4k,
+        &payloads,
+        opts.include_lights,
+        opts.lod_level,
+        &mut crate::socpak::light_component::LightResolver::new(db),
+    );
 
     let no_tex_opts = ExportOptions {
         material_mode: MaterialMode::Colors,
@@ -547,8 +553,14 @@ where
         }
     }
 
-    let mut interiors =
-        build_interiors_from_payloads(db, p4k, &payloads, opts.include_lights, opts.lod_level);
+    let mut interiors = build_interiors_from_payloads(
+        db,
+        p4k,
+        &payloads,
+        opts.include_lights,
+        opts.lod_level,
+        &mut crate::socpak::light_component::LightResolver::new(db),
+    );
     // Animated interior entities (`.cga` doors/elevators with a sibling
     // `.chrparams`) become decomposed children so their skeletal `.caf` clips are
     // extracted by the existing animation pipeline; this also removes them from
@@ -777,7 +789,13 @@ pub fn dump_hierarchy(
     let _ = write!(out, "  ],\n");
 
     // Interior containers
-    let interiors = load_interiors(db, p4k, record, &ExportOptions::default());
+    let interiors = load_interiors(
+        db,
+        p4k,
+        record,
+        &ExportOptions::default(),
+        &mut crate::socpak::light_component::LightResolver::new(db),
+    );
     let _ = write!(out, "  \"interiors\": [\n");
     for container in &interiors.containers {
         let _ = write!(
