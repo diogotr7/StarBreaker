@@ -26,6 +26,8 @@ pub fn entity_clip_catalogue(
         .unwrap_or("")
         .to_owned();
     let opts = ExportOptions {
+        kind: ExportKind::Decomposed,
+        format: ExportFormat::Glb,
         apply_default_animation_pose: false,
         ..Default::default()
     };
@@ -166,12 +168,14 @@ mod tests {
             },
             vec![
                 RigSource {
+                    controller: None,
                     owner_entity: "broken".into(),
                     skeleton_path: "Objects/synthetic/broken.chr".into(),
                     is_root: true,
                     namespace: None,
                 },
                 RigSource {
+                    controller: None,
                     owner_entity: "good".into(),
                     skeleton_path: "Objects/synthetic/good.chr".into(),
                     is_root: true,

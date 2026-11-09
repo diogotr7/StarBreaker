@@ -9,6 +9,7 @@ pub(crate) struct RigSource {
     pub skeleton_path: String,
     pub is_root: bool,
     pub namespace: Option<String>,
+    pub controller: Option<super::AnimationControllerSource>,
 }
 
 /// Preserve exporter order and rootless-interior namespace rules.
@@ -24,12 +25,14 @@ pub(crate) fn rig_sources(
             skeleton_path,
             is_root: true,
             namespace: None,
+            controller: None,
         });
     }
     sources.extend(
         children
             .into_iter()
             .map(|(owner_entity, skeleton_path)| RigSource {
+                controller: None,
                 namespace: namespace_children.then(|| owner_entity.clone()),
                 owner_entity,
                 skeleton_path,
@@ -52,7 +55,16 @@ pub(crate) fn read_source_clips(
         !source.is_root,
         endpoints,
     ) {
-        Ok(Some(Value::Array(clips))) => Some(clips),
+        Ok(Some(Value::Array(mut clips))) => {
+            if let Some(controller) = &source.controller {
+                if let Err(error) =
+                    super::annotate_animation_fragments_json(p4k, &mut clips, controller)
+                {
+                    log::warn!("[anim] child controller {}: {error}", source.owner_entity);
+                }
+            }
+            Some(clips)
+        }
         Ok(_) => None,
         Err(error) => {
             log::warn!(
@@ -80,9 +92,24 @@ impl ClipCollection {
         let name = match &source.namespace {
             Some(owner) if !original.is_empty() => {
                 let key = crate::decomposed::interior_clip_key(owner, &original);
+                // Resolve each controller-local animation ID in the same namespace as its clip.
+                if let Some(fragments) = clip.get_mut("fragments").and_then(Value::as_array_mut) {
+                    for fragment in fragments {
+                        if let Some(animations) = fragment["animations"].as_array_mut() {
+                            for animation in animations {
+                                if let Some(name) = animation["name"].as_str() {
+                                    animation["name"] = serde_json::json!(
+                                        crate::decomposed::interior_clip_key(owner, name)
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                clip["owner_entity"] = serde_json::json!(source.owner_entity);
                 clip["name"] = serde_json::json!(key);
                 clip["display_name"] = serde_json::json!(
-                    crate::decomposed::humanize_animation_label(owner, &original)
+                    crate::decomposed::humanize_animation_label(&source.owner_entity, &original)
                 );
                 key
             }
@@ -140,6 +167,19 @@ impl ClipCollection {
 mod tests {
     use super::*;
     #[test]
+    fn child_fragment_animation_ids_follow_namespaced_clip() {
+        let source =
+            rig_sources(None, [("synthetic_door".into(), "synthetic.chr".into())]).remove(0);
+        let mut collection = ClipCollection::default();
+        collection.append(
+            &source,
+            serde_json::json!({"name":"open", "bones":{},
+            "fragments":[{"fragment":"Door", "animations":[{"name":"open"}]}]}),
+        );
+        let clip = &collection.clips[0].value;
+        assert_eq!(clip["fragments"][0]["animations"][0]["name"], clip["name"]);
+    }
+    #[test]
     fn rootless_names_and_empty_names_preserve_export_rules() {
         let sources = rig_sources(
             None,
@@ -153,6 +193,12 @@ mod tests {
             collection.append(source, serde_json::json!({"name":"open", "bones":{}}));
             collection.append(source, serde_json::json!({"name":"", "bones":{}}));
         }
+        assert!(
+            collection
+                .clips
+                .iter()
+                .all(|c| c.value.get("fragments").is_none())
+        );
         assert_eq!(
             collection
                 .clips

@@ -53,7 +53,63 @@ pub(crate) fn discover_animation_sources(
         }
         visit(db, p4k, children, opts, &mut child_sources);
     }
-    rig_sources(root, child_sources)
+    let mut sources = rig_sources(root, child_sources);
+    fn controllers(
+        db: &Database,
+        nodes: &[crate::types::ResolvedNode],
+        out: &mut std::collections::HashMap<String, crate::animation::AnimationControllerSource>,
+    ) {
+        for node in nodes {
+            if let Some(controller) = query_animation_controller_source(db, &node.record) {
+                if !controller.animation_database.is_empty() {
+                    out.insert(node.entity_name.clone(), controller);
+                }
+            }
+            controllers(db, &node.children, out);
+        }
+    }
+    let mut by_owner = std::collections::HashMap::new();
+    controllers(db, children, &mut by_owner);
+    for source in &mut sources {
+        if !source.is_root {
+            if let Some(controller) = by_owner.get(&source.owner_entity) {
+                source.controller = Some(controller.clone());
+                // Repeated entity classes may use different geometry (e.g. mirrored ports).
+                // Identity includes the source path; no asset-name classification is involved.
+                source.namespace = Some(controller_namespace(
+                    &source.owner_entity,
+                    &source.skeleton_path,
+                ));
+            }
+        }
+    }
+    if opts.include_interior {
+        let mut lights = crate::socpak::light_component::LightResolver::new(db);
+        let interiors = load_interiors(db, p4k, record, opts, &mut lights);
+        let by_geometry = interior_controllers_by_geometry(db, record, &interiors);
+        for entry in interiors.unique_cgfs {
+            let controller = entry.animation_controller.or_else(|| {
+                by_geometry
+                    .get(&geometry_key(&entry.cgf_path))
+                    .cloned()
+                    .flatten()
+            });
+            if let Some(controller) = controller {
+                if let Some(path) = resolve_rig(p4k, &entry.name, Some(&entry.cgf_path), || {
+                    Ok(entry.cgf_path.clone())
+                }) {
+                    sources.push(RigSource {
+                        owner_entity: entry.name.clone(),
+                        namespace: Some(controller_namespace(&entry.name, &path)),
+                        skeleton_path: path,
+                        is_root: false,
+                        controller: Some(controller),
+                    });
+                }
+            }
+        }
+    }
+    sources
 }
 
 /// The same primary-path then DataCore-record fallback as child payload loading.
@@ -128,4 +184,91 @@ mod tests {
             Some("Objects/synthetic/good.chr".into())
         );
     }
+}
+
+/// Compact, stable IDs leave sidecar filenames within ustar's name limit.
+fn controller_namespace(owner: &str, path: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let identity = format!(
+        "{}|{}",
+        owner.to_ascii_lowercase(),
+        path.replace('\\', "/").to_ascii_lowercase()
+    );
+    let digest = Sha256::digest(identity.as_bytes());
+    format!(
+        "item_{}",
+        digest[..16]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    )
+}
+
+// IncludedObjects can carry raw geometry only. Resolve its controller by an exact
+// DataCore geometry relationship; conflicting authored controllers remain unresolved.
+fn geometry_key(path: &str) -> String {
+    path.replace('\\', "/")
+        .to_ascii_lowercase()
+        .trim_start_matches("data/")
+        .to_owned()
+}
+fn interior_controllers_by_geometry(
+    db: &Database,
+    root: &Record,
+    interiors: &LoadedInteriors,
+) -> std::collections::HashMap<String, Option<crate::animation::AnimationControllerSource>> {
+    let wanted: std::collections::HashSet<_> = interiors
+        .unique_cgfs
+        .iter()
+        .filter(|e| {
+            e.animation_controller.is_none() && e.cgf_path.to_ascii_lowercase().ends_with(".cga")
+        })
+        .map(|e| geometry_key(&e.cgf_path))
+        .collect();
+    let mut found: std::collections::HashMap<
+        String,
+        Option<crate::animation::AnimationControllerSource>,
+    > = std::collections::HashMap::new();
+    if wanted.is_empty() {
+        return found;
+    }
+    let Ok(path) = db.compile_path::<String>(
+        root.struct_id(),
+        "Components[SGeometryResourceParams].Geometry.Geometry.Geometry.path",
+    ) else {
+        return found;
+    };
+    for record in db
+        .records()
+        .iter()
+        .filter(|r| r.struct_id() == root.struct_id())
+    {
+        let Ok(Some(geometry)) = db.query_single::<String>(&path, record) else {
+            continue;
+        };
+        let key = geometry_key(&geometry);
+        if !wanted.contains(&key) {
+            continue;
+        }
+        let Some(controller) = query_animation_controller_source(db, record)
+            .filter(|c| !c.animation_database.is_empty())
+        else {
+            continue;
+        };
+        found
+            .entry(key)
+            .and_modify(|existing| {
+                if existing.as_ref().is_some_and(|c| {
+                    !c.animation_database
+                        .eq_ignore_ascii_case(&controller.animation_database)
+                        || !c
+                            .animation_controller
+                            .eq_ignore_ascii_case(&controller.animation_controller)
+                }) {
+                    *existing = None;
+                }
+            })
+            .or_insert(Some(controller));
+    }
+    found
 }

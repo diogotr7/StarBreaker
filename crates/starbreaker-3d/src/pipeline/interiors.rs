@@ -41,6 +41,7 @@ impl Default for LoadedInteriors {
 
 /// Metadata for one unique interior CGF (no mesh data).
 pub(crate) struct InteriorCgfEntry {
+    pub animation_controller: Option<crate::animation::AnimationControllerSource>,
     pub cgf_path: String,
     pub material_path: Option<String>,
     pub name: String,
@@ -259,6 +260,7 @@ fn remove_root_geometry_duplicate_interior_placements(
             let new_index = compact.len();
             remap.insert(old_index, new_index);
             compact.push(InteriorCgfEntry {
+                animation_controller: entry.animation_controller.clone(),
                 cgf_path: entry.cgf_path.clone(),
                 material_path: entry.material_path.clone(),
                 name: entry.name.clone(),
@@ -574,6 +576,7 @@ pub(crate) fn merge_interiors(target: &mut LoadedInteriors, source: LoadedInteri
             } else {
                 let index = target.unique_cgfs.len();
                 target.unique_cgfs.push(InteriorCgfEntry {
+                    animation_controller: entry.animation_controller.clone(),
                     cgf_path: entry.cgf_path.clone(),
                     material_path: entry.material_path.clone(),
                     name: entry.name.clone(),
@@ -703,6 +706,12 @@ pub(crate) fn build_interiors_from_payloads(
                     .unwrap_or(&cgf_path)
                     .to_string();
                 unique_cgfs.push(InteriorCgfEntry {
+                    animation_controller: im.entity_class_guid.as_deref()
+                        .and_then(|id| starbreaker_common::CigGuid::from_str(id).ok())
+                        .and_then(|id| db.record_by_id(&id))
+                        .or_else(|| im.entity_class_name.as_deref().and_then(|name| resolve_named_entity_record(db, name)))
+                        .and_then(|record| query_animation_controller_source(db, record))
+                        .filter(|source| !source.animation_database.is_empty()),
                     cgf_path: cgf_path.clone(),
                     material_path: mtl_path.clone().or_else(|| im.material_path.clone()),
                     name,
@@ -1267,6 +1276,7 @@ pub(crate) fn expand_loadout_into_placements(
                 .map(|(stem, _)| stem.to_string())
                 .unwrap_or_else(|| geom_owned.clone());
             unique_cgfs.push(InteriorCgfEntry {
+                animation_controller: query_animation_controller_source(db, &child.record).filter(|source| !source.animation_database.is_empty()),
                 cgf_path: geom_owned.clone(),
                 material_path: mtl_owned.clone(),
                 name,
@@ -1334,7 +1344,12 @@ pub(crate) fn load_interior_mesh_asset(
         false,
     ) {
         Ok((mesh, mtl, _tex, nmc, _palette, _, _, _bones, _skeleton_source_path)) => {
-            let needs_bake = mesh
+            // CGA is the authored animated-geometry category. Decomposed GLB writes
+            // its NMC rig, so baking it here would apply those transforms twice.
+            let preserve_rig = opts.kind == ExportKind::Decomposed
+                && opts.format == ExportFormat::Glb
+                && entry.cgf_path.to_ascii_lowercase().ends_with(".cga");
+            let needs_bake = !preserve_rig && mesh
                 .scaling_min
                 .iter()
                 .zip(&mesh.model_min)
@@ -1874,11 +1889,13 @@ mod tests {
         let mut interiors = LoadedInteriors {
             unique_cgfs: vec![
                 InteriorCgfEntry {
+                    animation_controller: None,
                     cgf_path: "Data/Objects/Ships/Test/root.cga".to_string(),
                     material_path: None,
                     name: "root".to_string(),
                 },
                 InteriorCgfEntry {
+                    animation_controller: None,
                     cgf_path: "Data/Objects/Ships/Test/door.cga".to_string(),
                     material_path: None,
                     name: "door".to_string(),

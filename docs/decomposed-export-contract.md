@@ -81,6 +81,7 @@ Each `children[]` entry (`scene_instance_json`) carries:
 
 - `entity_name`, `geometry_path`, `material_path`, `mesh_asset`,
   `material_sidecar`, `palette_id`
+- `item_type`: authored `SAttachableComponentParams.AttachDef.Type`, or null when absent. Consumers of older manifests must also accept an absent field; do not infer categories from entity names.
 - the attachment relationship: `parent_node_name`, `parent_entity_name`,
   `offset_position`, `offset_rotation`, `no_rotation`, `detach_direction`
   (the port's detach direction in port-local source axes), and `port_flags`
@@ -573,7 +574,7 @@ viewer exports default to bind pose with sidecars rather than a baked pose.
 
 Only the root entity carries animations: `root_entity.animations` is an
 optional array holding every discoverable clip for the root skeleton and the
-attached children's skeletons, merged by clip name (`decomposed.rs`).
+attached children's skeletons and controller-bearing interior rigs (`decomposed.rs`). Root/shared clips are merged by clip name; child controllers retain their own namespace.
 Animations are discovered by:
 
 1. Locating the skeleton's `.chrparams` CryXmlB file (derived by swapping extension from `.chr`)
@@ -584,6 +585,18 @@ When there is no root skeleton (socpak interior exports), child clips are
 keyed per entity type so identically-named clips on different entities (every
 door's `door_open`) stay separate, and each such clip gains a human-readable
 `display_name`.
+
+Child `SAnimationControllerParams` are resolved before merging. Their IDs use
+`item_<first 16 SHA-256 bytes in hex>__<clip>` from lowercase owner plus normalized
+rig path, preserving sidecar names within ustar limits. Fragment animation IDs use
+the same namespace, and the sidecar carries `owner_entity`; `display_name` remains
+human-readable. This prevents a child's `door_open` from selecting an unrelated
+root animation. Interior controllers come from entity-class identity where
+available, otherwise an exact DataCore geometry-path relationship; conflicting
+controller definitions are left unresolved. Both catalogue and export use this
+discovery and naming rule. Decomposed GLB interiors preserve the NMC hierarchy
+for the animated CGA category, leaving those vertices unbaked so transforms
+apply once; static CGF interiors retain the flat-mesh path.
 
 **Animation Clip Structure:**
 
@@ -598,7 +611,7 @@ Each animation clip object (`animation/serialise.rs`, `clip_to_json`) contains:
   samples). The addon uses it as the anchor for
   `result = bind ⋅ (start⁻¹ ⋅ sample)`; CAF clips omit both and the addon
   anchors on the first sample.
-- `fragments` — optional Mannequin ADB fragment metadata for clips reached from the root entity's `SAnimationControllerParams` (`animation/mannequin.rs`): `fragment`, `guid`, `tags`, `frag_tags`, `blend_out_duration`, `option_weight`, `scopes`, `animations` (each with `name`, `blend` timings, and optional `flags` / `speed`), and optional `procedurals`
+- `fragments` — optional Mannequin ADB fragment metadata for clips reached from the owning entity's `SAnimationControllerParams` (`animation/mannequin.rs`): `fragment`, `guid`, `tags`, `frag_tags`, `blend_out_duration`, `option_weight`, `scopes`, `animations` (each with `name`, `blend` timings, and optional `flags` / `speed`), and optional `procedurals`
 
 **Bone Channel Structure:**
 

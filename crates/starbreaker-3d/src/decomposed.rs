@@ -142,6 +142,8 @@ pub(crate) struct DecomposedMaterialView {
 
 #[derive(Debug, Clone)]
 struct SceneInstanceRecord {
+    /// DataCore SAttachableComponentParams.AttachDef.Type; absent for non-item attachments.
+    item_type: Option<String>,
     entity_name: String,
     geometry_path: String,
     material_path: String,
@@ -1442,6 +1444,7 @@ pub(crate) fn write_decomposed_export(
 
         let resolved_transform = resolved_child_transforms[index];
         child_instances.push(SceneInstanceRecord {
+            item_type: child.attach_def_type.clone(),
             entity_name: child.entity_name.clone(),
             geometry_path: normalize_source_path(p4k, &child.geometry_path),
             material_path: normalize_source_path(p4k, &child.material_path),
@@ -1682,7 +1685,7 @@ pub(crate) fn write_decomposed_export(
                     interior_asset_cache.insert(cache_key.clone(), reusable.clone());
                     reusable
                 } else {
-                    let Some((mesh, materials, _nmc)) = load_interior_mesh(entry) else {
+                    let Some((mesh, materials, nmc)) = load_interior_mesh(entry) else {
                         interior_asset_resolve_elapsed += asset_resolve_start.elapsed();
                         log::warn!("failed to build decomposed interior asset for {}", entry.cgf_path);
                         failed_interior_asset_cache.insert(cache_key);
@@ -1701,7 +1704,7 @@ pub(crate) fn write_decomposed_export(
                     let interior_material_view = build_decomposed_material_view(
                         &mesh,
                         materials.as_ref(),
-                        None,
+                        if entry.cgf_path.to_ascii_lowercase().ends_with(".cga") && opts.format == ExportFormat::Glb { nmc.as_ref() } else { None },
                         opts.include_nodraw,
                         opts.include_shields,
                     );
@@ -1776,9 +1779,8 @@ pub(crate) fn write_decomposed_export(
                             &interior_material_view.mesh,
                             interior_material_view.sidecar_materials.as_ref(),
                             &interior_material_view.sidecar_original_indices,
-                            // Interior meshes already follow the bundled flat-mesh path.
-                            // Preserving the raw NMC hierarchy here makes decomposed interiors
-                            // diverge from the reference import and can double-apply placement transforms.
+                            // Animated CGA interiors retain their receiving hierarchy; the loader
+                            // leaves their vertices unbaked. Static CGFs retain the flat path.
                             interior_material_view.glb_nmc.as_ref(),
                             &[],
                             opts.lod_level,
@@ -2340,6 +2342,7 @@ fn scene_instance_json(instance: &SceneInstanceRecord) -> serde_json::Value {
         "offset_rotation": instance.offset_rotation,
         "detach_direction": instance.detach_direction,
         "port_flags": instance.port_flags,
+        "item_type": instance.item_type,
         "ui_bindings": instance.ui_bindings.iter().map(ui_binding_json).collect::<Vec<_>>(),
     })
 }
@@ -7545,6 +7548,7 @@ mod tests {
     #[test]
     fn scene_manifest_uses_relative_asset_paths_for_children_and_interiors() {
         let child = SceneInstanceRecord {
+            item_type: Some("Seat".into()), // synthetic category fixture
             entity_name: "child_a".into(),
             geometry_path: "Data/Objects/Ships/Test/child.skin".into(),
             material_path: "Data/Objects/Ships/Test/child.mtl".into(),
@@ -7566,6 +7570,10 @@ mod tests {
             port_flags: "invisible uneditable".into(),
             ui_bindings: Vec::new(),
         };
+        assert!(scene_instance_json(&child).as_object().unwrap().contains_key("item_type"));
+        assert_eq!(scene_instance_json(&child)["item_type"], "Seat");
+        let unknown = SceneInstanceRecord { item_type: None, ..child.clone() };
+        assert!(scene_instance_json(&unknown)["item_type"].is_null());
         let interior = InteriorContainerRecord {
             name: "interior_main".into(),
             parent_entity_name: Some("child_entity".into()),
