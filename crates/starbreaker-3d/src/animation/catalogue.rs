@@ -29,6 +29,9 @@ pub struct ClipInfo {
     pub display_name: String,
     /// First owner in export discovery order; named clips may merge multiple rigs.
     pub owner_entity: String,
+    /// Owners and resolved rig nodes contributing channels; stable first-seen order.
+    #[serde(default)]
+    pub contributors: Vec<String>,
     pub source: ClipSource,
     pub fps: u16,
     pub frame_count: u32,
@@ -67,6 +70,7 @@ pub(crate) fn summarize(clip: &Value, owner: &str) -> Result<ClipInfo, Error> {
     let mut has_rotation = false;
     let mut boomerang = true;
     let mut bone_count = 0;
+    let mut contributors = Vec::new();
     for bone in clip["bones"].as_object().ok_or_else(invalid)?.values() {
         let variants: Vec<&Value> = match bone.as_array() {
             Some(a) => a.iter().collect(),
@@ -74,12 +78,21 @@ pub(crate) fn summarize(clip: &Value, owner: &str) -> Result<ClipInfo, Error> {
         };
         for channel in variants {
             bone_count += 1;
+            if !contributors.iter().any(|name| name == owner) {
+                contributors.push(owner.to_owned());
+            }
+            if let Some(name) = channel["source_node_name"].as_str() {
+                if !contributors.iter().any(|existing| existing == name) {
+                    contributors.push(name.to_owned());
+                }
+            }
             has_position |= channel["has_position"] == true;
             has_rotation |= channel["has_rotation"] == true;
             for key in ["position", "rotation"] {
                 if let Some(samples) = channel[key].as_array().filter(|s| !s.is_empty()) {
-                    let first = samples.first().unwrap();
-                    let last = samples.last().unwrap();
+                    let (Some(first), Some(last)) = (samples.first(), samples.last()) else {
+                        continue;
+                    };
                     // q and -q represent the same orientation.
                     let equal = first == last
                         || (key == "rotation"
@@ -111,6 +124,7 @@ pub(crate) fn summarize(clip: &Value, owner: &str) -> Result<ClipInfo, Error> {
             }),
         id,
         owner_entity: owner.into(),
+        contributors,
         source: serde_json::from_value(clip["catalogue_source"].clone())
             .map_err(|e| Error::Other(e.to_string()))?,
         fps,

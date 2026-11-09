@@ -37,7 +37,7 @@ fn assign_decal_materials_basic() {
         root_palette: None,
         available_palettes: vec![],
         root_bones: vec![],
-        root_skeleton_source_path: None,
+        animation_sources: Vec::new(),
         root_animation_controller: None,
         children: vec![],
         interiors: LoadedInteriors::default(),
@@ -79,7 +79,7 @@ fn assign_decal_materials_no_materials() {
         root_palette: None,
         available_palettes: vec![],
         root_bones: vec![],
-        root_skeleton_source_path: None,
+        animation_sources: Vec::new(),
         root_animation_controller: None,
         children: vec![],
         interiors: LoadedInteriors::default(),
@@ -121,7 +121,7 @@ fn assign_decal_materials_empty_mesh() {
         root_palette: None,
         available_palettes: vec![],
         root_bones: vec![],
-        root_skeleton_source_path: None,
+        animation_sources: Vec::new(),
         root_animation_controller: None,
         children: vec![],
         interiors: LoadedInteriors::default(),
@@ -163,7 +163,7 @@ fn assign_decal_materials_multiple_children() {
         root_palette: None,
         available_palettes: vec![],
         root_bones: vec![],
-        root_skeleton_source_path: None,
+        animation_sources: Vec::new(),
         root_animation_controller: None,
         children: vec![
             EntityPayload {
@@ -243,7 +243,7 @@ fn assign_decal_materials_with_child_mesh() {
         root_palette: None,
         available_palettes: vec![],
         root_bones: vec![],
-        root_skeleton_source_path: None,
+        animation_sources: Vec::new(),
         root_animation_controller: None,
         children: vec![
             EntityPayload {

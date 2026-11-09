@@ -19,7 +19,11 @@ pub(super) fn rotation_ends(
     if count <= 2 {
         return codec::read_rotation_keys(data, offset, count, flags);
     }
-    let stride = if flags >> 8 == 0x80 { 16 } else { 6 };
+    let stride = if flags >> 8 == 0x80 {
+        codec::UNCOMPRESSED_QUAT_STRIDE
+    } else {
+        codec::SMALL_TREE_QUAT_STRIDE
+    };
     let mut values = codec::read_rotation_keys(data, offset, 1, flags)?;
     values.extend(codec::read_rotation_keys(
         data,
@@ -44,19 +48,18 @@ pub(super) fn position_ends(
         let mut values = codec::read_position_keys(data, offset, 1, flags)?;
         values.extend(codec::read_position_keys(
             data,
-            offset + (count - 1) * 12,
+            offset + (count - 1) * codec::FLOAT_POSITION_STRIDE,
             1,
             flags,
         )?);
         return Ok(values);
     }
     if format != 0xC1 && format != 0xC2 {
-        return Err(Error::Other(format!(
-            "Unsupported catalogue position encoding: {format:#x}"
-        )));
+        log::warn!("Unknown position format 0x{format:02x}, count={count}");
+        return Ok(vec![[0.0; 3]; 2]);
     }
     let header = data
-        .get(offset..offset + 24)
+        .get(offset..offset + codec::SNORM_HEADER_SIZE)
         .ok_or_else(|| Error::Other("Truncated position header".into()))?;
     let mut sparse = header.to_vec();
     let copy = |out: &mut Vec<u8>, start, size| -> Result<(), Error> {
@@ -67,14 +70,22 @@ pub(super) fn position_ends(
         Ok(())
     };
     if format == 0xC1 {
-        copy(&mut sparse, offset + 24, 6)?;
-        copy(&mut sparse, offset + 24 + (count - 1) * 6, 6)?;
+        copy(
+            &mut sparse,
+            offset + codec::SNORM_HEADER_SIZE,
+            codec::SNORM_POSITION_STRIDE,
+        )?;
+        copy(
+            &mut sparse,
+            offset + codec::SNORM_HEADER_SIZE + (count - 1) * codec::SNORM_POSITION_STRIDE,
+            codec::SNORM_POSITION_STRIDE,
+        )?;
     } else {
         let scale = codec::read_vec3(header, 0);
-        let mut axis_start = offset + 24;
+        let mut axis_start = offset + codec::SNORM_HEADER_SIZE;
         for scale in scale {
             // Same sentinel and planar layout as the full SNORM decoder.
-            if scale.abs() < 3.0e38 {
+            if scale.abs() < codec::FLT_MAX_SENTINEL {
                 copy(&mut sparse, axis_start, 2)?;
                 copy(&mut sparse, axis_start + (count - 1) * 2, 2)?;
                 axis_start += count * 2;

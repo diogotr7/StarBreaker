@@ -46,6 +46,7 @@ mod interior_animation;
 pub(crate) use self::interior_animation::*;
 mod vehicle;
 pub use self::vehicle::*;
+pub(crate) mod animation_sources;
 mod clip_catalogue;
 pub use clip_catalogue::entity_clip_catalogue;
 mod glb_assembly;
@@ -567,7 +568,9 @@ where
         root_palette: None,
         available_palettes: Vec::new(),
         root_bones: Vec::new(),
-        root_skeleton_source_path: None,
+        animation_sources: crate::animation::rig_sources::rig_sources(None, children.iter().filter_map(|child| {
+            child.skeleton_source_path.as_ref().map(|path| (child.entity_name.clone(), path.clone()))
+        })),
         root_animation_controller: None,
         children,
         interiors,

@@ -9,3 +9,11 @@ The chrparams maps only `latch_cycle` to the first block; the second is DBA-only
 The CAF wraps the same synthetic blocks with an AnimInfo chunk to exercise the
 standalone parser. Tests assert full/sparse name and final-time parity, endpoint
 boomerang classification and that intermediate values are not materialized.
+
+`rigs.zip` is a deterministic stored ZIP readable by `MappedP4k`. It contains the
+synthetic DBA, a minimal empty IVO rig, valid chrparams, and another chrparams
+whose DBA reference is deliberately missing. It verifies that an unreadable rig
+cannot hide healthy clips and that missing child geometry falls back or skips.
+Additional in-memory mutations cover wildcard rules, zero CAF FPS, unsupported
+position encoding without block misalignment, inactive SNORM axes and bitmap
+frame times. All are invented, not game-derived.

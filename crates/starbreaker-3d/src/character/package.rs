@@ -124,7 +124,9 @@ pub fn export_character_package(
         root_palette: None,
         available_palettes: Vec::new(),
         root_bones: rig.bones(),
-        root_skeleton_source_path: None,
+        animation_sources: crate::animation::rig_sources::rig_sources(None, children.iter().filter_map(|child| {
+            child.skeleton_source_path.as_ref().map(|path| (child.entity_name.clone(), path.clone()))
+        })),
         root_animation_controller: None,
         children,
         interiors: Default::default(),

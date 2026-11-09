@@ -604,3 +604,13 @@ Mannequin fragment annotations use the same DataCore controller source. The
 catalogue does not change the animation sidecar or scene index format. As above,
 per-entity interior namespaces apply to rootless socpak packages, not ship
 packages with a root rig (including Cutlass).
+
+Catalogue review follow-up: the exporter and catalogue now consume the same
+ordered rig-source list (including DataCore geometry fallback and exact gear
+owner filenames) and clip merger. Rig-local failures warn and skip that source.
+Chrparams event names containing `*` or `?` are mapping rules and are no longer
+emitted as literal animation names; concrete DBA metadata entries remain in the
+union. This can replace an old wildcard index record with a concrete source name.
+The catalogue's additive `contributors: Vec<String>` lists contributing owners
+and resolved rig node names. Existing `id`/`owner_entity` semantics remain intact;
+this does not yet make merged ship door clips independently addressable.

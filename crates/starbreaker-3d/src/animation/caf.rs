@@ -55,7 +55,7 @@ pub(super) fn parse_caf_mode(data: &[u8], endpoints: bool) -> Result<AnimationDa
         .iter()
         .find(|c| c.chunk_type == chunk_types::ANIM_INFO)
         .map(|c| parse_anim_info(ivo.chunk_data(c)));
-    let fps = anim_info.map(|i| i.fps as f32).unwrap_or(30.0);
+    let fps = anim_info.filter(|i| i.fps != 0).map(|i| i.fps as f32).unwrap_or(30.0);
 
     let caf_chunk = ivo
         .chunks()

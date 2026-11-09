@@ -46,3 +46,14 @@ str_pos = attr_pos + len(attrs)*8
 xml = b'CryXmlB\0' + pack('<9I', str_pos + len(strings), node_pos, len(nodes), attr_pos, len(attrs), child_pos, len(children), str_pos, len(strings))
 xml += b''.join(nodes) + pack('<3i', *children) + b''.join(attrs) + strings
 (p/'synthetic.chrparams').write_bytes(xml)
+# Small deterministic stored ZIP readable by MappedP4k, with one broken rig.
+# Everything inside is generated above; this is not a game archive.
+import zipfile
+with zipfile.ZipFile(p/'rigs.zip', 'w', compression=zipfile.ZIP_STORED) as archive:
+    for name, payload in [
+        ('Data/Objects/synthetic/good.chr', b'#ivo' + pack('<III', 0x900, 0, 16)),
+        ('Data/Objects/synthetic/good.chrparams', xml),
+        ('Data/Objects/synthetic/broken.chrparams', xml.replace(b'test.dba', b'lost.dba')),
+        ('Data/Animations/synthetic/test.dba', (p/'synthetic.dba').read_bytes()),
+    ]:
+        archive.writestr(zipfile.ZipInfo(name, (2000, 1, 1, 0, 0, 0)), payload)

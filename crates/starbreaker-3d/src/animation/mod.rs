@@ -38,6 +38,10 @@ pub use dba::parse_dba;
 pub mod binding_report;
 pub mod serialise;
 pub mod mannequin;
+pub(crate) mod rig_sources;
+mod extraction;
+mod matching_scores;
+mod matching_diagnostics;
 pub mod matching;
 pub use serialise::{
     annotate_animations_json_with_blend_modes, classify_bone_blend_modes,

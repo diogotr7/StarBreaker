@@ -2242,7 +2242,7 @@ fn create_test_input(entity_name: &str, num_children: usize) -> DecomposedInput 
         root_palette: None,
         available_palettes: vec![],
         root_bones: vec![],
-        root_skeleton_source_path: None,
+        animation_sources: Vec::new(),
         root_animation_controller: None,
         children,
         interiors: LoadedInteriors {

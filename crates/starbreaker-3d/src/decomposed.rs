@@ -37,7 +37,7 @@ pub(crate) struct DecomposedInput {
     pub root_palette: Option<TintPalette>,
     pub available_palettes: Vec<TintPalette>,
     pub root_bones: Vec<Bone>,
-    pub root_skeleton_source_path: Option<String>,
+    pub animation_sources: Vec<crate::animation::rig_sources::RigSource>,
     pub root_animation_controller: Option<crate::animation::AnimationControllerSource>,
     pub children: Vec<EntityPayload>,
     pub interiors: LoadedInteriors,
@@ -1957,95 +1957,13 @@ pub(crate) fn write_decomposed_export(
     phase_start = Instant::now();
 
     let root_animations = if opts.include_animations {
-        let mut clips: Vec<serde_json::Value> = Vec::new();
-        // Map from clip name → index in `clips`, used to merge same-named clips
-        // from different child skeletons (e.g. landing_gear_extend from front/left/right CHRs).
-        let mut name_to_index = std::collections::HashMap::<String, usize>::new();
-
-        let mut append_from_skeleton = |skeleton_path: &str, include_unmatched: bool, allow_bone_subset_fallback: bool, namespace: Option<&str>| {
-            match crate::animation::extract_animations_for_skeleton_json(p4k, skeleton_path, include_unmatched, allow_bone_subset_fallback) {
-                Ok(Some(serde_json::Value::Array(values))) => {
-                    for mut clip in values {
-                        let original = clip
-                            .get("name")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        // Socpak interior children (`namespace = Some(entity stem)`):
-                        // key each clip by entity-type so different entities'
-                        // identically-named clips (every door's `door_open`) don't
-                        // merge, and attach a human-readable panel label. Instances of
-                        // the same entity-type share the key and still merge.
-                        let name = match namespace {
-                            Some(stem) if !original.is_empty() => {
-                                let key = interior_clip_key(stem, &original);
-                                if let Some(object) = clip.as_object_mut() {
-                                    object.insert(
-                                        "name".to_string(),
-                                        serde_json::Value::String(key.clone()),
-                                    );
-                                    object.insert(
-                                        "display_name".to_string(),
-                                        serde_json::Value::String(humanize_animation_label(
-                                            stem, &original,
-                                        )),
-                                    );
-                                }
-                                key
-                            }
-                            _ => original,
-                        };
-                        if name.is_empty() {
-                            clips.push(clip);
-                        } else if let Some(&existing_idx) = name_to_index.get(&name) {
-                            // Merge bone channels from this clip into the existing one.
-                            if let (Some(serde_json::Value::Object(new_bones)), Some(existing_clip)) =
-                                (clip.get_mut("bones").map(|b| b.take()), clips.get_mut(existing_idx))
-                            {
-                                if let Some(serde_json::Value::Object(existing_bones)) =
-                                    existing_clip.get_mut("bones")
-                                {
-                                    for (k, v) in new_bones {
-                                        if let Some(existing_value) = existing_bones.get_mut(&k) {
-                                            merge_animation_channel_values(existing_value, v, &name, &k);
-                                        } else {
-                                            existing_bones.insert(k, v);
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            let idx = clips.len();
-                            name_to_index.insert(name, idx);
-                            clips.push(clip);
-                        }
-                    }
-                }
-                Ok(Some(_)) => {}
-                Ok(None) => {}
-                Err(error) => {
-                    log::warn!(
-                        "[anim] failed to extract animations for skeleton '{}': {}",
-                        skeleton_path,
-                        error
-                    );
-                }
-            }
-        };
-
-        if let Some(skeleton_path) = input.root_skeleton_source_path.as_deref() {
-            append_from_skeleton(skeleton_path, true, false, None);
-        }
-        // With no root skeleton (the socpak interior case — ships always have a
-        // root rig), children are independent interior entities; namespace their
-        // clips per entity-type so distinct mechanisms stay separate.
-        let namespace_children = input.root_skeleton_source_path.is_none();
-        for child in &input.children {
-            if let Some(skeleton_path) = child.skeleton_source_path.as_deref() {
-                let namespace = namespace_children.then_some(child.entity_name.as_str());
-                append_from_skeleton(skeleton_path, false, true, namespace);
+        let mut collection = crate::animation::rig_sources::ClipCollection::default();
+        for source in &input.animation_sources {
+            for clip in crate::animation::rig_sources::read_source_clips(p4k, source, false).into_iter().flatten() {
+                collection.append(source, clip);
             }
         }
+        let mut clips: Vec<serde_json::Value> = collection.clips.into_iter().map(|clip| clip.value).collect();
 
         // Component animation tracks (doors, ladders, beds, …) live in a shared
         // .dba; the root-skeleton sweep stamps the blocks whose nodes are not in

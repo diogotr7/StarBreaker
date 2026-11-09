@@ -85,6 +85,11 @@ impl ChrParams {
     }
 
     fn record_animation_path(&mut self, name: &str, path: &str) {
+        // Wildcard names declare mapping rules, not playable event identifiers.
+        // DBA-only clips remain discoverable through the metadata catalogue.
+        if name.contains(['*', '?']) {
+            return;
+        }
         let key = name.to_string();
         let value = path.to_string();
         self.animation_paths

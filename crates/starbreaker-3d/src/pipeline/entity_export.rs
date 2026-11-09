@@ -67,13 +67,10 @@ pub(crate) fn export_entity_payload(
     export_entity_payload_cached(db, p4k, record, opts, &mut PngCache::new())
 }
 
-fn export_entity_payload_cached(
-    db: &Database,
-    p4k: &MappedP4k,
-    record: &Record,
-    opts: &ExportOptions,
-    png_cache: &mut PngCache,
-) -> Result<EntityPayload, Error> {
+/// DataCore geometry/material paths shared by mesh export and animation rig fallback.
+pub(crate) fn entity_geometry_paths(
+    db: &Database, record: &Record, opts: &ExportOptions,
+) -> Result<(String, String), Error> {
     let record_name = || db.resolve_string2(record.name_offset).to_string();
 
     let geom_compiled = db
@@ -116,6 +113,18 @@ fn export_entity_payload_cached(
     let (geometry_path, material_path) = super::geometry_variant::resolve(
         db, record, opts.geometry_tag.as_deref(), geometry_path, material_path,
     )?;
+
+    Ok((geometry_path, material_path))
+}
+
+fn export_entity_payload_cached(
+    db: &Database,
+    p4k: &MappedP4k,
+    record: &Record,
+    opts: &ExportOptions,
+    png_cache: &mut PngCache,
+) -> Result<EntityPayload, Error> {
+    let (geometry_path, material_path) = entity_geometry_paths(db, record, opts)?;
 
     let (mesh, mtl_file, textures, nmc, skeleton_bones, primary_path, skeleton_source_path) =
         load_geometry_parts(p4k, &geometry_path, &material_path, opts, png_cache, false)?;

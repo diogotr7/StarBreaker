@@ -71,6 +71,11 @@ pub fn assemble_glb_with_loadout_with_progress(
 
     log::info!("[mem-pipeline] resolving loadout meshes...");
     let resolved = resolve_loadout_meshes(db, p4k, record, tree, &payload_opts)?;
+    let animation_sources = if opts.include_animations {
+        super::animation_sources::discover_animation_sources(
+            db, p4k, record, resolved.geometry_path.as_deref(), &resolved.children, opts,
+        )
+    } else { Vec::new() };
     log::info!(
         "[mem-pipeline] resolved: {} children",
         resolved.children.len()
@@ -469,7 +474,7 @@ pub fn assemble_glb_with_loadout_with_progress(
             root_palette: root_palette.clone(),
             available_palettes,
             root_bones,
-            root_skeleton_source_path,
+            animation_sources,
             root_animation_controller,
             children: child_payloads,
             interiors: loaded_interiors,

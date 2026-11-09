@@ -1,15 +1,18 @@
-//! Metadata-only entity rig discovery and clip catalogue assembly; no meshes or textures decoded.
+//! Metadata-only entity clip catalogue using the exporter's shared rig discovery and collection.
 use super::*;
 use crate::{
-    animation::catalogue::{Catalogue, SkeletonInfo},
+    animation::{
+        catalogue::{Catalogue, SkeletonInfo},
+        rig_sources::{ClipCollection, RigSource, read_source_clips},
+    },
     error::Error,
 };
 use starbreaker_datacore::{database::Database, loadout::LoadoutTree, types::Record};
 use starbreaker_p4k::MappedP4k;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 /// Catalogue using the default decomposed export's root, landing-gear and loadout rigs.
-/// Shared animation matching decodes only first/final values, never intermediate keys.
+/// A broken geometry/animation source is warned about and skipped independently.
 pub fn entity_clip_catalogue(
     db: &Database,
     p4k: &MappedP4k,
@@ -22,86 +25,86 @@ pub fn entity_clip_catalogue(
         .next()
         .unwrap_or("")
         .to_owned();
-    let mut catalogue = Catalogue {
-        entity: entity.clone(),
-        skeletons: Vec::new(),
-        clips: Vec::new(),
-    };
     let opts = ExportOptions {
         apply_default_animation_pose: false,
         ..Default::default()
     };
-    let root = match resolve_loadout_meshes(db, p4k, record, tree, &opts) {
-        Ok(root) => root,
-        Err(Error::NoGeometryComponent { .. }) => return Ok(catalogue),
-        Err(error) => return Err(error),
+    let resolved = match resolve_loadout_meshes(db, p4k, record, tree, &opts) {
+        Ok(root) => Some(root),
+        Err(Error::NoGeometryComponent { .. }) => None,
+        Err(error) => {
+            log::warn!(
+                "[anim] cannot resolve root geometry for '{entity}': {error}; continuing child rigs"
+            );
+            None
+        }
     };
-    let root_path = root
-        .geometry_path
-        .as_deref()
-        .map(|p| rig_path(p4k, p))
-        .transpose()?
-        .flatten();
-    let namespace_children = root_path.is_none();
-    let mut sources = Vec::new();
-    if let Some(path) = root_path {
-        sources.push((entity.clone(), path, true));
-    }
-    for (path, _) in query_landing_gear(db, record) {
-        if let Some(rig) = rig_path(p4k, &path)? {
-            let owner = path
-                .replace('\\', "/")
-                .rsplit('/')
-                .next()
-                .unwrap_or(&path)
-                .split('.')
-                .next()
-                .unwrap_or(&path)
-                .to_owned();
-            sources.push((owner, rig, false));
-        }
-    }
-    fn visit(
-        p4k: &MappedP4k,
-        nodes: &[crate::types::ResolvedNode],
-        sources: &mut Vec<(String, String, bool)>,
-    ) -> Result<(), Error> {
-        for node in nodes {
-            if node.has_geometry {
-                if let Some(path) = &node.geometry_path {
-                    if let Some(rig) = rig_path(p4k, path)? {
-                        sources.push((node.entity_name.clone(), rig, false));
-                    }
-                }
-            }
-            visit(p4k, &node.children, sources)?;
-        }
-        Ok(())
-    }
-    visit(p4k, &root.children, &mut sources)?;
+    let fallback_children = if resolved.is_none() {
+        resolve_children(
+            db,
+            p4k,
+            &tree.root.children,
+            &opts,
+            &load_invisible_ports(db, p4k, record),
+        )
+    } else {
+        Vec::new()
+    };
+    let sources = super::animation_sources::discover_animation_sources(
+        db,
+        p4k,
+        record,
+        resolved
+            .as_ref()
+            .and_then(|root| root.geometry_path.as_deref()),
+        resolved
+            .as_ref()
+            .map_or(fallback_children.as_slice(), |root| {
+                root.children.as_slice()
+            }),
+        &opts,
+    );
+    catalogue_from_sources(
+        p4k,
+        Catalogue {
+            entity,
+            skeletons: Vec::new(),
+            clips: Vec::new(),
+        },
+        sources,
+        query_animation_controller_source(db, record),
+    )
+}
+
+fn catalogue_from_sources(
+    p4k: &MappedP4k,
+    mut catalogue: Catalogue,
+    sources: Vec<RigSource>,
+    controller: Option<crate::animation::AnimationControllerSource>,
+) -> Result<Catalogue, Error> {
     let mut seen = HashSet::new();
-    let mut clips: Vec<serde_json::Value> = Vec::new();
-    let mut indices = HashMap::<String, usize>::new();
-    let mut owners = Vec::new();
-    for (owner, path, is_root) in sources {
-        if !seen.insert((owner.clone(), path.to_ascii_lowercase(), is_root)) {
+    let mut collection = ClipCollection::default();
+    for source in sources {
+        if !seen.insert((
+            source.owner_entity.clone(),
+            source.skeleton_path.to_ascii_lowercase(),
+            source.is_root,
+        )) {
             continue;
         }
         let names = p4k
-            .read_file(&datacore_path_to_p4k(&path))
+            .read_file(&datacore_path_to_p4k(&source.skeleton_path))
             .ok()
             .and_then(|data| crate::skeleton::parse_rig_node_names(&data))
             .unwrap_or_default();
-        let values =
-            crate::animation::matching::extract_skeleton_json(p4k, &path, is_root, !is_root, true)?;
-        let values = values.as_ref().and_then(|v| v.as_array());
+        let values = read_source_clips(p4k, &source, true);
         if names.is_empty() && values.is_none() {
             continue;
         }
-        let first = values.and_then(|v| v.first());
+        let first = values.as_ref().and_then(|v| v.first());
         catalogue.skeletons.push(SkeletonInfo {
-            owner_entity: owner.clone(),
-            chr_path: path,
+            owner_entity: source.owner_entity.clone(),
+            chr_path: source.skeleton_path.clone(),
             chrparams_path: first
                 .and_then(|v| v["chrparams_path"].as_str())
                 .map(str::to_owned),
@@ -111,71 +114,74 @@ pub fn entity_clip_catalogue(
             bone_count: names.len(),
         });
         for clip in values.into_iter().flatten() {
-            let mut clip = clip.clone();
-            let original = clip["name"]
-                .as_str()
-                .ok_or_else(|| Error::Other("Clip without name".into()))?
-                .to_owned();
-            let name = if namespace_children && !is_root {
-                let key = crate::decomposed::interior_clip_key(&owner, &original);
-                clip["name"] = serde_json::json!(key);
-                clip["display_name"] = serde_json::json!(
-                    crate::decomposed::humanize_animation_label(&owner, &original)
-                );
-                key
-            } else {
-                original
-            };
-            if let Some(&index) = indices.get(&name) {
-                let incoming = clip["bones"]
-                    .as_object()
-                    .ok_or_else(|| Error::Other("Clip without bones".into()))?;
-                let existing = clips[index]["bones"].as_object_mut().unwrap();
-                for (key, value) in incoming {
-                    if let Some(old) = existing.get_mut(key) {
-                        crate::decomposed::merge_animation_channel_values(
-                            old,
-                            value.clone(),
-                            &name,
-                            key,
-                        );
-                    } else {
-                        existing.insert(key.clone(), value.clone());
-                    }
-                }
-            } else {
-                indices.insert(name, clips.len());
-                owners.push(owner.clone());
-                clips.push(clip);
-            }
+            collection.append(&source, clip);
         }
     }
-    if !clips.is_empty() {
-        if let Some(source) = query_animation_controller_source(db, record) {
+    // Annotate the merged names exactly as decomposed export does.
+    let mut values: Vec<_> = collection.clips.iter().map(|c| c.value.clone()).collect();
+    if !values.is_empty() {
+        if let Some(source) = controller {
             if let Err(error) =
-                crate::animation::annotate_animation_fragments_json(p4k, &mut clips, &source)
+                crate::animation::annotate_animation_fragments_json(p4k, &mut values, &source)
             {
-                // Same optional annotation policy as decomposed export.
                 log::warn!("[anim] failed to annotate Mannequin fragments: {error}");
             }
         }
     }
-    catalogue.clips = clips
-        .iter()
-        .zip(owners)
-        .map(|(clip, owner)| crate::animation::catalogue::summarize(clip, &owner))
-        .collect::<Result<_, _>>()?;
+    for (value, collected) in values.iter().zip(collection.clips) {
+        match crate::animation::catalogue::summarize(value, &collected.owner_entity) {
+            Ok(mut clip) => {
+                for owner in collected.contributors {
+                    if !clip.contributors.contains(&owner) {
+                        clip.contributors.push(owner);
+                    }
+                }
+                catalogue.clips.push(clip);
+            }
+            Err(error) => log::warn!(
+                "[anim] skipping invalid catalogue clip from '{}': {error}",
+                collected.owner_entity
+            ),
+        }
+    }
     Ok(catalogue)
 }
 
-fn rig_path(p4k: &MappedP4k, geometry: &str) -> Result<Option<String>, Error> {
-    if geometry.is_empty() {
-        return Ok(None);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn missing_dba_does_not_hide_other_rigs() {
+        let archive = MappedP4k::open(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/clip_catalogue/rigs.zip"),
+        )
+        .unwrap();
+        let catalogue = catalogue_from_sources(
+            &archive,
+            Catalogue {
+                entity: "synthetic".into(),
+                skeletons: vec![],
+                clips: vec![],
+            },
+            vec![
+                RigSource {
+                    owner_entity: "broken".into(),
+                    skeleton_path: "Objects/synthetic/broken.chr".into(),
+                    is_root: true,
+                    namespace: None,
+                },
+                RigSource {
+                    owner_entity: "good".into(),
+                    skeleton_path: "Objects/synthetic/good.chr".into(),
+                    is_root: true,
+                    namespace: None,
+                },
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(catalogue.clips.len(), 2);
+        assert!(catalogue.clips.iter().any(|c| c.id == "latch_cycle"));
     }
-    let resolved = resolve_geometry_files(p4k, geometry)?;
-    Ok(
-        skeleton_source_paths(resolved.skeleton_path.as_deref(), &resolved.parts[0].path)
-            .first()
-            .map(|p| (*p).to_owned()),
-    )
 }

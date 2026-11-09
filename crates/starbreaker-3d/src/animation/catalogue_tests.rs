@@ -7,7 +7,7 @@ const PARAMS: &[u8] = include_bytes!("../../tests/fixtures/clip_catalogue/synthe
 
 #[test]
 fn synthetic_catalogue_union_preserves_export_names_and_endpoints() {
-    let params = crate::chrparams::ChrParams::from_bytes(PARAMS).unwrap();
+    let params = crate::chrparams::ChrParams::from_bytes(&PARAMS.to_vec()).unwrap();
     assert_eq!(
         params.resolved_caf_path("cycle.caf"),
         "animations/synthetic/cycle.caf"
@@ -95,5 +95,128 @@ fn opposite_quaternion_signs_are_the_same_endpoint_pose() {
     assert_eq!(
         crate::decomposed::humanize_animation_label("mechanism_a", "open"),
         "Mechanism A — Open"
+    );
+}
+
+#[test]
+fn unknown_position_format_keeps_dba_blocks_aligned() {
+    let mut bytes = DBA.to_vec();
+    let data_offset = match starbreaker_chunks::ChunkFile::from_bytes(&bytes).unwrap() {
+        starbreaker_chunks::ChunkFile::Ivo(ivo) => ivo.chunks()[0].offset as usize,
+        _ => unreachable!(),
+    };
+    // First block: total-size prefix + block header + hash + position-flags offset.
+    let flags = data_offset + 4 + 12 + 4 + 14;
+    bytes[flags..flags + 2].copy_from_slice(&0xFF00u16.to_le_bytes());
+    let full = parse_dba(&bytes).unwrap();
+    let sparse = dba::parse_dba_mode(&bytes, true).unwrap();
+    assert_eq!(sparse.clips.len(), full.clips.len());
+    for (s, f) in sparse.clips.iter().zip(&full.clips) {
+        assert_eq!(s.name, f.name);
+        assert_eq!(
+            s.channels[0].positions.first().unwrap().value,
+            f.channels[0].positions.first().unwrap().value
+        );
+        assert_eq!(
+            s.channels[0].positions.last().unwrap().value,
+            f.channels[0].positions.last().unwrap().value
+        );
+    }
+}
+
+#[test]
+fn zero_caf_fps_uses_the_missing_info_default() {
+    let mut bytes = CAF.to_vec();
+    let info_offset = match starbreaker_chunks::ChunkFile::from_bytes(&bytes).unwrap() {
+        starbreaker_chunks::ChunkFile::Ivo(ivo) => ivo.chunks()[1].offset as usize,
+        _ => unreachable!(),
+    };
+    bytes[info_offset + 4..info_offset + 6].copy_from_slice(&0u16.to_le_bytes());
+    for endpoints in [false, true] {
+        let db = caf::parse_caf_mode(&bytes, endpoints).unwrap();
+        assert_eq!(db.clips[0].fps, 30.0);
+        let mut clip = clip_to_json(&db.clips[0]);
+        clip["catalogue_source"] = serde_json::json!("Caf");
+        assert!(catalogue::summarize(&clip, "synthetic").is_ok());
+    }
+}
+
+#[test]
+fn chrparams_wildcards_are_mapping_rules_not_clip_names() {
+    for name in ["*", "door_*", "door_?"] {
+        let mut bytes = PARAMS.to_vec();
+        let start = bytes
+            .windows(b"latch_cycle".len())
+            .position(|w| w == b"latch_cycle")
+            .unwrap();
+        bytes[start..start + b"latch_cycle".len()].fill(0);
+        bytes[start..start + name.len()].copy_from_slice(name.as_bytes());
+        let params = crate::chrparams::ChrParams::from_bytes(&bytes).unwrap();
+        assert!(params.animations.is_empty());
+        assert!(params.animation_paths.is_empty());
+    }
+}
+
+#[test]
+fn sparse_planar_positions_skip_inactive_axes() {
+    let mut bytes = Vec::new();
+    for v in [f32::MAX, 2.0, 3.0, 7.0, 5.0, 6.0] {
+        bytes.extend(v.to_le_bytes());
+    }
+    for v in [1u16, 4, 8, 2, 6, 9] {
+        bytes.extend(v.to_le_bytes());
+    }
+    let sparse = endpoints::position_ends(&bytes, 0, 3, 0xC200).unwrap();
+    assert_eq!(
+        sparse,
+        endpoints::ends(codec::read_position_keys(&bytes, 0, 3, 0xC200).unwrap())
+    );
+    assert_eq!(sparse[0][0], 7.0);
+    assert_eq!(sparse[1][0], 7.0);
+}
+
+#[test]
+fn sparse_block_uses_bitmap_frame_times() {
+    // Three samples at frames 2, 5, 9. Header/controllers precede time/value pools.
+    let mut block = b"#caf".to_vec();
+    block.extend(1u16.to_le_bytes());
+    block.extend(0xAA55u16.to_le_bytes());
+    block.extend(40u32.to_le_bytes());
+    block.extend(1u32.to_le_bytes());
+    block.extend([0; 24]);
+    let controller = 16;
+    let times = block.len();
+    block.extend(2u16.to_le_bytes());
+    block.extend(9u16.to_le_bytes());
+    block.push(0b10001001);
+    let values = block.len();
+    for x in [0.0f32, 5.0, 0.0] {
+        for v in [x, 0.0, 0.0] {
+            block.extend(v.to_le_bytes());
+        }
+    }
+    block[controller + 12..controller + 14].copy_from_slice(&3u16.to_le_bytes());
+    block[controller + 14..controller + 16].copy_from_slice(&0xC002u16.to_le_bytes());
+    block[controller + 16..controller + 20]
+        .copy_from_slice(&((times - controller) as u32).to_le_bytes());
+    block[controller + 20..controller + 24]
+        .copy_from_slice(&((values - controller) as u32).to_le_bytes());
+    let sparse = caf::parse_animation_blocks_mode(&block, true).unwrap();
+    assert_eq!(
+        sparse[0][0]
+            .positions
+            .iter()
+            .map(|k| k.time)
+            .collect::<Vec<_>>(),
+        vec![2.0, 9.0]
+    );
+    let full = caf::parse_animation_blocks_mode(&block, false).unwrap();
+    assert_eq!(
+        full[0][0]
+            .positions
+            .iter()
+            .map(|k| k.time)
+            .collect::<Vec<_>>(),
+        vec![2.0, 5.0, 9.0]
     );
 }
