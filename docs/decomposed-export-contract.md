@@ -120,10 +120,11 @@ importers:
 - target records come only from child entities whose DataCore
   `Category` is `Thruster` **and** whose `SAttachableComponentParams.AttachDef.Type`
   is `MainThruster` (`should_export_engine_glow_targets`), and only from
-  Illum/HardSurface submaterials with positive static emission or an enabled
-  DataCore `SEntityComponentEffects.entityEffects.materialEffects` link writing
-  `materialProperty = Glow`. The latter joins authored `subMeshName` exactly
-  (case-insensitive) to the owning entity's NMC node, then to source material IDs.
+  an enabled DataCore `SEntityComponentEffects.entityEffects.materialEffects`
+  link writing `materialProperty = Glow`. Static emission alone never qualifies.
+  A named `subMeshName` joins exactly (case-insensitive) to the owning entity's
+  NMC node, then to source material IDs. Empty and `"*"` selectors apply to the
+  owning entity's entire mesh; they do not require an NMC node name.
   Both enabled `tagEffects` and `triggerEffects` are supported. A node-level
   write qualifies only glow-capable slots: forward-rendered Illum/HardSurface
   (`MtlFlags & 0x8000`), or a material with an `EMITTANCE_MAP` /
@@ -149,9 +150,10 @@ importers:
 Control bounds are the union of the individual link output ranges: the lowest
 minimum and highest maximum, or null when any contributing bound is unknown.
 The manual control's initial `default_strength` is the derived lower bound (also
-null if unknown), not a prediction of the active game tag or idle thrust. For a
-static-only target, the arrays are empty and its authored `static_glow` supplies
-both bounds. There is no invented input-parameter domain or display cap; very
+null if unknown), not a prediction of the active game tag or idle thrust.
+Every target has at least one authored property link; `static_glow` only records
+the material's original value and does not supply control bounds.
+There is no invented input-parameter domain or display cap; very
 large authored clamp maxima are preserved verbatim. Importers must handle null
 bounds and must not sum mutually exclusive effects just because both are listed.
 Evaluating game tags and their input parameters remains runtime behaviour.
@@ -341,19 +343,23 @@ Each `*.materials.json` sidecar preserves:
 
 ### Curated emission and decal semantics (material schema v2)
 
-Every submaterial has `emissive`:
+Every submaterial has `emissive`. The validator checks explicit integer schema
+versions on root/package `scene.json` and material sidecars: `1` and `2` are
+accepted; missing, non-integer and unsupported versions are errors.
 
 - `color`: tint-only linear RGB factor. Nonzero `Emissive` is the tint; an all-zero
   triplet means no tint and exports `[1,1,1]`.
-- `strength`, in priority order: positive `Glow`; otherwise mean(`Emissive`)
+- `strength`, in priority order: positive `Glow`; otherwise `1`
   for Illum/HardSurface with `MtlFlags & 0x8000` and non-black Emissive;
-  otherwise `1` for an enabled emittance-map token; otherwise `0`.
+  otherwise `1` for an enabled `%EMITTANCE_MAP` or `%MACRO_EMISSIVE_MAP` token;
+  otherwise `0`. Both tokens count as emittance maps.
   The forward flag is CryEngine `MTL_FLAG_REQUIRE_FORWARD_RENDERING`. This rule
   identifies forward glow cards without using material or texture names.
   LayerBlend_V2 and non-forward materials never emit from Emissive alone.
 - `forward_rendering`: the authored `MtlFlags & 0x8000` decision, also present
   in `alpha_config`. The flag alone does not imply emission (runtime-driven
-  thruster surfaces and glass can also have it).
+  thruster surfaces and glass can also have it). `MtlFlags` is parsed as signed
+  64-bit and reinterpreted as bits, preserving negative authored values.
 - `glow`: parsed raw scalar (`Glow`/`GlowAmount`); absent is zero.
 - `uses_base_texture`: false for `%EMITTANCE_MAP` or `%MACRO_EMISSIVE_MAP`, true
   otherwise. These are exact decoded permutation tokens, not slot/asset names.

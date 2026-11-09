@@ -548,14 +548,13 @@ fn build_thruster_engine_glow_targets(
             if !source_indices.contains(&source_index) {
                 return None;
             }
-            if !is_engine_glow_material(material, glow_effect_materials.contains_key(&source_index)) {
-                return None;
-            }
+            // Static emission alone is not a runtime engine-control binding.
+            // The upstream join has already checked selectors and card/map capability.
+            let property_links = glow_effect_materials
+                .get(&source_index)
+                .filter(|links| !links.is_empty())?;
             Some(EngineGlowTargetRecord {
-                property_links: glow_effect_materials
-                    .get(&source_index)
-                    .cloned()
-                    .unwrap_or_default(),
+                property_links: property_links.clone(),
                 static_glow: material.glow,
                 entity_name: entity_name.to_string(),
                 geometry_path: normalize_requested_source_path(geometry_path),
@@ -572,28 +571,14 @@ fn build_thruster_engine_glow_targets(
         .collect()
 }
 
-fn is_engine_glow_material(material: &SubMaterial, has_glow_effect: bool) -> bool {
-    // Dynamic eligibility has already been narrowed by the structural card/map gate.
-    has_glow_effect
-        || (matches!(
-            material.shader_family(),
-            ShaderFamily::Illum | ShaderFamily::HardSurface
-        ) && material.emissive_factor().iter().any(|component| *component > 0.0))
-}
-
 /// Union of authored output bounds. An unbounded link keeps that bound unknown.
 fn engine_glow_range(targets: &[EngineGlowTargetRecord]) -> (Option<f32>, Option<f32>) {
     let bounds = |lower: bool| -> Option<f32> {
         let values: Option<Vec<f32>> = targets
             .iter()
             .flat_map(|target| {
-                if target.property_links.is_empty() {
-                    vec![Some(target.static_glow)]
-                } else {
-                    target.property_links.iter()
-                        .map(|link| if lower { link.minimum } else { link.maximum })
-                        .collect()
-                }
+                target.property_links.iter()
+                    .map(|link| if lower { link.minimum } else { link.maximum })
             })
             .collect();
         values.and_then(|values| values.into_iter().reduce(if lower { f32::min } else { f32::max }))
@@ -7798,7 +7783,7 @@ mod tests {
     }
 
     #[test]
-    fn engine_glow_targets_follow_datacore_thruster_entity_material_bindings() {
+    fn static_emission_without_glow_link_is_not_engine_control_target() {
         let mut glow_material = sample_submaterial();
         glow_material.name = "Glow_Thrusters".into();
         glow_material.shader = "Illum".into();
@@ -7832,18 +7817,7 @@ mod tests {
             "Data/Objects/Spaceships/Thrusters/DRAK/test_thruster_LOD0.blend",
         );
 
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].entity_name, "DRAK_Test_Thruster_Main");
-        assert_eq!(
-            targets[0].geometry_path,
-            "Data/Objects/Spaceships/Thrusters/DRAK/test_thruster.cga"
-        );
-        assert_eq!(
-            targets[0].mesh_asset,
-            "Data/Objects/Spaceships/Thrusters/DRAK/test_thruster_LOD0.blend"
-        );
-        assert_eq!(targets[0].source_material_index, 5);
-        assert_eq!(targets[0].submaterial_name, "Glow_Thrusters");
+        assert!(targets.is_empty(), "static emission is not a runtime Glow link");
     }
 
     #[test]

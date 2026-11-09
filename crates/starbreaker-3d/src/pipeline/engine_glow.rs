@@ -197,9 +197,6 @@ fn glow_links(category: &Value) -> Result<Vec<GlowPropertyLink>, Error> {
                 let Some(Value::String(name)) = field(link, "subMeshName") else {
                     continue;
                 };
-                if name.is_empty() {
-                    continue;
-                }
                 let modifiers = modifiers(link)?;
                 let (multiplier, minimum, maximum) = summarize(&modifiers);
                 result.push(GlowPropertyLink {
@@ -235,13 +232,13 @@ fn bound_materials(
         {
             continue;
         }
-        let Some(node) = nmc.and_then(|n| n.nodes.get(submesh.node_parent_index as usize)) else {
-            continue;
-        };
-        for link in links
-            .iter()
-            .filter(|link| node.name.eq_ignore_ascii_case(&link.submesh_name))
-        {
+        let node = nmc.and_then(|n| n.nodes.get(submesh.node_parent_index as usize));
+        for link in links.iter().filter(|link| {
+            // Empty/default and '*' address this entity's whole render object.
+            // Other selectors still require an exact NMC node; no fuzzy matching.
+            matches!(link.submesh_name.as_str(), "" | "*")
+                || node.is_some_and(|node| node.name.eq_ignore_ascii_case(&link.submesh_name))
+        }) {
             let bindings = result.entry(source_id).or_default();
             if !bindings.contains(link) {
                 bindings.push(link.clone());
@@ -267,6 +264,7 @@ mod tests {
     fn effect(
         enabled: bool,
         property: &'static str,
+        selector: &'static str,
         factor: f32,
         lo: f32,
         hi: f32,
@@ -281,7 +279,7 @@ mod tests {
                         "Synthetic",
                         vec![
                             ("materialProperty", Value::Enum(property)),
-                            ("subMeshName", Value::String("PART")),
+                            ("subMeshName", Value::String(selector)),
                             (
                                 "modifiers",
                                 Value::Array(vec![
@@ -305,6 +303,10 @@ mod tests {
         )
     }
     fn links() -> Vec<GlowPropertyLink> {
+        links_for("PART")
+    }
+
+    fn links_for(selector: &'static str) -> Vec<GlowPropertyLink> {
         // Synthetic values intentionally unrelated to any game's thruster settings.
         glow_links(&object(
             "Synthetic",
@@ -313,10 +315,10 @@ mod tests {
                 (
                     "tagEffects",
                     Value::Array(vec![
-                        effect(true, "Glow", 3.0, 2.0, 17.0),
-                        effect(true, "Glow", 7.0, 4.0, 29.0),
-                        effect(false, "Glow", 9.0, 1.0, 2.0),
-                        effect(true, "Opacity", 9.0, 1.0, 2.0),
+                        effect(true, "Glow", selector, 3.0, 2.0, 17.0),
+                        effect(true, "Glow", selector, 7.0, 4.0, 29.0),
+                        effect(false, "Glow", selector, 9.0, 1.0, 2.0),
+                        effect(true, "Opacity", selector, 9.0, 1.0, 2.0),
                     ]),
                 ),
             ],
@@ -324,12 +326,12 @@ mod tests {
         .unwrap()
     }
     #[test]
-    fn node_glow_selects_forward_card_not_deferred_materials() {
+    fn enabled_glow_link_keeps_only_capable_cards_and_exact_source_ids() {
         let bytes = crate::test_xml::encode(
             r#"<Material><SubMaterials>
             <Material Shader="Illum" MtlFlags="32768"/>
-            <Material Shader="Illum" Emissive="0,0,0"/>
-            <Material Shader="HardSurface" Emissive="1,1,1"/>
+            <Material Shader="Illum" Emissive="0,0,0" Glow="0.25"/>
+            <Material Shader="HardSurface" Emissive="1,1,1" Glow="0.5"/>
             <Material Shader="MeshDecal"/>
             <Material Shader="Illum" StringGenMask="%DECAL%DECAL_OPACITY_MAP"/>
             <Material Shader="Illum" MtlFlags="0x8000" Emissive="0,0,0"/>
@@ -389,6 +391,19 @@ mod tests {
         assert_eq!(bound[&5], links); // Both effects survive; repeated primitives do not duplicate them.
         assert!(bound_materials(&mesh, None, Some(&materials), &links).is_empty());
         assert!(bound_materials(&mesh, Some(&rig), None, &links).is_empty());
+        // Empty and '*' selectors are entity-wide authored Glow links, not
+        // permission to include deferred materials or infer a missing link.
+        for selector in ["", "*"] {
+            let broad = links_for(selector);
+            assert_eq!(broad.len(), 2);
+            for nmc in [Some(&rig), None] {
+                let bound = bound_materials(&mesh, nmc, Some(&materials), &broad);
+                let mut ids: Vec<_> = bound.keys().copied().collect();
+                ids.sort();
+                assert_eq!(ids, vec![0, 5]);
+                assert_eq!(bound[&5], broad);
+            }
+        }
     }
     #[test]
     fn enabled_links_retain_both_modifier_chains_and_bounds() {

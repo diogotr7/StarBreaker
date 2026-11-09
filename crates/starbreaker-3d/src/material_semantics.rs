@@ -204,6 +204,18 @@ mod tests {
         );
     }
     #[test]
+    fn signed_material_flags_preserve_the_authored_bits() {
+        for (flags, bits) in [
+            ("-1", u64::MAX),
+            ("-9223372036854743038", (i64::MIN + 32770) as u64),
+        ] {
+            let m = material(&format!(r#"<Material Shader="Illum" MtlFlags="{flags}"/>"#));
+            assert_eq!(m.material_flags(), bits);
+            assert!(m.is_forward_rendered());
+            assert!(m.authored_two_sided());
+        }
+    }
+    #[test]
     fn forward_illum_cards_emit_without_glow_but_other_families_do_not() {
         // Synthetic authored categories; names are deliberately irrelevant.
         for shader in ["Illum", "HardSurface"] {
@@ -217,7 +229,7 @@ mod tests {
                     r#"<Material Shader="{shader}" MtlFlags="32768" Emissive="0.25,0.5,0.75"/>"#
                 ),
                 [0.25, 0.5, 0.75],
-                0.5,
+                1.0,
             );
             check_emission(
                 &format!(r#"<Material Shader="{shader}" MtlFlags="32768" Emissive="0,0,0"/>"#),
@@ -236,7 +248,7 @@ mod tests {
                     r#"<Material Shader="{shader}" MtlFlags="32768" Emissive="0.25,0.5,0.75" StringGenMask="%EMITTANCE_MAP"/>"#
                 ),
                 [0.25, 0.5, 0.75],
-                0.5,
+                1.0,
             );
         }
         for flags in ["0", "32768"] {

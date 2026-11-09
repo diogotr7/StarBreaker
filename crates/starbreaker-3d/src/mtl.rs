@@ -636,11 +636,11 @@ impl SubMaterial {
         };
         let value = attr.value.trim();
         let parsed = if let Some(hex) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
-            u64::from_str_radix(hex, 16)
+            i64::from_str_radix(hex, 16)
         } else {
-            value.parse::<u64>()
+            value.parse::<i64>()
         };
-        parsed.unwrap_or_else(|error| {
+        parsed.map(|flags| flags as u64).unwrap_or_else(|error| {
             log::warn!("Invalid authored MtlFlags {:?}: {error}", attr.value);
             0
         })
@@ -664,7 +664,7 @@ impl SubMaterial {
             && self.is_forward_rendered()
             && self.emissive.iter().any(|component| *component != 0.0)
         {
-            self.emissive.iter().sum::<f32>() / 3.0
+            1.0 // Emissive is applied once, as tint, never again as strength.
         } else if self.has_emittance_map() {
             1.0
         } else {

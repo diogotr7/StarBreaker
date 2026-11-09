@@ -1,3 +1,5 @@
+//! Shared tolerant vehicle XML loading: visit base and modification definitions.
+//! Missing or malformed optional sources are diagnosed without blocking export.
 use starbreaker_cryxml::CryXml;
 use starbreaker_datacore::{Database, types::Record};
 use starbreaker_p4k::MappedP4k;
