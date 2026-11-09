@@ -488,8 +488,10 @@ fn package_relative_path(package_name: &str, file_name: &str) -> String {
     format!("Packages/{package_name}/{file_name}")
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct EngineGlowTargetRecord {
+    property_links: Vec<crate::pipeline::engine_glow::GlowPropertyLink>,
+    static_glow: f32,
     entity_name: String,
     geometry_path: String,
     mesh_asset: String,
@@ -504,7 +506,7 @@ fn build_thruster_engine_glow_targets(
     materials: Option<&MtlFile>,
     material_sidecar: Option<&str>,
     sidecar_original_indices: &[u32],
-    glow_effect_materials: &HashSet<u32>,
+    glow_effect_materials: &crate::pipeline::engine_glow::GlowMaterialBindings,
     entity_name: &str,
     geometry_path: &str,
     mesh_asset: &str,
@@ -546,10 +548,15 @@ fn build_thruster_engine_glow_targets(
             if !source_indices.contains(&source_index) {
                 return None;
             }
-            if !is_engine_glow_material(material, glow_effect_materials.contains(&source_index)) {
+            if !is_engine_glow_material(material, glow_effect_materials.contains_key(&source_index)) {
                 return None;
             }
             Some(EngineGlowTargetRecord {
+                property_links: glow_effect_materials
+                    .get(&source_index)
+                    .cloned()
+                    .unwrap_or_default(),
+                static_glow: material.glow,
                 entity_name: entity_name.to_string(),
                 geometry_path: normalize_requested_source_path(geometry_path),
                 mesh_asset: mesh_asset.to_string(),
@@ -566,14 +573,32 @@ fn build_thruster_engine_glow_targets(
 }
 
 fn is_engine_glow_material(material: &SubMaterial, has_glow_effect: bool) -> bool {
-    if !matches!(
-        material.shader_family(),
-        ShaderFamily::Illum | ShaderFamily::HardSurface
-    ) {
-        return false;
-    }
+    // Dynamic eligibility has already been narrowed by the structural card/map gate.
     has_glow_effect
-        || material.emissive_factor().iter().any(|component| *component > 0.0)
+        || (matches!(
+            material.shader_family(),
+            ShaderFamily::Illum | ShaderFamily::HardSurface
+        ) && material.emissive_factor().iter().any(|component| *component > 0.0))
+}
+
+/// Union of authored output bounds. An unbounded link keeps that bound unknown.
+fn engine_glow_range(targets: &[EngineGlowTargetRecord]) -> (Option<f32>, Option<f32>) {
+    let bounds = |lower: bool| -> Option<f32> {
+        let values: Option<Vec<f32>> = targets
+            .iter()
+            .flat_map(|target| {
+                if target.property_links.is_empty() {
+                    vec![Some(target.static_glow)]
+                } else {
+                    target.property_links.iter()
+                        .map(|link| if lower { link.minimum } else { link.maximum })
+                        .collect()
+                }
+            })
+            .collect();
+        values.and_then(|values| values.into_iter().reduce(if lower { f32::min } else { f32::max }))
+    };
+    (bounds(true), bounds(false))
 }
 
 fn should_export_engine_glow_targets(child: &crate::types::EntityPayload) -> bool {
@@ -1397,8 +1422,12 @@ pub(crate) fn write_decomposed_export(
                 material_sidecar.as_deref(),
                 &child_material_view.sidecar_original_indices,
                 &crate::pipeline::engine_glow::glow_effect_materials(
-                    db, &child.entity_name, &child.mesh, child.nmc.as_ref(),
-                ),
+                    db,
+                    &child.entity_name,
+                    &child.mesh,
+                    child.nmc.as_ref(),
+                    child.materials.as_ref(),
+                )?,
                 &child.entity_name,
                 &child.geometry_path,
                 &mesh_asset,
@@ -2170,16 +2199,22 @@ fn build_scene_manifest_value(
         manifest["weapon_assembly"] = weapon_assembly.clone();
     }
     if !engine_glow_targets.is_empty() {
+        let (minimum, maximum) = engine_glow_range(engine_glow_targets);
         manifest["controls"] = serde_json::json!({
             "engine_glow": {
                 "label": "Engine Glow",
-                "units": "emission_strength",
-                "min_strength": 0.0,
-                "max_strength": 200.0,
-                "default_strength": 0.0,
+                "units": "material_property_glow",
+                "min_strength": minimum,
+                "max_strength": maximum,
+                "default_strength": minimum,
                 "targets": engine_glow_targets
                     .iter()
                     .map(|target| serde_json::json!({
+                        "multiplier": target.property_links.iter().map(|link| link.multiplier).collect::<Vec<_>>(),
+                        "minimum": target.property_links.iter().map(|link| link.minimum).collect::<Vec<_>>(),
+                        "maximum": target.property_links.iter().map(|link| link.maximum).collect::<Vec<_>>(),
+                        "property_links": target.property_links,
+                        "static_glow": target.static_glow,
                         "entity_name": target.entity_name,
                         "geometry_path": target.geometry_path,
                         "mesh_asset": target.mesh_asset,
@@ -7705,6 +7740,14 @@ mod tests {
         );
     }
 
+    fn synthetic_glow_link(multiplier: f32, minimum: f32, maximum: f32) -> crate::pipeline::engine_glow::GlowPropertyLink {
+        use crate::pipeline::engine_glow::{GlowPropertyLink, GlowModifier};
+        GlowPropertyLink { effect_kind: "tagEffects".into(), effect_index: 0, property_link_index: 0,
+            submesh_name: "arbitrary".into(), parameter_record_id: None, tag_record_id: None,
+            modifiers: vec![GlowModifier::Multiplier { multiplier }, GlowModifier::MinMax { minimum, maximum }],
+            multiplier: Some(multiplier), minimum: Some(minimum), maximum: Some(maximum) }
+    }
+
     #[test]
     fn scene_manifest_includes_engine_glow_controls() {
         let value = build_scene_manifest_value(
@@ -7719,6 +7762,8 @@ mod tests {
             &[],
             &[],
             &[EngineGlowTargetRecord {
+                property_links: vec![synthetic_glow_link(3.0, 2.0, 17.0), synthetic_glow_link(7.0, 4.0, 29.0)],
+                static_glow: 0.0,
                 material_sidecar: "Data/Objects/Ships/Test/root.materials.json".into(),
                 entity_name: "DRAK_Clipper_Thruster_Main".into(),
                 geometry_path: "Data/Objects/Spaceships/Thrusters/DRAK/test_thruster.cga".into(),
@@ -7735,12 +7780,17 @@ mod tests {
 
         assert_eq!(
             value["controls"]["engine_glow"]["default_strength"],
-            serde_json::json!(0.0)
+            serde_json::json!(2.0)
         );
         assert_eq!(
             value["controls"]["engine_glow"]["targets"][0]["geometry_path"],
             serde_json::json!("Data/Objects/Spaceships/Thrusters/DRAK/test_thruster.cga")
         );
+        assert_eq!(value["controls"]["engine_glow"]["min_strength"], 2.0);
+        assert_eq!(value["controls"]["engine_glow"]["max_strength"], 29.0);
+        assert_eq!(value["controls"]["engine_glow"]["targets"][0]["multiplier"], serde_json::json!([3.0, 7.0]));
+        assert_eq!(value["controls"]["engine_glow"]["targets"][0]["minimum"], serde_json::json!([2.0, 4.0]));
+        assert_eq!(value["controls"]["engine_glow"]["targets"][0]["maximum"], serde_json::json!([17.0, 29.0]));
         assert_eq!(
             value["controls"]["engine_glow"]["targets"][0]["source_material_index"],
             serde_json::json!(7)
@@ -7776,7 +7826,7 @@ mod tests {
             Some(&materials),
             Some("Data/Objects/Ships/Test/root.materials.json"),
             &[5],
-            &HashSet::new(),
+            &HashMap::new(),
             "DRAK_Test_Thruster_Main",
             "Objects/Spaceships/Thrusters/DRAK/test_thruster.cga",
             "Data/Objects/Spaceships/Thrusters/DRAK/test_thruster_LOD0.blend",
@@ -7820,7 +7870,7 @@ mod tests {
             num_vertices: 3,
             node_parent_index: 0,
         }]);
-        for (ids, expected) in [(HashSet::from([7]), 1), (HashSet::from([9]), 0), (HashSet::new(), 0)] {
+        for (ids, expected) in [(HashMap::from([(7, vec![synthetic_glow_link(3.0, 2.0, 17.0)])]), 1), (HashMap::from([(9, vec![synthetic_glow_link(3.0, 2.0, 17.0)])]), 0), (HashMap::new(), 0)] {
             let targets = build_thruster_engine_glow_targets(
                 &mesh, Some(&materials), Some("synthetic.materials.json"),
                 &[7], &ids, "synthetic", "synthetic.cga", "synthetic.glb",

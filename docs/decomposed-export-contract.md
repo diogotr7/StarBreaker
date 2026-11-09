@@ -107,8 +107,11 @@ loadout-attached child's palette), and `ui_bindings[]`.
 `controls.engine_glow` is additive metadata for engine-emission tuning in
 importers:
 
-- `label` (`"Engine Glow"`) and `units` (`"emission_strength"`)
-- absolute emission-strength range metadata (`min_strength`, `max_strength`, `default_strength`)
+- `label` (`"Engine Glow"`) and `units` (`"material_property_glow"`): the value
+  written to the material's **Glow** property, not lumens, normalized thrust,
+  or the multiplier's input parameter
+- range metadata (`min_strength`, `max_strength`, `default_strength`) derived
+  from the authored modifier chains as described below
 - `targets[]` keyed by `mesh_asset` + `material_sidecar` + `source_material_index`
   (deduplicated on those plus `geometry_path`)
 - each target also carries `entity_name` and `geometry_path` (source evidence
@@ -121,12 +124,37 @@ importers:
   DataCore `SEntityComponentEffects.entityEffects.materialEffects` link writing
   `materialProperty = Glow`. The latter joins authored `subMeshName` exactly
   (case-insensitive) to the owning entity's NMC node, then to source material IDs.
-  Both enabled `tagEffects` and `triggerEffects` are supported. A link addresses
-  the entire named submesh, so all its compatible material slots are control
-  targets; the exporter does not guess a narrower slot from its name or texture.
-  These dynamic bindings do not change static sidecar emission strength. Effect
-  tags/modifiers remain game runtime behaviour; this control is manual tuning.
-  Texture names are not emission evidence
+  Both enabled `tagEffects` and `triggerEffects` are supported. A node-level
+  write qualifies only glow-capable slots: forward-rendered Illum/HardSurface
+  (`MtlFlags & 0x8000`), or a material with an `EMITTANCE_MAP` /
+  `MACRO_EMISSIVE_MAP` feature token. Deferred materials without those sources
+  do not become targets merely by sharing the node. Neither material names nor
+  texture names are emission evidence. Dynamic bindings do not change static
+  sidecar emission strength
+- each target has `property_links[]`, preserving `effect_kind` (`tagEffects` or
+  `triggerEffects`), `effect_index`, `property_link_index`, `submesh_name`,
+  `parameter_record_id`, `tag_record_id`, and the ordered `modifiers[]` chain.
+  A modifier is `{kind:"multiplier", multiplier:...}` or
+  `{kind:"min_max", minimum:..., maximum:...}`. Unknown or malformed modifier
+  types fail export instead of silently producing a fabricated range
+- per-target `multiplier[]`, `minimum[]`, and `maximum[]` are parallel arrays
+  aligned with `property_links[]`, so several tag effects retain separate values
+  on one material target. The same summary fields occur on each link.
+  `multiplier` is the product of its authored multipliers (null if none);
+  `minimum` / `maximum` are output bounds after applying the ordered chain,
+  with null for an unbounded/unauthored bound. The full chain remains authoritative
+  when a clamp precedes a multiplier. Multipliers are dimensionless;
+  output bounds and `static_glow` use Glow property units
+
+Control bounds are the union of the individual link output ranges: the lowest
+minimum and highest maximum, or null when any contributing bound is unknown.
+The manual control's initial `default_strength` is the derived lower bound (also
+null if unknown), not a prediction of the active game tag or idle thrust. For a
+static-only target, the arrays are empty and its authored `static_glow` supplies
+both bounds. There is no invented input-parameter domain or display cap; very
+large authored clamp maxima are preserved verbatim. Importers must handle null
+bounds and must not sum mutually exclusive effects just because both are listed.
+Evaluating game tags and their input parameters remains runtime behaviour.
 
 ### Importer-only decal-host fields
 
