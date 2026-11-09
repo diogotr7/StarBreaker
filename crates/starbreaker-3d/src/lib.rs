@@ -10,6 +10,7 @@ pub mod mesh_rig;
 pub mod parity;
 pub mod mtl;
 pub mod material_slots;
+mod material_semantics;
 pub mod nmc;
 pub(crate) mod pipeline;
 pub mod skeleton;
@@ -23,6 +24,8 @@ pub mod validation;
 pub mod ui_pipeline;
 #[cfg(test)]
 pub(crate) mod test_p4k;
+#[cfg(test)]
+pub(crate) mod test_xml;
 
 pub use error::Error;
 pub use included_objects::{IncludedObject, IncludedObjects};
@@ -34,6 +37,7 @@ pub use pipeline::{
     resolve_loadout_meshes, socpaks_to_decomposed_blend,
     socpaks_to_decomposed_blend_with_progress, socpaks_to_glb, SocpakExportProgress,
     SocpakHierarchyNode,
+    EntityLight, LightCatalogue, VehicleLightPort, entity_light_catalogue,
 };
 pub use types::Mesh;
 pub use validation::{ValidationReport, validate_decomposed_export};

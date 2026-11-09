@@ -52,7 +52,7 @@ sidecars, 366 PNGs and 63 animation sidecars.
 
 `scene.json` (`build_scene_manifest_value`) carries these top-level keys:
 
-- `version` (`1`) and `export_kind` (`"Decomposed"`)
+- `version` (`2`) and `export_kind` (`"Decomposed"`)
 - `package_rule`: `root`, `package_dir` (`Packages/<package name>`),
   `paths_are_relative_to_export_root` (always `true`), `shared_asset_root`
   (`Data`), `normalized_p4k_relative_paths`. All asset paths in the package are
@@ -117,8 +117,8 @@ importers:
 - target records come only from child entities whose DataCore
   `Category` is `Thruster` **and** whose `SAttachableComponentParams.AttachDef.Type`
   is `MainThruster` (`should_export_engine_glow_targets`), and only from
-  Illum/HardSurface submaterials with emissive energy or a glow/emissive
-  texture (`is_engine_glow_material`)
+  Illum/HardSurface submaterials with positive authored `Emissive × Glow`
+  energy (`is_engine_glow_material`); texture names are not emission evidence
 
 ### Importer-only decal-host fields
 
@@ -131,8 +131,42 @@ host-material matching) when they are absent, which is always today.
 
 ## Light Records
 
-Lights are exported per interior container, in `interiors[].lights`. Each
-light record (built in `decomposed.rs` from the `LightInfo` parsed in
+Schema v2 exports attached vehicle light groups in `root_entity.lights` and
+`children[].lights`. Lights without a resolved group helper remain in
+`interiors[].lights`; a source light occurs **once**, never in both arrays.
+All entity arrays are emitted (empty when none). Standalone SOC packages retain
+the container representation. Schema-v1 consumers must add entity light-array
+support before consuming v2 scenes.
+
+Vehicle discovery follows DataCore `VehicleComponentParams.objectContainers`
+and loadout children. In current game builds, the MultiLight XML port can be
+unequipped: actual groups are authored as SOC `SLightGroupComponentParams`
+with baked `LightComponentParams`, not as a ship-specific equipped light item.
+`root_entity.vehicle_light_ports` and `children[].vehicle_light_ports` preserve each owner's XML ports and their
+`attachment_points` map (point name -> bone), including modification overrides.
+Explicit SOC group helpers take precedence over XML attachment-point mappings.
+Do not infer a missing item, light, helper or colour from an asset name.
+
+Entity light records add `owner_entity`, `source_container`,
+`source_container_index`, `source_light_index`, `source_parent_node_name`,
+`parent_node_name` (actual resolved NMC node), `parent_local_position` and
+`parent_local_rotation`. Their flat position/rotation are **owner-entity local**;
+parent-local values are an equivalent transform for attaching the light to an
+animated helper. Apply either the entity-local transform or the parent-local
+transform under that helper, never both. Interior light records retain their
+container-local transforms and add the same source indices. Those indices join
+the metadata-only `entity_light_catalogue` with an export using the same options;
+they are not persistent IDs across source builds or export-option changes.
+
+`attachment` is null for single lights, or contains the source `group`, optional
+`helper`, and optional `attachment_point` parsed from SOC `TileAttachmentParams`.
+A missing or ambiguous helper leaves the light in its original container and
+emits a diagnostic; the exporter does not substitute the origin. Empty groups
+produce no fallback lights. The catalogue keeps all lights and their resolved
+entity positions, including lights retained in interior arrays by the exporter.
+Catalogue projector references are source paths; exported references are images.
+
+Each light record (built in `decomposed.rs` from the `LightInfo` parsed in
 `socpak.rs`) carries:
 
 - `name`, `light_type` (the raw source type: `Omni`, `SoftOmni`, `Projector`,
@@ -156,6 +190,7 @@ light record (built in `decomposed.rs` from the `LightInfo` parsed in
 - `projector_texture` for projector gobos: the export-root-relative path of
   the exported texture, `.exr` when the source is HDR (BC6H), otherwise `.png`
   (a white PNG fallback if both fail); `null` for non-projector lights
+- `light_style`, the active state's authored style (also retained per state)
 - `active_state` and a `states` map capturing every authored CryEngine state
   (`offState`, `defaultState`, `auxiliaryState`, `emergencyState`,
   `cinematicState`; missing states are absent). The active state is the first
@@ -267,6 +302,43 @@ Each `*.materials.json` sidecar preserves:
 - material-set identity and palette-routing metadata
 - resolved paint-override selectors when equipped paints choose a palette or material through `SubGeometry` tag matching
 - variant-membership hints for palette-routed and layered materials
+
+### Curated emission and decal semantics (material schema v2)
+
+Every submaterial has `emissive`:
+
+- `color`: linear `Emissive × Glow × Diffuse` RGB, before texture modulation.
+- `glow`: parsed raw scalar (`Glow`/`GlowAmount`); absent is zero. Nonzero
+  `Emissive` alone, including a neutral white triplet, does not emit.
+- `uses_base_texture`: true unless an authored emittance texture is present.
+- `emittance_texture`: slot reference or null. Explicit `Emittance`/`Emissive`
+  bindings and HardSurface's documented `TexSlot14` identify emittance maps.
+  Importers multiply by that map when present, otherwise the base-colour texture.
+- `alpha_glow_cutoff`: authored scalar from PublicParams/attributes, or null
+  when absent. Importers need not parse authored-attribute strings.
+
+`decal` is null outside MeshDecal. MeshDecal entries carry:
+
+- `kind`: `relief_only`, `color_sheet`, `stencil_palette`, or `unknown`.
+  Stencil-map plus the `$TintPaletteDecal` virtual binding selects the palette
+  path. POM without structural colour/stencil/tint controls selects relief.
+  Otherwise DIFFUSE_MAP with TexSlot1 selects the colour-sheet path; ambiguous
+  combinations remain unknown. Classification follows the Blender control-only
+  POM exclusions, including DECAL_OPACITY_MAP and slots 5–8.
+- `slots`: only present inputs, referenced by their original `TexSlotN` names:
+  `coverage`, `base_color` (colour sheets), `normal_gloss`, `height`, `breakup`,
+  `tint_mask`, `stencil`, and `grime`. Resolve them through `texture_slots` to
+  obtain paths, virtual-input metadata and UV transforms. Relief-only TexSlot1
+  supplies coverage alpha, not owned base colour.
+- `public_params`: authored `DecalAlphaMultiplier`, `DecalDiffuseOpacity`,
+  `DecalFalloff`, `PomDisplacement`, `PomHeightBias` and every `Stencil*` parameter.
+  Scalars/bools are JSON numbers/bools; RGB triplets are numeric arrays. Missing
+  parameters remain absent; the exporter does not invent shader defaults.
+
+The original `authored_attributes`, `authored_public_params`, `public_params`,
+feature flags and texture inventory are preserved. Consumers of v1 sidecars can
+continue their existing reconstruction; v2 consumers should prefer these curated
+objects. Geometry/material slot indices and exported asset names are unchanged.
 
 Blender importer note:
 

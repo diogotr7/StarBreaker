@@ -1997,6 +1997,8 @@ mod tests {
             parent_node_name: None,
             meshes: Vec::new(),
             lights: vec![crate::types::LightInfo {
+                attachment: None,
+                light_style: 0,
                 name: "Light".to_string(),
                 position: [0.0, 0.0, 0.0],
                 transform_basis: "cryengine_z_up".to_string(),
@@ -2040,6 +2042,8 @@ mod tests {
             parent_node_name: None,
             meshes: Vec::new(),
             lights: vec![crate::types::LightInfo {
+                attachment: None,
+                light_style: 0,
                 name: "Light".to_string(),
                 position: [0.0, 0.0, 0.0],
                 transform_basis: "cryengine_z_up".to_string(),

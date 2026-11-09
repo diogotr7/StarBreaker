@@ -748,7 +748,7 @@ fn transform_non_item_port_mesh(
     mesh
 }
 
-fn transform_non_item_port_light(
+pub(crate) fn transform_non_item_port_light(
     mut light: LightInfo,
     non_item_port_transform_delta: [[f32; 4]; 4],
 ) -> LightInfo {
@@ -1417,6 +1417,8 @@ fn process_entity_children(
             || entity_class == "LightBox"
             || entity_class == "LightGroup"
             || entity_class == "LightGroupPoweredItem"
+            || has_light_group_component(xml, entity)
+            || find_entity_component_light(xml, entity).is_some()
         {
             let parsed_lights =
                 parse_light_entities(xml, entity, &attrs, &pos, &rot, &scale, entity_class);
@@ -1718,31 +1720,48 @@ fn parse_light_group(
         }
     }
 
-    if lights.is_empty() {
-        // Fallback
-        lights.push(LightInfo {
-            name: base_name.to_string(),
-            position: *base_pos,
-            transform_basis: "cryengine_z_up".to_string(),
-            rotation: *base_rot,
-            direction_sc: quat_rotate_vec(base_rot, &[1.0, 0.0, 0.0]),
-            color: [1.0, 0.95, 0.9],
-            light_type: "Omni".to_string(),
-            semantic_light_kind: "point".to_string(),
-            intensity_raw: 1.0,
-            intensity_unit: "cryengine_authored_intensity".to_string(),
-            intensity_candela_proxy: authored_light_intensity_to_candela(1.0),
-            intensity: authored_light_intensity_to_candela(1.0),
-            radius: 5.0,
-            radius_m: 5.0,
-            inner_angle: None,
-            outer_angle: None,
-            projector_texture: None,
-            active_state: String::new(),
-            states: std::collections::BTreeMap::new(),
+    let helper = xml.node_children(entity)
+        .filter(|node| xml.node_tag(node) == "PropertiesDataCore")
+        .chain(std::iter::once(entity))
+        .flat_map(|node| xml.node_children(node))
+        .filter(|node| xml.node_tag(node) == "EntityComponentLightGroup")
+        .flat_map(|node| xml.node_attributes(node))
+        .find(|(key, value)| *key == "helper" && !value.is_empty())
+        .map(|(_, value)| value.to_owned());
+    let attachment_point = xml.node_children(entity)
+        .find(|node| xml.node_tag(node) == "TileAttachmentParams")
+        .and_then(|node| xml.node_attributes(node).find(|(key, _)| *key == "ItemPortName"))
+        .and_then(|(_, value)| value.rsplit_once('['))
+        .and_then(|(_, value)| value.strip_suffix(']'))
+        .map(str::to_owned);
+    for light in &mut lights {
+        light.attachment = Some(crate::types::LightAttachment {
+            group: base_name.to_owned(), helper: helper.clone(),
+            attachment_point: attachment_point.clone(),
         });
     }
     lights
+}
+
+#[cfg(test)]
+mod light_regressions {
+    #[test]
+    fn empty_light_group_does_not_invent_energy() {
+        let bytes = crate::test_xml::encode(r#"<Entities><Entity EntityClass="LightGroup" Name="synthetic"><EntityComponentLightGroup><BakedInLights/></EntityComponentLightGroup></Entity></Entities>"#);
+        let xml = starbreaker_cryxml::from_bytes(&bytes).unwrap();
+        assert!(super::extract_cryxml_entities(&xml).1.is_empty());
+    }
+
+    #[test]
+    fn component_driven_light_group_item_is_not_dropped() {
+        let bytes = crate::test_xml::encode(r#"<Entities><Entity EntityClass="LightGroupItem" Name="synthetic"><EntityComponentLightGroup><BakedInLights><Light><EntityComponentLight lightType="Omni" useTemperature="0"><defaultState intensity="0.125" temperature="5000" lightStyle="3"><color r="0.5" g="0.25" b="0.75"/></defaultState><sizeParams lightRadius="7"/></EntityComponentLight></Light></BakedInLights></EntityComponentLightGroup></Entity></Entities>"#);
+        let xml = starbreaker_cryxml::from_bytes(&bytes).unwrap();
+        let lights = super::extract_cryxml_entities(&xml).1;
+        assert_eq!(lights.len(), 1);
+        assert_eq!(lights[0].color, [0.5, 0.25, 0.75]);
+        assert_eq!(lights[0].radius_m, 7.0);
+        assert_eq!(lights[0].states["defaultState"].light_style, 3);
+    }
 }
 
 /// Build a LightInfo from an EntityComponentLight CryXML node.
@@ -1964,6 +1983,8 @@ fn build_light_info_from_component(
     );
 
     Some(LightInfo {
+        attachment: None,
+        light_style: active.map_or(0, |state| state.light_style),
         name: name.to_string(),
         position: *pos,
         transform_basis: "cryengine_z_up".to_string(),

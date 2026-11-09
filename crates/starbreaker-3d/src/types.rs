@@ -1,3 +1,4 @@
+//! Mesh, entity, interior and authored light payloads shared by export pipelines.
 use crate::dequant;
 use crate::ivo::material::MaterialName;
 use crate::ivo::skin::{NormalData, PositionData, SkinMesh, TangentData};
@@ -884,9 +885,21 @@ pub struct EntityPayload {
     pub ui_bindings: Vec<UiBinding>,
 }
 
+/// Authored group attachment metadata, independent of the group's display name.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LightAttachment {
+    pub group: String,
+    pub helper: Option<String>,
+    pub attachment_point: Option<String>,
+}
+
 /// A light extracted from a CryXMLB entity in a .soc file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LightInfo {
+    #[serde(default)]
+    pub attachment: Option<LightAttachment>,
+    /// Active state's authored style, also preserved in states.
+    pub light_style: i32,
     pub name: String,
     /// Position in CryEngine coordinates (relative to container).
     pub position: [f64; 3],
@@ -939,7 +952,7 @@ pub struct LightInfo {
 /// `cinematicState`). Each carries its own `intensity`, `temperature`, and
 /// `<color r g b>` child. We preserve all of them so downstream consumers
 /// can switch between them at runtime.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LightStateInfo {
     /// Raw CryEngine intensity (pre-candela multiplier). Zero means the
     /// light is authored off in this state.

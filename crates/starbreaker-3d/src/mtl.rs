@@ -1,3 +1,4 @@
+//! Authored CryEngine materials, shader families, texture semantics and emission factors.
 use crate::error::Error;
 use crate::ivo::material::MaterialName;
 use starbreaker_chunks::ChunkFile;
@@ -614,18 +615,10 @@ impl SubMaterial {
 
     /// Emissive factor for glTF.
     ///
-    /// CryEngine: EmissiveColor is the emission color, GlowAmount is the intensity
-    /// multiplier. If EmissiveColor is non-zero, the material intends to emit light.
-    /// GlowAmount defaults to 0 when absent from the MTL, but materials that set
-    /// EmissiveColor without explicit GlowAmount still expect to glow (at full intensity).
+    /// CryEngine's Emissive colour is multiplied by authored Glow. Missing Glow
+    /// parses as zero: a neutral Emissive triplet alone is not emission.
     pub fn emissive_factor(&self) -> [f32; 3] {
-        let e = &self.emissive;
-        if e[0] > 0.0 || e[1] > 0.0 || e[2] > 0.0 {
-            let g = if self.glow > 0.0 { self.glow } else { 1.0 };
-            [e[0] * g, e[1] * g, e[2] * g]
-        } else {
-            [0.0, 0.0, 0.0]
-        }
+        self.emissive.map(|component| component * self.glow)
     }
 
     pub fn is_double_sided(&self) -> bool {
@@ -1190,6 +1183,19 @@ pub fn extract_mtl_name(data: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emissive_requires_authored_glow() {
+        // Synthetic authored-attribute fixture: neutral Emissive is not energy.
+        for shader in ["Illum", "LayerBlend_V2", "MeshDecal"] {
+            for (glow, expected) in [("", [0.0; 3]), (" Glow=\"0\"", [0.0; 3]),
+                (" Glow=\"0.25\"", [0.125, 0.25, 0.0625])] {
+                let xml = format!("<Material Shader=\"{shader}\" Emissive=\"0.5,1,0.25\"{glow}/> ");
+                let parsed = parse_mtl(&crate::test_xml::encode(&xml)).unwrap();
+                assert_eq!(parsed.materials[0].emissive_factor(), expected, "{xml}");
+            }
+        }
+    }
 
     fn dummy_submaterial(shader: &str, string_gen_mask: &str) -> SubMaterial {
         SubMaterial {

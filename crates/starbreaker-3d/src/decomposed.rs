@@ -571,14 +571,7 @@ fn is_engine_glow_material(material: &SubMaterial) -> bool {
     ) {
         return false;
     }
-    let emissive_factor = material.emissive_factor();
-    let has_emissive_energy =
-        emissive_factor.iter().any(|component| *component > 0.0) || material.glow > 0.0;
-    let has_emissive_texture = material.texture_slots.iter().any(|slot| {
-        let lowered = slot.path.to_ascii_lowercase();
-        lowered.contains("glow") || lowered.contains("emissive")
-    });
-    has_emissive_energy || has_emissive_texture
+    material.emissive_factor().iter().any(|component| *component > 0.0)
 }
 
 fn should_export_engine_glow_targets(child: &crate::types::EntityPayload) -> bool {
@@ -1486,6 +1479,17 @@ pub(crate) fn write_decomposed_export(
 
     let mut interior_asset_cache: HashMap<String, (String, Option<String>)> = HashMap::new();
     let mut failed_interior_asset_cache: HashSet<String> = HashSet::new();
+    let mut light_rigs = HashMap::new();
+    if let Some(nmc) = &input.root_nmc { light_rigs.insert(input.entity_name.clone(), nmc); }
+    for child in &input.children {
+        if let Some(nmc) = &child.nmc { light_rigs.insert(child.entity_name.clone(), nmc); }
+    }
+    let mut light_owners: Vec<_> = light_rigs.keys().cloned().collect();
+    if !light_owners.contains(&input.entity_name) { light_owners.push(input.entity_name.clone()); }
+    let mut light_ports = crate::pipeline::load_owner_light_ports(db, p4k, &light_owners)?;
+    let resolved_lights = crate::pipeline::collect_entity_lights(
+        &input.entity_name, &light_rigs, &light_ports, &input.interiors);
+    let mut entity_light_records: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
     let mut interior_records = Vec::with_capacity(input.interiors.containers.len());
     let mut interior_placement_elapsed = std::time::Duration::ZERO;
     let mut interior_asset_resolve_elapsed = std::time::Duration::ZERO;
@@ -1808,7 +1812,7 @@ pub(crate) fn write_decomposed_export(
 
         let mut lights = Vec::with_capacity(container.lights.len());
         let light_start = Instant::now();
-        for light in &container.lights {
+        for (light_index, light) in container.lights.iter().enumerate() {
             // Extract the projector (gobo) texture.
             // ONLY for Projector lights (spot lights). Point lights (Omni) should never have gobos.
             // Priority: EXR (for HDR formats like BC6H) -> PNG (for SDR formats) -> white PNG fallback
@@ -1862,46 +1866,21 @@ pub(crate) fn write_decomposed_export(
             } else {
                 None
             };
-            lights.push(serde_json::json!({
-                "name": light.name,
-                "position": light.position,
-                "transform_basis": light.transform_basis,
-                "rotation": light.rotation,
-                "direction_sc": light.direction_sc,
-                "color": light.color,
-                "light_type": light.light_type,
-                "semantic_light_kind": light.semantic_light_kind,
-                "intensity_raw": light.intensity_raw,
-                "intensity_unit": light.intensity_unit,
-                "intensity_candela_proxy": light.intensity_candela_proxy,
-                "intensity": light.intensity,
-                "radius": light.radius,
-                "radius_m": light.radius_m,
-                "inner_angle": light.inner_angle,
-                "outer_angle": light.outer_angle,
-                "projector_texture": projector_texture_export,
-                "active_state": light.active_state,
-                "states": light
-                    .states
-                    .iter()
-                    .map(|(name, s)| {
-                        (
-                            name.clone(),
-                            serde_json::json!({
-                                "intensity_raw": s.intensity_raw,
-                                "intensity_unit": s.intensity_unit,
-                                "intensity_cd": s.intensity_cd,
-                                "intensity_candela_proxy": s.intensity_candela_proxy,
-                                "temperature": s.temperature,
-                                "use_temperature": s.use_temperature,
-                                "color": s.color,
-                                "light_style": s.light_style,
-                                "preset_tag": s.preset_tag,
-                            }),
-                        )
-                    })
-                    .collect::<serde_json::Map<_, _>>(),
-            }));
+            let resolved = resolved_lights.iter().find(|record|
+                record.source_container_index == index && record.source_light_index == light_index);
+            // Vehicle groups with a resolved rig attachment live on their owning entity.
+            // Other SOC lights retain the existing container-local contract, without duplication.
+            if let Some(record) = resolved.filter(|r| r.parent_node_name.is_some()) {
+                let mut value = serde_json::to_value(record)?;
+                value["projector_texture"] = serde_json::json!(projector_texture_export);
+                entity_light_records.entry(record.owner_entity.clone()).or_default().push(value);
+            } else {
+                let mut value = serde_json::to_value(light)?;
+                value["projector_texture"] = serde_json::json!(projector_texture_export);
+                value["source_container_index"] = serde_json::json!(index);
+                value["source_light_index"] = serde_json::json!(light_index);
+                lights.push(value);
+            }
         }
         interior_light_elapsed += light_start.elapsed();
 
@@ -2042,7 +2021,7 @@ pub(crate) fn write_decomposed_export(
     );
     phase_start = Instant::now();
 
-    let scene_manifest = build_scene_manifest_value(
+    let mut scene_manifest = build_scene_manifest_value(
         &input.entity_name,
         &package_name,
         &normalize_source_path(p4k, &input.geometry_path),
@@ -2058,6 +2037,17 @@ pub(crate) fn write_decomposed_export(
         input.weapon_assembly.as_ref(),
         opts,
     );
+    scene_manifest["root_entity"]["lights"] = serde_json::json!(
+        entity_light_records.remove(&input.entity_name).unwrap_or_default());
+    scene_manifest["root_entity"]["vehicle_light_ports"] = serde_json::json!(light_ports.remove(&input.entity_name).unwrap_or_default());
+    for child in scene_manifest["children"].as_array_mut().expect("children array") {
+        let name = child["entity_name"].as_str().expect("child name").to_owned();
+        child["lights"] = serde_json::json!(entity_light_records.remove(&name).unwrap_or_default());
+        child["vehicle_light_ports"] = serde_json::json!(light_ports.get(&name).cloned().unwrap_or_default());
+    }
+    if !entity_light_records.is_empty() {
+        return Err(Error::Other("resolved light owner is absent from the scene instances".into()));
+    }
     report_progress(progress, INTERIOR_ASSETS_END, "Writing manifests");
     insert_ui_export_stamp(&mut files);
     insert_json_file(&mut files, scene_manifest_path, scene_manifest);
@@ -2134,7 +2124,7 @@ fn build_scene_manifest_value(
     opts: &ExportOptions,
 ) -> serde_json::Value {
     let mut manifest = serde_json::json!({
-        "version": 1,
+        "version": 2,
         "export_kind": "Decomposed",
         "package_rule": {
             "root": "caller_selected_export_root",
@@ -2835,7 +2825,7 @@ fn build_material_sidecar_value(
         preferred_blender_material_names(&materials.materials, source_stem);
 
     serde_json::json!({
-        "version": 1,
+        "version": 2,
         "source_material_path": source_material_path,
         "normalized_export_relative_path": relative_path,
         "authored_material_set": {
@@ -2910,7 +2900,7 @@ fn build_submaterial_json(
         .collect::<Vec<_>>();
     let screen_effects = screen_effects_json(material, &semantic_slots);
 
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "index": index,
         "submaterial_name": material.name,
         "blender_material_name": blender_material_name,
@@ -3019,7 +3009,10 @@ fn build_submaterial_json(
             "layer_palette_routed": material.layers.iter().any(|layer| layer.palette_tint > 0),
             "layered": !material.layers.is_empty(),
         },
-    })
+    });
+    value["emissive"] = crate::material_semantics::emissive(material);
+    value["decal"] = crate::material_semantics::decal(material).unwrap_or(serde_json::Value::Null);
+    value
 }
 
 fn build_slot_export_value(
@@ -5185,7 +5178,7 @@ fn ddna_roughness_derivation_status(
     }
 }
 
-fn string_value_to_json(value: &str) -> serde_json::Value {
+pub(crate) fn string_value_to_json(value: &str) -> serde_json::Value {
     if value.eq_ignore_ascii_case("true") {
         return serde_json::Value::Bool(true);
     }
@@ -7754,6 +7747,7 @@ mod tests {
         glow_material.name = "Glow_Thrusters".into();
         glow_material.shader = "Illum".into();
         glow_material.glow = 1.0;
+        glow_material.emissive = [0.5, 0.25, 0.75]; // Synthetic positive emission.
 
         let materials = MtlFile {
             materials: vec![glow_material],
