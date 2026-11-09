@@ -1,3 +1,4 @@
+//! Entity discovery and bundled/decomposed export CLI commands.
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -531,8 +532,10 @@ fn export(
     dump_hierarchy: bool,
     opts: ExportOpts,
 ) -> Result<()> {
-    // Decomposed exports generate scene.blend with linked mesh instances.
-    if opts.kind.to_lowercase() == "decomposed" {
+    // Blend assembly fills linked mesh placeholders; GLB assets are emitted directly.
+    if opts.kind.to_lowercase() == "decomposed"
+        && opts.format == crate::common::DecomposedFormat::Blend
+    {
         return export_blend(name, output, p4k_path, opts);
     }
 

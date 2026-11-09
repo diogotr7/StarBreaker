@@ -1,4 +1,5 @@
 //! Blender decomposed export: convert `DecomposedInput` to individual `.blend` files.
+//! GLB requests return the completed shared package before native Blend assembly.
 //!
 //! Phase 1 (mesh decomposition):
 //! - Extract meshes from `DecomposedInput::children`
@@ -1057,6 +1058,13 @@ pub fn write_decomposed_export_blend(
         &mut interior_mesh_loader,
     )?;
     log::info!("[timing][blend] base_decomposed_export: {:.2}s", phase_start.elapsed().as_secs_f32());
+    // GLB assets are complete in the shared exporter. The native Blend pass
+    // below schedules every scene mesh, which would otherwise overwrite GLBs
+    // with compressed Blend payloads and add a redundant scene.blend.
+    if opts.format != crate::ExportFormat::Blend {
+        report_progress(progress, 1.0, "Export complete");
+        return Ok(base_export);
+    }
     phase_start = Instant::now();
 
     // Extract updated projector_texture paths from the generated scene.json

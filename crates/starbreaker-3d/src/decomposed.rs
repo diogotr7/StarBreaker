@@ -1,3 +1,5 @@
+//! Shared decomposed scene, material, texture and animation package generation.
+//! GLB mesh assets retain the shared sidecar's material slot indices.
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
@@ -1149,7 +1151,8 @@ pub(crate) fn write_decomposed_export(
                 &input.entity_name,
                 &input.geometry_path,
                 &root_material_view.mesh,
-                root_material_view.glb_materials.as_ref(),
+                root_material_view.sidecar_materials.as_ref(),
+                &root_material_view.sidecar_original_indices,
                 root_material_view.glb_nmc.as_ref(),
                 &input.root_bones,
                 opts.lod_level,
@@ -1353,7 +1356,8 @@ pub(crate) fn write_decomposed_export(
             &child.entity_name,
             &child.geometry_path,
             &child_material_view.mesh,
-            child_material_view.glb_materials.as_ref(),
+            child_material_view.sidecar_materials.as_ref(),
+            &child_material_view.sidecar_original_indices,
             child_material_view.glb_nmc.as_ref(),
             &child.bones,
             opts.lod_level,
@@ -1747,7 +1751,8 @@ pub(crate) fn write_decomposed_export(
                             &entry.name,
                             &entry.cgf_path,
                             &interior_material_view.mesh,
-                            interior_material_view.glb_materials.as_ref(),
+                            interior_material_view.sidecar_materials.as_ref(),
+                            &interior_material_view.sidecar_original_indices,
                             // Interior meshes already follow the bundled flat-mesh path.
                             // Preserving the raw NMC hierarchy here makes decomposed interiors
                             // diverge from the reference import and can double-apply placement transforms.
@@ -2464,10 +2469,11 @@ fn write_mesh_asset(
     p4k: &MappedP4k,
     fallback_name: &str,
     geometry_path: &str,
-    _mesh: &Mesh,
-    _materials: Option<&MtlFile>,
-    _nmc: Option<&NodeMeshCombo>,
-    _bones: &[Bone],
+    mesh: &Mesh,
+    materials: Option<&MtlFile>,
+    sidecar_original_indices: &[u32],
+    nmc: Option<&NodeMeshCombo>,
+    bones: &[Bone],
     lod_level: u32,
     format: ExportFormat,
     existing_asset_paths: Option<&HashSet<String>>,
@@ -2479,7 +2485,62 @@ fn write_mesh_asset(
     {
         return Ok(requested_path);
     }
-    Ok(insert_binary_file(files, requested_path, Vec::new()))
+    // The GLB decomposed format writes the per-mesh GLB
+    // (untextured, material names preserved for sidecar slot mapping);
+    // the Blend format keeps the placeholder that blend assembly fills later.
+    let bytes = if format == ExportFormat::Glb {
+        // The shared sidecar contains all visible source slots, while the mesh
+        // view compacts its used slots. Restore sidecar indices for GLB output.
+        let mut mesh = mesh.clone();
+        if materials.is_some() {
+            for submesh in &mut mesh.submeshes {
+                let source = submesh.source_material_id.unwrap_or(submesh.material_id);
+                let slot = sidecar_original_indices.iter().position(|&i| i == source)
+                    .ok_or_else(|| Error::Other(format!("mesh material {source} missing from sidecar for {geometry_path}")))?;
+                submesh.material_id = slot as u32;
+                submesh.source_material_id = Some(slot as u32);
+            }
+        }
+        crate::gltf::write_glb(
+            crate::gltf::GlbInput {
+                root_mesh: Some(mesh),
+                root_materials: materials.cloned(),
+                root_textures: None,
+                root_nmc: nmc.cloned(),
+                root_palette: None,
+                skeleton_bones: bones.to_vec(),
+                children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
+            },
+            &mut crate::gltf::GlbLoaders {
+                load_textures: &mut |_, _| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &crate::gltf::GlbOptions {
+                material_mode: crate::pipeline::MaterialMode::Colors,
+                preserve_textureless_decal_primitives: true,
+                metadata: crate::gltf::GlbMetadata {
+                    entity_name: None,
+                    geometry_path: Some(geometry_path.to_string()),
+                    material_path: None,
+                    export_options: crate::gltf::ExportOptionsMetadata {
+                        kind: "Decomposed".to_string(),
+                        material_mode: "Colors".to_string(),
+                        format: "Glb".to_string(),
+                        lod_level,
+                        texture_mip: 0,
+                        include_attachments: false,
+                        include_interior: false,
+                    },
+                },
+                fallback_palette: None,
+            },
+        )?
+    } else {
+        Vec::new()
+    };
+    Ok(insert_binary_file(files, requested_path, bytes))
 }
 
 fn write_material_sidecar(

@@ -1,4 +1,5 @@
 //! Validation framework for decomposed export output.
+//! Supports native Blend packages and GLB packages with JSON scene manifests.
 //!
 //! Provides comprehensive validation of export results against requirements:
 //! - Mesh files: count, structure, geometry
@@ -12,6 +13,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 
 use crate::error::Error;
+
+mod glb;
 
 /// Comprehensive validation report for decomposed export.
 #[derive(Debug, Clone)]
@@ -127,7 +130,7 @@ fn validate_mesh_files(objects_dir: &Path, report: &mut ValidationReport) -> Res
     report.add_metadata("mesh_files_found".to_string(), mesh_count.to_string());
 
     if mesh_count == 0 {
-        report.add_warning("No mesh .blend files found".to_string());
+        report.add_warning("No mesh .blend or .glb files found".to_string());
     }
 
     Ok(mesh_count)
@@ -145,6 +148,9 @@ fn validate_scene_blends(output_root: &Path, report: &mut ValidationReport) -> R
     }
 
     if scene_blends.is_empty() {
+        if glb::has_glb_manifests(output_root, report) {
+            return Ok(());
+        }
         report.add_error("scene.blend not found".to_string());
         return Ok(());
     }
@@ -201,7 +207,7 @@ fn collect_blend_files(dir: &Path, blend_files: &mut Vec<std::path::PathBuf>) {
             collect_blend_files(&path, blend_files);
         } else if path
             .extension()
-            .is_some_and(|extension| extension == "blend")
+            .is_some_and(|extension| extension == "blend" || extension == "glb")
         {
             blend_files.push(path);
         }
@@ -226,8 +232,11 @@ fn collect_named_files(dir: &Path, filename: &str, files: &mut Vec<std::path::Pa
     }
 }
 
-/// Validate a single mesh .blend file.
+/// Validate a single mesh .blend or .glb file.
 fn validate_single_mesh_file(path: &Path, report: &mut ValidationReport) -> Result<usize, Error> {
+    if path.extension().is_some_and(|extension| extension == "glb") {
+        return Ok(glb::validate_mesh(path, report));
+    }
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -1800,6 +1809,31 @@ mod tests {
             report.metadata.contains_key("package_count"),
             "Should have package_count metadata"
         );
+    }
+
+    #[test]
+    fn validate_decomposed_glb_without_scene_blend_and_reject_empty_mesh() {
+        let root = create_test_export_dir("decomposed_glb_without_blend");
+        let package = root.join("Packages/Synthetic");
+        let objects = root.join("Data/Objects");
+        fs::create_dir_all(&package).unwrap();
+        fs::create_dir_all(&objects).unwrap();
+        fs::write(package.join("scene.json"),
+            r#"{"export_options":{"format":"Glb"},"root_entity":{"mesh_asset":"Data/Objects/synthetic.glb"}}"#).unwrap();
+        let mesh_path = objects.join("synthetic.glb");
+        let bytes = gltf::binary::Glb {
+            header: gltf::binary::Header { magic: *b"glTF", version: 2, length: 0 },
+            json: std::borrow::Cow::Borrowed(br#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[]}],"scene":0}"#),
+            bin: None,
+        }.to_vec().unwrap();
+        fs::write(&mesh_path, bytes).unwrap();
+        let valid = validate_decomposed_export(&root).unwrap();
+        assert!(valid.is_valid, "{:?}", valid.errors);
+        assert_eq!(valid.mesh_count, 1);
+        fs::write(&mesh_path, []).unwrap();
+        let invalid = validate_decomposed_export(&root).unwrap();
+        assert!(!invalid.is_valid);
+        assert!(invalid.errors.iter().any(|e| e.contains("synthetic.glb")));
     }
 
     #[test]

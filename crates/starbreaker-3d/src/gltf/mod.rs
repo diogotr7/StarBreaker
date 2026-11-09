@@ -1,3 +1,4 @@
+//! GLB scene assembly, including stable sidecar material slots for decomposed meshes.
 mod animation;
 mod glb_builder;
 
@@ -175,6 +176,7 @@ pub fn write_glb_with_progress(
     progress: Option<&Progress>,
 ) -> Result<Vec<u8>, Error> {
     let mut builder = GlbBuilder::new();
+    builder.preserve_material_slots = opts.metadata.export_options.kind == "Decomposed";
     // The root's instance name; decomposed GLBs are shared assets and carry
     // no instance metadata.
     let root_name = opts.metadata.entity_name.clone().filter(|_| opts.metadata.export_options.kind != "Decomposed");
@@ -1079,6 +1081,38 @@ mod tests {
             },
             &default_opts(),
         )
+    }
+
+    #[test]
+    fn decomposed_glb_retains_unused_material_slots_without_primitives() {
+        let mut mesh = triangle_mesh();
+        mesh.submeshes[0].material_id = 3;
+        mesh.submeshes[0].source_material_id = Some(3);
+        let mut materials = shared_material_file();
+        let template = materials.materials[0].clone();
+        materials.materials = (0..5).map(|i| {
+            let mut material = template.clone();
+            material.name = format!("slot_{i}");
+            material
+        }).collect();
+        let mut opts = default_opts();
+        opts.material_mode = crate::pipeline::MaterialMode::Colors;
+        opts.metadata.export_options.kind = "Decomposed".into();
+        let bytes = write_glb(
+            GlbInput { root_mesh: Some(mesh), root_materials: Some(materials),
+                root_textures: None, root_nmc: None, root_palette: None,
+                skeleton_bones: Vec::new(), children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(), animations: Vec::new() },
+            &mut GlbLoaders { load_textures: &mut |_, _| None, load_interior_mesh: &mut |_| None },
+            &opts,
+        ).unwrap();
+        let doc = glb_json(&bytes);
+        assert_eq!(doc["materials"].as_array().unwrap().len(), 4);
+        for i in 0..4 {
+            assert_eq!(doc["materials"][i]["name"], format!("shared_slot_{i}_{i:02}"));
+        }
+        assert_eq!(doc["meshes"][0]["primitives"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["meshes"][0]["primitives"][0]["material"], 3);
     }
 
     #[test]

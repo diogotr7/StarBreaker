@@ -1,3 +1,4 @@
+//! Shared archive loading, export options and CLI path filtering.
 use std::path::Path;
 
 use starbreaker_p4k::MappedP4k;
@@ -54,6 +55,9 @@ pub struct ExportOpts {
     /// Export kind: bundled or decomposed
     #[arg(long, default_value = "bundled")]
     pub kind: String,
+    /// Decomposed mesh format (bundled exports always use GLB).
+    #[arg(long, value_enum, default_value = "blend")]
+    pub format: DecomposedFormat,
     /// Material detail: none, colors, textures, all
     #[arg(long, default_value = "textures")]
     pub materials: String,
@@ -90,6 +94,9 @@ pub struct ExportOpts {
     pub ui_only_files: bool,
 }
 
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecomposedFormat { Glb, Blend }
+
 impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
     fn from(opts: &ExportOpts) -> Self {
         let kind = match opts.kind.to_lowercase().as_str() {
@@ -107,7 +114,10 @@ impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
             }
         };
         let format = match kind {
-            starbreaker_3d::ExportKind::Decomposed => starbreaker_3d::ExportFormat::Blend,
+            starbreaker_3d::ExportKind::Decomposed => match opts.format {
+                DecomposedFormat::Glb => starbreaker_3d::ExportFormat::Glb,
+                DecomposedFormat::Blend => starbreaker_3d::ExportFormat::Blend,
+            },
             starbreaker_3d::ExportKind::Bundled => starbreaker_3d::ExportFormat::Glb,
         };
         starbreaker_3d::ExportOptions {
@@ -153,6 +163,23 @@ pub fn matches_filter(name: &str, filter: Option<&str>, regex: Option<&regex::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decomposed_format_is_explicit_and_defaults_to_blend() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Args {
+            #[command(flatten)]
+            opts: ExportOpts,
+        }
+        let default = Args::try_parse_from(["test", "--kind", "decomposed"]).unwrap();
+        assert_eq!(starbreaker_3d::ExportOptions::from(&default.opts).format,
+            starbreaker_3d::ExportFormat::Blend);
+        let glb = Args::try_parse_from(["test", "--kind", "decomposed", "--format", "glb"]).unwrap();
+        assert_eq!(starbreaker_3d::ExportOptions::from(&glb.opts).format,
+            starbreaker_3d::ExportFormat::Glb);
+        assert!(Args::try_parse_from(["test", "--format", "invalid"]).is_err());
+    }
 
     // Typical P4k entry paths (backslash-separated, rooted at Data\).
     const XML_DEEP: &str = r"Data\Libs\Subsumption\Missions\mission.xml";

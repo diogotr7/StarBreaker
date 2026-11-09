@@ -153,6 +153,8 @@ pub(crate) struct GlbBuilder {
     pub buffer_views: Vec<json::buffer::View>,
     pub accessors: Vec<json::Accessor>,
     pub materials_json: Vec<json::Material>,
+    /// Decomposed GLBs preserve sidecar slot order, including unused gaps.
+    pub preserve_material_slots: bool,
     pub images_json: Vec<json::Image>,
     pub textures_json: Vec<json::Texture>,
     pub samplers_json: Vec<json::texture::Sampler>,
@@ -228,6 +230,7 @@ impl GlbBuilder {
             buffer_views: Vec::new(),
             accessors: Vec::new(),
             materials_json: Vec::new(),
+            preserve_material_slots: false,
             images_json: Vec::new(),
             textures_json: Vec::new(),
             samplers_json: Vec::new(),
@@ -1399,6 +1402,7 @@ impl GlbBuilder {
 
         // Build materials with dedup
         let submesh_mat_indices = build_materials(
+            self.preserve_material_slots,
             &mesh.submeshes,
             materials,
             palette,
@@ -2549,6 +2553,7 @@ fn material_uses_texture_transform(material: &json::Material) -> bool {
 
 /// Build deduplicated glTF materials for a set of submeshes.
 fn build_materials(
+    preserve_slots: bool,
     submeshes: &[SubMesh],
     materials: Option<&crate::mtl::MtlFile>,
     palette: Option<&crate::mtl::TintPalette>,
@@ -2563,6 +2568,39 @@ fn build_materials(
     experimental_textures: bool,
     preserve_textureless_decal_primitives: bool,
 ) -> Vec<u32> {
+    if preserve_slots {
+        if let Some(materials) = materials {
+            // Seed through the highest referenced sidecar slot, including gaps.
+            // These synthetic descriptors allocate materials, never geometry.
+            let slot_count = submeshes.iter().map(|s| s.material_id as usize + 1).max().unwrap_or(0);
+            let slots: Vec<_> = materials.materials.iter().take(slot_count).enumerate().map(|(i, material)| SubMesh {
+                material_id: i as u32,
+                source_material_id: Some(i as u32),
+                material_name: Some(material.name.clone()),
+                first_index: 0, num_indices: 0, first_vertex: 0, num_vertices: 0,
+                node_parent_index: 0,
+            }).collect();
+            let base_index = materials_json.len() as u32;
+            for sub in &slots {
+                let BuiltMaterial { mut material, .. } = build_material(
+                    sub, Some(materials), palette, textures,
+                    submaterial_texture_idx, submaterial_normal_idx, submaterial_roughness_idx,
+                    submaterial_emissive_idx, submaterial_occlusion_idx,
+                    experimental_textures, preserve_textureless_decal_primitives,
+                );
+                let name = &materials.materials[sub.material_id as usize].name;
+                let stem = materials.source_path.as_deref()
+                    .and_then(|p| p.rsplit(['\\', '/']).next())
+                    .map(|file| file.strip_suffix(".mtl").unwrap_or(file));
+                material.name = Some(match stem {
+                    Some(stem) => format!("{stem}_{name}_{:02}", sub.material_id),
+                    None => format!("{name}_{:02}", sub.material_id),
+                });
+                materials_json.push(material);
+            }
+            return submeshes.iter().map(|s| base_index + s.material_id).collect();
+        }
+    }
     submeshes
         .iter()
         .map(|sub| {

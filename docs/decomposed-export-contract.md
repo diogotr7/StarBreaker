@@ -18,6 +18,29 @@ Within that export root:
 
 ## Scene Manifest
 
+### GLB mesh assets
+
+The entity CLI accepts `--kind decomposed --format glb|blend`. Decomposed
+exports default to `blend`; bundled exports continue to use GLB. GLB packages
+contain actual per-mesh GLBs and a JSON scene manifest, without `scene.blend`.
+The validator accepts both formats and parses GLB mesh payloads structurally.
+
+Decomposed GLB materials are named `<mtl stem>_<submaterial name>_<NN>`, with
+`NN` a minimum two-digit decimal index. A primitive's material index `i` is the
+array position `submaterials[i]` in its material sidecar, not that entry's
+`index` field (which retains the original source slot before hide filtering).
+Each mesh retains all sidecar slots through its highest referenced slot;
+unused slots within that range are material entries without primitives.
+Trailing unused slots are omitted. Meshes sharing a sidecar therefore use the
+same material index space. Bundled GLB material naming/deduplication is unchanged.
+
+For the LIVE 4.10.2 Gladius fixture at LOD 1 / mip 2, the root has 274 nodes,
+89 meshes and 27 GLB materials: its shared sidecar has 28 slots, and the highest
+referenced slot is 26. The package has 45 non-empty mesh GLBs, 23 material
+sidecars, 366 PNGs and 63 animation sidecars.
+
+### Manifest fields
+
 `scene.json` (`build_scene_manifest_value`) carries these top-level keys:
 
 - `version` (`1`) and `export_kind` (`"Decomposed"`)
