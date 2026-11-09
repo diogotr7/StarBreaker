@@ -1,7 +1,7 @@
-//! CAF (Animation Clip) and shared block-parsing helpers.
+//! CAF (Animation Clip) and shared full/sparse block-parsing helpers.
 //!
 //! Both `.dba` and `.caf` use the same block format internally;
-//! [`parse_animation_blocks`] and [`parse_single_block`] are called from
+//! [`parse_animation_blocks_mode`] and [`parse_single_block`] are called from
 //! [`super::dba`] as well.
 
 use super::chunk_types;
@@ -40,6 +40,10 @@ pub(super) fn parse_anim_info(data: &[u8]) -> AnimInfo {
 
 /// Parse a `.caf` file from raw bytes.
 pub fn parse_caf(data: &[u8]) -> Result<AnimationDatabase, Error> {
+    parse_caf_mode(data, false)
+}
+
+pub(super) fn parse_caf_mode(data: &[u8], endpoints: bool) -> Result<AnimationDatabase, Error> {
     let chunk_file = ChunkFile::from_bytes(data)?;
     let ivo = match &chunk_file {
         ChunkFile::Ivo(ivo) => ivo,
@@ -60,7 +64,7 @@ pub fn parse_caf(data: &[u8]) -> Result<AnimationDatabase, Error> {
         .ok_or_else(|| Error::Other("No CAF data chunk found".into()))?;
 
     let data_bytes = ivo.chunk_data(caf_chunk);
-    let blocks = parse_animation_blocks(data_bytes)?;
+    let blocks = parse_animation_blocks_mode(data_bytes, endpoints)?;
 
     let clips = blocks
         .into_iter()
@@ -83,7 +87,9 @@ pub fn parse_caf(data: &[u8]) -> Result<AnimationDatabase, Error> {
 
 // ── Block parsing ───────────────────────────────────────────────────────────
 
-pub(super) fn parse_animation_blocks(data: &[u8]) -> Result<Vec<Vec<BoneChannel>>, Error> {
+pub(super) fn parse_animation_blocks_mode(
+    data: &[u8], endpoints: bool,
+) -> Result<Vec<Vec<BoneChannel>>, Error> {
     let mut blocks = Vec::new();
     let mut offset = 0usize;
 
@@ -113,7 +119,7 @@ pub(super) fn parse_animation_blocks(data: &[u8]) -> Result<Vec<Vec<BoneChannel>
         let block_start = offset + 12;
         let headers_end = block_start + bone_count * 4 + bone_count * 24;
 
-        match parse_single_block(data, block_start, bone_count) {
+        match parse_single_block(data, block_start, bone_count, endpoints) {
             Ok(channels) => blocks.push(channels),
             Err(e) => log::warn!("Failed to parse animation block at 0x{offset:x}: {e}"),
         }
@@ -128,6 +134,7 @@ fn parse_single_block(
     data: &[u8],
     start: usize,
     bone_count: usize,
+    endpoints: bool,
 ) -> Result<Vec<BoneChannel>, Error> {
     let mut pos = start;
 
@@ -202,12 +209,14 @@ fn parse_single_block(
             } else {
                 (0..ctrl.num_rot_keys as usize).map(|t| t as f32).collect()
             };
-            let values = codec::read_rotation_keys(
-                data,
-                base + ctrl.rot_data_offset as usize,
-                ctrl.num_rot_keys as usize,
-                ctrl.rot_format_flags,
-            )?;
+            let values = if endpoints {
+                super::endpoints::rotation_ends(data, base + ctrl.rot_data_offset as usize,
+                    ctrl.num_rot_keys as usize, ctrl.rot_format_flags)?
+            } else {
+                codec::read_rotation_keys(data, base + ctrl.rot_data_offset as usize,
+                    ctrl.num_rot_keys as usize, ctrl.rot_format_flags)?
+            };
+            let times = if endpoints { super::endpoints::ends(times) } else { times };
             times
                 .into_iter()
                 .zip(values)
@@ -228,12 +237,14 @@ fn parse_single_block(
             } else {
                 (0..ctrl.num_pos_keys as usize).map(|t| t as f32).collect()
             };
-            let values = codec::read_position_keys(
-                data,
-                base + ctrl.pos_data_offset as usize,
-                ctrl.num_pos_keys as usize,
-                ctrl.pos_format_flags,
-            )?;
+            let values = if endpoints {
+                super::endpoints::position_ends(data, base + ctrl.pos_data_offset as usize,
+                    ctrl.num_pos_keys as usize, ctrl.pos_format_flags)?
+            } else {
+                codec::read_position_keys(data, base + ctrl.pos_data_offset as usize,
+                    ctrl.num_pos_keys as usize, ctrl.pos_format_flags)?
+            };
+            let times = if endpoints { super::endpoints::ends(times) } else { times };
             times
                 .into_iter()
                 .zip(values)

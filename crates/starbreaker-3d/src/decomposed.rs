@@ -5288,14 +5288,14 @@ fn string_value_to_json(value: &str) -> serde_json::Value {
 /// `door_open` — no longer merge into one), while instances of the same
 /// entity-type share a key (so they still merge into a single clip). The double
 /// underscore separates the entity stem from the action unambiguously.
-fn interior_clip_key(entity_stem: &str, clip_name: &str) -> String {
+pub(crate) fn interior_clip_key(entity_stem: &str, clip_name: &str) -> String {
     format!("{entity_stem}__{clip_name}")
 }
 
 /// Human-readable panel label for a socpak interior animation: the title-cased
 /// entity stem plus the title-cased clip action. Purely generic (split on `_`,
 /// capitalise each token) — no asset-specific token stripping.
-fn humanize_animation_label(entity_stem: &str, clip_name: &str) -> String {
+pub(crate) fn humanize_animation_label(entity_stem: &str, clip_name: &str) -> String {
     fn titlecase(value: &str) -> String {
         value
             .split('_')
@@ -5313,7 +5313,7 @@ fn humanize_animation_label(entity_stem: &str, clip_name: &str) -> String {
     format!("{} — {}", titlecase(entity_stem), titlecase(clip_name))
 }
 
-fn merge_animation_channel_values(
+pub(crate) fn merge_animation_channel_values(
     existing_value: &mut serde_json::Value,
     incoming_value: serde_json::Value,
     clip_name: &str,

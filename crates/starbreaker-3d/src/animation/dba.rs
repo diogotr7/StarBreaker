@@ -1,9 +1,9 @@
-//! DBA (Animation Database) parsing.
+//! DBA (Animation Database) parsing with full and endpoint-only inspection modes.
 //!
 //! DBA files pack multiple animation clips; block-level parsing is shared
-//! with CAF via [`super::caf::parse_animation_blocks`].
+//! with CAF via [`super::caf::parse_animation_blocks_mode`].
 
-use super::caf::parse_animation_blocks;
+use super::caf::parse_animation_blocks_mode;
 use super::chunk_types;
 use super::{AnimationClip, AnimationDatabase, BoneChannel};
 use crate::error::Error;
@@ -31,6 +31,10 @@ struct DbaMetaEntry {
 
 /// Parse a `.dba` file from raw bytes.
 pub fn parse_dba(data: &[u8]) -> Result<AnimationDatabase, Error> {
+    parse_dba_mode(data, false)
+}
+
+pub(super) fn parse_dba_mode(data: &[u8], endpoints: bool) -> Result<AnimationDatabase, Error> {
     let chunk_file = ChunkFile::from_bytes(data)?;
     let ivo = match &chunk_file {
         ChunkFile::Ivo(ivo) => ivo,
@@ -56,7 +60,7 @@ pub fn parse_dba(data: &[u8]) -> Result<AnimationDatabase, Error> {
         .map(|c| parse_dba_metadata(ivo.chunk_data(c)))
         .unwrap_or_default();
 
-    let mut blocks = parse_animation_blocks(data_bytes)?;
+    let mut blocks = parse_animation_blocks_mode(data_bytes, endpoints)?;
     if !meta_entries.is_empty() && blocks.len() > meta_entries.len() {
         log::warn!(
             "DBA parse produced {} blocks but metadata lists {}; truncating to metadata count",

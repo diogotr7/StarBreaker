@@ -587,3 +587,20 @@ slot, and marks the object when `default_state_is_off` is set.
 Bindings with a null `generated_image_path` are imported without a texture;
 the mesh retains its base material colour (typically near-black for a dark
 powered-off screen).
+
+## Metadata-only animation catalogue
+
+`entity_clip_catalogue(db, p4k, record, loadout_tree)` returns the serializable
+`animation::catalogue::Catalogue` for the default entity export. It discovers
+root, landing-gear and resolved loadout rigs without loading mesh/texture payloads.
+It shares the exporter name matcher, merge helper and interior key/label helpers;
+DBA/CAF inspection decodes first/final values only, retaining the motion score
+used by matching. Time tables are read for the exported final-key frame count.
+
+The catalogue's clip `id` joins `root_entity.animations[].name`. Named clips
+shared by several rigs retain the first owner in export order; merged channel
+counts and endpoint boomerang flags cover all contributing rigs. Optional
+Mannequin fragment annotations use the same DataCore controller source. The
+catalogue does not change the animation sidecar or scene index format. As above,
+per-entity interior namespaces apply to rootless socpak packages, not ship
+packages with a root rig (including Cutlass).

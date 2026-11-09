@@ -1,4 +1,4 @@
-//! Geometry parsing and public StarBreaker export entry points.
+//! Geometry parsing, clip catalogues and public StarBreaker export entry points.
 pub mod dequant;
 pub(crate) mod decomposed;
 pub mod error;
@@ -593,3 +593,5 @@ mod nmc_flatten_tests {
         mx - mn
     }
 }
+
+pub use pipeline::entity_clip_catalogue;

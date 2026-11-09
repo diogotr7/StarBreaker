@@ -22,6 +22,8 @@
 //! u16 boundaries).
 
 mod codec;
+mod endpoints;
+pub mod catalogue;
 pub mod pose;
 pub mod caf;
 pub mod dba;
@@ -133,3 +135,5 @@ pub(super) mod chunk_types {
 #[cfg(test)]
 mod bake_tests;
 
+#[cfg(test)]
+mod catalogue_tests;

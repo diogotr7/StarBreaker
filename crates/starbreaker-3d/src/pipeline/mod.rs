@@ -46,6 +46,8 @@ mod interior_animation;
 pub(crate) use self::interior_animation::*;
 mod vehicle;
 pub use self::vehicle::*;
+mod clip_catalogue;
+pub use clip_catalogue::entity_clip_catalogue;
 mod glb_assembly;
 pub(crate) use self::glb_assembly::path_is_shield_related;
 pub use self::glb_assembly::{assemble_glb_with_loadout, assemble_glb_with_loadout_with_progress};

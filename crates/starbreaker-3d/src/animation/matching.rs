@@ -1,14 +1,12 @@
-//! CAF matching, scoring, and the top-level animation extraction orchestrator.
+//! Shared CAF matching and scoring for full animation extraction and sparse catalogue inspection.
 
 use std::collections::{HashMap, HashSet};
 
-use super::dba::parse_dba;
 use super::serialise::{
     annotate_animation_json_source, database_to_animations_json,
 };
 use super::{AnimationClip, AnimationDatabase};
 use crate::error::Error;
-use super::caf::parse_caf;
 use super::pose::bone_name_hash;
 
 pub(super) fn clip_name_lookup_keys(name: &str) -> Vec<String> {
@@ -152,7 +150,7 @@ fn clip_motion_score_milli(clip: &AnimationClip) -> i64 {
 /// Unmatched DBA blocks retain their original DBA metadata names only when
 /// `include_unmatched` is `true`.  Pass `false` for child skeleton sources that
 /// share the root's DBA so that already-covered blocks are not duplicated.
-fn caf_anchored_remap(
+pub(super) fn caf_anchored_remap(
     db: &AnimationDatabase,
     chrparams: &crate::chrparams::ChrParams,
     skeleton_bone_hashes: &HashSet<u32>,
@@ -513,6 +511,18 @@ pub fn extract_animations_for_skeleton_json(
     include_unmatched_dba_blocks: bool,
     allow_bone_subset_fallback: bool,
 ) -> Result<Option<serde_json::Value>, Error> {
+    extract_skeleton_json(
+        p4k, skeleton_path, include_unmatched_dba_blocks, allow_bone_subset_fallback, false,
+    )
+}
+
+pub(crate) fn extract_skeleton_json(
+    p4k: &starbreaker_p4k::MappedP4k,
+    skeleton_path: &str,
+    include_unmatched_dba_blocks: bool,
+    allow_bone_subset_fallback: bool,
+    endpoints: bool,
+) -> Result<Option<serde_json::Value>, Error> {
     let mut candidate_paths = Vec::new();
     if let Some(path) = swap_extension(skeleton_path, ".chrparams") {
         candidate_paths.push(path);
@@ -528,12 +538,14 @@ pub fn extract_animations_for_skeleton_json(
 
     // Try candidate chrparams paths; skip if none found.
     let mut chrparams_data = None;
+    let mut chrparams_path = String::new();
     for candidate in &candidate_paths {
         let candidate_p4k = crate::pipeline::datacore_path_to_p4k(candidate);
         if let Some(data) = p4k
             .entry_case_insensitive(&candidate_p4k)
             .and_then(|e| p4k.read(e).ok())
         {
+            chrparams_path = candidate.clone();
             chrparams_data = Some(data.to_vec());
             break;
         }
@@ -615,7 +627,7 @@ pub fn extract_animations_for_skeleton_json(
             .and_then(|e| p4k.read(e).ok())
             .ok_or_else(|| Error::Other(format!("Cannot load tracks database: {resolved_path}")))?
             .to_vec();
-        let db = parse_dba(&dba_data)?;
+        let db = super::dba::parse_dba_mode(&dba_data, endpoints)?;
         let clips = caf_anchored_remap(
             &db,
             &chrparams,
@@ -636,6 +648,19 @@ pub fn extract_animations_for_skeleton_json(
         // the addon's runtime override path consumes the field when set.
         let mut value = database_to_animations_json(&AnimationDatabase { clips });
         annotate_animation_json_source(&mut value, skeleton_path, &skeleton_bone_name_by_hash);
+        if endpoints {
+            for clip in value.as_array_mut().into_iter().flatten() {
+                clip["catalogue_source"] = serde_json::json!(
+                    if chrparams.animations.contains_key(clip["name"].as_str().unwrap_or("")) {
+                        "Chrparams"
+                    } else {
+                        "DbaOnly"
+                    }
+                );
+                clip["chrparams_path"] = serde_json::json!(chrparams_path);
+                clip["dba_path"] = serde_json::json!(resolved_path);
+            }
+        }
         return Ok(Some(value));
     }
 
@@ -653,7 +678,7 @@ pub fn extract_animations_for_skeleton_json(
         else {
             continue;
         };
-        if let Ok(mut db) = parse_caf(&caf_data) {
+        if let Ok(mut db) = super::caf::parse_caf_mode(&caf_data, endpoints) {
             for mut clip in db.clips.drain(..) {
                 clip.name = event_name.clone();
                 clips.push(clip);
@@ -665,6 +690,12 @@ pub fn extract_animations_for_skeleton_json(
     }
     let mut value = database_to_animations_json(&AnimationDatabase { clips });
     annotate_animation_json_source(&mut value, skeleton_path, &skeleton_bone_name_by_hash);
+    if endpoints {
+        for clip in value.as_array_mut().into_iter().flatten() {
+            clip["catalogue_source"] = serde_json::json!("Caf");
+            clip["chrparams_path"] = serde_json::json!(chrparams_path);
+        }
+    }
     Ok(Some(value))
 }
 
