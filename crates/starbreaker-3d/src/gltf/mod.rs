@@ -4,7 +4,7 @@ mod glb_builder;
 
 use gltf_json as json;
 use json::validation::Checked;
-use starbreaker_common::progress::{Progress, report as report_progress};
+use starbreaker_common::progress::{Progress, report_checked as report_progress};
 
 use crate::error::Error;
 use crate::nmc::NodeMeshCombo;
@@ -184,7 +184,7 @@ pub fn write_glb_with_progress(
     let root_name = opts.metadata.entity_name.clone().filter(|_| opts.metadata.export_options.kind != "Decomposed");
 
     log::info!("[mem-phase] start write_glb");
-    report_progress(progress, 0.05, "Packing root mesh");
+    report_progress(progress, 0.05, "Packing root mesh")?;
     // ---- Pack root entity (drop textures after packing) ----
     let root_without_geometry = input.root_mesh.as_ref().is_some_and(|m| m.positions.is_empty())
         && input.root_nmc.as_ref().is_none_or(|n| n.nodes.is_empty());
@@ -229,7 +229,7 @@ pub fn write_glb_with_progress(
         "[mem-phase] root packed, bin={}MB",
         builder.bin.len() / 1_048_576
     );
-    report_progress(progress, 0.20, "Packing child meshes");
+    report_progress(progress, 0.20, "Packing child meshes")?;
     // ---- Skeleton bone nodes ----
     if !hierarchy_covers_bones(input.root_nmc.as_ref(), &input.skeleton_bones) {
         builder.attach_skeleton_bones(&input.skeleton_bones, &scene_nodes);
@@ -253,7 +253,7 @@ pub fn write_glb_with_progress(
         );
         if num_children > 0 {
             let fraction = (i + 1) as f32 / num_children as f32;
-            report_progress(progress, 0.20 + 0.40 * fraction, "Packing child meshes");
+            report_progress(progress, 0.20 + 0.40 * fraction, "Packing child meshes")?;
         }
         if (i + 1) % 20 == 0 || i + 1 == num_children {
             log::info!(
@@ -271,7 +271,7 @@ pub fn write_glb_with_progress(
     );
     builder.add_animations(&input.animations)?;
     if num_children == 0 {
-        report_progress(progress, 0.60, "Packing interiors");
+        report_progress(progress, 0.60, "Packing interiors")?;
     }
     // ---- Interior mesh instancing ----
     let (interior_scene_nodes, all_lights) = builder.attach_interiors(
@@ -286,7 +286,7 @@ pub fn write_glb_with_progress(
         "[mem-phase] interiors done, bin={}MB",
         builder.bin.len() / 1_048_576
     );
-    report_progress(progress, 0.80, "Finalizing GLB");
+    report_progress(progress, 0.80, "Finalizing GLB")?;
 
     // ---- Entity + palette extras on root node ----
     {
@@ -329,7 +329,7 @@ pub fn write_glb_with_progress(
         }
     }
 
-    report_progress(progress, 0.95, "Finalizing GLB");
+    report_progress(progress, 0.95, "Finalizing GLB")?;
     builder.finalize(scene_nodes, all_lights, &opts.metadata)
 }
 

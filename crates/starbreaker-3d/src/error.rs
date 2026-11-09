@@ -1,7 +1,11 @@
+//! Typed failures from geometry parsing and cooperative export cancellation.
 use starbreaker_chunks::ChunkFileError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error(transparent)]
+    Cancelled(#[from] starbreaker_common::progress::Cancelled),
+
     #[error(transparent)]
     ChunkFile(#[from] ChunkFileError),
 

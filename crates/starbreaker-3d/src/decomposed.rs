@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use gltf_json as json;
 use rayon::prelude::*;
-use starbreaker_common::progress::{Progress, report as report_progress};
+use starbreaker_common::progress::{Progress, report_checked as report_progress};
 use starbreaker_dds;
 use starbreaker_datacore::Database;
 use starbreaker_p4k::MappedP4k;
@@ -1128,7 +1128,7 @@ pub(crate) fn write_decomposed_export(
     let liveries_manifest_path = package_relative_path(&package_name, "liveries.json");
     let total_start = Instant::now();
     let mut phase_start = Instant::now();
-    report_progress(progress, ROOT_ASSETS_START, "Writing root assets");
+    report_progress(progress, ROOT_ASSETS_START, "Writing root assets")?;
     let root_palette_id = input
         .root_palette
         .as_ref()
@@ -1278,7 +1278,7 @@ pub(crate) fn write_decomposed_export(
     );
     phase_start = Instant::now();
 
-    report_progress(progress, CHILD_ASSETS_START, "Writing child assets");
+    report_progress(progress, CHILD_ASSETS_START, "Writing child assets")?;
 
     let resolved_child_transforms = resolve_child_instance_transforms(&input);
     let mut child_instances = Vec::with_capacity(input.children.len());
@@ -1467,7 +1467,7 @@ pub(crate) fn write_decomposed_export(
                 progress,
                 CHILD_ASSETS_START + (CHILD_ASSETS_END - CHILD_ASSETS_START) * fraction,
                 "Writing child assets",
-            );
+            )?;
         }
     }
     let mut dedupe = HashSet::new();
@@ -1486,7 +1486,7 @@ pub(crate) fn write_decomposed_export(
             .then(a.source_material_index.cmp(&b.source_material_index))
     });
     if child_count == 0 {
-        report_progress(progress, CHILD_ASSETS_END, "Writing interior assets");
+        report_progress(progress, CHILD_ASSETS_END, "Writing interior assets")?;
     }
     log::info!(
         "[timing][decomposed] child_assets: {:.2}s ({} children, parallel ui render {:.2}s)",
@@ -1653,7 +1653,7 @@ pub(crate) fn write_decomposed_export(
                         progress,
                         CHILD_ASSETS_END + (INTERIOR_ASSETS_END - CHILD_ASSETS_END) * fraction,
                         "Writing interior assets",
-                    );
+                    )?;
                 }
                 continue;
             }
@@ -1694,7 +1694,7 @@ pub(crate) fn write_decomposed_export(
                                 progress,
                                 CHILD_ASSETS_END + (INTERIOR_ASSETS_END - CHILD_ASSETS_END) * fraction,
                                 "Writing interior assets",
-                            );
+                            )?;
                         }
                         continue;
                     };
@@ -1824,7 +1824,7 @@ pub(crate) fn write_decomposed_export(
                     progress,
                     CHILD_ASSETS_END + (INTERIOR_ASSETS_END - CHILD_ASSETS_END) * fraction,
                     "Writing interior assets",
-                );
+                )?;
             }
         }
         interior_placement_elapsed += placement_start.elapsed();
@@ -1919,11 +1919,11 @@ pub(crate) fn write_decomposed_export(
                 progress,
                 CHILD_ASSETS_END + (INTERIOR_ASSETS_END - CHILD_ASSETS_END) * fraction,
                 "Writing interior assets",
-            );
+            )?;
         }
     }
     if container_count == 0 {
-        report_progress(progress, INTERIOR_ASSETS_END, "Writing manifests");
+        report_progress(progress, INTERIOR_ASSETS_END, "Writing manifests")?;
     }
     log::info!(
         "[timing][decomposed] interior_placements: {:.2}s",
@@ -2067,7 +2067,7 @@ pub(crate) fn write_decomposed_export(
     if !entity_light_records.is_empty() {
         return Err(Error::Other("resolved light owner is absent from the scene instances".into()));
     }
-    report_progress(progress, INTERIOR_ASSETS_END, "Writing manifests");
+    report_progress(progress, INTERIOR_ASSETS_END, "Writing manifests")?;
     insert_ui_export_stamp(&mut files);
     insert_json_file(&mut files, scene_manifest_path, scene_manifest);
     if !opts.ui_only_files {

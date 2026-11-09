@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use starbreaker_common::progress::{Progress, report as report_progress};
+use starbreaker_common::progress::{Progress, report_checked as report_progress};
 use starbreaker_datacore::database::Database;
 use starbreaker_datacore::types::Record;
 use starbreaker_p4k::MappedP4k;
@@ -57,7 +57,7 @@ pub fn assemble_glb_with_loadout_with_progress(
     let assembly_kind = classify_entity_kind(db, record);
     let is_fps_weapon = assembly_kind == EntityAssemblyKind::FpsWeapon;
 
-    report_progress(progress, LOADOUT_STAGE_START, "Resolving loadout");
+    report_progress(progress, LOADOUT_STAGE_START, "Resolving loadout")?;
     let phase_start = Instant::now();
     let payload_material_mode = if opts.kind == ExportKind::Decomposed && !is_fps_weapon {
         MaterialMode::Colors
@@ -85,7 +85,7 @@ pub fn assemble_glb_with_loadout_with_progress(
         phase_start.elapsed().as_secs_f32()
     );
 
-    report_progress(progress, ROOT_EXPORT_STAGE_START, "Exporting root mesh");
+    report_progress(progress, ROOT_EXPORT_STAGE_START, "Exporting root mesh")?;
     let phase_start = Instant::now();
     let localization = load_localization_map(p4k);
     let paint_display_names = build_paint_display_name_map(db, &localization);
@@ -161,7 +161,7 @@ pub fn assemble_glb_with_loadout_with_progress(
     };
     let gear_parts = query_landing_gear(db, record);
     let mut child_payloads: Vec<EntityPayload> = Vec::new();
-    report_progress(progress, FLATTEN_STAGE_START, "Flattening attachments");
+    report_progress(progress, FLATTEN_STAGE_START, "Flattening attachments")?;
     let phase_start = Instant::now();
     if opts.include_attachments {
         let mut gear_cache: HashMap<String, LandingGearAsset> = HashMap::new();
@@ -293,7 +293,7 @@ pub fn assemble_glb_with_loadout_with_progress(
     } else {
         None
     };
-    report_progress(progress, ASSEMBLY_STAGE_START, "Discovering interiors");
+    report_progress(progress, ASSEMBLY_STAGE_START, "Discovering interiors")?;
 
     // Interior discovery (no mesh loading — JIT during GLB packing).
     let phase_start = Instant::now();
@@ -374,7 +374,7 @@ pub fn assemble_glb_with_loadout_with_progress(
         } else {
             "Packing GLB"
         },
-    );
+    )?;
     let preloaded_interior_mesh_indices: std::collections::HashMap<String, usize> =
         loaded_interiors
             .unique_cgfs
@@ -498,7 +498,7 @@ pub fn assemble_glb_with_loadout_with_progress(
             phase_start.elapsed().as_secs_f32()
         );
 
-        report_progress(progress, ASSEMBLY_STAGE_END, "Writing structured package");
+        report_progress(progress, ASSEMBLY_STAGE_END, "Writing structured package")?;
 
         return Ok(ExportResult {
             kind: opts.kind,
@@ -556,7 +556,7 @@ pub fn assemble_glb_with_loadout_with_progress(
         phase_start.elapsed().as_secs_f32()
     );
 
-    report_progress(progress, ASSEMBLY_STAGE_END, "Writing bundled file");
+    report_progress(progress, ASSEMBLY_STAGE_END, "Writing bundled file")?;
 
     log::info!(
         "[timing] TOTAL export time: {:.2}s",
