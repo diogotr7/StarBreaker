@@ -985,7 +985,8 @@ weapon on a bone stow port. In LIVE 4.10.2 this selects `Brightsky.xml`, not the
 PVE loadout named in the brief. Request the PVE loadout explicitly to verify that
 weapon; no entity/loadout-name special case selects it.
 
-Unarmed queries include authored `moveSpeed` tag variants. Body locomotion
+All actor queries, unarmed and per weapon, include the untagged speed state and
+every authored `moveSpeed` tag variant. Body locomotion
 fragments must have their own motion schema and animate the actor root scope;
 fragments requiring an external item's animation scope are excluded. Stow queries
 use the port selection tag independently of the carry locomotion base. `scopes`
@@ -1015,3 +1016,20 @@ female remap list supplies no mapping. It is therefore reported as missing,
 without borrowing a male clip or substituting another fragment. The verifier
 prints this sidearm diagnostic; missing clips in required stand FP/3P unarmed or
 stocked-rifle idle, movement, select or deselect states fail verification.
+
+The motion base is shared actor state, inferred once across matching weapon-tagged
+options in all participating fragment schemas with a `MotionBase` group. That
+same base is included in every participating fragment query; a movement fragment
+need not repeat a weapon tag to inherit the association authored by idle. Stow
+selection remains independent. If the current stance has no weapon/base
+association, the association lookup considers other authored stance tags while
+retaining the weapon, speed, first-person and skeleton context. Actual fragment
+resolution continues to use only the requested stance. This is needed because
+LIVE rifle/base associations are authored for stand but reused by crouch.
+
+No locomotion base name is hard-coded. The inspected weapon DataCore grip motion
+bases describe carry poses, and its enslavement ADB has no motion-base mapping;
+the shared player motion ADB supplies the locomotion association. The schema is
+unchanged. Consumers should select `move_speed_tag` alongside stance and view mode.
+The verifier requires every armed standing state to have looping movement queried
+with the same base as its idle and validates all clip/blend-space references.

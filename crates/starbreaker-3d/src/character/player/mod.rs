@@ -4,6 +4,7 @@ mod clips;
 mod diagnostics;
 mod motion;
 mod ports;
+mod queries;
 mod xml;
 
 #[cfg(test)]

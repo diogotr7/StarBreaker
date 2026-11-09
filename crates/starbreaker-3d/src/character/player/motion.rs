@@ -195,13 +195,7 @@ pub(super) fn build(
             .flatten()
             .filter(|s| matches!(s.as_str(), "stand" | "crouch"))
         {
-            let speeds = if weapon.is_none() {
-                std::iter::once(None)
-                    .chain(global_groups.get("moveSpeed").into_iter().flatten().map(Some))
-                    .collect::<Vec<_>>()
-            } else {
-                vec![None]
-            };
+            let speeds = super::queries::speeds(&global_groups);
             for speed in speeds {
                 for fp in [false, true] {
                     let mut tags = weapon_tags.clone();
@@ -231,19 +225,27 @@ pub(super) fn build(
                         &mut fragments,
                         &mut docs,
                     )?;
+                    let mut bases = super::queries::bases(&fragments, &schemas, &tags, &weapon_tags);
+                    if weapon.is_some() && bases.values().all(Option::is_none) {
+                        // Some weapon/base associations are authored only for one stance.
+                        // Carry that actor base into other stances without broadening the
+                        // tags used for actual fragment selection.
+                        let context = super::queries::base_context(&tags, &global_groups["stance"]);
+                        let mut associations = Vec::new();
+                        adb(
+                            p4k,
+                            database,
+                            &allowed,
+                            &context,
+                            &mut BTreeSet::new(),
+                            &mut associations,
+                            &mut docs,
+                        )?;
+                        bases = super::queries::bases(&associations, &schemas, &context, &weapon_tags);
+                    }
                     let mut resolved = Vec::new();
                     for (name, schema) in &schemas {
-                        let bases = schema.get("MotionBase").cloned().unwrap_or_default();
-                        let base = fragments
-                            .iter()
-                            .filter(|f| {
-                                f["fragment"] == *name
-                                    && subset(&strings(&f["tags"]), &tags)
-                                    && strings(&f["tags"]).iter().any(|t| weapon_tags.contains(t))
-                            })
-                            .flat_map(|f| strings(&f["frag_tags"]))
-                            .find(|t| bases.contains(t));
-                        let base = query_base(schema.contains_key("selectTag"), base);
+                        let base = bases[name].clone();
                         let mut permitted = BTreeSet::new();
                         for key in [
                             "MotionHemisphere",

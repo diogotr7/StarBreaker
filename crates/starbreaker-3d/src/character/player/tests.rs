@@ -232,3 +232,65 @@ fn wearer_identity_is_not_exported_again_as_loadout_clothing() {
     assert_eq!(result[0].children.len(), 1);
     assert_eq!(result[0].children[0].item, "synthetic_gear");
 }
+
+#[test]
+fn weapon_motion_base_is_shared_across_fragment_schemas() {
+    use std::collections::BTreeMap;
+    let motion = BTreeMap::from([("MotionBase".into(), vec!["synthetic_base".into()])]);
+    let mut stow = motion.clone();
+    stow.insert("selectTag".into(), vec!["slot".into()]);
+    let schemas = BTreeMap::from([
+        ("synthetic_idle".into(), motion.clone()),
+        ("synthetic_move".into(), motion),
+        ("synthetic_stow".into(), stow),
+    ]);
+    let fragments = vec![
+        json!({"fragment":"synthetic_idle","tags":["synthetic_weapon","synthetic_stance"],"frag_tags":["synthetic_base"]}),
+        json!({"fragment":"synthetic_move","tags":["synthetic_stance"],"frag_tags":["synthetic_base"]}),
+    ];
+    let bases = queries::bases(
+        &fragments,
+        &schemas,
+        &["synthetic_weapon".into(), "synthetic_stance".into()],
+        &["synthetic_weapon".into()],
+    );
+    assert_eq!(bases["synthetic_idle"].as_deref(), Some("synthetic_base"));
+    assert_eq!(bases["synthetic_move"], bases["synthetic_idle"]);
+    assert_eq!(bases["synthetic_stow"], None);
+    assert!(
+        queries::bases(&fragments, &schemas, &["synthetic_stance".into()], &[])
+            .values()
+            .all(Option::is_none)
+    );
+}
+
+#[test]
+fn weapon_queries_enumerate_every_authored_speed_and_the_untagged_state() {
+    let groups = std::collections::BTreeMap::from([(
+        "moveSpeed".into(),
+        vec!["synthetic_slow".into(), "synthetic_fast".into()],
+    )]);
+    assert_eq!(
+        queries::speeds(&groups)
+            .into_iter()
+            .map(|s| s.map(String::as_str))
+            .collect::<Vec<_>>(),
+        vec![None, Some("synthetic_slow"), Some("synthetic_fast")]
+    );
+}
+
+#[test]
+fn weapon_motion_base_association_can_be_authored_in_another_stance() {
+    let tags = vec![
+        "synthetic_weapon".into(),
+        "synthetic_crouch".into(),
+        "synthetic_speed".into(),
+    ];
+    let context = queries::base_context(&tags, &["synthetic_stand".into(), "synthetic_crouch".into()]);
+    assert!(ports::subset(
+        &["synthetic_weapon".into(), "synthetic_stand".into()],
+        &context
+    ));
+    assert!(ports::subset(&tags, &context));
+    assert!(!context.contains(&"unrequested_speed".into()));
+}
