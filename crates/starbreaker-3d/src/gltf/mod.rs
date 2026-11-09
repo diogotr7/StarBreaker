@@ -62,6 +62,8 @@ pub struct GlbLoaders<'a> {
 pub struct GlbOptions {
     pub material_mode: crate::pipeline::MaterialMode,
     pub preserve_textureless_decal_primitives: bool,
+    /// Preserve sidecar slots for a decomposed mesh; independent of metadata labels.
+    pub preserve_material_slots: bool,
     pub metadata: GlbMetadata,
     pub fallback_palette: Option<crate::mtl::TintPalette>,
 }
@@ -176,7 +178,7 @@ pub fn write_glb_with_progress(
     progress: Option<&Progress>,
 ) -> Result<Vec<u8>, Error> {
     let mut builder = GlbBuilder::new();
-    builder.preserve_material_slots = opts.metadata.export_options.kind == "Decomposed";
+    builder.preserve_material_slots = opts.preserve_material_slots;
     // The root's instance name; decomposed GLBs are shared assets and carry
     // no instance metadata.
     let root_name = opts.metadata.entity_name.clone().filter(|_| opts.metadata.export_options.kind != "Decomposed");
@@ -399,6 +401,7 @@ mod tests {
         GlbOptions {
             material_mode: crate::pipeline::MaterialMode::None,
             preserve_textureless_decal_primitives: false,
+            preserve_material_slots: false,
             metadata: GlbMetadata {
                 entity_name: None,
                 geometry_path: None,
@@ -1097,7 +1100,8 @@ mod tests {
         }).collect();
         let mut opts = default_opts();
         opts.material_mode = crate::pipeline::MaterialMode::Colors;
-        opts.metadata.export_options.kind = "Decomposed".into();
+        // Deliberately keep Bundled metadata: only the explicit flag controls slots.
+        opts.preserve_material_slots = true;
         let bytes = write_glb(
             GlbInput { root_mesh: Some(mesh), root_materials: Some(materials),
                 root_textures: None, root_nmc: None, root_palette: None,
@@ -1113,6 +1117,31 @@ mod tests {
         }
         assert_eq!(doc["meshes"][0]["primitives"].as_array().unwrap().len(), 1);
         assert_eq!(doc["meshes"][0]["primitives"][0]["material"], 3);
+    }
+
+    #[test]
+    fn bundled_material_count_ignores_metadata_kind() {
+        let render = |kind: &str| {
+            let mut mesh = triangle_mesh();
+            mesh.submeshes[0].material_id = 3;
+            let mut materials = shared_material_file();
+            let template = materials.materials[0].clone();
+            materials.materials = (0..5).map(|i| {
+                let mut material = template.clone(); material.name = format!("slot_{i}"); material
+            }).collect();
+            let mut opts = default_opts();
+            opts.material_mode = crate::pipeline::MaterialMode::Colors;
+            opts.metadata.export_options.kind = kind.into();
+            let bytes = write_glb(
+                GlbInput { root_mesh: Some(mesh), root_materials: Some(materials), root_textures: None,
+                    root_nmc: None, root_palette: None, skeleton_bones: Vec::new(), children: Vec::new(),
+                    interiors: crate::pipeline::LoadedInteriors::default(), animations: Vec::new() },
+                &mut GlbLoaders { load_textures: &mut |_, _| None, load_interior_mesh: &mut |_| None }, &opts,
+            ).unwrap();
+            glb_json(&bytes)["materials"].as_array().unwrap().len()
+        };
+        assert_eq!(render("Bundled"), 1);
+        assert_eq!(render("Decomposed"), render("Bundled"));
     }
 
     #[test]

@@ -64,6 +64,7 @@ fn export(clips: Vec<Clip>) -> Result<Vec<u8>, crate::error::Error> {
         &GlbOptions {
             material_mode: crate::pipeline::MaterialMode::None,
             preserve_textureless_decal_primitives: false,
+            preserve_material_slots: false,
             metadata: GlbMetadata {
                 entity_name: Some("head".into()),
                 geometry_path: None,

@@ -2520,6 +2520,7 @@ fn write_mesh_asset(
             &crate::gltf::GlbOptions {
                 material_mode: crate::pipeline::MaterialMode::Colors,
                 preserve_textureless_decal_primitives: true,
+                preserve_material_slots: true,
                 metadata: crate::gltf::GlbMetadata {
                     entity_name: None,
                     geometry_path: Some(geometry_path.to_string()),

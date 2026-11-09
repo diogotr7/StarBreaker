@@ -1,3 +1,4 @@
+//! Geometry parsing and public StarBreaker export entry points.
 pub mod dequant;
 pub(crate) mod decomposed;
 pub mod error;
@@ -394,6 +395,7 @@ pub fn skin_to_glb(data: &[u8], metadata: Option<&[u8]>) -> Result<Vec<u8>, Erro
         &gltf::GlbOptions {
             material_mode: pipeline::MaterialMode::None,
             preserve_textureless_decal_primitives: false,
+            preserve_material_slots: false,
             metadata: gltf::GlbMetadata {
                 entity_name: None,
                 geometry_path: None,

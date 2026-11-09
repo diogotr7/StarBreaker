@@ -18,6 +18,15 @@ Within that export root:
 
 ## Scene Manifest
 
+### Glb format
+
+Callers requesting `ExportKind::Decomposed` with `ExportFormat::Glb` now receive
+a GLB package with `scene.json`, rather than passing through native Blend
+assembly and receiving `scene.blend`. The `__child` mesh rewrite step belongs
+to Blend assembly and is Blend-only. The decomposed mesh writer explicitly
+sets `GlbOptions.preserve_material_slots`; the behavior does not depend on the
+free-form export-kind metadata label. Bundled callers leave that option false.
+
 ### GLB mesh assets
 
 The entity CLI accepts `--kind decomposed --format glb|blend`. Decomposed

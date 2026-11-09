@@ -129,6 +129,7 @@ fn synthetic_glb(mesh: Mesh, bones: Vec<crate::skeleton::Bone>, clip: Clip) -> V
         &GlbOptions {
             material_mode: crate::pipeline::MaterialMode::None,
             preserve_textureless_decal_primitives: false,
+            preserve_material_slots: false,
             metadata: GlbMetadata {
                 entity_name: Some("head".into()),
                 geometry_path: None,

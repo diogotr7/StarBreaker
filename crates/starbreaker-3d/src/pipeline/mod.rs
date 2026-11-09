@@ -425,6 +425,7 @@ pub fn socpaks_to_glb(
         &crate::gltf::GlbOptions {
             material_mode: opts.material_mode,
             preserve_textureless_decal_primitives: false,
+            preserve_material_slots: false,
             metadata: crate::gltf::GlbMetadata {
                 entity_name: None,
                 geometry_path: None,

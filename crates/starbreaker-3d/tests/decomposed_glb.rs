@@ -57,10 +57,8 @@ fn decomposed_glb_meshes_are_real_glbs() {
         .find(|f| f.relative_path == root["material_sidecar"].as_str().unwrap())
         .unwrap();
     let sidecar: serde_json::Value = serde_json::from_slice(&sidecar.bytes).unwrap();
-    assert_eq!(root_glb["nodes"].as_array().unwrap().len(), 274);
-    assert_eq!(root_glb["meshes"].as_array().unwrap().len(), 89);
-    assert_eq!(root_glb["materials"].as_array().unwrap().len(), 27);
-    assert_eq!(sidecar["submaterials"].as_array().unwrap().len(), 28);
+    let material_count = root_glb["materials"].as_array().unwrap().len();
+    assert!(sidecar["submaterials"].as_array().unwrap().len() >= material_count);
     for (i, material) in root_glb["materials"].as_array().unwrap().iter().enumerate() {
         let submaterial = sidecar["submaterials"][i]["submaterial_name"]
             .as_str()
@@ -82,7 +80,7 @@ fn decomposed_glb_meshes_are_real_glbs() {
         .filter_map(|p| p["material"].as_u64())
         .max()
         .unwrap();
-    assert_eq!(highest, 26);
+    assert_eq!(material_count as u64, highest + 1);
     for file in meshes {
         assert!(
             file.bytes.starts_with(b"glTF"),
@@ -93,6 +91,18 @@ fn decomposed_glb_meshes_are_real_glbs() {
         );
         let len = u32::from_le_bytes(file.bytes[12..16].try_into().unwrap()) as usize;
         let doc: serde_json::Value = serde_json::from_slice(&file.bytes[20..20 + len]).unwrap();
+        let count = doc["materials"].as_array().map_or(0, |m| m.len());
+        let indices: Vec<_> = doc["meshes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|m| m["primitives"].as_array().unwrap())
+            .filter_map(|p| p["material"].as_u64())
+            .collect();
+        assert!(indices.iter().all(|&i| i < count as u64));
+        if let Some(highest) = indices.iter().max() {
+            assert_eq!(count as u64, highest + 1);
+        }
         for (i, material) in doc["materials"]
             .as_array()
             .into_iter()

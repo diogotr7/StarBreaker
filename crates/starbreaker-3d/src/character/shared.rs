@@ -221,6 +221,7 @@ impl CharacterRig {
         let opts = GlbOptions {
             material_mode: crate::pipeline::MaterialMode::Colors,
             preserve_textureless_decal_primitives: false,
+            preserve_material_slots: false,
             metadata: GlbMetadata {
                 entity_name: Some(self.name.clone()),
                 geometry_path: None,
