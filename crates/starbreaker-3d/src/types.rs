@@ -1091,6 +1091,9 @@ pub struct InteriorPayload {
     pub meshes: Vec<InteriorMesh>,
     /// Lights from CryXMLB entities.
     pub lights: Vec<LightInfo>,
+    /// Room extents (area shapes linked to the container's registered rooms),
+    /// in the same container-local space as `lights`.
+    pub room_volumes: Vec<crate::socpak::room_volume::RoomVolume>,
     /// 4×4 column-major transform for this container relative to hull.
     pub container_transform: [[f32; 4]; 4],
     /// Tint palette record names from IncludedObjects (e.g. "rsi_interior_zeus_base").

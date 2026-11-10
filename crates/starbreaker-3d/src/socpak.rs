@@ -26,6 +26,7 @@ use crate::types::{InteriorMesh, InteriorPayload, LightInfo, LightStateInfo};
 mod light_field_tests;
 
 pub(crate) mod light_component;
+pub(crate) mod room_volume;
 #[path = "socpak_light_fields.rs"]
 pub(crate) mod light_fields;
 
@@ -228,8 +229,24 @@ pub fn load_interior_from_socpak(
         }
     }
 
+    // Room registry sidecar (`<name>/metadata/entitycomponentroom.xml`): the
+    // CryGUIDs of the container's rooms. Area shapes in the `.soc` that link
+    // one of them describe that room's extent (see `room_volume`).
+    let mut room_guids = HashSet::new();
+    for entry in inner.entries() {
+        let lowered = entry.name.to_ascii_lowercase().replace('\\', "/");
+        if !lowered.ends_with("metadata/entitycomponentroom.xml") {
+            continue;
+        }
+        match inner.read(entry) {
+            Ok(data) => room_guids.extend(room_volume::parse_room_registry(&data)),
+            Err(e) => log::warn!("failed to read {}: {e}", entry.name),
+        }
+    }
+
     let mut meshes = Vec::new();
     let mut lights = Vec::new();
+    let mut room_volumes = Vec::new();
     let mut tint_palette_names = Vec::new();
 
     for soc_entry in &soc_entries {
@@ -241,7 +258,7 @@ pub fn load_interior_from_socpak(
             }
         };
 
-        match parse_soc(&soc_data, &soc_entry.name, container_transform) {
+        match parse_soc(&soc_data, &soc_entry.name, container_transform, &room_guids) {
             Ok((mut payload, palette_names)) => {
                 associate_transit_locations(&mut payload.meshes, &transit_destinations);
                 log::debug!(
@@ -261,6 +278,12 @@ pub fn load_interior_from_socpak(
                         .lights
                         .into_iter()
                         .map(|light| transform_non_item_port_light(light, non_item_port_transform_delta)),
+                );
+                room_volumes.extend(
+                    payload
+                        .room_volumes
+                        .into_iter()
+                        .map(|volume| volume.transformed(non_item_port_transform_delta)),
                 );
                 if tint_palette_names.is_empty() {
                     tint_palette_names = palette_names;
@@ -285,6 +308,7 @@ pub fn load_interior_from_socpak(
         parent_node_name: None,
         meshes,
         lights,
+        room_volumes,
         container_transform,
         tint_palette_names,
     })
@@ -699,6 +723,7 @@ fn parse_soc(
     data: &[u8],
     name: &str,
     container_transform: [[f32; 4]; 4],
+    room_guids: &HashSet<String>,
 ) -> Result<(InteriorPayload, Vec<String>), Error> {
     let cf =
         ChunkFile::from_bytes(data).map_err(|e| Error::ChunkParse(format!("{name}.soc: {e}")))?;
@@ -711,6 +736,7 @@ fn parse_soc(
 
     let mut meshes = Vec::new();
     let mut lights = Vec::new();
+    let mut room_volumes = Vec::new();
     let mut palette_names = Vec::new();
 
     for chunk in crch_file.chunks() {
@@ -731,6 +757,7 @@ fn parse_soc(
                     let (entity_meshes, entity_lights) = extract_cryxml_entities(&xml);
                     meshes.extend(entity_meshes);
                     lights.extend(entity_lights);
+                    room_volumes.extend(room_volume::extract_room_volumes(&xml, room_guids));
                 }
                 Err(e) => log::warn!("failed to parse CryXMLB in {name}: {e}"),
             },
@@ -744,6 +771,7 @@ fn parse_soc(
         parent_node_name: None,
         meshes,
         lights,
+        room_volumes,
         container_transform,
         tint_palette_names: Vec::new(), // Set by caller from palette_names
     }, palette_names))

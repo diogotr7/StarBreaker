@@ -226,6 +226,7 @@ mod tests {
             parent_entity_name: Some("owner".into()),
             parent_node_name: None,
             container_transform: transform.to_cols_array_2d(),
+            room_volumes: Vec::new(),
             placements: vec![],
             lights: vec![light],
             palette: None,

@@ -61,6 +61,8 @@ pub(crate) struct InteriorContainerData {
     /// tints independently of the parent socpak's tint palette.
     pub placements: Vec<crate::types::InteriorPlacement>,
     pub lights: Vec<crate::types::LightInfo>,
+    /// Room extents in container-local space (see `socpak::room_volume`).
+    pub room_volumes: Vec<crate::socpak::room_volume::RoomVolume>,
     /// Tint palette resolved from the socpak's IncludedObjects tint_palette_paths.
     pub palette: Option<mtl::TintPalette>,
 }
@@ -783,6 +785,7 @@ pub(crate) fn build_interiors_from_payloads(
             parent_entity_name: payload.parent_entity_name.clone(),
             parent_node_name: payload.parent_node_name.clone(),
             container_transform: payload.container_transform,
+            room_volumes: payload.room_volumes.clone(),
             placements,
             lights: if include_lights {
                 payload
@@ -1908,6 +1911,7 @@ mod tests {
                     parent_entity_name: None,
                     parent_node_name: None,
                     container_transform: identity,
+                    room_volumes: Vec::new(),
                     placements: vec![root_placement(0), root_placement(1)],
                     lights: Vec::new(),
                     palette: None,
@@ -1920,6 +1924,7 @@ mod tests {
                     parent_entity_name: Some(root_entity_name.to_string()),
                     parent_node_name: Some("hardpoint_interior_oc".to_string()),
                     container_transform: identity,
+                    room_volumes: Vec::new(),
                     placements: vec![root_placement(0), root_placement(1)],
                     lights: Vec::new(),
                     palette: None,
@@ -1931,6 +1936,7 @@ mod tests {
                     parent_entity_name: Some("Test_Child_Module".to_string()),
                     parent_node_name: Some("helper".to_string()),
                     container_transform: identity,
+                    room_volumes: Vec::new(),
                     placements: vec![root_placement(0)],
                     lights: Vec::new(),
                     palette: None,
@@ -2046,6 +2052,7 @@ mod tests {
             parent_entity_name: None,
             parent_node_name: None,
             meshes: Vec::new(),
+            room_volumes: Vec::new(),
             lights: vec![crate::types::LightInfo {
                 source_component: None,
                 // Synthetic fixture dimensions and flags.
@@ -2109,6 +2116,7 @@ mod tests {
             parent_entity_name: None,
             parent_node_name: None,
             meshes: Vec::new(),
+            room_volumes: Vec::new(),
             lights: vec![crate::types::LightInfo {
                 source_component: None,
                 // Synthetic fixture dimensions and flags.

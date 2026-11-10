@@ -431,6 +431,7 @@ struct InteriorContainerRecord {
     container_transform: [[f32; 4]; 4],
     placements: Vec<InteriorPlacementRecord>,
     lights: Vec<serde_json::Value>,
+    room_volumes: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -1913,6 +1914,7 @@ pub(crate) fn write_decomposed_export(
             container_transform: container.container_transform,
             placements,
             lights,
+            room_volumes: container.room_volumes.iter().map(|volume| volume.to_json()).collect(),
         });
 
         if container_count > 0 && total_interior_placements == 0 {
@@ -2367,6 +2369,7 @@ fn interior_container_json(container: &InteriorContainerRecord) -> serde_json::V
             })
         }).collect::<Vec<_>>(),
         "lights": container.lights,
+        "room_volumes": container.room_volumes,
     })
 }
 
@@ -7603,6 +7606,7 @@ mod tests {
                 palette_id: None,
             }],
             lights: vec![serde_json::json!({ "name": "light_a" })],
+            room_volumes: vec![serde_json::json!({ "kind": "box" })],
         };
 
         let value = build_scene_manifest_value(
