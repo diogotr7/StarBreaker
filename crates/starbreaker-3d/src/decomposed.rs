@@ -5231,6 +5231,14 @@ pub(crate) fn merge_animation_channel_values(
     clip_name: &str,
     channel_key: &str,
 ) {
+    // A channel entry is one channel or a flat list of variants. An incoming list joins
+    // variant by variant, so a list never ends up nested inside a list.
+    if let serde_json::Value::Array(incoming_variants) = incoming_value {
+        for variant in incoming_variants {
+            merge_animation_channel_values(existing_value, variant, clip_name, channel_key);
+        }
+        return;
+    }
     if *existing_value == incoming_value {
         return;
     }
@@ -5614,6 +5622,33 @@ mod tests {
             .as_array()
             .expect("channel entry should remain an array");
         assert_eq!(arr.len(), 2);
+    }
+
+    #[test]
+    fn merge_animation_channel_values_joins_an_incoming_variant_list_flat() {
+        let (a, b, c) = (
+            serde_json::json!({"position": [[1.0, 2.0, 3.0]], "source": 0}),
+            serde_json::json!({"position": [[4.0, 5.0, 6.0]], "source": 1}),
+            serde_json::json!({"position": [[7.0, 8.0, 9.0]], "source": 1}),
+        );
+        // One channel meets a variant list: three variants, never a list inside a list.
+        let mut existing = a.clone();
+        merge_animation_channel_values(
+            &mut existing,
+            serde_json::json!([b.clone(), c.clone()]),
+            "open",
+            "0x1",
+        );
+        assert_eq!(existing, serde_json::json!([a.clone(), b.clone(), c.clone()]));
+        // Two lists that share a variant: each distinct variant once, in merge order.
+        let mut existing = serde_json::json!([a.clone(), b.clone()]);
+        merge_animation_channel_values(
+            &mut existing,
+            serde_json::json!([b.clone(), c.clone()]),
+            "open",
+            "0x1",
+        );
+        assert_eq!(existing, serde_json::json!([a, b, c]));
     }
 
     fn sample_submaterial() -> SubMaterial {

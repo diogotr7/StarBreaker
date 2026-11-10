@@ -630,16 +630,21 @@ with its `source_skeleton_path`. In the game each rig plays its own animation of
 that name, so the clip keeps every contributing animation apart
 (`animation/rig_sources.rs`):
 
-- `sources` — one record per distinct contributing animation, in merge order:
-  `{skeleton_path, fps, frame_count, start_rotation?, start_position?}`, the
-  values of that animation's own clip (keys absent there are absent here). One
-  animation reached through several entities is one record; a rig that
-  contributes no channel has none.
+- `sources` — the timing and anchor of every contributing animation, in merge
+  order: `{skeleton_path, fps, frame_count, start_rotation?, start_position?}`,
+  the values of that animation's own clip (keys absent there are absent here).
+  Records equal in every field are one record, so an animation reached through
+  several entities is listed once. A record identifies a rig's rate, length and
+  start pose, not a key block: two animations of one rig that agree on all of
+  them share a record. A rig that contributes no channel has none, and every
+  record is named by at least one channel.
   `skeleton_path` is the rig the animation was read for; a channel re-stamped to
   the geometry that owns its node keeps its `source`.
 - Every channel (each variant of a variant array included) carries `source`, the
   index of its animation in `sources`. Its key times are frames at that
   animation's `fps`, within `0..=frame_count` of that record.
+- A bone's entry is one channel or a flat array of variants. A contributor that
+  brings an array joins it variant by variant; an array never holds an array.
 - The clip-level `fps` / `start_rotation` / `start_position` / `fragments` stay
   the first contributor's. The clip-level `frame_count` is the longest
   contributor's duration in frames at the clip-level `fps` (rounded up). A

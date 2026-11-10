@@ -398,4 +398,21 @@ mod tests {
         assert_eq!(clip["bones"]["0x1"][0]["source"], 0);
         assert_eq!(clip["bones"]["0x1"][1]["source"], 0);
     }
+    #[test]
+    fn a_rig_with_channel_variants_joins_a_merged_clip_flat() {
+        let sources = rig_sources(
+            Some(("ship".into(), "root.chr".into())),
+            [("port_a".into(), "a.chr".into()), ("port_b".into(), "b.chr".into())],
+        );
+        let mut collection = ClipCollection::default();
+        collection.append(&sources[1], timed(40, 30, [1.0, 0.0, 0.0, 0.0], "0x1"));
+        collection.append(
+            &sources[2],
+            serde_json::json!({"name":"open", "fps":30, "frame_count":70,
+                "bones":{"0x1":[{"position":[[0.0, 0.0, 0.0]]}, {"position":[[1.0, 0.0, 0.0]]}]}}),
+        );
+        let variants = collection.clips[0].value["bones"]["0x1"].as_array().unwrap();
+        let named: Vec<_> = variants.iter().map(|variant| variant["source"].as_u64()).collect();
+        assert_eq!(named, [Some(0), Some(1), Some(1)], "every variant is a channel that names its source");
+    }
 }
