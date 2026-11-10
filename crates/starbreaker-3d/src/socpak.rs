@@ -26,6 +26,8 @@ use crate::types::{InteriorMesh, InteriorPayload, LightInfo, LightStateInfo};
 mod light_field_tests;
 
 pub(crate) mod light_component;
+pub(crate) mod light_anchor;
+mod room_containment;
 pub(crate) mod room_volume;
 #[path = "socpak_light_fields.rs"]
 pub(crate) mod light_fields;
@@ -301,6 +303,12 @@ pub fn load_interior_from_socpak(
         container_transform,
         root_item_port_reference_candidates,
     ));
+    if let Some((_, descriptor)) = read_root_container_xml(&inner, &name) {
+        light_anchor::assign_item_port_positions(
+            &mut lights,
+            &light_anchor::parse_item_port_positions(&descriptor),
+        );
+    }
 
     Ok(InteriorPayload {
         name,
@@ -802,6 +810,13 @@ pub(crate) fn transform_non_item_port_light(
         transformed_position.y as f64,
         transformed_position.z as f64,
     ];
+    // The group origin lives in the light's frame and moves with it.
+    if let Some(group) = light.attachment.as_mut().and_then(|a| a.group_position.as_mut()) {
+        *group = delta
+            .transform_point3(glam::Vec3::from_array(group.map(|v| v as f32)))
+            .to_array()
+            .map(f64::from);
+    }
     let local_rotation = glam::Quat::from_xyzw(
         light.rotation[1] as f32,
         light.rotation[2] as f32,
@@ -830,25 +845,29 @@ pub(crate) fn transform_non_item_port_light(
     light
 }
 
+/// The container descriptor (`<name>.xml` at the socpak root): entry name and bytes.
+fn read_root_container_xml(inner: &P4kArchive, root_name: &str) -> Option<(String, Vec<u8>)> {
+    let root_xml_name = format!("{}.xml", root_name.to_ascii_lowercase());
+    let entry = inner.entries().iter().find(|entry| {
+        entry.name.replace('/', "\\").to_ascii_lowercase() == root_xml_name
+    })?;
+    match inner.read(entry) {
+        Ok(data) => Some((entry.name.clone(), data)),
+        Err(e) => {
+            log::warn!("failed to read {}: {e}", entry.name);
+            None
+        }
+    }
+}
+
 fn extract_root_item_port_meshes(
     inner: &P4kArchive,
     root_name: &str,
     container_transform: [[f32; 4]; 4],
     root_item_port_reference_candidates: &[[[f32; 4]; 4]],
 ) -> Vec<InteriorMesh> {
-    let root_xml_name = format!("{}.xml", root_name.to_ascii_lowercase());
-    let Some(entry) = inner.entries().iter().find(|entry| {
-        entry.name.replace('/', "\\").to_ascii_lowercase() == root_xml_name
-    }) else {
+    let Some((entry_name, data)) = read_root_container_xml(inner, root_name) else {
         return Vec::new();
-    };
-
-    let data = match inner.read(entry) {
-        Ok(data) => data,
-        Err(e) => {
-            log::warn!("failed to read {}: {e}", entry.name);
-            return Vec::new();
-        }
     };
 
     let root_bounds = parse_editor_bounds(&data).or_else(|| read_root_editor_bounds(inner, root_name));
@@ -867,7 +886,7 @@ fn extract_root_item_port_meshes(
     if !kept.is_empty() {
         log::debug!(
             "  root container xml '{}' → {} item-port entities",
-            entry.name,
+            entry_name,
             kept.len()
         );
     }
@@ -1396,6 +1415,13 @@ const SKIP_ENTITY_CLASSES: &[&str] = &[
     "VehicleAudioPoint",
 ];
 
+/// Lights of a synthetic `.soc` entity document, for tests outside this module.
+#[cfg(test)]
+pub(crate) fn lights_from_soc_xml(xml: &str) -> Vec<LightInfo> {
+    let bytes = crate::test_xml::encode(xml);
+    extract_cryxml_entities(&starbreaker_cryxml::from_bytes(&bytes).unwrap()).1
+}
+
 fn extract_cryxml_entities(xml: &CryXml) -> (Vec<InteriorMesh>, Vec<LightInfo>) {
     let mut meshes = Vec::new();
     let mut lights = Vec::new();
@@ -1769,16 +1795,22 @@ fn parse_light_group(
         .flat_map(|node| xml.node_attributes(node))
         .find(|(key, value)| *key == "helper" && !value.is_empty())
         .map(|(_, value)| value.to_owned());
-    let attachment_point = xml.node_children(entity)
+    let item_port = xml.node_children(entity)
         .find(|node| xml.node_tag(node) == "TileAttachmentParams")
         .and_then(|node| xml.node_attributes(node).find(|(key, _)| *key == "ItemPortName"))
-        .and_then(|(_, value)| value.rsplit_once('['))
+        .map(|(_, value)| value.to_owned());
+    let attachment_point = item_port
+        .as_deref()
+        .and_then(|value| value.rsplit_once('['))
         .and_then(|(_, value)| value.strip_suffix(']'))
         .map(str::to_owned);
     for light in &mut lights {
         light.attachment = Some(crate::types::LightAttachment {
             group: base_name.to_owned(), helper: helper.clone(),
             attachment_point: attachment_point.clone(),
+            item_port: item_port.clone(),
+            group_position: Some(*base_pos),
+            port_position: None,
         });
     }
     lights

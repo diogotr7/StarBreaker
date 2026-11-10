@@ -103,6 +103,19 @@ child-attachment parents (`parent_entity_name`, `parent_node_name`),
 container's: the socpak object's own per-object tint palette, or a
 loadout-attached child's palette), and `ui_bindings[]`.
 
+`room_volumes[]` lists the extents of the rooms the container registers in
+`<name>/metadata/entitycomponentroom.xml`, one entry per `AreaComponent`
+segment that links a registered room GUID: `room` (GUID), `room_name` and
+`source` (labels only), `transform` (4×4 column-major, segment space →
+container-local space, the frame of `lights[]`), and `kind`: `box` (`box_min`,
+`box_max`), `prism` (`points` in the segment XY plane, extruded along +Z by
+`height` from the lowest point) or `trimesh` (`vertices`, three per
+triangle). A light flagged `affects_this_area_only` is confined by the engine
+to the area it sits in; the volumes let a consumer make that decision. The
+array is empty when the container registers no rooms. A point on a shared
+edge or vertex of a `trimesh` must be counted once: `RoomVolume::contains`
+(`socpak/room_containment.rs`) casts +Z and breaks edge ties symbolically.
+
 ### Engine-glow controls
 
 `controls.engine_glow` is additive metadata for engine-emission tuning in
@@ -199,6 +212,21 @@ they are not persistent IDs across source builds or export-option changes.
 
 `attachment` is null for single lights, or contains the source `group`, optional
 `helper`, and optional `attachment_point` parsed from SOC `TileAttachmentParams`.
+A group that names an item port (`TileAttachmentParams@ItemPortName`) of the
+container descriptor (`<name>.xml`, `TileItemPortEntries/ItemPort`) is placed
+with its origin on that port's `interactionOffset`, which is authored in the
+frame of the entity that owns the container; the group's lights keep their
+offsets from the group origin and their orientation (the descriptor ports
+carry no usable rotation). The `.soc` position of such a group is in the same
+frame for some containers and container-local for others, so it is not used
+for placement. This applies to the containers listed directly on an entity's
+`VehicleComponentParams.objectContainers`; groups in nested child containers
+and in containers of loadout children keep their `.soc` placement.
+A helper-parented container's `container_transform` is relative to that
+helper (`parent_node_name` of `parent_entity_name`); the bundled GLB hangs
+the container node under the helper node, or under the owner entity node
+when the container names no helper, and falls back to the scene root with a
+warning only when neither node exists.
 A missing or ambiguous helper leaves the light in its original container and
 emits a diagnostic; the exporter does not substitute the origin. Empty groups
 produce no fallback lights. The catalogue keeps all lights and their resolved

@@ -127,18 +127,21 @@ pub(crate) fn load_interiors(
                 reference_transform,
                 parent_entity_name,
                 parent_node_name,
+                helper_transform,
             )
         })
         .collect();
     let mut root_item_port_reference_candidates: std::collections::HashMap<String, Vec<[[f32; 4]; 4]>> =
         std::collections::HashMap::new();
-    for (container, _, reference_transform, _, _) in &container_instances {
+    for (container, _, reference_transform, _, _, _) in &container_instances {
         root_item_port_reference_candidates
             .entry(container.file_name.to_ascii_lowercase())
             .or_default()
             .push(*reference_transform);
     }
-    for (container, container_transform, _, parent_entity_name, parent_node_name) in &container_instances {
+    for (container, container_transform, _, parent_entity_name, parent_node_name, helper_transform) in
+        &container_instances
+    {
         let reference_candidates = root_item_port_reference_candidates
             .get(&container.file_name.to_ascii_lowercase())
             .map(Vec::as_slice)
@@ -159,6 +162,14 @@ pub(crate) fn load_interiors(
                     parent_node_name.clone(),
                     true,
                 );
+                // Only the container authored directly on the entity: its item ports are
+                // in that entity's frame. Nested child socpaks keep their `.soc` placement.
+                if let Some(root) = tree_payloads.first_mut() {
+                    socpak::light_anchor::anchor_group_lights_to_item_ports(
+                        &mut root.lights,
+                        root_container_owner_transform(*helper_transform, root.container_transform),
+                    );
+                }
                 payloads.append(&mut tree_payloads);
             }
             Err(e) => log::warn!("failed to load {}: {e}", container.file_name),
@@ -187,7 +198,7 @@ pub(crate) fn load_interiors(
     loaded
 }
 
-fn helper_node_name_matches(node_name: &str, helper_name: &str) -> bool {
+pub(crate) fn helper_node_name_matches(node_name: &str, helper_name: &str) -> bool {
     let node_name = node_name.to_ascii_lowercase();
     let helper_name = helper_name.to_ascii_lowercase();
     node_name == helper_name || node_name.ends_with(&format!("_{helper_name}"))
@@ -280,6 +291,15 @@ fn remove_root_geometry_duplicate_interior_placements(
     interiors.unique_cgfs = compact;
 
     removed
+}
+
+/// Owner-entity-from-container transform of a root container instance: the
+/// container's final transform under the helper it is parented to, if any.
+fn root_container_owner_transform(
+    helper_transform: Option<glam::Mat4>,
+    container_transform: [[f32; 4]; 4],
+) -> glam::Mat4 {
+    helper_transform.unwrap_or(glam::Mat4::IDENTITY) * mat4_from_array(&container_transform)
 }
 
 fn compose_root_container_transform(

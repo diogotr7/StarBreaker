@@ -1257,10 +1257,46 @@ impl GlbBuilder {
             if !container_children.is_empty() {
                 self.nodes_json[container_node_idx as usize].children = Some(container_children);
             }
-            container_scene_nodes.push(json::Index::new(container_node_idx));
+            match self.interior_container_parent(container) {
+                Some(parent_idx) => self.append_child_to_node(parent_idx, container_node_idx),
+                None => container_scene_nodes.push(json::Index::new(container_node_idx)),
+            }
         }
 
         (container_scene_nodes, all_lights)
+    }
+
+    /// Node an interior container hangs under: the helper it is authored on
+    /// (`parent_node_name`, matched like the NMC helper lookup that produced its
+    /// helper-relative transform), else its owning entity's node. `None` leaves
+    /// the container a scene root: it has no parent, or none of them has a node.
+    fn interior_container_parent(
+        &self,
+        container: &crate::pipeline::InteriorContainerData,
+    ) -> Option<u32> {
+        let helper = container.parent_node_name.as_deref().filter(|name| !name.is_empty());
+        let owner = container.parent_entity_name.as_deref().filter(|name| !name.is_empty());
+        let parent = helper
+            .and_then(|helper| {
+                self.node_name_to_idx.get(&helper.to_lowercase()).copied().or_else(|| {
+                    self.nodes_json.iter().position(|node| {
+                        node.name
+                            .as_deref()
+                            .is_some_and(|name| crate::pipeline::helper_node_name_matches(name, helper))
+                    })
+                    .map(|idx| idx as u32)
+                })
+            })
+            .or_else(|| owner.and_then(|owner| self.node_name_to_idx.get(&owner.to_lowercase()).copied()));
+        if parent.is_none() && (helper.is_some() || owner.is_some()) {
+            log::warn!(
+                "no node for interior container '{}' (helper {:?}, owner {:?}), attaching to root",
+                container.name,
+                helper,
+                owner
+            );
+        }
+        parent
     }
 
     /// Pack a mesh's vertex data, textures, and materials into the builder.

@@ -1,4 +1,5 @@
-//! Room volumes authored in interior object containers.
+//! Room volumes authored in interior object containers (parsing and types;
+//! point containment lives in `room_containment.rs`).
 //!
 //! An object container registers its rooms in the socpak sidecar
 //! `<name>/metadata/entitycomponentroom.xml` (one `<Entity CryGUID="…"/>` per
@@ -61,66 +62,6 @@ impl RoomVolume {
         self
     }
 
-    /// Whether a container-local point lies inside this segment.
-    pub fn contains(&self, point: [f32; 3]) -> bool {
-        let to_segment = glam::Mat4::from_cols_array_2d(&self.transform).inverse();
-        let p = to_segment.transform_point3(glam::Vec3::from_array(point));
-        if !p.is_finite() {
-            return false;
-        }
-        match &self.shape {
-            RoomVolumeShape::Box { min, max } => {
-                (0..3).all(|axis| min[axis] <= p[axis] && p[axis] <= max[axis])
-            }
-            RoomVolumeShape::Prism { points, height } => {
-                let base = points.iter().map(|q| q[2]).fold(f32::INFINITY, f32::min);
-                if p.z < base || p.z > base + height {
-                    return false;
-                }
-                // Even-odd rule on the XY polygon.
-                let mut inside = false;
-                for (index, a) in points.iter().enumerate() {
-                    let b = points[(index + 1) % points.len()];
-                    if (a[1] > p.y) != (b[1] > p.y)
-                        && p.x < (b[0] - a[0]) * (p.y - a[1]) / (b[1] - a[1]) + a[0]
-                    {
-                        inside = !inside;
-                    }
-                }
-                inside
-            }
-            RoomVolumeShape::Trimesh { vertices } => {
-                // Parity of ray crossings along a direction no authored face is aligned with.
-                let direction = PARITY_RAY;
-                let mut crossings = 0usize;
-                for triangle in vertices.chunks_exact(3) {
-                    let a = glam::Vec3::from_array(triangle[0]);
-                    let edge1 = glam::Vec3::from_array(triangle[1]) - a;
-                    let edge2 = glam::Vec3::from_array(triangle[2]) - a;
-                    let h = direction.cross(edge2);
-                    let det = edge1.dot(h);
-                    if det.abs() < 1e-12 {
-                        continue;
-                    }
-                    let s = p - a;
-                    let u = s.dot(h) / det;
-                    if !(0.0..=1.0).contains(&u) {
-                        continue;
-                    }
-                    let q = s.cross(edge1);
-                    let v = direction.dot(q) / det;
-                    if v < 0.0 || u + v > 1.0 {
-                        continue;
-                    }
-                    if edge2.dot(q) / det > 1e-9 {
-                        crossings += 1;
-                    }
-                }
-                crossings % 2 == 1
-            }
-        }
-    }
-
     /// `scene.json` representation (`interiors[].room_volumes[]`).
     pub(crate) fn to_json(&self) -> serde_json::Value {
         let mut value = serde_json::json!({
@@ -149,11 +90,6 @@ impl RoomVolume {
         value
     }
 }
-
-/// Unit direction used for the trimesh parity test (normalised 2, 3, 4): not
-/// parallel to any axis or axis-plane diagonal, so axis-aligned authored faces
-/// are never grazed edge-on.
-const PARITY_RAY: glam::Vec3 = glam::Vec3::new(0.371_390_7, 0.557_086, 0.742_781_4);
 
 /// Parse `metadata/entitycomponentroom.xml` (binary CryXMLB or plain text)
 /// into the lower-cased `CryGUID`s of the container's rooms.

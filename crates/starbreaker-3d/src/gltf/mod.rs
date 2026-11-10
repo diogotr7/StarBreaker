@@ -336,6 +336,8 @@ pub fn write_glb_with_progress(
 #[cfg(test)]
 mod tests_anim;
 #[cfg(test)]
+mod tests_interiors;
+#[cfg(test)]
 mod tests_rig;
 
 #[cfg(test)]

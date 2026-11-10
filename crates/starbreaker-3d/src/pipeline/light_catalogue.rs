@@ -244,6 +244,64 @@ mod tests {
         assert_eq!(record.light.color, Some([0.5, 0.25, 0.75]));
     }
     #[test]
+    fn item_port_anchored_group_lands_on_its_port_in_the_owner_frame() {
+        // All values synthetic. The container hangs off a rotated, offset helper, the way a
+        // helper-parented object container does; the group's port lies elsewhere in the owner frame.
+        let helper = glam::Mat4::from_rotation_translation(
+            glam::Quat::from_rotation_z(0.5),
+            glam::vec3(3.0, 4.0, 5.0),
+        );
+        let cols = helper.to_cols_array_2d();
+        let rig = nmc::NodeMeshCombo {
+            material_indices: vec![],
+            nodes: vec![nmc::NmcNode {
+                name: "mount".into(),
+                parent_index: None,
+                bone_to_world: std::array::from_fn(|r| std::array::from_fn(|c| cols[c][r])),
+                world_to_bone: [[0.0; 4]; 3],
+                scale: [1.0; 3],
+                geometry_type: 3,
+                properties: HashMap::new(),
+            }],
+        };
+        let mut light: LightInfo = serde_json::from_value(serde_json::json!({
+            "name":"synthetic", "position":[1.0,2.0,3.0],"rotation":[1.0,0.0,0.0,0.0],
+            "direction_sc":[1.0,0.0,0.0],"transform_basis":"cryengine_z_up",
+            "color":[0.5,0.25,0.75],"light_type":"Omni","semantic_light_kind":"point",
+            "intensity_raw":0.5,"intensity_unit":"cryengine_authored_intensity",
+            "intensity_candela_proxy":750.0,"intensity":750.0,"radius":9.0,"radius_m":9.0,
+            "inner_angle":null,"outer_angle":null,"projector_texture":null,
+            "active_state":"","states":{},"light_style":2,
+            "attachment":{"group":"arbitrary","helper":"mount","attachment_point":"tip"}
+        }))
+        .unwrap();
+        let attachment = light.attachment.as_mut().unwrap();
+        attachment.group_position = Some([0.5, 1.5, 2.0]);
+        attachment.port_position = Some([10.0, 20.0, 30.0]);
+        let mut lights = vec![light];
+        crate::socpak::light_anchor::anchor_group_lights_to_item_ports(&mut lights, helper);
+        let mut interiors = LoadedInteriors::default();
+        interiors.containers.push(InteriorContainerData {
+            name: "container".into(),
+            parent_entity_name: Some("owner".into()),
+            parent_node_name: Some("mount".into()),
+            container_transform: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            room_volumes: Vec::new(),
+            placements: vec![],
+            lights,
+            palette: None,
+        });
+        let rigs = HashMap::from([("owner".into(), &rig)]);
+        let result = collect_entity_lights("owner", &rigs, &HashMap::new(), &interiors);
+        let record = &result[0];
+        let position = glam::Vec3::from_array(record.light.position.map(|x| x as f32));
+        let expected = glam::vec3(10.0, 20.0, 30.0)
+            + glam::Quat::from_rotation_z(0.5) * glam::vec3(0.5, 0.5, 1.0);
+        assert!((position - expected).length() < 1e-4, "{position:?}");
+        let local = glam::Vec3::from_array(record.parent_local_position.unwrap().map(|x| x as f32));
+        assert!((position - helper.transform_point3(local)).length() < 1e-4);
+    }
+    #[test]
     fn suffix_helpers_do_not_bind_even_when_unique() {
         let node = |name: &str| nmc::NmcNode {
             name: name.into(),

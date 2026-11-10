@@ -891,6 +891,17 @@ pub struct LightAttachment {
     pub group: String,
     pub helper: Option<String>,
     pub attachment_point: Option<String>,
+    /// Full `TileAttachmentParams@ItemPortName`: the container-descriptor item
+    /// port this group is attached to. Internal to placement resolution.
+    #[serde(skip)]
+    pub item_port: Option<String>,
+    /// Group origin, in the same frame as the light's `position`.
+    #[serde(skip)]
+    pub group_position: Option<[f64; 3]>,
+    /// The named port's `interactionOffset`: the group origin in the frame of
+    /// the entity that owns the container (see `socpak::light_anchor`).
+    #[serde(skip)]
+    pub port_position: Option<[f64; 3]>,
 }
 
 /// A light extracted from a CryXMLB entity in a .soc file.
