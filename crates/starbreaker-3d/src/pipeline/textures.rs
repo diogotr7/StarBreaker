@@ -1106,6 +1106,30 @@ pub(super) fn encode_png_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Option<
     Some(png_buf)
 }
 
+/// PNG signature + IHDR chunk (length, type, 13 data bytes, CRC).
+const PNG_IHDR_END: usize = 8 + 4 + 4 + 13 + 4;
+
+/// Record a texture's color encoding in its PNG: an `sRGB` chunk when the
+/// source DDS is read through an sRGB format, `gAMA` 1.0 when its values are
+/// linear. The pixel values are the stored ones either way; the chunk tells a
+/// consumer how the engine samples them (see [`DdsFile::is_srgb`]).
+pub(super) fn tag_png_color_encoding(mut png: Vec<u8>, srgb: bool) -> Vec<u8> {
+    let (kind, data): (&[u8; 4], Vec<u8>) = if srgb {
+        (b"sRGB", vec![0])
+    } else {
+        (b"gAMA", 100_000u32.to_be_bytes().to_vec())
+    };
+    let mut crc = crc32fast::Hasher::new();
+    crc.update(kind);
+    crc.update(&data);
+    let mut chunk = (data.len() as u32).to_be_bytes().to_vec();
+    chunk.extend_from_slice(kind);
+    chunk.extend_from_slice(&data);
+    chunk.extend_from_slice(&crc.finalize().to_be_bytes());
+    png.splice(PNG_IHDR_END..PNG_IHDR_END, chunk);
+    png
+}
+
 pub(crate) fn load_diffuse_texture(
     p4k: &MappedP4k,
     tif_path: &str,
@@ -1135,7 +1159,7 @@ pub(crate) fn load_diffuse_texture(
     let (w, h) = dds.dimensions(mip);
     let rgba = dds.decode_rgba(mip).ok()?;
 
-    encode_png_rgba(w, h, rgba)
+    encode_png_rgba(w, h, rgba).map(|png| tag_png_color_encoding(png, dds.is_srgb()))
 }
 
 /// Load a normal-gloss texture as a PNG while preserving DDNA smoothness in alpha.
@@ -1417,6 +1441,44 @@ fn texture_path_looks_normal_gloss(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Chunk types of a PNG in file order.
+    fn png_chunks(png: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let mut chunks = Vec::new();
+        let mut at = 8;
+        while at + 12 <= png.len() {
+            let len = u32::from_be_bytes(png[at..at + 4].try_into().unwrap()) as usize;
+            let kind = String::from_utf8_lossy(&png[at + 4..at + 8]).into_owned();
+            chunks.push((kind, png[at + 8..at + 8 + len].to_vec()));
+            at += 12 + len;
+        }
+        chunks
+    }
+
+    #[test]
+    fn generic_texture_png_records_its_color_encoding() {
+        let pixels = vec![10, 20, 30, 255, 200, 100, 50, 128];
+        let plain = encode_png_rgba(2, 1, pixels.clone()).unwrap();
+        assert!(
+            png_chunks(&plain)
+                .iter()
+                .all(|(kind, _)| kind != "sRGB" && kind != "gAMA"),
+            "the encoder writes no color chunk of its own"
+        );
+        for (srgb, kind, data) in [
+            (true, "sRGB", vec![0u8]),
+            (false, "gAMA", 100_000u32.to_be_bytes().to_vec()),
+        ] {
+            let tagged = tag_png_color_encoding(plain.clone(), srgb);
+            let chunks = png_chunks(&tagged);
+            assert_eq!(chunks[0].0, "IHDR");
+            assert_eq!(chunks[1], (kind.to_string(), data));
+            assert_eq!(chunks.len(), png_chunks(&plain).len() + 1);
+            // A valid PNG (chunk CRC included) whose pixels are the stored values.
+            let decoded = decode_png(&tagged).expect("tagged PNG decodes");
+            assert_eq!(decoded.into_raw(), pixels);
+        }
+    }
 
     fn test_material() -> mtl::SubMaterial {
         mtl::SubMaterial {

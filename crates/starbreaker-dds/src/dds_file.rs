@@ -13,6 +13,17 @@ use crate::error::DdsError;
 use crate::sibling::ReadSibling;
 use crate::types::{DDS_MAGIC, DdsHeader, DdsHeaderDxt10, DdsPixelFormat, DxgiFormat};
 
+/// CryEngine extends the DDS header: `reserved1[1]` holds the image flags
+/// (`CImageExtensionHelper::EIF_*`) and `reserved2[2]` (`dwTextureStage`) the
+/// `'CRYF'` marker that makes them valid.
+const CRY_IMAGE_FLAGS_INDEX: usize = 1;
+const CRY_MARKER_INDEX: usize = 2;
+const CRY_MARKER: u32 = u32::from_le_bytes(*b"FYRC");
+/// `EIF_SRGBRead`: the texture is read through an sRGB format.
+const CRY_IMAGE_FLAG_SRGB_READ: u32 = 0x800;
+/// DXGI `*_UNORM_SRGB` formats: R8G8B8A8, BC1, BC2, BC3, B8G8R8A8, B8G8R8X8, BC7.
+const DXGI_SRGB_FORMATS: [u32; 7] = [29, 72, 75, 78, 91, 93, 99];
+
 /// A parsed DDS texture with separated mip levels.
 pub struct DdsFile {
     pub header: DdsHeader,
@@ -485,6 +496,27 @@ impl DdsFile {
         (w, h)
     }
 
+    /// Whether the color channels are stored sRGB-encoded, i.e. the engine
+    /// creates the texture with an sRGB format and the sampler decodes it.
+    ///
+    /// The resource compiler decides this per texture, not per slot: bright
+    /// textures are converted to linear before compression and carry no flag
+    /// (their header average brightness equals the mean of the stored values),
+    /// the others keep sRGB values and are flagged (their header average is the
+    /// mean of the linearized values). A `_diff`, `_spec` or `_blend` texture
+    /// can be either, so consumers must not derive the encoding from the slot.
+    pub fn is_srgb(&self) -> bool {
+        if let Some(dx10) = &self.dxt10_header {
+            let format = { dx10.dxgi_format };
+            if DXGI_SRGB_FORMATS.contains(&format) {
+                return true;
+            }
+        }
+        let image_flags = { self.header.reserved1 }[CRY_IMAGE_FLAGS_INDEX];
+        let marker = { self.header.reserved2 }[CRY_MARKER_INDEX];
+        marker == CRY_MARKER && image_flags & CRY_IMAGE_FLAG_SRGB_READ != 0
+    }
+
     /// Number of mip levels present.
     pub fn mip_count(&self) -> usize {
         self.mip_data.len()
@@ -738,5 +770,82 @@ fn dxgi_uncompressed_bpp(dxgi_format: u32) -> Option<usize> {
         28 | 29 => Some(4), // R8G8B8A8_UNORM / SRGB
         87 | 91 => Some(4), // B8G8R8A8_UNORM / SRGB
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zerocopy::IntoBytes;
+
+    /// A header-only DDS: `image_flags` in the CryEngine flags word, optionally
+    /// the `'CRYF'` marker and a DX10 header with `dxgi_format`.
+    fn header_bytes(image_flags: u32, marker: bool, dxgi_format: Option<u32>) -> Vec<u8> {
+        let mut reserved1 = [0u32; 11];
+        reserved1[CRY_IMAGE_FLAGS_INDEX] = image_flags;
+        let mut reserved2 = [0u32; 3];
+        if marker {
+            reserved2[CRY_MARKER_INDEX] = CRY_MARKER;
+        }
+        let header = DdsHeader {
+            size: 124,
+            flags: 0,
+            height: 4,
+            width: 4,
+            pitch_or_linear_size: 0,
+            depth: 0,
+            mipmap_count: 1,
+            reserved1,
+            pixel_format: DdsPixelFormat {
+                size: 32,
+                flags: 4,
+                four_cc: if dxgi_format.is_some() {
+                    *b"DX10"
+                } else {
+                    *b"DXT1"
+                },
+                rgb_bit_count: 0,
+                r_bit_mask: 0,
+                g_bit_mask: 0,
+                b_bit_mask: 0,
+                a_bit_mask: 0,
+            },
+            surface_flags: 0,
+            cubemap_flags: 0,
+            reserved2,
+        };
+        let mut bytes = DDS_MAGIC.to_vec();
+        bytes.extend_from_slice(header.as_bytes());
+        if let Some(dxgi_format) = dxgi_format {
+            let dx10 = DdsHeaderDxt10 {
+                dxgi_format,
+                resource_dimension: 3,
+                misc_flag: 0,
+                array_size: 1,
+                misc_flags2: 0,
+            };
+            bytes.extend_from_slice(dx10.as_bytes());
+        }
+        bytes
+    }
+
+    fn is_srgb(image_flags: u32, marker: bool, dxgi_format: Option<u32>) -> bool {
+        DdsFile::headers_only(&header_bytes(image_flags, marker, dxgi_format))
+            .unwrap()
+            .is_srgb()
+    }
+
+    #[test]
+    fn srgb_comes_from_the_cry_image_flag_or_the_dxgi_format() {
+        // Split-mip flag only: stored linear (the resource compiler converted it).
+        assert!(!is_srgb(0x0020_0000, true, None));
+        // EIF_SRGBRead on a legacy FourCC texture.
+        assert!(is_srgb(0x0020_0800, true, None));
+        // The flag word means nothing without the CryEngine marker.
+        assert!(!is_srgb(0x0020_0800, false, None));
+        // BC7_UNORM vs BC7_UNORM_SRGB, BC5_SNORM normal maps.
+        assert!(!is_srgb(0x0020_0000, true, Some(98)));
+        assert!(is_srgb(0, false, Some(99)));
+        assert!(!is_srgb(0x0020_0400, true, Some(84)));
     }
 }
