@@ -606,8 +606,35 @@ attached children's skeletons and controller-bearing interior rigs (`decomposed.
 Animations are discovered by:
 
 1. Locating the skeleton's `.chrparams` CryXmlB file (derived by swapping extension from `.chr`)
-2. Parsing the animation map and `$TracksDatabase` reference (usually a `.dba` file)
-3. Loading the tracks database and exporting **all** animation clips
+2. Parsing the animation map and `$TracksDatabase` reference (usually a `.dba` file).
+   `#filepath` is a running directive: each event resolves under the `#filepath`
+   in effect where it is declared (a file may declare several), directive names
+   are case-insensitive, and the prefix is always joined to the event's path.
+3. Pairing every event with the CAF its resolved path names
+   (`animation/matching.rs`): the tracks-database entry of that name — entry `i`
+   of the database's metadata owns key block `i` — or else the loose `.caf` file
+   at that path. Nothing else decides the pairing: not the bones a block
+   animates, not the words in a name. An event whose CAF is stored in neither
+   place gets no clip. For the root rig, database entries that no event names
+   follow under their database path as the clip name.
+
+A clip merged by name across rigs carries every contributor's bones, each tagged
+with its `source_skeleton_path`, and its `frame_count` is the longest
+contributor's. Its clip-level `fps` / `start_rotation` / `start_position` are the
+first contributor's.
+
+Known gaps of the pairing (flagged, not worked around):
+
+- A merged clip has one length and one clip-level start pose. Contributors whose
+  own animation is shorter hold their last key until the merged clip ends, and a
+  consumer playing the clip backwards starts them late by the difference.
+  Contributors with different start rotations would need per-rig anchors.
+- The engine's global CAF index (`Animations/Animations.img`) is not parsed, so
+  an event whose CAF lives only in a tracks database its own chrparams does not
+  declare gets no clip.
+- Only the last `$TracksDatabase` of a chrparams is read; a file declaring
+  several loses the events stored in the others.
+- Wildcard animation rules (`name="*"`) are not expanded into events.
 
 When there is no root skeleton (socpak interior exports), child clips are
 keyed per entity type so identically-named clips on different entities (every

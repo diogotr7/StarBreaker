@@ -405,16 +405,15 @@ fn apply_default_animation_pose_for_skel(
     let mut tag_match: Option<(&str, String)> = None;
     for tag in &opts.default_animation_tags {
         if let Some(p) = cp.animations.get(tag) {
-            tag_match = Some((tag.as_str(), cp.resolved_caf_path(p)));
+            tag_match = Some((tag.as_str(), p.clone()));
             break;
         }
     }
-    let (_tag, _caf_path) = match tag_match {
+    let (_tag, caf_path) = match tag_match {
         Some(t) => t,
         None => return 0,
     };
-    // We need the .dba ($TracksDatabase). The .caf is a hint that the right
-    // bone subset will live in some DBA block; we don't open the .caf.
+    // The event's CAF is an entry of the tracks database ($TracksDatabase).
     let dba_path = match cp.tracks_database.as_deref() {
         Some(p) => p,
         None => return 0,
@@ -437,12 +436,7 @@ fn apply_default_animation_pose_for_skel(
             return 0;
         }
     };
-    // Skeleton bone-hash set for signature matching.
-    let skel_hashes: std::collections::HashSet<u32> = bones
-        .iter()
-        .map(|b| crate::animation::bone_name_hash(&b.name))
-        .collect();
-    let clip = match crate::animation::find_block_for_skeleton(&db, &skel_hashes, true) {
+    let clip = match crate::animation::matching::clip_for_caf_path(&db, &caf_path) {
         Some(c) => c,
         None => return 0,
     };

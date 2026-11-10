@@ -52,7 +52,6 @@ pub(crate) fn read_source_clips(
         p4k,
         &source.skeleton_path,
         source.is_root,
-        !source.is_root,
         endpoints,
     ) {
         Ok(Some(Value::Array(mut clips))) => {
@@ -130,6 +129,11 @@ impl ClipCollection {
             let Some(incoming_bones) = clip["bones"].as_object() else {
                 return;
             };
+            // Each rig plays its own animation of this name; the merged clip must run until
+            // the longest of them has finished.
+            if clip["frame_count"].as_u64() > existing.value["frame_count"].as_u64() {
+                existing.value["frame_count"] = clip["frame_count"].clone();
+            }
             let Some(existing_bones) = existing.value["bones"].as_object_mut() else {
                 return;
             };
@@ -231,5 +235,22 @@ mod tests {
                 .len(),
             2
         );
+    }
+    #[test]
+    fn merged_clip_runs_as_long_as_its_longest_contributor() {
+        let sources = rig_sources(
+            Some(("ship".into(), "root.chr".into())),
+            [
+                ("port_a".into(), "a.chr".into()),
+                ("port_b".into(), "b.chr".into()),
+                ("port_c".into(), "c.chr".into()),
+            ],
+        );
+        let mut collection = ClipCollection::default();
+        for (source, (bone, frames)) in sources[1..].iter().zip([("0x1", 40), ("0x2", 70), ("0x3", 55)]) {
+            collection.append(source, serde_json::json!({"name":"open", "frame_count":frames, "bones":{bone:{}}}));
+        }
+        assert_eq!(collection.clips.len(), 1);
+        assert_eq!(collection.clips[0].value["frame_count"], 70);
     }
 }

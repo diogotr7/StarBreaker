@@ -40,8 +40,6 @@ pub mod serialise;
 pub mod mannequin;
 pub(crate) mod rig_sources;
 mod extraction;
-mod matching_scores;
-mod matching_diagnostics;
 pub mod matching;
 pub use serialise::{
     annotate_animations_json_with_blend_modes, classify_bone_blend_modes,
@@ -51,10 +49,7 @@ pub use serialise::{
 pub use mannequin::{
     annotate_animation_fragments_json, dump_mannequin_adb_to_json,
 };
-pub use matching::{
-    caf_anchored_remap_decisions, extract_animations_for_skeleton_json,
-    ClipMatchDecision,
-};
+pub use matching::extract_animations_for_skeleton_json;
 
 // ── Public types ────────────────────────────────────────────────────────────
 

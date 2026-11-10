@@ -1,207 +1,167 @@
-//! Synthetic regression tests for CAF event matching and scoring.
+//! Synthetic regression tests for chrparams event → animation block pairing.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 
-use super::caf_anchored_remap;
-use super::tokenize_for_match;
-use crate::animation::{AnimationClip, AnimationDatabase};
+use super::{ClipOrigin, caf_anchored_remap, clip_for_caf_path};
+use crate::animation::{AnimationClip, AnimationDatabase, BoneChannel, Keyframe, bone_name_hash};
 use crate::chrparams::ChrParams;
 
-#[test]
-fn tokenize_for_match_keeps_ship_specific_tokens() {
-    let tokens = tokenize_for_match("RSI Scorpius wings deploy");
-    assert!(tokens.iter().any(|token| token == "rsi"));
-    assert!(tokens.iter().any(|token| token == "scorpius"));
+/// A one-channel block whose single rotation key marks which block it is.
+fn block(name: &str, bone: &str, marker: f32) -> AnimationClip {
+    AnimationClip {
+        name: name.into(),
+        fps: 30.0,
+        channels: vec![BoneChannel {
+            bone_hash: bone_name_hash(bone),
+            rotations: vec![
+                Keyframe { time: 0.0, value: [0.0, 0.0, 0.0, 1.0] },
+                Keyframe { time: marker, value: [0.0, 1.0, 0.0, 0.0] },
+            ],
+            positions: vec![],
+            rot_format_flags: 0,
+            pos_format_flags: 0,
+        }],
+        start_rotation: None,
+        start_position: None,
+    }
+}
+
+fn marker(clip: &AnimationClip) -> f32 {
+    clip.channels[0].rotations[1].time
+}
+
+fn events(pairs: &[(&str, &str)]) -> ChrParams {
+    ChrParams {
+        animations: pairs
+            .iter()
+            .map(|(event, path)| (event.to_string(), path.to_string()))
+            .collect::<BTreeMap<_, _>>(),
+        ..Default::default()
+    }
+}
+
+/// Pair with no loose CAF files available. `_rig_bones` documents what the rig owns: the pairing
+/// must not depend on it.
+fn remap(
+    db: &AnimationDatabase,
+    chrparams: &ChrParams,
+    _rig_bones: &[&str],
+    include_unmatched: bool,
+) -> Vec<AnimationClip> {
+    caf_anchored_remap(db, chrparams, include_unmatched, |_| Vec::new())
+        .into_iter()
+        .map(|paired| paired.clip)
+        .collect()
 }
 
 #[test]
-fn tokenize_for_match_still_removes_generic_stopwords() {
-    let tokens = tokenize_for_match("Animations ships component wings");
-    assert!(!tokens.iter().any(|token| token == "animations"));
-    assert!(!tokens.iter().any(|token| token == "ships"));
-    assert!(!tokens.iter().any(|token| token == "component"));
-    assert!(tokens.iter().any(|token| token == "wings"));
-}
-
-#[test]
-fn caf_anchored_remap_uses_unmatched_duplicate_name_slots() {
+fn event_takes_the_block_its_caf_path_names_whatever_the_bones_are_called() {
+    // The second block animates a bone whose name repeats every word of the event; the event's
+    // CAF path still names the first.
     let db = AnimationDatabase {
         clips: vec![
-            AnimationClip {
-                name: "animations/shared_clip.caf".into(),
-                fps: 30.0,
-                channels: vec![],
-                start_rotation: None,
-                start_position: None,
-            },
-            AnimationClip {
-                name: "animations/shared_clip.caf".into(),
-                fps: 30.0,
-                channels: vec![],
-                start_rotation: None,
-                start_position: None,
-            },
+            block("animations/synthetic/rig/clip_a.caf", "flap_left", 10.0),
+            block("animations/synthetic/rig/clip_b.caf", "landing_gear_deploy_piston", 20.0),
         ],
     };
-
-    let chrparams = ChrParams {
-        animations: BTreeMap::from([
-            (
-                "event_a".to_string(),
-                "animations/shared_clip.caf".to_string(),
-            ),
-            (
-                "event_b".to_string(),
-                "animations/shared_clip.caf".to_string(),
-            ),
-        ]),
-        animation_paths: BTreeMap::new(),
-        ..Default::default()
-    };
-
-    let remapped = caf_anchored_remap(
-        &db,
-        &chrparams,
-        &HashSet::new(),
-        &HashMap::new(),
-        &HashMap::new(),
-        false,
-        false,
-    );
-
-    assert_eq!(remapped.len(), 2);
-    assert!(remapped.iter().any(|clip| clip.name == "event_a"));
-    assert!(remapped.iter().any(|clip| clip.name == "event_b"));
+    let chrparams = events(&[("landing_gear_deploy", "Animations/Synthetic/Rig/clip_a.caf")]);
+    let clips = remap(&db, &chrparams, &["flap_left", "landing_gear_deploy_piston"], false);
+    assert_eq!(clips.len(), 1);
+    assert_eq!(clips[0].name, "landing_gear_deploy");
+    assert_eq!(marker(&clips[0]), 10.0);
 }
 
 #[test]
-fn caf_anchored_remap_matches_filename_when_metadata_omits_prefix() {
-    let db = AnimationDatabase {
-        clips: vec![AnimationClip {
-            name: "shared_clip.caf".into(),
-            fps: 30.0,
-            channels: vec![],
-            start_rotation: None,
-            start_position: None,
-        }],
-    };
-
-    let chrparams = ChrParams {
-        animations: BTreeMap::from([(
-            "event_prefixed".to_string(),
-            "Animations/shared_clip.caf".to_string(),
-        )]),
-        animation_paths: BTreeMap::new(),
-        ..Default::default()
-    };
-
-    let remapped = caf_anchored_remap(
-        &db,
-        &chrparams,
-        &HashSet::new(),
-        &HashMap::new(),
-        &HashMap::new(),
-        false,
-        false,
-    );
-
-    assert_eq!(remapped.len(), 1);
-    assert_eq!(remapped[0].name, "event_prefixed");
+fn path_named_block_is_used_even_when_it_animates_bones_the_rig_lacks() {
+    let mut clip = block("animations/synthetic/rig/open.caf", "door_left", 10.0);
+    clip.channels.push(block("", "bone_of_another_rig", 10.0).channels.remove(0));
+    let db = AnimationDatabase { clips: vec![clip] };
+    let chrparams = events(&[("open", "animations/synthetic/rig/open.caf")]);
+    let clips = remap(&db, &chrparams, &["door_left"], false);
+    assert_eq!(clips.len(), 1);
+    assert_eq!(clips[0].channels.len(), 2);
 }
 
-/// When two DBA blocks have identical semantic scores (no path hint resolves
-/// either), the tiebreaker picks the block with the *higher* motion score
-/// (more actual joint movement).  This test pins that behaviour so a
-/// future change to the tiebreak direction is caught immediately.
 #[test]
-fn caf_anchored_remap_equal_semantic_score_tiebreaks_on_higher_motion() {
-    use crate::animation::{BoneChannel, Keyframe};
-
-    let bone_hash = 0xC1571A1A_u32; // BONE_Back_Right_Foot_Main
-    let skeleton_hashes: HashSet<u32> = [bone_hash].into_iter().collect();
-    let mut skeleton_names: HashMap<u32, String> = HashMap::new();
-    skeleton_names.insert(bone_hash, "bone_back_right_foot_main".to_string());
-
-    // Block 0: minimal rotation delta (near-zero motion score).
-    let still_clip = AnimationClip {
-        name: "animations/gear.caf".into(),
-        fps: 30.0,
-        channels: vec![BoneChannel {
-            bone_hash,
-            rotations: vec![
-                Keyframe {
-                    time: 0.0,
-                    value: [1.0, 0.0, 0.0, 0.0],
-                },
-                Keyframe {
-                    time: 1.0,
-                    value: [1.0, 0.0, 0.0, 0.0],
-                },
-            ],
-            positions: vec![],
-            rot_format_flags: 0,
-            pos_format_flags: 0,
-        }],
-        start_rotation: None,
-        start_position: None,
-    };
-
-    // Block 1: 180° rotation delta (high motion score).
-    let moving_clip = AnimationClip {
-        name: "animations/gear.caf".into(),
-        fps: 30.0,
-        channels: vec![BoneChannel {
-            bone_hash,
-            rotations: vec![
-                Keyframe {
-                    time: 0.0,
-                    value: [1.0, 0.0, 0.0, 0.0],
-                },
-                Keyframe {
-                    time: 1.0,
-                    value: [0.0, 1.0, 0.0, 0.0],
-                },
-            ],
-            positions: vec![],
-            rot_format_flags: 0,
-            pos_format_flags: 0,
-        }],
-        start_rotation: None,
-        start_position: None,
-    };
-
+fn event_whose_caf_is_absent_gets_no_clip() {
+    // The only block animates this rig's bones and shares the event's words, but it is another CAF.
     let db = AnimationDatabase {
-        clips: vec![still_clip, moving_clip.clone()],
+        clips: vec![block("animations/synthetic/rig/gear_retract.caf", "gear_retract_arm", 10.0)],
     };
+    let chrparams = events(&[("gear_retract", "animations/synthetic/rig/missing.caf")]);
+    assert!(remap(&db, &chrparams, &["gear_retract_arm"], false).is_empty());
+}
 
-    // CAF path does NOT match either block by name — path lookup fails,
-    // leaving only semantic scoring.  Both blocks have equal token overlap
-    // (same bone, caf stem "unknown_anim" has no name tokens in common),
-    // so motion score is the sole tiebreaker.
-    let chrparams = ChrParams {
-        animations: BTreeMap::from([(
-            "gear_retract".to_string(),
-            "Animations/unknown_anim.caf".to_string(),
-        )]),
-        animation_paths: BTreeMap::new(),
-        ..Default::default()
+#[test]
+fn events_naming_the_same_caf_all_get_its_block() {
+    let db = AnimationDatabase {
+        clips: vec![block("animations/synthetic/rig/shared.caf", "door_left", 10.0)],
     };
-
-    let remapped = caf_anchored_remap(
-        &db,
-        &chrparams,
-        &skeleton_hashes,
-        &skeleton_names,
-        &HashMap::new(),
-        false,
-        false,
-    );
-
-    assert_eq!(remapped.len(), 1, "expected exactly one clip matched");
-    // Block 1 (moving_clip) has higher motion — must be chosen.
+    let chrparams = events(&[
+        ("event_a", "animations/synthetic/rig/shared.caf"),
+        ("event_b", "animations\\synthetic\\rig\\SHARED.caf"),
+    ]);
+    let clips = remap(&db, &chrparams, &["door_left"], true);
     assert_eq!(
-        remapped[0].channels[0].rotations[1].value,
-        [0.0_f32, 1.0, 0.0, 0.0],
-        "tiebreaker should select the block with higher motion score"
+        clips.iter().map(|clip| clip.name.as_str()).collect::<Vec<_>>(),
+        ["event_a", "event_b"]
     );
+    assert!(clips.iter().all(|clip| marker(clip) == 10.0));
+}
+
+#[test]
+fn blocks_no_event_names_keep_their_database_name_only_on_request() {
+    let db = AnimationDatabase {
+        clips: vec![
+            block("animations/synthetic/rig/used.caf", "door_left", 10.0),
+            block("animations/synthetic/rig/spare.caf", "door_left", 20.0),
+        ],
+    };
+    let chrparams = events(&[("open", "animations/synthetic/rig/used.caf")]);
+    let with = remap(&db, &chrparams, &["door_left"], true);
+    assert_eq!(
+        with.iter().map(|clip| clip.name.as_str()).collect::<Vec<_>>(),
+        ["open", "animations/synthetic/rig/spare.caf"]
+    );
+    assert_eq!(remap(&db, &chrparams, &["door_left"], false).len(), 1);
+}
+
+#[test]
+fn event_missing_from_the_database_plays_its_loose_caf() {
+    let db = AnimationDatabase {
+        clips: vec![block("animations/synthetic/rig/in_database.caf", "door_left", 10.0)],
+    };
+    let chrparams = events(&[
+        ("close", "Animations/Synthetic/Rig/loose.caf"),
+        ("open", "animations/synthetic/rig/in_database.caf"),
+    ]);
+    let mut asked = Vec::new();
+    let paired = caf_anchored_remap(&db, &chrparams, true, |path| {
+        asked.push(path.to_string());
+        vec![block("", "door_left", 30.0)]
+    });
+    assert_eq!(asked, ["Animations/Synthetic/Rig/loose.caf"]);
+    assert_eq!(
+        paired
+            .iter()
+            .map(|p| (p.clip.name.as_str(), marker(&p.clip), p.origin))
+            .collect::<Vec<_>>(),
+        [
+            ("close", 30.0, ClipOrigin::LooseCafEvent),
+            ("open", 10.0, ClipOrigin::DatabaseEvent),
+        ]
+    );
+}
+
+#[test]
+fn caf_path_lookup_ignores_case_and_separator() {
+    let db = AnimationDatabase {
+        clips: vec![
+            block("animations/synthetic/rig/a.caf", "door_left", 10.0),
+            block("animations/synthetic/rig/b.caf", "door_left", 20.0),
+        ],
+    };
+    let clip = clip_for_caf_path(&db, "Animations\\Synthetic\\Rig\\B.caf").unwrap();
+    assert_eq!(marker(clip), 20.0);
+    assert!(clip_for_caf_path(&db, "animations/synthetic/rig/c.caf").is_none());
 }

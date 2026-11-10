@@ -1,6 +1,5 @@
 //! Synthetic catalogue tests: source union, sparse decoding, timing, endpoints and namespace keys.
 use super::*;
-use std::collections::{HashMap, HashSet};
 const DBA: &[u8] = include_bytes!("../../tests/fixtures/clip_catalogue/synthetic.dba");
 const CAF: &[u8] = include_bytes!("../../tests/fixtures/clip_catalogue/synthetic.caf");
 const PARAMS: &[u8] = include_bytes!("../../tests/fixtures/clip_catalogue/synthetic.chrparams");
@@ -9,23 +8,18 @@ const PARAMS: &[u8] = include_bytes!("../../tests/fixtures/clip_catalogue/synthe
 fn synthetic_catalogue_union_preserves_export_names_and_endpoints() {
     let params = crate::chrparams::ChrParams::from_bytes(&PARAMS.to_vec()).unwrap();
     assert_eq!(
-        params.resolved_caf_path("cycle.caf"),
-        "animations/synthetic/cycle.caf"
+        params.animations.get("latch_cycle").map(String::as_str),
+        Some("animations/synthetic/cycle.caf")
     );
     // ChunkFile's zero-copy u32 reader needs aligned storage (as P4k reads provide).
     let dba_bytes = DBA.to_vec();
     let sparse = dba::parse_dba_mode(&dba_bytes, true).unwrap();
     let full = parse_dba(&dba_bytes).unwrap();
     let remap = |db: &AnimationDatabase| {
-        matching::caf_anchored_remap(
-            db,
-            &params,
-            &HashSet::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            true,
-            false,
-        )
+        matching::caf_anchored_remap(db, &params, true, |_| Vec::new())
+            .into_iter()
+            .map(|paired| paired.clip)
+            .collect::<Vec<_>>()
     };
     let sparse = remap(&sparse);
     let full = remap(&full);

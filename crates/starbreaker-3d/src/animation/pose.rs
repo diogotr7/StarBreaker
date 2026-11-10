@@ -33,8 +33,9 @@ pub fn cry_xyzw_to_blender_wxyz(q: [f32; 4]) -> [f32; 4] {
 /// TRS keyed by bone CRC32 hash.
 ///
 /// `animation_name` is matched against the metadata strings stored in the
-/// DBA chunk (case-insensitive substring). Prefer [`find_block_for_skeleton`]
-/// for production use; this helper is kept for debugging.
+/// DBA chunk (case-insensitive substring). Production code pairs an event with
+/// the entry its CAF path names (`matching::clip_for_caf_path`); this helper is
+/// kept for debugging.
 pub fn read_dba_final_pose(
     dba_bytes: &[u8],
     animation_name: &str,
@@ -72,6 +73,9 @@ pub fn clip_final_pose(clip: &AnimationClip) -> HashMap<u32, BonePose> {
 
 /// Pick the best matching animation clip in `db` for a given skeleton, by
 /// bone-hash signature.
+///
+/// Diagnostic only: a bone signature does not identify which animation an event
+/// plays (several entries animate the same bones). Exports pair by CAF path.
 ///
 /// A clip is a *candidate* iff every one of its channel bone hashes is present
 /// in the skeleton (clip bones ⊆ skeleton bones). The first candidate is
