@@ -626,25 +626,49 @@ The default-pose bake resolves its event by the same rule (`clips_for_caf_path`)
 loose CAFs included.
 
 A clip merged by name across rigs carries every contributor's bones, each tagged
-with its `source_skeleton_path`, and its `frame_count` is the longest
-contributor's. Its clip-level `fps` / `start_rotation` / `start_position` are the
-first contributor's.
+with its `source_skeleton_path`. In the game each rig plays its own animation of
+that name, so the clip keeps every contributing animation apart
+(`animation/rig_sources.rs`):
+
+- `sources` — one record per distinct contributing animation, in merge order:
+  `{skeleton_path, fps, frame_count, start_rotation?, start_position?}`, the
+  values of that animation's own clip (keys absent there are absent here). One
+  animation reached through several entities is one record; a rig that
+  contributes no channel has none.
+  `skeleton_path` is the rig the animation was read for; a channel re-stamped to
+  the geometry that owns its node keeps its `source`.
+- Every channel (each variant of a variant array included) carries `source`, the
+  index of its animation in `sources`. Its key times are frames at that
+  animation's `fps`, within `0..=frame_count` of that record.
+- The clip-level `fps` / `start_rotation` / `start_position` / `fragments` stay
+  the first contributor's. The clip-level `frame_count` is the longest
+  contributor's duration in frames at the clip-level `fps` (rounded up). A
+  contributor whose rate cannot be related to the clip's (one of the two is
+  missing) is logged and does not extend the clip.
+
+A consumer times and anchors a channel by its `sources` record: played forward
+every animation starts with the clip and a shorter one holds its last key;
+played backward (a fragment with `speed: -1`) every animation starts at its own
+end. The Blender addon does not read `sources` yet and still uses the clip-level
+values. Clips that were not built by this merge (the player's) have no
+`sources`; their clip-level values apply to every
+channel.
 
 Known gaps of the pairing (flagged, not worked around):
 
-- A merged clip has one length and one clip-level start pose. Contributors whose
-  own animation is shorter hold their last key until the merged clip ends, and a
-  consumer playing the clip backwards starts them late by the difference.
-  Contributors with different start rotations would need per-rig anchors.
 - The engine's global CAF index (`Animations/Animations.img`) is not parsed, so
   an event whose CAF lives only in a tracks database its own chrparams does not
   declare gets no clip.
 - Only the last `$TracksDatabase` of a chrparams is read; a file declaring
   several loses the events stored in the others.
 - Wildcard animation rules (`name="*"`) are not expanded into events.
-- A merged clip also has one `fps` and one set of anchors and fragment
-  references (the first contributor's). Contributors authored at another rate
-  would be mistimed; on the three regression ships every contributor is 30 fps.
+- A merged clip has one set of fragment references (the first contributor's);
+  the other contributors' own fragments are dropped.
+- Clips are merged by name alone, so unrelated items whose animations share a
+  name (the `open` / `close` of a power plant, a jump module and a fuel port)
+  land in one clip and play together.
+- The Blender addon ignores `sources`: it times every channel by the clip-level
+  `fps` / `frame_count` and anchors it on the clip-level start pose.
 - A loose CAF holding several key blocks yields one clip per block, all under
   the event's name, so they merge into one clip. Which block the engine plays
   is not known.
