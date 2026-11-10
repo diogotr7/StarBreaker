@@ -507,23 +507,20 @@ fn get_value_u8(val: &starbreaker_datacore::query::value::Value, name: &str) -> 
     None
 }
 
-/// Helper: get an f32-like field from a DataCore Value.
-fn get_value_f32(val: &starbreaker_datacore::query::value::Value, name: &str) -> Option<f32> {
-    if let starbreaker_datacore::query::value::Value::Object { fields, .. } = val {
-        for (k, v) in fields {
-            if *k == name {
-                return match v {
-                    starbreaker_datacore::query::value::Value::Float(n) => Some(*n),
-                    starbreaker_datacore::query::value::Value::Double(n) => Some(*n as f32),
-                    starbreaker_datacore::query::value::Value::UInt8(n) => Some(*n as f32),
-                    starbreaker_datacore::query::value::Value::UInt16(n) => Some(*n as f32),
-                    starbreaker_datacore::query::value::Value::UInt32(n) => Some(*n as f32),
-                    _ => None,
-                };
-            }
+/// `TintEntry.glossiness` is a UNorm8 in DataCore (255, the schema default, is the identity). The palette
+/// shader multiplies the layer gloss by it, so the finish carries the 0..1 fraction.
+fn palette_glossiness_fraction(raw: u8) -> f32 {
+    raw as f32 / 255.0
+}
+
+/// Helper: read a `TintEntry`'s glossiness as a 0..1 fraction from a DataCore Value.
+fn get_value_glossiness(val: &starbreaker_datacore::query::value::Value) -> Option<f32> {
+    match get_value_field(val, "glossiness")? {
+        starbreaker_datacore::query::value::Value::UInt8(n) => {
+            Some(palette_glossiness_fraction(*n))
         }
+        _ => None,
     }
-    None
 }
 
 fn extract_subgeometry_palette(
@@ -541,7 +538,7 @@ fn extract_subgeometry_palette(
         let entry = get_value_field(root, entry_name);
         mtl::TintPaletteFinishEntry {
             specular: entry.and_then(|value| read_rgb_value_field(value, "specColor")),
-            glossiness: entry.and_then(|value| get_value_f32(value, "glossiness")),
+            glossiness: entry.and_then(get_value_glossiness),
         }
     };
 
@@ -892,8 +889,11 @@ fn query_tint_from_path(
     };
     let query_glossiness = |entry: &str| -> Option<f32> {
         let path = format!("{base}.{entry}.glossiness");
-        let compiled = db.compile_path::<f32>(record.struct_id(), &path).ok()?;
-        db.query_single::<f32>(&compiled, record).ok().flatten()
+        let compiled = db.compile_path::<u8>(record.struct_id(), &path).ok()?;
+        db.query_single::<u8>(&compiled, record)
+            .ok()
+            .flatten()
+            .map(palette_glossiness_fraction)
     };
     let query_palette_rgb = |entry: &str| -> Option<[f32; 3]> {
         let mut rgb = [0.0f32; 3];
@@ -1120,14 +1120,14 @@ mod tests {
         spec_r: u8,
         spec_g: u8,
         spec_b: u8,
-        glossiness: f32,
+        glossiness: u8,
     ) -> Value<'static> {
         object(
             "TintEntry",
             vec![
                 ("tintColor", rgb(r, g, b)),
                 ("specColor", rgb(spec_r, spec_g, spec_b)),
-                ("glossiness", Value::Float(glossiness)),
+                ("glossiness", Value::UInt8(glossiness)),
             ],
         )
     }
@@ -1149,9 +1149,9 @@ mod tests {
                                 object(
                                     "TintPalette",
                                     vec![
-                                        ("entryA", tint_entry(55, 55, 55, 59, 59, 59, 180.0)),
-                                        ("entryB", tint_entry(45, 45, 45, 59, 59, 59, 250.0)),
-                                        ("entryC", tint_entry(211, 152, 28, 59, 59, 59, 250.0)),
+                                        ("entryA", tint_entry(55, 55, 55, 59, 59, 59, 180)),
+                                        ("entryB", tint_entry(45, 45, 45, 59, 59, 59, 250)),
+                                        ("entryC", tint_entry(211, 152, 28, 59, 59, 59, 250)),
                                         ("glassColor", rgb(255, 95, 17)),
                                     ],
                                 ),
@@ -1173,5 +1173,10 @@ mod tests {
                 srgb_to_linear(17.0 / 255.0),
             ]
         );
+        // DataCore `TintEntry.glossiness` is a UNorm8; the finish carries the 0..1 fraction
+        // the palette shader multiplies in.
+        assert_eq!(palette.finish.primary.glossiness, Some(180.0 / 255.0));
+        assert_eq!(palette.finish.secondary.glossiness, Some(250.0 / 255.0));
+        assert_eq!(palette.finish.glass.glossiness, None);
     }
 }
