@@ -127,11 +127,15 @@ impl ChrParams {
     }
 }
 
-/// `path` under the `#filepath` directory in effect, or as given when no
-/// `#filepath` has been declared yet.
+/// `path` under the `#filepath` directory in effect, joined by exactly one separator, or as
+/// given when no (or an empty)
+/// `#filepath` is in effect.
 fn resolve_under(filepath: Option<&str>, path: &str) -> String {
     match filepath {
-        Some(dir) => format!("{}/{path}", dir.trim_end_matches(['/', '\\'])),
+        Some(dir) => match dir.trim_end_matches(['/', '\\']) {
+            "" => path.to_string(),
+            dir => format!("{dir}/{}", path.trim_start_matches(['/', '\\'])),
+        },
         None => path.to_string(),
     }
 }
@@ -306,6 +310,30 @@ mod tests {
         assert_eq!(
             parsed.animations.get("gear_extend").map(String::as_str),
             Some("Animations/Synthetic/ShipB/exterior/gear_extend.caf")
+        );
+    }
+
+    #[test]
+    fn filepath_and_path_join_with_exactly_one_separator() {
+        let parsed = ChrParams::from_entries([
+            ("#filepath", "Animations/Synthetic/ShipC\\"),
+            ("door_open", "/door_open.caf"),
+            ("door_close", "\\interior\\door_close.caf"),
+            ("#filepath", ""),
+            ("hatch_open", "Animations/Synthetic/ShipD/hatch_open.caf"),
+        ]);
+
+        assert_eq!(
+            parsed.animations.get("door_open").map(String::as_str),
+            Some("Animations/Synthetic/ShipC/door_open.caf")
+        );
+        assert_eq!(
+            parsed.animations.get("door_close").map(String::as_str),
+            Some("Animations/Synthetic/ShipC/interior\\door_close.caf")
+        );
+        assert_eq!(
+            parsed.animations.get("hatch_open").map(String::as_str),
+            Some("Animations/Synthetic/ShipD/hatch_open.caf")
         );
     }
 }

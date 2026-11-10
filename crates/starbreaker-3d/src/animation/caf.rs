@@ -2,7 +2,9 @@
 //!
 //! Both `.dba` and `.caf` use the same block format internally;
 //! [`parse_animation_blocks_mode`] and [`parse_single_block`] are called from
-//! [`super::dba`] as well.
+//! [`super::dba`] as well. A block that fails to decode stays in the block list
+//! as `None`, so a block's index is always its position in the file: DBA
+//! metadata entry `i` names block `i`.
 
 use super::chunk_types;
 use super::codec;
@@ -69,6 +71,7 @@ pub(super) fn parse_caf_mode(data: &[u8], endpoints: bool) -> Result<AnimationDa
     let clips = blocks
         .into_iter()
         .enumerate()
+        .filter_map(|(i, channels)| Some((i, channels?)))
         .map(|(i, channels)| AnimationClip {
             name: format!("clip_{i}"),
             fps,
@@ -87,9 +90,11 @@ pub(super) fn parse_caf_mode(data: &[u8], endpoints: bool) -> Result<AnimationDa
 
 // ── Block parsing ───────────────────────────────────────────────────────────
 
+/// One entry per block header in file order; `None` marks a block whose
+/// controllers could not be decoded (logged), keeping later blocks at their index.
 pub(super) fn parse_animation_blocks_mode(
     data: &[u8], endpoints: bool,
-) -> Result<Vec<Vec<BoneChannel>>, Error> {
+) -> Result<Vec<Option<Vec<BoneChannel>>>, Error> {
     let mut blocks = Vec::new();
     let mut offset = 0usize;
 
@@ -120,8 +125,11 @@ pub(super) fn parse_animation_blocks_mode(
         let headers_end = block_start + bone_count * 4 + bone_count * 24;
 
         match parse_single_block(data, block_start, bone_count, endpoints) {
-            Ok(channels) => blocks.push(channels),
-            Err(e) => log::warn!("Failed to parse animation block at 0x{offset:x}: {e}"),
+            Ok(channels) => blocks.push(Some(channels)),
+            Err(e) => {
+                log::warn!("Failed to parse animation block at 0x{offset:x}: {e}");
+                blocks.push(None);
+            }
         }
 
         offset = headers_end;

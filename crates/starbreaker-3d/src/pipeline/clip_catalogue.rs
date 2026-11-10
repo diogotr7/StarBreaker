@@ -110,8 +110,11 @@ fn catalogue_from_sources(
             chrparams_path: first
                 .and_then(|v| v["chrparams_path"].as_str())
                 .map(str::to_owned),
-            dba_path: first
-                .and_then(|v| v["dba_path"].as_str())
+            // Clips from loose CAFs carry no `dba_path`; any database-backed clip names it.
+            dba_path: values
+                .iter()
+                .flatten()
+                .find_map(|v| v["dba_path"].as_str())
                 .map(str::to_owned),
             bone_count: names.len(),
         });
@@ -187,5 +190,38 @@ mod tests {
         .unwrap();
         assert_eq!(catalogue.clips.len(), 2);
         assert!(catalogue.clips.iter().any(|c| c.id == "latch_cycle"));
+    }
+
+    #[test]
+    fn skeleton_names_its_tracks_database_when_its_first_clip_is_a_loose_caf() {
+        // `mixed.chrparams`: `a_loose` (first in name order) is a loose CAF, `latch_cycle` is an
+        // entry of the tracks database.
+        let archive = MappedP4k::open(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/clip_catalogue/rigs.zip"),
+        )
+        .unwrap();
+        let catalogue = catalogue_from_sources(
+            &archive,
+            Catalogue {
+                entity: "synthetic".into(),
+                skeletons: vec![],
+                clips: vec![],
+            },
+            vec![RigSource {
+                controller: None,
+                owner_entity: "mixed".into(),
+                skeleton_path: "Objects/synthetic/mixed.chr".into(),
+                is_root: true,
+                namespace: None,
+            }],
+            None,
+        )
+        .unwrap();
+        assert!(catalogue.clips.iter().any(|c| c.id == "a_loose"));
+        assert_eq!(
+            catalogue.skeletons[0].dba_path.as_deref(),
+            Some("animations/synthetic/test.dba")
+        );
     }
 }

@@ -39,7 +39,7 @@ pub mod binding_report;
 pub mod serialise;
 pub mod mannequin;
 pub(crate) mod rig_sources;
-mod extraction;
+pub(crate) mod extraction;
 pub mod matching;
 pub use serialise::{
     annotate_animations_json_with_blend_modes, classify_bone_blend_modes,

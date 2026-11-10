@@ -1,4 +1,4 @@
-//! Chrparams event → animation data pairing (`caf_anchored_remap`, `clip_for_caf_path`), plus
+//! Chrparams event → animation data pairing (`caf_anchored_remap`, `clips_for_caf_path`), plus
 //! the small name / attribute helpers the Mannequin annotator shares.
 //!
 //! An event plays the CAF its resolved path names. That CAF is the tracks-database entry of the
@@ -64,6 +64,20 @@ pub(crate) fn clip_for_caf_path<'a>(
 ) -> Option<&'a AnimationClip> {
     let key = caf_path_key(caf_path);
     db.clips.iter().find(|clip| caf_path_key(&clip.name) == key)
+}
+
+/// The animation data a CAF path names: the tracks-database entry of that name, else whatever
+/// `load_loose_caf` finds stored at that path. The loose file is not consulted for a path the
+/// database holds.
+pub(crate) fn clips_for_caf_path(
+    db: &AnimationDatabase,
+    caf_path: &str,
+    load_loose_caf: impl FnOnce(&str) -> Vec<AnimationClip>,
+) -> Vec<AnimationClip> {
+    match clip_for_caf_path(db, caf_path) {
+        Some(clip) => vec![clip.clone()],
+        None => load_loose_caf(caf_path),
+    }
 }
 
 /// Name the clips of one rig after its `.chrparams` events.

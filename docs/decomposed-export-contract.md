@@ -609,14 +609,21 @@ Animations are discovered by:
 2. Parsing the animation map and `$TracksDatabase` reference (usually a `.dba` file).
    `#filepath` is a running directive: each event resolves under the `#filepath`
    in effect where it is declared (a file may declare several), directive names
-   are case-insensitive, and the prefix is always joined to the event's path.
+   are case-insensitive, and the prefix is always joined to the event's path by
+   exactly one separator (an empty `#filepath` leaves the path as given).
 3. Pairing every event with the CAF its resolved path names
    (`animation/matching.rs`): the tracks-database entry of that name — entry `i`
    of the database's metadata owns key block `i` — or else the loose `.caf` file
    at that path. Nothing else decides the pairing: not the bones a block
    animates, not the words in a name. An event whose CAF is stored in neither
    place gets no clip. For the root rig, database entries that no event names
-   follow under their database path as the clip name.
+   follow under their database path as the clip name. A key block that cannot be
+   decoded yields no clip and leaves a gap: the blocks after it keep their index
+   and so their own metadata entry. A loose CAF that is stored but cannot be read
+   or decoded is logged as a warning and costs only its own event.
+
+The default-pose bake resolves its event by the same rule (`clips_for_caf_path`),
+loose CAFs included.
 
 A clip merged by name across rigs carries every contributor's bones, each tagged
 with its `source_skeleton_path`, and its `frame_count` is the longest
@@ -635,6 +642,17 @@ Known gaps of the pairing (flagged, not worked around):
 - Only the last `$TracksDatabase` of a chrparams is read; a file declaring
   several loses the events stored in the others.
 - Wildcard animation rules (`name="*"`) are not expanded into events.
+- A merged clip also has one `fps` and one set of anchors and fragment
+  references (the first contributor's). Contributors authored at another rate
+  would be mistimed; on the three regression ships every contributor is 30 fps.
+- A loose CAF holding several key blocks yields one clip per block, all under
+  the event's name, so they merge into one clip. Which block the engine plays
+  is not known.
+- Event names are compared case-sensitively and the first declaration of a name
+  wins. Seven chrparams in 4.10.2 declare names differing only in case (a
+  consumer with case-insensitive names collapses them), and 45 declare the same
+  name more than once (`animation_paths` keeps every path, the export uses the
+  first).
 
 When there is no root skeleton (socpak interior exports), child clips are
 keyed per entity type so identically-named clips on different entities (every

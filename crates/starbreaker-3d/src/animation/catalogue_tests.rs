@@ -197,7 +197,7 @@ fn sparse_block_uses_bitmap_frame_times() {
         .copy_from_slice(&((values - controller) as u32).to_le_bytes());
     let sparse = caf::parse_animation_blocks_mode(&block, true).unwrap();
     assert_eq!(
-        sparse[0][0]
+        sparse[0].as_ref().unwrap()[0]
             .positions
             .iter()
             .map(|k| k.time)
@@ -206,11 +206,35 @@ fn sparse_block_uses_bitmap_frame_times() {
     );
     let full = caf::parse_animation_blocks_mode(&block, false).unwrap();
     assert_eq!(
-        full[0][0]
+        full[0].as_ref().unwrap()[0]
             .positions
             .iter()
             .map(|k| k.time)
             .collect::<Vec<_>>(),
         vec![2.0, 5.0, 9.0]
     );
+}
+
+#[test]
+fn undecodable_block_keeps_its_place_in_the_block_list() {
+    // Block 0: one controller whose rotation keys point past the data. Block 1: one controller
+    // with no keys. Metadata entry `i` owns block `i`, so block 1 must stay at index 1.
+    let mut data = Vec::new();
+    for rotation_keys in [3u16, 0] {
+        data.extend(b"#caf");
+        data.extend(1u16.to_le_bytes());
+        data.extend(0xAA55u16.to_le_bytes());
+        data.extend(40u32.to_le_bytes());
+        data.extend(1u32.to_le_bytes());
+        let controller = data.len();
+        data.extend([0; 24]);
+        data[controller..controller + 2].copy_from_slice(&rotation_keys.to_le_bytes());
+        data[controller + 2..controller + 4].copy_from_slice(&0x8042u16.to_le_bytes());
+        data[controller + 4..controller + 8].copy_from_slice(&0x00FF_FFFFu32.to_le_bytes());
+        data[controller + 8..controller + 12].copy_from_slice(&0x00FF_FFFFu32.to_le_bytes());
+    }
+    let blocks = caf::parse_animation_blocks_mode(&data, false).unwrap();
+    assert_eq!(blocks.len(), 2);
+    assert!(blocks[0].is_none());
+    assert!(blocks[1].is_some());
 }

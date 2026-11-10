@@ -14,6 +14,10 @@ boomerang classification and that intermediate values are not materialized.
 synthetic DBA, a minimal empty IVO rig, valid chrparams, and another chrparams
 whose DBA reference is deliberately missing. It verifies that an unreadable rig
 cannot hide healthy clips and that missing child geometry falls back or skips.
+`loose.chrparams` declares no tracks database and names three loose CAFs: one
+stored (`loose.caf`, one block moving the invented bone `synthetic_latch`
+0 → 4 → 8), one stored but not a CAF (`torn.caf`) and one stored nowhere.
+`mixed.chrparams` declares the DBA and names a loose CAF before a DBA entry.
 Additional in-memory mutations cover wildcard rules, zero CAF FPS, unsupported
 position encoding without block misalignment, inactive SNORM axes and bitmap
 frame times. All are invented, not game-derived.

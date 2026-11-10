@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{ClipOrigin, caf_anchored_remap, clip_for_caf_path};
+use super::{ClipOrigin, caf_anchored_remap, clip_for_caf_path, clips_for_caf_path};
 use crate::animation::{AnimationClip, AnimationDatabase, BoneChannel, Keyframe, bone_name_hash};
 use crate::chrparams::ChrParams;
 
@@ -165,3 +165,27 @@ fn caf_path_lookup_ignores_case_and_separator() {
     assert_eq!(marker(clip), 20.0);
     assert!(clip_for_caf_path(&db, "animations/synthetic/rig/c.caf").is_none());
 }
+
+#[test]
+fn caf_path_in_the_database_never_consults_the_loose_file() {
+    let db = AnimationDatabase {
+        clips: vec![block("Animations/Synthetic/ShipA/hatch_open.caf", "hatch", 3.0)],
+    };
+    let clips = clips_for_caf_path(&db, "animations\\synthetic\\shipa\\HATCH_OPEN.caf", |_| {
+        panic!("the database holds this CAF")
+    });
+    assert_eq!(clips.iter().map(marker).collect::<Vec<_>>(), [3.0]);
+}
+
+#[test]
+fn caf_path_missing_from_the_database_is_the_loose_file() {
+    let db = AnimationDatabase {
+        clips: vec![block("Animations/Synthetic/ShipA/hatch_open.caf", "hatch", 3.0)],
+    };
+    let clips = clips_for_caf_path(&db, "Animations/Synthetic/ShipA/hatch_close.caf", |path| {
+        assert_eq!(path, "Animations/Synthetic/ShipA/hatch_close.caf");
+        vec![block("clip_0", "hatch", 7.0)]
+    });
+    assert_eq!(clips.iter().map(marker).collect::<Vec<_>>(), [7.0]);
+}
+

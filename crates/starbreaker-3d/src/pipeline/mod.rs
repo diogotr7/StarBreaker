@@ -34,6 +34,7 @@ pub(crate) use self::child_payload::*;
 mod loadout;
 pub use self::loadout::resolve_loadout_meshes;
 pub(crate) use self::loadout::*;
+mod default_pose;
 pub(crate) mod entity_export;
 mod geometry_variant;
 pub(crate) use self::entity_export::*;

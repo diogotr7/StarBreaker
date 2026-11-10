@@ -3,7 +3,7 @@
 //! `export_entity_payload` and `export_entity_from_paths` are the primary entity
 //! export functions; `export_cgf_from_path` handles individual CGF files.
 //! Geometry loading helpers: `resolve_geometry_files`, `load_geometry_parts`,
-//! `skeleton_source_paths`, `load_skeleton`, `apply_default_animation_pose_for_skel`.
+//! `skeleton_source_paths`, `load_skeleton` (the default-pose bake lives in `default_pose`).
 //! Mesh helpers: `load_nmc_and_material`, `load_single_mesh`, `rebase_mesh_submeshes_to_bone_space`.
 //! CDF exports synthesize a skeleton-backed NMC when merged skin attachments
 //! reference bone indices that the primary CGF's NMC does not cover.
@@ -19,6 +19,7 @@ use crate::mtl;
 use crate::nmc;
 use crate::types::MaterialTextures;
 
+use super::default_pose::apply_default_animation_pose_for_skel;
 use super::{
     ExportFormat, ExportKind, ExportOptions, MaterialMode, PngCache, bone_world_transform,
     datacore_path_to_p4k, load_material_textures, query_tint_palette, resolve_material,
@@ -369,94 +370,6 @@ pub(crate) fn load_skeleton(
     Vec::new()
 }
 
-/// Look up a `.chrparams` for the given skeleton path, find an animation
-/// matching one of `opts.default_animation_tags`, and bake its final-frame
-/// pose into `bones` in native CryEngine Y-up, preserving unkeyed bind
-/// components. Sidecar axis conversion is not part of this bake.
-/// Returns the number of bones updated (0 = nothing
-/// applied / chrparams missing / animation missing).
-fn apply_default_animation_pose_for_skel(
-    p4k: &MappedP4k,
-    skel_path: &str,
-    bones: &mut [crate::skeleton::Bone],
-    opts: &ExportOptions,
-) -> usize {
-    // Derive the .chrparams path: replace .chr/.skin extension with .chrparams.
-    let chrparams_path = match swap_extension(skel_path, "chrparams") {
-        Some(p) => p,
-        None => return 0,
-    };
-    let p4k_path = datacore_path_to_p4k(&chrparams_path);
-    let bytes = match p4k
-        .entry_case_insensitive(&p4k_path)
-        .and_then(|entry| p4k.read(entry).ok())
-    {
-        Some(b) => b,
-        None => return 0,
-    };
-    let cp = match crate::chrparams::ChrParams::from_bytes(&bytes) {
-        Ok(cp) => cp,
-        Err(e) => {
-            log::warn!("[anim] failed to parse {chrparams_path}: {e}");
-            return 0;
-        }
-    };
-    // Pick the first matching animation tag.
-    let mut tag_match: Option<(&str, String)> = None;
-    for tag in &opts.default_animation_tags {
-        if let Some(p) = cp.animations.get(tag) {
-            tag_match = Some((tag.as_str(), p.clone()));
-            break;
-        }
-    }
-    let (_tag, caf_path) = match tag_match {
-        Some(t) => t,
-        None => return 0,
-    };
-    // The event's CAF is an entry of the tracks database ($TracksDatabase).
-    let dba_path = match cp.tracks_database.as_deref() {
-        Some(p) => p,
-        None => return 0,
-    };
-    let dba_p4k = datacore_path_to_p4k(dba_path);
-    let dba_bytes = match p4k
-        .entry_case_insensitive(&dba_p4k)
-        .and_then(|entry| p4k.read(entry).ok())
-    {
-        Some(b) => b,
-        None => {
-            log::warn!("[anim] tracks database not found: {dba_path}");
-            return 0;
-        }
-    };
-    let db = match crate::animation::parse_dba(&dba_bytes) {
-        Ok(d) => d,
-        Err(e) => {
-            log::warn!("[anim] failed to parse {dba_path}: {e}");
-            return 0;
-        }
-    };
-    let clip = match crate::animation::matching::clip_for_caf_path(&db, &caf_path) {
-        Some(c) => c,
-        None => return 0,
-    };
-    let pose = crate::animation::clip_final_pose(clip);
-    crate::animation::apply_pose_to_skeleton(bones, &pose)
-}
-
-/// Replace the file extension of `path` with `new_ext` (no leading dot).
-/// Returns `None` if `path` has no extension.
-fn swap_extension(path: &str, new_ext: &str) -> Option<String> {
-    let dot = path.rfind('.')?;
-    let slash = path.rfind(|c: char| c == '/' || c == '\\').unwrap_or(0);
-    if dot < slash {
-        return None;
-    }
-    let mut out = String::with_capacity(dot + 1 + new_ext.len());
-    out.push_str(&path[..dot + 1]);
-    out.push_str(new_ext);
-    Some(out)
-}
 /// Move a CA_BONE attachment into its bone's frame and bind it rigidly to
 /// that bone.
 fn transform_mesh_by_bone(mesh: &mut crate::Mesh, bone: &crate::skeleton::Bone) {

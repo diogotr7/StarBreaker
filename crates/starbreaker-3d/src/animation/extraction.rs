@@ -1,8 +1,9 @@
 //! Shared full/sparse extraction of one rig's clips: its chrparams events paired with the
-//! tracks database (.dba) entries or loose CAF files their paths name.
+//! tracks database (.dba) entries or loose CAF files their paths name. `load_tracks_database`
+//! and `loose_caf_clips` are the two sources every consumer of that pairing reads from.
 use super::matching::{ClipOrigin, caf_anchored_remap};
 use super::serialise::{annotate_animation_json_source, database_to_animations_json};
-use super::{AnimationDatabase, pose::bone_name_hash};
+use super::{AnimationClip, AnimationDatabase, pose::bone_name_hash};
 use crate::error::Error;
 use std::collections::HashMap;
 
@@ -103,29 +104,10 @@ pub(crate) fn extract_skeleton_json(
         skeleton_bone_name_by_hash.len()
     );
 
-    // The tracks database (.dba) holds the rig's CAFs; a rig without one stores each loose.
     let dba_path = chrparams.tracks_database.clone();
-    let db = match &dba_path {
-        Some(resolved_path) => {
-            let resolved_p4k = crate::pipeline::datacore_path_to_p4k(resolved_path);
-            let dba_data = p4k
-                .entry_case_insensitive(&resolved_p4k)
-                .and_then(|e| p4k.read(e).ok())
-                .ok_or_else(|| {
-                    Error::Other(format!("Cannot load tracks database: {resolved_path}"))
-                })?
-                .to_vec();
-            super::dba::parse_dba_mode(&dba_data, endpoints)?
-        }
-        None => AnimationDatabase { clips: Vec::new() },
-    };
+    let db = load_tracks_database(p4k, &chrparams, endpoints)?;
     let paired = caf_anchored_remap(&db, &chrparams, include_unmatched_dba_blocks, |caf_path| {
-        let caf_p4k = crate::pipeline::datacore_path_to_p4k(caf_path);
-        p4k.entry_case_insensitive(&caf_p4k)
-            .and_then(|e| p4k.read(e).ok())
-            .and_then(|caf_data| super::caf::parse_caf_mode(&caf_data, endpoints).ok())
-            .map(|caf| caf.clips)
-            .unwrap_or_default()
+        loose_caf_clips(p4k, caf_path, endpoints)
     });
     if paired.is_empty() && dba_path.is_none() {
         return Ok(None);
@@ -155,6 +137,54 @@ pub(crate) fn extract_skeleton_json(
     Ok(Some(value))
 }
 
+/// The tracks database (.dba) a rig's chrparams declares. It holds the rig's CAFs; a rig that
+/// declares none stores each CAF loose and gets an empty database. A declared database that
+/// cannot be read or decoded is an error.
+pub(crate) fn load_tracks_database(
+    p4k: &starbreaker_p4k::MappedP4k,
+    chrparams: &crate::chrparams::ChrParams,
+    endpoints: bool,
+) -> Result<AnimationDatabase, Error> {
+    let Some(dba_path) = chrparams.tracks_database.as_deref() else {
+        return Ok(AnimationDatabase { clips: Vec::new() });
+    };
+    let dba_data = p4k
+        .entry_case_insensitive(&crate::pipeline::datacore_path_to_p4k(dba_path))
+        .and_then(|e| p4k.read(e).ok())
+        .ok_or_else(|| Error::Other(format!("Cannot load tracks database: {dba_path}")))?;
+    super::dba::parse_dba_mode(&dba_data, endpoints)
+}
+
+/// The clips of the loose `.caf` stored at `caf_path`: none when no file is stored there (the
+/// game has nothing to play either), an error when a stored file cannot be read or decoded.
+pub(crate) fn read_loose_caf(
+    p4k: &starbreaker_p4k::MappedP4k,
+    caf_path: &str,
+    endpoints: bool,
+) -> Result<Vec<AnimationClip>, Error> {
+    let Some(entry) = p4k.entry_case_insensitive(&crate::pipeline::datacore_path_to_p4k(caf_path))
+    else {
+        return Ok(Vec::new());
+    };
+    let caf_data = p4k
+        .read(entry)
+        .map_err(|error| Error::Other(format!("cannot read {caf_path}: {error}")))?;
+    Ok(super::caf::parse_caf_mode(&caf_data, endpoints)?.clips)
+}
+
+/// [`read_loose_caf`] for the pairing: a stored but unusable CAF is reported and yields no clip,
+/// so one damaged file costs its own event, not the rig.
+pub(crate) fn loose_caf_clips(
+    p4k: &starbreaker_p4k::MappedP4k,
+    caf_path: &str,
+    endpoints: bool,
+) -> Vec<AnimationClip> {
+    read_loose_caf(p4k, caf_path, endpoints).unwrap_or_else(|error| {
+        log::warn!("[anim] loose CAF {caf_path} is stored but unusable: {error}");
+        Vec::new()
+    })
+}
+
 /// Helper: swap file extension. E.g., "file.chr" → "file.chrparams"
 fn swap_extension(path: &str, new_ext: &str) -> Option<String> {
     if let Some(dot_pos) = path.rfind('.') {
@@ -162,5 +192,44 @@ fn swap_extension(path: &str, new_ext: &str) -> Option<String> {
         Some(format!("{}{}", base, new_ext))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rigs() -> starbreaker_p4k::MappedP4k {
+        starbreaker_p4k::MappedP4k::open(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/clip_catalogue/rigs.zip"),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn loose_caf_stored_nowhere_is_no_clip_and_no_error() {
+        let clips = read_loose_caf(&rigs(), "animations/synthetic/absent.caf", false).unwrap();
+        assert!(clips.is_empty());
+    }
+
+    #[test]
+    fn loose_caf_that_is_stored_but_not_a_caf_is_an_error() {
+        assert!(read_loose_caf(&rigs(), "animations/synthetic/torn.caf", false).is_err());
+    }
+
+    #[test]
+    fn unusable_loose_caf_costs_its_own_event_only() {
+        // `loose.chrparams` names a good CAF, a stored non-CAF and a CAF stored nowhere.
+        let value = extract_skeleton_json(&rigs(), "Objects/synthetic/loose.chr", true, false)
+            .unwrap()
+            .unwrap();
+        let names: Vec<&str> = value
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|clip| clip["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["latch_cycle"]);
     }
 }
