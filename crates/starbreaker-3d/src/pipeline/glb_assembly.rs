@@ -21,6 +21,33 @@ use crate::types::MaterialTextures;
 
 use super::*;
 
+/// Material loading policy at the assembly entry point. The first mode also
+/// controls child texture loading during attachment flattening and landing gear;
+/// the second controls the child geometry payloads.
+fn assembly_material_modes(opts: &ExportOptions, is_fps_weapon: bool) -> (MaterialMode, MaterialMode) {
+    // DDS pass-through must run before any bundled decode/PNG conversion,
+    // including the FPS weapon path and all of its attachments.
+    let defer_textures = opts.kind == ExportKind::Decomposed
+        && (!is_fps_weapon || opts.texture_container == TextureContainer::Dds);
+    let payload_material_mode = if defer_textures {
+        MaterialMode::Colors
+    } else {
+        opts.material_mode
+    };
+    let child_material_mode = if defer_textures {
+        MaterialMode::Colors
+    } else if is_fps_weapon {
+        opts.material_mode
+    } else {
+        match opts.material_mode {
+            _ if opts.kind == ExportKind::Decomposed => MaterialMode::Colors,
+            MaterialMode::None => MaterialMode::None,
+            _ => MaterialMode::Colors,
+        }
+    };
+    (payload_material_mode, child_material_mode)
+}
+
 pub fn assemble_glb_with_loadout(
     db: &Database,
     p4k: &MappedP4k,
@@ -59,11 +86,8 @@ pub fn assemble_glb_with_loadout_with_progress(
 
     report_progress(progress, LOADOUT_STAGE_START, "Resolving loadout")?;
     let phase_start = Instant::now();
-    let payload_material_mode = if opts.kind == ExportKind::Decomposed && !is_fps_weapon {
-        MaterialMode::Colors
-    } else {
-        opts.material_mode
-    };
+    let (payload_material_mode, child_material_mode) =
+        assembly_material_modes(opts, is_fps_weapon);
     let payload_opts = ExportOptions {
         material_mode: payload_material_mode,
         ..opts.clone()
@@ -141,20 +165,7 @@ pub fn assemble_glb_with_loadout_with_progress(
     // Landing gear CDF geometry attaches to NMC helper bones (e.g. hardpoint_landing_gear_front).
     // Adding them as EntityPayloads lets the existing scene graph handle positioning.
     // Children skip textures to save memory, but never exceed the user's material mode.
-    let child_payload_material_mode = if opts.kind == ExportKind::Decomposed && !is_fps_weapon {
-        MaterialMode::Colors
-    } else {
-        opts.material_mode
-    };
-    let child_material_mode = if is_fps_weapon {
-        opts.material_mode
-    } else {
-        match opts.material_mode {
-            _ if opts.kind == ExportKind::Decomposed => MaterialMode::Colors,
-            MaterialMode::None => MaterialMode::None,
-            _ => MaterialMode::Colors,
-        }
-    };
+    let child_payload_material_mode = payload_material_mode;
     let child_opts = ExportOptions {
         material_mode: child_material_mode,
         ..payload_opts.clone()
@@ -601,6 +612,53 @@ fn select_root_nmc(
 mod tests {
     use super::*;
     use crate::nmc::{NmcNode, NodeMeshCombo};
+
+    #[test]
+    fn assembly_entry_defers_dds_weapon_and_child_textures() {
+        for material_mode in [MaterialMode::Textures, MaterialMode::All] {
+            let opts = ExportOptions {
+                kind: ExportKind::Decomposed,
+                texture_container: TextureContainer::Dds,
+                material_mode,
+                ..Default::default()
+            };
+            let (root_and_child_textures, child_payloads) = assembly_material_modes(&opts, true);
+            assert_eq!(root_and_child_textures, MaterialMode::Colors);
+            assert_eq!(child_payloads, MaterialMode::Colors);
+        }
+    }
+
+    #[test]
+    fn assembly_entry_preserves_png_and_bundled_weapon_modes() {
+        for kind in [ExportKind::Decomposed, ExportKind::Bundled] {
+            for material_mode in [
+                MaterialMode::None,
+                MaterialMode::Colors,
+                MaterialMode::Textures,
+                MaterialMode::All,
+            ] {
+                let opts = ExportOptions {
+                    kind,
+                    material_mode,
+                    ..Default::default()
+                };
+                assert_eq!(
+                    assembly_material_modes(&opts, true),
+                    (material_mode, material_mode)
+                );
+                if kind == ExportKind::Bundled {
+                    let opts = ExportOptions {
+                        texture_container: TextureContainer::Dds,
+                        ..opts
+                    };
+                    assert_eq!(
+                        assembly_material_modes(&opts, true),
+                        (material_mode, material_mode)
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn exported_root_nmc_takes_priority_over_loadout_probe_nmc() {

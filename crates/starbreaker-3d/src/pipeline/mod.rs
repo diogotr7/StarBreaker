@@ -18,11 +18,17 @@ use crate::nmc;
 use crate::types::MaterialTextures;
 
 mod textures;
+
+#[cfg(test)]
+thread_local! {
+    /// Observe bundled texture loads on a dedicated single-thread test pool.
+    pub(crate) static BUNDLED_TEXTURE_LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 use self::textures::*;
 pub(crate) use self::textures::cached_load;
 pub(crate) use self::textures::{
     PngCache, RoughnessCache, cached_load_keyed, load_diffuse_texture, load_normal_texture,
-    load_roughness_texture, load_roughness_texture_result, png_cache_key,
+    load_roughness_texture, load_roughness_texture_result, load_package_texture_dds, png_cache_key,
 };
 mod interiors;
 pub(crate) use self::interiors::*;
@@ -121,6 +127,17 @@ pub enum ExportFormat {
     Blend,
 }
 
+/// Storage container for decomposed source textures. Bundled exports remain PNG.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum TextureContainer {
+    #[default]
+    Png,
+    Dds,
+}
+impl TextureContainer {
+    fn is_png(&self) -> bool { *self == Self::Png }
+}
+
 /// Options for controlling the export pipeline.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ExportOptions {
@@ -144,6 +161,9 @@ pub struct ExportOptions {
     pub lod_level: u32,
     /// Texture mip level (0 = full resolution, 2 = 1/4 res, 4 = 1/16 res).
     pub texture_mip: u32,
+    /// Pass supported decomposed textures through as DDS; PNG retains upstream behavior.
+    #[serde(skip_serializing_if = "TextureContainer::is_png")]
+    pub texture_container: TextureContainer,
     /// Worker threads for parallel export phases. 0 = auto/all available cores, 1 = sequential.
     pub threads: usize,
     /// Export animation clips into decomposed scene sidecars.
@@ -161,6 +181,7 @@ pub struct ExportOptions {
     /// still keeping shared assets under `Data/...`.
     pub decomposed_package_subdir: Option<String>,
     /// Decomposed fast path: emit only UI-generated images and required scene manifests.
+    /// Projected texture paths in this mode remain PNG-only.
     pub ui_only_files: bool,
     /// Optional normalized lowercase socpak paths to include during inherited
     /// interior discovery. `None` exports every discovered container.
@@ -182,6 +203,7 @@ impl Default for ExportOptions {
             include_shields: false,
             lod_level: 1,
             texture_mip: 2,
+            texture_container: TextureContainer::Png,
             threads: 0,
             include_animations: false,
             apply_default_animation_pose: true,

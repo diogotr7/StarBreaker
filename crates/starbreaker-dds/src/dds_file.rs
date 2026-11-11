@@ -1,3 +1,4 @@
+//! DDS header parsing, split mip reassembly, and colour/alpha decoding.
 use std::path::Path;
 
 use starbreaker_common::SpanReader;
@@ -546,6 +547,11 @@ fn compute_mip_size(
 ) -> usize {
     let w = std::cmp::max(1, width >> mip_level);
     let h = std::cmp::max(1, height >> mip_level);
+
+    // BC2 has no decoder enum variant, but its DX10 mip layout is still exact.
+    if dxt10.is_some_and(|dx| matches!(dx.dxgi_format, 74 | 75)) {
+        return (w.div_ceil(4) as usize) * (h.div_ceil(4) as usize) * 16;
+    }
 
     // Try block-compressed first
     if let Ok(format) = resolve_format(pf, dxt10) {

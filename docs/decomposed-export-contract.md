@@ -556,6 +556,58 @@ The current sidecar contract is now substantially closer to the raw `.mtl` XML s
 ### Texture Export Rules
 
 - Decomposed exports now write source textures as `.png` using the original `Data/...` filename with only the extension changed.
+### Optional compressed texture container
+
+`ExportOptions::texture_container` is `TextureContainer::Png` by default. This
+preserves the existing PNG bytes and paths (and omits the default option from
+serialized export options). `TextureContainer::Dds` applies to decomposed Generic
+and Normal texture assets, palette decal textures, and DDNA alpha derivations.
+Bundled exports, player-package `texture_png`, generated UI PNGs, and gobo PNG/EXR
+exports retain their existing paths. `ui_only_files` projected paths remain PNG-only.
+
+Supported sources are written as `Data/.../<stem>_TEX<mip>.dds`; sidecar
+`export_path` always names the emitted container. Unsupported sources use the
+existing PNG conversion. Block-compressed sources also fall back to PNG when the
+selected top mip width or height is not a multiple of 4 (including 1×1, 2×2 and
+odd sizes). Smaller tail mips are allowed. Empty chains and chains exceeding
+`floor(log2(max(width, height))) + 1` mips cannot pass through. DDS normal maps
+pass through BC5 colour mips behind the same normal/gloss filename gate as PNG; their smoothness siblings are separate.
+Decomposed DDS assembly defers bundled texture loading for root entities and
+children, including standalone FPS weapons. DDS files are reusable texture assets.
+DDS normal source refs retain DDNA identity but omit PNG-only alpha-channel claims.
+DDNA alpha uses `<stem>_smoothness_TEX<mip>.dds` and its derived ref and derivation
+status describe `packed_texture_format = "smoothness"`,
+`packed_channel_semantics = { "r": "smoothness" }`, `value_channel = "r"`,
+`value_transform = "identity"`, with no constant channels. Provenance still names
+the source DDNA alpha, and the semantic role remains `roughness`. PNG fallback
+keeps `roughness_grayscale` and `sqrt_one_minus` below.
+
+Package DDS consists of `DDS `, a 124-byte header, an always-present DX10 header,
+and the selected mip through the last available mip, verbatim. Selection clamps
+to the available colour or alpha chain independently. Width/height describe the
+selected mip; mip count describes the written chain; header flags are
+`DDSD_MIPMAPCOUNT|DDSD_LINEARSIZE|CAPS|HEIGHT|WIDTH|PIXELFORMAT`, and linear size is
+the first written mip's byte count. The pixel FourCC is `DX10`; resource dimension
+is 3 (2D), misc flags are zero, and array size is 1.
+
+Pass-through formats are DXGI 61, 71/72, 74/75, 77/78, 80/81, 83/84, 98/99,
+87/91, and 28/29. Legacy DXT1, DXT3, DXT5, ATI1/BC4U, BC4S, ATI2/BC5U, BC5S
+map respectively to 71, **74 (BC2)**, 77, 80, 81, 83, 84. Legacy R8/L8 mask
+0xff maps to 61; RGBA8 and BGRA8 masks map to 28 and 87. Source sRGB encoding
+promotes 71→72, 74→75, 77→78, 98→99, 87→91, 28→29, so consumers need only DXGI.
+BC6H, unsupported formats, cubemaps, arrays, volumes, sRGB sources without an
+sRGB variant, and incorrectly sized mip payloads fall back to PNG. Alpha DDS
+chains must have one uniform BC4 UNORM, BC4 SNORM, or R8 format across every
+written mip, each with its exact expected byte size; smoothness is linear.
+
+DDS export and both prewarm passes perform no pixel decode or PNG encode for
+pass-through assets. DDS derivation diagnostics retain dimensions, mip selection,
+and alpha format/layout; decoded smoothness and roughness statistics are omitted.
+PNG paths retain their existing statistics. Existing-file reuse distinguishes
+DDS and PNG, including PNG fallback when the preferred container is DDS.
+
+The following alpha-in-PNG and grayscale-roughness rules describe PNG export:
+
 - DDNA normal-gloss exports preserve smoothness in the source PNG alpha channel and mark that slot with `texture_identity = ddna_normal`, `alpha_semantic = smoothness`, and `alpha_channel = a` only when the same source has an exported `ddna_derivations[]` smoothness payload. DDNA sources with `status = missing` keep `texture_identity = ddna_normal` but must not claim `alpha_semantic = smoothness`. The DDNA identity is detected from the source filename stem token `ddna`, not from directory names or arbitrary path substrings.
 - Rust also emits derived DDNA roughness PNGs when alpha mips are available. Any texture slot classified as `normal_gloss` with `texture_identity = ddna_normal` is eligible, even when the authored DDNA sampler is not the conventional TexSlot2 field. Derived roughness refs are written to `derived_textures[]` for direct material normal-gloss slots and to per-layer `roughness_texture` for layer-material normal-gloss slots.
 - Newer sidecars also emit `ddna_derivations[]` beside direct submaterial textures and inside each layer manifest. These records are diagnostic coverage entries for every eligible DDNA normal-gloss source. Each record carries the DDNA transform contract (`derived_from_texture_identity = ddna_normal`, `derived_from_semantic = smoothness`, `derived_from_channel = a`, `value_transform = sqrt_one_minus`, `value_channel = r`, `packed_texture_format = roughness_grayscale`, packed channel semantics, and alpha channel constants) so even `status = missing` entries describe how the source would have been converted. `status = exported` also includes the derived `export_path` plus mip selection and parse metadata (`requested_mip`, `selected_mip`, `mip_selection`, `alpha_mip_format`, `alpha_mip_layout`, `width`, `height`, `alpha_mip_count`), decoded source smoothness statistics (`smoothness_min`, `smoothness_max`, `smoothness_mean`, byte range 0-255), and derived roughness statistics (`roughness_min`, `roughness_max`, `roughness_mean`, byte range 0-255). `mip_selection = requested` means the requested texture mip had a matching alpha mip; `mip_selection = clamped_to_available_alpha_mip` means the requested mip exceeded available DDNA alpha mips and the exporter used the last available alpha mip. `alpha_mip_format` is one of `bc4_unorm`, `bc4_snorm`, or `r8_unorm`. `alpha_mip_layout` is one of `numbered_sibling`, `headered_tail`, `raw_tail_split`, or `raw_single_payload` and describes how the selected alpha mip was sourced from split CryEngine DDS siblings. `status = missing` includes a structural `reason` such as `missing_alpha_mips` when the source DDNA has no alpha/smoothness payload.

@@ -986,7 +986,7 @@ pub fn write_decomposed_export_blend(
         }
     }
     let (prewarmed_png_cache, prewarmed_mtl_cache) =
-        crate::decomposed::prewarm_decomposed_textures(p4k, &prewarm_assets, opts.texture_mip);
+        crate::decomposed::prewarm_decomposed_textures(p4k, &prewarm_assets, opts.texture_mip, opts.texture_container);
     log::info!(
         "[timing][blend] prewarm_textures: {:.2}s ({} assets, {} cached, {} mtl)",
         prewarm_start.elapsed().as_secs_f32(),
@@ -996,7 +996,7 @@ pub fn write_decomposed_export_blend(
     );
     let prewarm_rough_start = Instant::now();
     let prewarmed_roughness_cache =
-        crate::decomposed::prewarm_decomposed_roughness(p4k, &prewarm_assets, opts.texture_mip);
+        crate::decomposed::prewarm_decomposed_roughness(p4k, &prewarm_assets, opts.texture_mip, opts.texture_container);
     log::info!(
         "[timing][blend] prewarm_roughness: {:.2}s ({} sources)",
         prewarm_rough_start.elapsed().as_secs_f32(),

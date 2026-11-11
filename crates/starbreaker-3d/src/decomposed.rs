@@ -19,7 +19,7 @@ use crate::mtl::{
 use crate::nmc::NodeMeshCombo;
 use crate::pipeline::{
     DecomposedExport, ExportFormat, ExportOptions, ExportedFile, ExportedFileKind,
-    InteriorCgfEntry, LoadedInteriors, MaterialMode, PngCache, RoughnessCache,
+    InteriorCgfEntry, LoadedInteriors, MaterialMode, PngCache, RoughnessCache, TextureContainer,
 };
 use crate::skeleton::Bone;
 use crate::types::{EntityPayload, Mesh, UiBinding};
@@ -1098,7 +1098,7 @@ pub(crate) fn write_decomposed_export(
             }
             _ => HashMap::new(),
         };
-    let mut texture_cache: HashMap<(String, TextureFlavor), String> = HashMap::new();
+    let mut texture_cache: HashMap<(String, TextureFlavor, TextureContainer), String> = HashMap::new();
     // Memo for the DDNA→roughness derivation (exported ref + status metadata);
     // shared across root/paint/child/interior sidecars so each DDNA source is
     // decoded and statistics-scanned exactly once per export.
@@ -1197,6 +1197,7 @@ pub(crate) fn write_decomposed_export(
                 opts.texture_mip,
                 existing_asset_paths,
                 &mut mtl_cache,
+                opts.texture_container,
             )
         }
     }).map(|path| normalize_material_source_for_manifest(p4k, &path));
@@ -1254,6 +1255,7 @@ pub(crate) fn write_decomposed_export(
                     opts.texture_mip,
                     existing_asset_paths,
                     &mut mtl_cache,
+                    opts.texture_container,
                 )
             }
         }).map(|path| normalize_material_source_for_manifest(p4k, &path));
@@ -1400,6 +1402,7 @@ pub(crate) fn write_decomposed_export(
                     opts.texture_mip,
                     existing_asset_paths,
                     &mut mtl_cache,
+                    opts.texture_container,
                 )
             }
         }).map(|path| normalize_material_source_for_manifest(p4k, &path));
@@ -1761,6 +1764,7 @@ pub(crate) fn write_decomposed_export(
                                 opts.texture_mip,
                                 existing_asset_paths,
                                 &mut mtl_cache,
+                                opts.texture_container,
                             )
                         }
                     }).map(|path| normalize_material_source_for_manifest(p4k, &path));
@@ -1864,6 +1868,7 @@ pub(crate) fn write_decomposed_export(
                         TextureFlavor::Generic,
                         opts.texture_mip,
                         existing_asset_paths,
+                        TextureContainer::Png,
                     )
                     .is_some()
                     {
@@ -1872,6 +1877,7 @@ pub(crate) fn write_decomposed_export(
                             src,
                             TextureFlavor::Generic,
                             opts.texture_mip,
+                            TextureContainer::Png,
                         ));
                     }
 
@@ -2084,6 +2090,7 @@ pub(crate) fn write_decomposed_export(
             &mut texture_cache,
             opts.texture_mip,
             existing_asset_paths,
+            opts.texture_container,
         );
         if let Some(diagnostics) = input.weapon_assembly_diagnostics.as_ref() {
             insert_json_file(
@@ -2124,7 +2131,7 @@ fn classify_exported_file_kind(relative_path: &str) -> ExportedFileKind {
         ExportedFileKind::MaterialSidecar
     } else if relative_path.ends_with(".glb") || relative_path.ends_with(".blend") {
         ExportedFileKind::MeshAsset
-    } else if relative_path.ends_with(".png") {
+    } else if relative_path.ends_with(".png") || relative_path.ends_with(".dds") {
         ExportedFileKind::TextureAsset
     } else {
         ExportedFileKind::PackageManifest
@@ -2488,7 +2495,7 @@ fn write_material_sidecar(
     files: &mut OutputFiles,
     p4k: &MappedP4k,
     png_cache: &mut PngCache,
-    texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    texture_cache: &mut HashMap<(String, TextureFlavor, TextureContainer), String>,
     ddna_status_cache: &mut HashMap<String, (Option<TextureExportRef>, TextureDerivationStatus)>,
     roughness_cache: &RoughnessCache,
     palettes_manifest_path: &str,
@@ -2500,6 +2507,7 @@ fn write_material_sidecar(
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
     mtl_cache: &mut HashMap<String, Option<MtlFile>>,
+    texture_container: TextureContainer,
 ) -> String {
     let source_material_path = canonical_material_source_path(
         p4k,
@@ -2541,6 +2549,7 @@ fn write_material_sidecar(
                 existing_asset_paths,
                 mtl_cache,
                 &source_material_path,
+                texture_container,
             )
         })
         .collect::<Vec<_>>();
@@ -2613,7 +2622,7 @@ fn extract_material_entry(
     files: &mut OutputFiles,
     p4k: &MappedP4k,
     png_cache: &mut PngCache,
-    texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    texture_cache: &mut HashMap<(String, TextureFlavor, TextureContainer), String>,
     ddna_status_cache: &mut HashMap<String, (Option<TextureExportRef>, TextureDerivationStatus)>,
     roughness_cache: &RoughnessCache,
     material: &SubMaterial,
@@ -2621,6 +2630,7 @@ fn extract_material_entry(
     existing_asset_paths: Option<&HashSet<String>>,
     mtl_cache: &mut HashMap<String, Option<MtlFile>>,
     source_material_path: &str,
+    texture_container: TextureContainer,
 ) -> ExtractedMaterialEntry {
     let mut derived_texture_exports = Vec::new();
     let mut ddna_derivations = Vec::new();
@@ -2634,6 +2644,7 @@ fn extract_material_entry(
             &path,
             texture_mip,
             existing_asset_paths,
+            texture_container,
         );
         if let Some(roughness_texture) = roughness_texture {
             derived_texture_exports.push(roughness_texture);
@@ -2657,6 +2668,7 @@ fn extract_material_entry(
                 texture_mip,
                 existing_asset_paths,
                 &ddna_smoothness_sources,
+                texture_container,
             )
         })
         .collect::<Vec<_>>();
@@ -2672,6 +2684,7 @@ fn extract_material_entry(
             TextureFlavor::Generic,
             texture_mip,
             existing_asset_paths,
+            texture_container,
         ) {
             direct_texture_exports.push(TextureExportRef {
                 role: "diffuse".to_string(),
@@ -2702,7 +2715,9 @@ fn extract_material_entry(
             TextureFlavor::Normal,
             texture_mip,
             existing_asset_paths,
+            texture_container,
         ) {
+            let stores_alpha = !export_path.ends_with(".dds");
             direct_texture_exports.push(TextureExportRef {
                 role: "normal_gloss".to_string(),
                 source_path: normalize_source_path(p4k, path),
@@ -2715,6 +2730,7 @@ fn extract_material_entry(
                     TextureSemanticRole::NormalGloss,
                     &ddna_smoothness_sources,
                 )
+                .filter(|_| stores_alpha)
                 .map(str::to_string),
                 alpha_channel: ddna_alpha_channel_for_exported_source(
                     p4k,
@@ -2722,6 +2738,7 @@ fn extract_material_entry(
                     TextureSemanticRole::NormalGloss,
                     &ddna_smoothness_sources,
                 )
+                .filter(|_| stores_alpha)
                 .map(str::to_string),
                 derived_from_texture_identity: None,
                 derived_from_semantic: None,
@@ -2757,6 +2774,7 @@ fn extract_material_entry(
                         &path,
                         texture_mip,
                         existing_asset_paths,
+                        texture_container,
                     );
                     if roughness_texture.is_none() {
                         roughness_texture = candidate;
@@ -2782,6 +2800,7 @@ fn extract_material_entry(
                                 texture_mip,
                                 existing_asset_paths,
                                 &layer_ddna_smoothness_sources,
+                                texture_container,
                             )
                         })
                         .collect::<Vec<_>>()
@@ -2799,6 +2818,7 @@ fn extract_material_entry(
                         TextureFlavor::Generic,
                         texture_mip,
                         existing_asset_paths,
+                        texture_container,
                     )
                 });
             let normal_path = layer_sub.and_then(|sub| sub.normal_tex.as_deref());
@@ -2812,6 +2832,7 @@ fn extract_material_entry(
                     TextureFlavor::Normal,
                     texture_mip,
                     existing_asset_paths,
+                    texture_container,
                 )
             });
             let roughness_export_path = roughness_texture
@@ -3052,13 +3073,14 @@ fn build_slot_export_value(
     files: &mut OutputFiles,
     p4k: &MappedP4k,
     png_cache: &mut PngCache,
-    texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    texture_cache: &mut HashMap<(String, TextureFlavor, TextureContainer), String>,
     binding: &SemanticTextureBinding,
     material: &SubMaterial,
     source_material_path: &str,
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
     ddna_smoothness_sources: &HashSet<String>,
+    texture_container: TextureContainer,
 ) -> serde_json::Value {
     let source_path = slot_source_path(Some(p4k), binding);
     let export_flavor = slot_texture_flavor(binding.role);
@@ -3087,6 +3109,7 @@ fn build_slot_export_value(
             export_flavor,
             texture_mip,
             existing_asset_paths,
+            texture_container,
         )
     };
 
@@ -3128,7 +3151,7 @@ fn build_slot_export_value(
         &binding.path,
         binding.role,
         ddna_smoothness_sources,
-    ) {
+    ).filter(|_| export_path.as_deref().is_none_or(|path| !path.ends_with(".dds"))) {
         value.insert(
             "alpha_semantic".to_string(),
             serde_json::json!(alpha_semantic),
@@ -3139,7 +3162,7 @@ fn build_slot_export_value(
         &binding.path,
         binding.role,
         ddna_smoothness_sources,
-    ) {
+    ).filter(|_| export_path.as_deref().is_none_or(|path| !path.ends_with(".dds"))) {
         value.insert(
             "alpha_channel".to_string(),
             serde_json::json!(alpha_channel),
@@ -3175,7 +3198,7 @@ fn generated_ui_texture_for_binding(
     _files: &mut OutputFiles,
     _p4k: &MappedP4k,
     _png_cache: &mut PngCache,
-    _texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    _texture_cache: &mut HashMap<(String, TextureFlavor, TextureContainer), String>,
     material: &SubMaterial,
     binding: &SemanticTextureBinding,
     _source_material_path: &str,
@@ -3614,19 +3637,37 @@ fn export_texture_asset(
     files: &mut OutputFiles,
     p4k: &MappedP4k,
     png_cache: &mut PngCache,
-    texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    texture_cache: &mut HashMap<(String, TextureFlavor, TextureContainer), String>,
     source_path: &str,
     flavor: TextureFlavor,
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
+    texture_container: TextureContainer,
 ) -> Option<String> {
     let normalized_source = normalize_source_path(p4k, source_path);
-    let cache_key = texture_cache_key(&normalized_source, flavor);
+    let cache_key = texture_cache_key(&normalized_source, flavor, texture_container);
     if let Some(existing) = texture_cache.get(&cache_key) {
         return Some(existing.clone());
     }
 
-    let requested_path = texture_relative_path(p4k, source_path, flavor, texture_mip);
+    if texture_container == TextureContainer::Dds {
+        if let Some(bytes) = load_texture_dds(p4k, source_path, flavor, texture_mip) {
+            let path =
+                texture_relative_path(p4k, source_path, flavor, texture_mip, TextureContainer::Dds);
+            let stored = if existing_asset_paths
+                .is_some_and(|paths| paths.contains(&path.to_ascii_lowercase()))
+            {
+                path
+            } else {
+                insert_binary_file(files, path, bytes)
+            };
+            texture_cache.insert(cache_key, stored.clone());
+            return Some(stored);
+        }
+    }
+
+    let requested_path =
+        texture_relative_path(p4k, source_path, flavor, texture_mip, TextureContainer::Png);
     if existing_asset_paths
         .is_some_and(|paths| paths.contains(&requested_path.to_ascii_lowercase()))
     {
@@ -3666,8 +3707,27 @@ fn export_texture_asset(
     Some(stored_path)
 }
 
-fn texture_cache_key(normalized_source: &str, flavor: TextureFlavor) -> (String, TextureFlavor) {
-    (normalized_source.to_ascii_lowercase(), flavor)
+fn load_texture_dds(
+    p4k: &MappedP4k,
+    source: &str,
+    flavor: TextureFlavor,
+    mip: u32,
+) -> Option<Vec<u8>> {
+    crate::pipeline::load_package_texture_dds(
+        p4k,
+        source,
+        mip,
+        flavor == TextureFlavor::Normal,
+        flavor == TextureFlavor::Roughness,
+    )
+}
+
+fn texture_cache_key(
+    normalized_source: &str,
+    flavor: TextureFlavor,
+    container: TextureContainer,
+) -> (String, TextureFlavor, TextureContainer) {
+    (normalized_source.to_ascii_lowercase(), flavor, container)
 }
 
 /// Decode one P4k texture to its package PNG: `(relative path, bytes)`, at
@@ -3686,7 +3746,16 @@ pub(crate) fn texture_png(
         png_cache,
         crate::pipeline::load_diffuse_texture,
     )?;
-    Some((texture_relative_path(p4k, source_path, TextureFlavor::Generic, texture_mip), bytes))
+    Some((
+        texture_relative_path(
+            p4k,
+            source_path,
+            TextureFlavor::Generic,
+            texture_mip,
+            TextureContainer::Png,
+        ),
+        bytes,
+    ))
 }
 
 fn register_palette(
@@ -3725,9 +3794,10 @@ fn finalize_palette_records(
     files: &mut OutputFiles,
     p4k: &MappedP4k,
     png_cache: &mut PngCache,
-    texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    texture_cache: &mut HashMap<(String, TextureFlavor, TextureContainer), String>,
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
+    texture_container: TextureContainer,
 ) {
     for record in records.values_mut() {
         let Some(source_path) = record.palette.decal_texture.as_deref() else {
@@ -3742,6 +3812,7 @@ fn finalize_palette_records(
             TextureFlavor::Generic,
             texture_mip,
             existing_asset_paths,
+            texture_container,
         );
     }
 }
@@ -3966,22 +4037,35 @@ fn texture_relative_path(
     source_path: &str,
     flavor: TextureFlavor,
     mip: u32,
+    texture_container: TextureContainer,
 ) -> String {
     let normalized = normalize_source_path(p4k, source_path);
-    texture_relative_path_from_normalized(&normalized, flavor, mip)
+    texture_relative_path_from_normalized(&normalized, flavor, mip, texture_container)
 }
 
 fn texture_relative_path_from_normalized(
     normalized: &str,
     flavor: TextureFlavor,
     mip: u32,
+    texture_container: TextureContainer,
 ) -> String {
-    let base = match flavor {
-        TextureFlavor::Generic => replace_extension(&normalized, ".png"),
-        TextureFlavor::Normal => replace_extension(&normalized, ".png"),
-        TextureFlavor::Roughness => {
-            insert_stem_suffix(&replace_extension(&normalized, ".png"), "_roughness")
-        }
+    let extension = if texture_container == TextureContainer::Dds {
+        ".dds"
+    } else {
+        ".png"
+    };
+    let base = replace_extension(normalized, extension);
+    let base = if flavor == TextureFlavor::Roughness {
+        insert_stem_suffix(
+            &base,
+            if texture_container == TextureContainer::Dds {
+                "_smoothness"
+            } else {
+                "_roughness"
+            },
+        )
+    } else {
+        base
     };
     insert_stem_suffix(&base, &format!("_TEX{mip}"))
 }
@@ -4846,6 +4930,7 @@ pub(crate) fn prewarm_decomposed_textures(
     p4k: &MappedP4k,
     assets: &[(MtlFile, String, String)],
     texture_mip: u32,
+    texture_container: TextureContainer,
 ) -> (PngCache, HashMap<String, Option<MtlFile>>) {
     // Resolve source materials + collect keys serially (cheap .mtl parses,
     // deduped via a local mtl cache). Texture DECODE is the expensive part and
@@ -4853,8 +4938,13 @@ pub(crate) fn prewarm_decomposed_textures(
     let mut mtl_cache: HashMap<String, Option<MtlFile>> = HashMap::new();
     let mut requests: HashSet<(String, TextureFlavor)> = HashSet::new();
     for (materials, material_path, geometry_path) in assets {
-        let source_material_path =
-            canonical_material_source_path(p4k, materials, material_path, geometry_path, &mut mtl_cache);
+        let source_material_path = canonical_material_source_path(
+            p4k,
+            materials,
+            material_path,
+            geometry_path,
+            &mut mtl_cache,
+        );
         let (sidecar_materials, _indices) = canonical_sidecar_materials_from_source(
             p4k,
             &source_material_path,
@@ -4869,6 +4959,10 @@ pub(crate) fn prewarm_decomposed_textures(
     let jobs: Vec<(String, TextureFlavor)> = requests.into_iter().collect();
     let png_cache: PngCache = jobs
         .par_iter()
+        .filter(|(path, flavor)| {
+            texture_container != TextureContainer::Dds
+                || load_texture_dds(p4k, path, *flavor, texture_mip).is_none()
+        })
         .map(|(path, flavor)| match flavor {
             TextureFlavor::Generic => (
                 crate::pipeline::png_cache_key(path, texture_mip, ""),
@@ -4905,6 +4999,7 @@ pub(crate) fn prewarm_decomposed_roughness(
     p4k: &MappedP4k,
     assets: &[(MtlFile, String, String)],
     texture_mip: u32,
+    texture_container: TextureContainer,
 ) -> RoughnessCache {
     use rayon::prelude::*;
     let mut sources: HashSet<String> = HashSet::new();
@@ -4920,7 +5015,12 @@ pub(crate) fn prewarm_decomposed_roughness(
         .map(|src| {
             (
                 src.clone(),
-                crate::pipeline::load_roughness_texture_result(p4k, src, texture_mip),
+                crate::pipeline::load_roughness_texture_result(
+                    p4k,
+                    src,
+                    texture_mip,
+                    texture_container,
+                ),
             )
         })
         .collect()
@@ -4938,6 +5038,7 @@ fn ddna_roughness_texture_ref(
     p4k: &MappedP4k,
     source_path: &str,
     export_path: String,
+    container: TextureContainer,
 ) -> TextureExportRef {
     TextureExportRef {
         role: "roughness".to_string(),
@@ -4953,10 +5054,32 @@ fn ddna_roughness_texture_ref(
         derived_from_channel: ddna_alpha_channel(source_path, TextureSemanticRole::NormalGloss)
             .map(str::to_string),
         value_channel: Some("r".to_string()),
-        value_transform: Some("sqrt_one_minus".to_string()),
-        packed_texture_format: Some("roughness_grayscale".to_string()),
-        packed_channel_semantics: Some(roughness_grayscale_channel_semantics()),
-        constant_channel_values: Some(roughness_grayscale_constant_channels()),
+        value_transform: Some(
+            if container == TextureContainer::Dds {
+                "identity"
+            } else {
+                "sqrt_one_minus"
+            }
+            .to_string(),
+        ),
+        packed_texture_format: Some(
+            if container == TextureContainer::Dds {
+                "smoothness"
+            } else {
+                "roughness_grayscale"
+            }
+            .to_string(),
+        ),
+        packed_channel_semantics: Some(if container == TextureContainer::Dds {
+            BTreeMap::from([("r".into(), "smoothness".into())])
+        } else {
+            roughness_grayscale_channel_semantics()
+        }),
+        constant_channel_values: if container == TextureContainer::Dds {
+            None
+        } else {
+            Some(roughness_grayscale_constant_channels())
+        },
     }
 }
 
@@ -4976,12 +5099,13 @@ fn roughness_grayscale_constant_channels() -> BTreeMap<String, String> {
 fn export_ddna_roughness_asset_with_status(
     files: &mut OutputFiles,
     p4k: &MappedP4k,
-    texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    texture_cache: &mut HashMap<(String, TextureFlavor, TextureContainer), String>,
     ddna_status_cache: &mut HashMap<String, (Option<TextureExportRef>, TextureDerivationStatus)>,
     roughness_cache: &RoughnessCache,
     source_path: &str,
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
+    texture_container: TextureContainer,
 ) -> (Option<TextureExportRef>, TextureDerivationStatus) {
     let Some(_) = ddna_texture_identity(source_path) else {
         return (
@@ -5024,10 +5148,11 @@ fn export_ddna_roughness_asset_with_status(
     }
 
     let normalized_source = normalize_source_path(p4k, source_path);
-    let cache_key = texture_cache_key(&normalized_source, TextureFlavor::Roughness);
-    let requested_path =
-        texture_relative_path(p4k, source_path, TextureFlavor::Roughness, texture_mip);
-
+    let cache_key = texture_cache_key(
+        &normalized_source,
+        TextureFlavor::Roughness,
+        texture_container,
+    );
     // Consult the prewarmed pure-decode cache (keyed by RAW source path) before
     // decoding. This is the ONLY roughness_cache use — the `ddna_status_cache`
     // memo above and all `files`/`texture_cache` inserts below stay serial, so a
@@ -5036,9 +5161,21 @@ fn export_ddna_roughness_asset_with_status(
         .get(source_path)
         .cloned()
         .unwrap_or_else(|| {
-            crate::pipeline::load_roughness_texture_result(p4k, source_path, texture_mip)
+            crate::pipeline::load_roughness_texture_result(
+                p4k,
+                source_path,
+                texture_mip,
+                texture_container,
+            )
         }) {
         Ok(loaded) => {
+            let requested_path = texture_relative_path(
+                p4k,
+                source_path,
+                TextureFlavor::Roughness,
+                texture_mip,
+                loaded.container,
+            );
             let selected_mip = loaded.selected_mip;
             let requested_mip = loaded.requested_mip;
             let mip_selection = loaded.mip_selection;
@@ -5061,7 +5198,7 @@ fn export_ddna_roughness_asset_with_status(
                 texture_cache.insert(cache_key, requested_path.clone());
                 requested_path
             } else {
-                let stored_path = insert_binary_file(files, requested_path, loaded.grayscale_png);
+                let stored_path = insert_binary_file(files, requested_path, loaded.package_bytes);
                 texture_cache.insert(cache_key, stored_path.clone());
                 stored_path
             };
@@ -5070,6 +5207,7 @@ fn export_ddna_roughness_asset_with_status(
                     p4k,
                     source_path,
                     stored_path.clone(),
+                    loaded.container,
                 )),
                 ddna_roughness_derivation_status(
                     p4k,
@@ -5085,12 +5223,12 @@ fn export_ddna_roughness_asset_with_status(
                     Some(width),
                     Some(height),
                     Some(alpha_mip_count),
-                    Some(smoothness_min),
-                    Some(smoothness_max),
-                    Some(smoothness_mean),
-                    Some(roughness_min),
-                    Some(roughness_max),
-                    Some(roughness_mean),
+                    smoothness_min,
+                    smoothness_max,
+                    smoothness_mean,
+                    roughness_min,
+                    roughness_max,
+                    roughness_mean,
                 ),
             )
         }
@@ -5144,6 +5282,14 @@ fn ddna_roughness_derivation_status(
     roughness_max: Option<u8>,
     roughness_mean: Option<u8>,
 ) -> TextureDerivationStatus {
+    let container = if export_path
+        .as_deref()
+        .is_some_and(|path| path.ends_with(".dds"))
+    {
+        TextureContainer::Dds
+    } else {
+        TextureContainer::Png
+    };
     TextureDerivationStatus {
         role: "roughness".to_string(),
         source_path: normalize_source_path(p4k, source_path),
@@ -5155,10 +5301,32 @@ fn ddna_roughness_derivation_status(
         derived_from_channel: ddna_alpha_channel(source_path, TextureSemanticRole::NormalGloss)
             .map(str::to_string),
         value_channel: Some("r".to_string()),
-        value_transform: Some("sqrt_one_minus".to_string()),
-        packed_texture_format: Some("roughness_grayscale".to_string()),
-        packed_channel_semantics: Some(roughness_grayscale_channel_semantics()),
-        constant_channel_values: Some(roughness_grayscale_constant_channels()),
+        value_transform: Some(
+            if container == TextureContainer::Dds {
+                "identity"
+            } else {
+                "sqrt_one_minus"
+            }
+            .to_string(),
+        ),
+        packed_texture_format: Some(
+            if container == TextureContainer::Dds {
+                "smoothness"
+            } else {
+                "roughness_grayscale"
+            }
+            .to_string(),
+        ),
+        packed_channel_semantics: Some(if container == TextureContainer::Dds {
+            BTreeMap::from([("r".into(), "smoothness".into())])
+        } else {
+            roughness_grayscale_channel_semantics()
+        }),
+        constant_channel_values: if container == TextureContainer::Dds {
+            None
+        } else {
+            Some(roughness_grayscale_constant_channels())
+        },
         status: status.to_string(),
         reason: reason.map(str::to_string),
         export_path,
@@ -5651,7 +5819,7 @@ mod tests {
         assert_eq!(existing, serde_json::json!([a, b, c]));
     }
 
-    fn sample_submaterial() -> SubMaterial {
+    pub(super) fn sample_submaterial() -> SubMaterial {
         SubMaterial {
             name: "hull_panel".into(),
             shader: "LayerBlend_V2".into(),
@@ -5790,7 +5958,7 @@ mod tests {
         }
     }
 
-    fn sample_mesh(submeshes: Vec<crate::types::SubMesh>) -> Mesh {
+    pub(super) fn sample_mesh(submeshes: Vec<crate::types::SubMesh>) -> Mesh {
         let index_count = submeshes
             .iter()
             .map(|submesh| submesh.first_index + submesh.num_indices)
@@ -5938,6 +6106,7 @@ mod tests {
                 "Data/Objects/FPS_Weapons/Test/brfl_fps_behr_p6lr_ddna.dds",
                 TextureFlavor::Roughness,
                 2,
+                TextureContainer::Png,
             ),
             "Data/Objects/FPS_Weapons/Test/brfl_fps_behr_p6lr_ddna_roughness_TEX2.png"
         );
@@ -5997,15 +6166,16 @@ mod tests {
     #[test]
     fn texture_cache_key_normalizes_case_by_flavor() {
         assert_eq!(
-            texture_cache_key("Data/Objects/Test/PANEL_DDNA.dds", TextureFlavor::Roughness),
+            texture_cache_key("Data/Objects/Test/PANEL_DDNA.dds", TextureFlavor::Roughness, TextureContainer::Png),
             (
                 "data/objects/test/panel_ddna.dds".to_string(),
-                TextureFlavor::Roughness
+                TextureFlavor::Roughness,
+                TextureContainer::Png
             )
         );
         assert_ne!(
-            texture_cache_key("Data/Objects/Test/PANEL_DDNA.dds", TextureFlavor::Normal),
-            texture_cache_key("Data/Objects/Test/PANEL_DDNA.dds", TextureFlavor::Roughness)
+            texture_cache_key("Data/Objects/Test/PANEL_DDNA.dds", TextureFlavor::Normal, TextureContainer::Png),
+            texture_cache_key("Data/Objects/Test/PANEL_DDNA.dds", TextureFlavor::Roughness, TextureContainer::Png)
         );
     }
 
@@ -6024,7 +6194,9 @@ mod tests {
             .map(|e| e.name.clone())
             .find(|n| {
                 n.to_ascii_lowercase().ends_with("_ddna.dds")
-                    && crate::pipeline::load_roughness_texture_result(&p4k, n, 0).is_ok()
+                    && crate::pipeline::load_roughness_texture_result(&p4k, n, 0,
+                    TextureContainer::Png,
+                ).is_ok()
             })
             .expect("a decodable ddna source");
 
@@ -6035,12 +6207,15 @@ mod tests {
         let empty = RoughnessCache::new();
         let cold = export_ddna_roughness_asset_with_status(
             &mut f0, &p4k, &mut tc0, &mut sc0, &empty, &src, 0, None,
+            TextureContainer::Png,
         );
 
         // Prewarmed path: cache pre-seeded with the pure decode result.
         let warm_cache: RoughnessCache = std::iter::once((
             src.clone(),
-            crate::pipeline::load_roughness_texture_result(&p4k, &src, 0),
+            crate::pipeline::load_roughness_texture_result(&p4k, &src, 0,
+            TextureContainer::Png,
+        ),
         ))
         .collect();
         let mut f1 = OutputFiles::new();
@@ -6048,11 +6223,14 @@ mod tests {
         let mut sc1 = HashMap::new();
         let warm = export_ddna_roughness_asset_with_status(
             &mut f1, &p4k, &mut tc1, &mut sc1, &warm_cache, &src, 0, None,
+            TextureContainer::Png,
         );
 
         assert_eq!(cold.0, warm.0, "exported ref must match the cold path");
         assert_eq!(cold.1, warm.1, "derivation status must match the cold path");
-        let rel = texture_relative_path(&p4k, &src, TextureFlavor::Roughness, 0);
+        let rel = texture_relative_path(&p4k, &src, TextureFlavor::Roughness, 0,
+        TextureContainer::Png,
+    );
         assert!(
             f1.contains_key(&rel),
             "roughness PNG must be inserted on the prewarmed path"
@@ -8263,3 +8441,7 @@ mod tests {
     // they require a real `MappedP4k` because the builders adopt P4K-entry
     // casing (there is no in-memory archive to assert literal casing against).
 }
+
+#[cfg(test)]
+#[path = "decomposed_texture_tests.rs"]
+mod texture_container_tests;

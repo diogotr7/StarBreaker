@@ -1,11 +1,11 @@
-//! Texture loading, PNG encode/decode, and material texture assembly.
+//! Texture loading, DDS pass-through, PNG encode/decode, and material assembly.
 //!
 //! Provides `PngCache` for deduplicated DDS→PNG transcoding, texture-transform
 //! helpers (`apply_transform`, `apply_stencil`, etc.), the layered/fallback
 //! texture-tag builders (`build_fallback_texture_tags`), and the top-level
 //! `load_material_textures` function that drives the full material texture pipeline.
 //! Public exports: `PngCache`, `cached_load`, `load_diffuse_texture`,
-//! `load_normal_texture`, `load_roughness_texture`, `decode_png`.
+//! `load_normal_texture`, `load_roughness_texture`, `load_package_texture_dds`, `decode_png`.
 
 use starbreaker_dds::DdsFile;
 use starbreaker_p4k::MappedP4k;
@@ -13,7 +13,7 @@ use starbreaker_p4k::MappedP4k;
 use crate::mtl;
 use crate::types::{MaterialTextures, TextureTransformInfo};
 
-use super::{P4kSiblingReader, datacore_path_to_p4k, try_load_mtl};
+use super::{TextureContainer, P4kSiblingReader, datacore_path_to_p4k, try_load_mtl};
 
 pub(crate) type PngCache = std::collections::HashMap<String, Option<Vec<u8>>>;
 
@@ -38,7 +38,9 @@ pub(crate) enum RoughnessTextureLoadError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RoughnessTextureLoad {
     pub(crate) png: Vec<u8>,
-    pub(crate) grayscale_png: Vec<u8>,
+    /// DDS smoothness or PNG grayscale roughness for decomposed export.
+    pub(crate) package_bytes: Vec<u8>,
+    pub(crate) container: TextureContainer,
     pub(crate) requested_mip: u32,
     pub(crate) selected_mip: u32,
     pub(crate) mip_selection: &'static str,
@@ -47,12 +49,12 @@ pub(crate) struct RoughnessTextureLoad {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) alpha_mip_count: u32,
-    pub(crate) smoothness_min: u8,
-    pub(crate) smoothness_max: u8,
-    pub(crate) smoothness_mean: u8,
-    pub(crate) roughness_min: u8,
-    pub(crate) roughness_max: u8,
-    pub(crate) roughness_mean: u8,
+    pub(crate) smoothness_min: Option<u8>,
+    pub(crate) smoothness_max: Option<u8>,
+    pub(crate) smoothness_mean: Option<u8>,
+    pub(crate) roughness_min: Option<u8>,
+    pub(crate) roughness_max: Option<u8>,
+    pub(crate) roughness_mean: Option<u8>,
 }
 
 impl RoughnessTextureLoadError {
@@ -782,6 +784,8 @@ pub(super) fn load_material_textures(
     include_normals: bool,
     experimental_textures: bool,
 ) -> MaterialTextures {
+    #[cfg(test)]
+    super::BUNDLED_TEXTURE_LOADS.with(|count| count.set(count.get() + 1));
     let mut textures = empty_material_textures(mtl.materials.len());
 
     for material in &mtl.materials {
@@ -1233,7 +1237,7 @@ pub(crate) fn load_roughness_texture(
     tif_path: &str,
     mip_level: u32,
 ) -> Option<Vec<u8>> {
-    load_roughness_texture_result(p4k, tif_path, mip_level)
+    load_roughness_texture_result(p4k, tif_path, mip_level, TextureContainer::Png)
         .ok()
         .map(|loaded| loaded.png)
 }
@@ -1242,6 +1246,7 @@ pub(crate) fn load_roughness_texture_result(
     p4k: &MappedP4k,
     tif_path: &str,
     mip_level: u32,
+    container: TextureContainer,
 ) -> Result<RoughnessTextureLoad, RoughnessTextureLoadError> {
     let dds_path = tif_path
         .strip_suffix(".tif")
@@ -1290,21 +1295,40 @@ pub(crate) fn load_roughness_texture_result(
         None => "unknown",
     };
 
-    let smoothness = dds
-        .decode_alpha_mip(mip)
-        .map_err(|_| RoughnessTextureLoadError::DecodeAlphaMip)?;
-    let smoothness_stats =
-        smoothness_statistics(&smoothness).ok_or(RoughnessTextureLoadError::DecodeAlphaMip)?;
-    let roughness = smoothness_to_perceptual_roughness(&smoothness);
-    let roughness_stats =
-        byte_statistics(&roughness).ok_or(RoughnessTextureLoadError::EncodePng)?;
-    let png = pack_perceptual_roughness_as_metallic_roughness_png(w, h, &roughness)
-        .ok_or(RoughnessTextureLoadError::EncodePng)?;
-    let grayscale_png = pack_perceptual_roughness_as_grayscale_roughness_png(w, h, &roughness)
-        .ok_or(RoughnessTextureLoadError::EncodePng)?;
+    // Pass-through performs no decode or PNG encode, including statistics. Keep
+    // structural provenance and omit pixel statistics for compressed smoothness.
+    let dds_bytes = (container == TextureContainer::Dds)
+        .then(|| starbreaker_dds::package::write_package_dds(&dds, mip_level, true))
+        .flatten();
+    let (png, package_bytes, container, smoothness_stats, roughness_stats) = if let Some(bytes) =
+        dds_bytes
+    {
+        (Vec::new(), bytes, TextureContainer::Dds, None, None)
+    } else {
+        let smoothness = dds
+            .decode_alpha_mip(mip)
+            .map_err(|_| RoughnessTextureLoadError::DecodeAlphaMip)?;
+        let smoothness_stats =
+            smoothness_statistics(&smoothness).ok_or(RoughnessTextureLoadError::DecodeAlphaMip)?;
+        let roughness = smoothness_to_perceptual_roughness(&smoothness);
+        let roughness_stats =
+            byte_statistics(&roughness).ok_or(RoughnessTextureLoadError::EncodePng)?;
+        let png = pack_perceptual_roughness_as_metallic_roughness_png(w, h, &roughness)
+            .ok_or(RoughnessTextureLoadError::EncodePng)?;
+        let grayscale_png = pack_perceptual_roughness_as_grayscale_roughness_png(w, h, &roughness)
+            .ok_or(RoughnessTextureLoadError::EncodePng)?;
+        (
+            png,
+            grayscale_png,
+            TextureContainer::Png,
+            Some(smoothness_stats),
+            Some(roughness_stats),
+        )
+    };
     Ok(RoughnessTextureLoad {
         png,
-        grayscale_png,
+        package_bytes,
+        container,
         requested_mip: mip_level,
         selected_mip: mip as u32,
         mip_selection,
@@ -1313,12 +1337,12 @@ pub(crate) fn load_roughness_texture_result(
         width: w,
         height: h,
         alpha_mip_count: dds.alpha_mip_data.len() as u32,
-        smoothness_min: smoothness_stats.0,
-        smoothness_max: smoothness_stats.1,
-        smoothness_mean: smoothness_stats.2,
-        roughness_min: roughness_stats.0,
-        roughness_max: roughness_stats.1,
-        roughness_mean: roughness_stats.2,
+        smoothness_min: smoothness_stats.map(|stats| stats.0),
+        smoothness_max: smoothness_stats.map(|stats| stats.1),
+        smoothness_mean: smoothness_stats.map(|stats| stats.2),
+        roughness_min: roughness_stats.map(|stats| stats.0),
+        roughness_max: roughness_stats.map(|stats| stats.1),
+        roughness_mean: roughness_stats.map(|stats| stats.2),
     })
 }
 
@@ -1597,4 +1621,37 @@ mod tests {
             "Data/Objects/Test_ddna_cache/panel_diff.tif"
         ));
     }
+}
+
+pub(crate) fn load_package_texture_dds(
+    p4k: &MappedP4k,
+    source: &str,
+    mip: u32,
+    normal: bool,
+    alpha: bool,
+) -> Option<Vec<u8>> {
+    if source.starts_with('$') || (normal && !crate::mtl::texture_path_looks_normal_gloss(source)) {
+        return None;
+    }
+    let path = source
+        .strip_suffix(".tif")
+        .map(|s| format!("{s}.dds"))
+        .unwrap_or_else(|| source.to_owned());
+    let path = crate::pipeline::datacore_path_to_p4k(&path);
+    let entry = p4k.entry_case_insensitive(&path)?;
+    let bytes = p4k.read(entry).ok()?;
+    let siblings = crate::pipeline::P4kSiblingReader {
+        p4k,
+        base_path: path,
+    };
+    let dds = starbreaker_dds::DdsFile::from_split(&bytes, &siblings).ok()?;
+    if normal
+        && !matches!(
+            starbreaker_dds::resolve_format(&dds.header.pixel_format, dds.dxt10_header.as_ref()),
+            Ok(starbreaker_dds::DxgiFormat::BC5Unorm | starbreaker_dds::DxgiFormat::BC5Snorm)
+        )
+    {
+        return None;
+    }
+    starbreaker_dds::package::write_package_dds(&dds, mip, alpha)
 }

@@ -31,7 +31,7 @@ pub(crate) mod test_xml;
 pub use error::Error;
 pub use included_objects::{IncludedObject, IncludedObjects};
 pub use pipeline::{
-    DecomposedExport, ExportFormat, ExportKind, ExportOptions, ExportResult, ExportedFile,
+    DecomposedExport, ExportFormat, ExportKind, ExportOptions, TextureContainer, ExportResult, ExportedFile,
     ExportedFileKind, MaterialMode,
     assemble_glb_with_loadout, assemble_glb_with_loadout_with_progress,
     dump_hierarchy, inspect_socpak_hierarchy, load_invisible_ports, query_animation_controller_source,
