@@ -45,6 +45,8 @@ pub(crate) struct DecomposedInput {
     pub paint_variants: Vec<crate::mtl::PaintVariant>,
     /// Animation clips over the root skeleton and morph targets.
     pub animations: Vec<crate::clip::Clip>,
+    /// `root_entity.physics_grid` (see [`crate::physics_grid`]); only with `include_physics`.
+    pub physics_grid: Option<serde_json::Value>,
 }
 
 pub(crate) type ExistingInteriorAssetMap = HashMap<String, (String, Option<String>)>;
@@ -1166,6 +1168,7 @@ pub(crate) fn write_decomposed_export(
                 opts.lod_level,
                 opts.format,
                 existing_asset_paths,
+                opts.include_physics,
             )
         })
         .transpose()?;
@@ -1373,6 +1376,7 @@ pub(crate) fn write_decomposed_export(
             opts.lod_level,
             opts.format,
             existing_asset_paths,
+            opts.include_physics,
         )?;
         let material_sidecar = child_material_view.sidecar_materials.as_ref().map(|materials| {
             if opts.ui_only_files {
@@ -1791,6 +1795,7 @@ pub(crate) fn write_decomposed_export(
                             opts.lod_level,
                             opts.format,
                             existing_asset_paths,
+                            opts.include_physics,
                         )?
                     };
                     interior_asset_cache.insert(cache_key, (mesh_asset.clone(), material_sidecar.clone()));
@@ -2069,6 +2074,9 @@ pub(crate) fn write_decomposed_export(
     scene_manifest["root_entity"]["lights"] = serde_json::json!(
         entity_light_records.remove(&input.entity_name).unwrap_or_default());
     scene_manifest["root_entity"]["vehicle_light_ports"] = serde_json::json!(light_ports.remove(&input.entity_name).unwrap_or_default());
+    if let Some(grid) = &input.physics_grid {
+        scene_manifest["root_entity"]["physics_grid"] = grid.clone();
+    }
     for child in scene_manifest["children"].as_array_mut().expect("children array") {
         let name = child["entity_name"].as_str().expect("child name").to_owned();
         child["lights"] = serde_json::json!(entity_light_records.remove(&name).unwrap_or_default());
@@ -2424,6 +2432,7 @@ fn write_mesh_asset(
     lod_level: u32,
     format: ExportFormat,
     existing_asset_paths: Option<&HashSet<String>>,
+    include_physics: bool,
 ) -> Result<String, Error> {
     let requested_path =
         mesh_asset_relative_path(p4k, geometry_path, fallback_name, lod_level, format);
@@ -2487,6 +2496,11 @@ fn write_mesh_asset(
         )?
     } else {
         Vec::new()
+    };
+    let bytes = if include_physics && format == ExportFormat::Glb {
+        crate::decomposed_physics::attach_source_physics(p4k, geometry_path, nmc, bytes)?
+    } else {
+        bytes
     };
     Ok(insert_binary_file(files, requested_path, bytes))
 }

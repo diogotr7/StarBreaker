@@ -48,6 +48,31 @@ For the LIVE 4.10.2 Gladius fixture at LOD 1 / mip 2, the root has 274 nodes,
 referenced slot is 26. The package has 45 non-empty mesh GLBs, 23 material
 sidecars, 366 PNGs and 63 animation sidecars.
 
+### Game physics (`include_physics`)
+
+`ExportOptions.include_physics` (default `false`; upstream output unchanged) adds the source's CryPhysics
+collision geometry (`.cga` / `.cgf` IVO chunk `0x58DE1772`, decoded by `ivo/physics.rs`) to decomposed GLB mesh
+assets (`decomposed_physics.rs`):
+
+- A glTF node of an NMC node carries `extras.sc_physics`: an array of records in that node's own frame (the frame
+  of its render vertices). Every record has `part` (the source key's high half: a per-node index, **not** a
+  collision filter) and `kind`: `box` (`center`, `half_size`, `axes` = 3 row vectors), `sphere` (`center`,
+  `radius`), `cylinder` / `capsule` (`center`, `axis`, `radius`, `half_height`), `trimesh` (`mesh` = index of an
+  unreferenced one-primitive glTF mesh, `vertices`, `triangles` counts), or `damage_mesh` / `sdf` (`bytes` only:
+  Star Engine damage physics, not collision).
+- `class` is present when the node name gives one (`physics_class.rs`, the engine's naming convention; the chunk
+  itself carries no filter): `interaction` (`$IP_*` interaction volumes), `tires_only`
+  (`TIRES_ONLY_COLLISION(S)`), `player_only` (`PLAYER_ONLY_COLLISIONS`), `no_terrain` (`IGNORE_TERRAIN_COLLIDE` /
+  `_COLLISION`, `NO_TERRAIN_COLLISION`), `grid_volume` (`physicsgrid_` / `localgrid_allow_no_collide*`). Absent:
+  an ordinary collider.
+- Nodes the export drops (`filter_nmc_hierarchy`, e.g. `$proxy_*`) that carry colliders are recreated as
+  transform-only nodes. Whole-object physics (`0xFFFF`) sits on the object's single geometry node, else on a
+  `$physics_object` node whose frame is the object's.
+- `root_entity.physics_grid` (vehicles; `physics_grid.rs`): the vehicle's physics-grid volume from DataCore
+  `VehicleComponentParams.physicsGrid.physicsProxy` — `{ "source_path", "shapes": [...] }`, shapes as above but in
+  the root entity's frame (CryEngine Z-up metres) with trimesh `vertices` / `triangles` inline. Inside it an actor
+  belongs to the vehicle's grid, where the root entity's own colliders (its exterior hull) do not block it.
+
 ### Manifest fields
 
 `scene.json` (`build_scene_manifest_value`) carries these top-level keys:
@@ -61,7 +86,8 @@ sidecars, 366 PNGs and 63 animation sidecars.
   `mesh_asset`, `material_sidecar`, `palette_id`, and optionally `animations`
   (only the root entity carries animations) and, in character packages,
   `character` (the resolved CHF material customization and HumanSkin_V2
-  wrinkle-slot layout; written by `character/package.rs`). `mesh_asset` is
+  wrinkle-slot layout; written by `character/package.rs`), and with
+  `include_physics` `physics_grid` (vehicles; see Game physics). `mesh_asset` is
   `null` when the root has no geometry (no vertices, no NMC nodes — e.g. a
   socpak scene root, or a character whose head a full helmet hides); the
   `.blend` then has no root mesh object and the package armature sits at the

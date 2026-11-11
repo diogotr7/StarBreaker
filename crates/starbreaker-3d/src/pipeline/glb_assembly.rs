@@ -470,6 +470,12 @@ pub fn assemble_glb_with_loadout_with_progress(
         let decomposed_progress =
             progress.map(|progress| progress.sub(ASSEMBLY_STAGE_START, ASSEMBLY_STAGE_END));
 
+        // WP-P3: the vehicle's physics-grid volume, beside the colliders in the mesh assets.
+        let physics_grid = if opts.include_physics {
+            crate::physics_grid::query_physics_grid(db, p4k, record)?
+        } else {
+            None
+        };
         let decomposed_input = crate::decomposed::DecomposedInput {
             entity_name: resolved.entity_name.clone(),
             geometry_path: geometry_path.clone(),
@@ -493,6 +499,7 @@ pub fn assemble_glb_with_loadout_with_progress(
             interiors: loaded_interiors,
             paint_variants,
             animations: Vec::new(),
+            physics_grid,
         };
 
         let phase_start = Instant::now();

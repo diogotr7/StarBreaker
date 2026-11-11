@@ -2251,6 +2251,7 @@ fn create_test_input(entity_name: &str, num_children: usize) -> DecomposedInput 
         },
         paint_variants: vec![],
         animations: Vec::new(),
+        physics_grid: None,
     }
 }
 

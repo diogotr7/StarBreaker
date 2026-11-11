@@ -148,6 +148,7 @@ pub fn export_character_package(
         interiors: Default::default(),
         paint_variants: Vec::new(),
         animations: rig.animations.clone(),
+        physics_grid: None,
     };
     let mut export = if glb {
         crate::decomposed::write_decomposed_export(db, p4k, input, opts, None, None, None,

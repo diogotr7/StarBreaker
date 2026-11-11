@@ -164,6 +164,10 @@ pub struct ExportOptions {
     /// Pass supported decomposed textures through as DDS; PNG retains upstream behavior.
     #[serde(skip_serializing_if = "TextureContainer::is_png")]
     pub texture_container: TextureContainer,
+    /// Decomposed mesh GLBs carry the source's CryPhysics collision geometry (`StatObjPhysics`) as glTF node
+    /// `extras.sc_physics` (docs/decomposed-export-contract.md); false keeps upstream output unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_physics: bool,
     /// Worker threads for parallel export phases. 0 = auto/all available cores, 1 = sequential.
     pub threads: usize,
     /// Export animation clips into decomposed scene sidecars.
@@ -204,6 +208,7 @@ impl Default for ExportOptions {
             lod_level: 1,
             texture_mip: 2,
             texture_container: TextureContainer::Png,
+            include_physics: false,
             threads: 0,
             include_animations: false,
             apply_default_animation_pose: true,
@@ -620,6 +625,7 @@ where
         interiors,
         paint_variants: Vec::new(),
         animations: Vec::new(),
+        physics_grid: None,
     };
 
     write_decomposed_export_blend(db, p4k, input, opts, None, None, None, None)
