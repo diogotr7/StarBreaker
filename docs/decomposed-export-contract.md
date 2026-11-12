@@ -29,7 +29,8 @@ free-form export-kind metadata label. Bundled callers leave that option false.
 
 ### GLB mesh assets
 
-The entity CLI accepts `--kind decomposed --format glb|blend`. Decomposed
+The entity CLI accepts `--kind decomposed --format glb|blend`. Socpak packages (`socpak export --kind decomposed`) accept the same formats (GLB through the shared decomposed
+exporter, as for entities); `--dds` writes the game's DDS blocks (`TextureContainer::Dds`) instead of PNG. Decomposed
 exports default to `blend`; bundled exports continue to use GLB. GLB packages
 contain actual per-mesh GLBs and a JSON scene manifest, without `scene.blend`.
 The validator accepts both formats and parses GLB mesh payloads structurally.

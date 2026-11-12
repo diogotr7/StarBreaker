@@ -92,6 +92,9 @@ pub struct ExportOpts {
     /// This preserves UI PNG parity with full export while reducing output churn.
     #[arg(long)]
     pub ui_only_files: bool,
+    /// Decomposed exports: write textures as the game's DDS blocks (TextureContainer::Dds) instead of PNG.
+    #[arg(long)]
+    pub dds: bool,
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,7 +142,7 @@ impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
             ui_only_files: opts.ui_only_files,
             socpak_path_filter: None,
             geometry_tag: opts.geometry_tag.clone(),
-            texture_container: starbreaker_3d::TextureContainer::Png,
+            texture_container: if opts.dds { starbreaker_3d::TextureContainer::Dds } else { starbreaker_3d::TextureContainer::Png },
             include_physics: false,
         }
     }

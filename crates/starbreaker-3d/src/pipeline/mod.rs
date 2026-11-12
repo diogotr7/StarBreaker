@@ -541,11 +541,7 @@ where
     use crate::socpak;
 
     ensure_supported_export_options(opts)?;
-    if opts.kind != ExportKind::Decomposed || opts.format != ExportFormat::Blend {
-        return Err(Error::UnsupportedExportFormat(
-            "socpak decomposed blend export requires kind=Decomposed and format=Blend".to_string(),
-        ));
-    }
+    check_socpak_decomposed_options(opts)?;
 
     let identity = glam::Mat4::IDENTITY.to_cols_array_2d();
     let mut payloads = Vec::new();
@@ -629,6 +625,15 @@ where
     };
 
     write_decomposed_export_blend(db, p4k, input, opts, None, None, None, None)
+}
+
+/// Socpak packages are decomposed exports; the mesh format is the caller's (`Blend` native assets, or `Glb` mesh
+/// assets through the shared decomposed exporter, as for entities).
+pub(crate) fn check_socpak_decomposed_options(opts: &ExportOptions) -> Result<(), Error> {
+    if opts.kind != ExportKind::Decomposed {
+        return Err(Error::UnsupportedExportFormat("socpak package export requires kind=Decomposed".to_string()));
+    }
+    Ok(())
 }
 
 fn empty_socpak_scene_root_mesh() -> crate::types::Mesh {
@@ -873,6 +878,15 @@ pub fn dump_hierarchy(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn socpak_packages_accept_glb_and_blend_but_not_bundled() {
+        let decomposed = |format| ExportOptions { kind: ExportKind::Decomposed, format, ..Default::default() };
+        assert!(super::check_socpak_decomposed_options(&decomposed(ExportFormat::Glb)).is_ok());
+        assert!(super::check_socpak_decomposed_options(&decomposed(ExportFormat::Blend)).is_ok());
+        let bundled = ExportOptions { kind: ExportKind::Bundled, format: ExportFormat::Glb, ..Default::default() };
+        assert!(super::check_socpak_decomposed_options(&bundled).is_err());
+    }
+
     use super::*;
 
     use starbreaker_datacore::types::{CigGuid, StringId, StringId2};
