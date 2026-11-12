@@ -139,6 +139,8 @@ impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
             ui_only_files: opts.ui_only_files,
             socpak_path_filter: None,
             geometry_tag: opts.geometry_tag.clone(),
+            texture_container: starbreaker_3d::TextureContainer::Png,
+            include_physics: false,
         }
     }
 }

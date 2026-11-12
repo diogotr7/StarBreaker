@@ -200,7 +200,7 @@ fn mat3x4_mul(a: &[[f32; 4]; 3], b: &[[f32; 4]; 3]) -> [[f32; 4]; 3] {
     r
 }
 
-const NMC_IDENTITY: [[f32; 4]; 3] = [
+pub(crate) const NMC_IDENTITY: [[f32; 4]; 3] = [
     [1.0, 0.0, 0.0, 0.0],
     [0.0, 1.0, 0.0, 0.0],
     [0.0, 0.0, 1.0, 0.0],
@@ -220,7 +220,9 @@ fn nmc_matrix_is_identity_or_zero(m: &[[f32; 4]; 3]) -> bool {
 /// builder: each node's `bone_to_world` is its LOCAL matrix composed down the
 /// parent hierarchy; a submesh's triangles (its INDEX range) reference shared
 /// per-node-local positions, transformed by that node's composed world matrix.
-fn flatten_nmc_to_world(mesh: &Mesh, nodes: &[nmc::NmcNode]) -> Mesh {
+/// Each NMC node's matrix composed down the parent hierarchy (`bone_to_world` is the node's LOCAL matrix; an
+/// identity-or-zero matrix is identity). `None` for a node whose parent chain does not resolve.
+pub(crate) fn nmc_world_matrices(nodes: &[nmc::NmcNode]) -> Vec<Option<[[f32; 4]; 3]>> {
     // Composed world matrix per node (parents resolved first via a fixpoint
     // pass — NMC parent indices are not guaranteed to precede children).
     let local: Vec<[[f32; 4]; 3]> = nodes
@@ -257,6 +259,11 @@ fn flatten_nmc_to_world(mesh: &Mesh, nodes: &[nmc::NmcNode]) -> Mesh {
             break;
         }
     }
+    world
+}
+
+fn flatten_nmc_to_world(mesh: &Mesh, nodes: &[nmc::NmcNode]) -> Mesh {
+    let world = nmc_world_matrices(nodes);
 
     let apply = |m: &[[f32; 4]; 3], p: [f32; 3]| -> [f32; 3] {
         [

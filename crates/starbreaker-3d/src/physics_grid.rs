@@ -30,18 +30,20 @@ pub(crate) fn query_physics_grid(db: &Database, p4k: &MappedP4k, record: &Record
     grid_json(&entry.name.replace('\\', "/"), &entries, &nodes)
 }
 
-/// The volume's shapes in the entity frame: a per-node entry through its node's `bone_to_world`, whole-object
+/// The volume's shapes in the entity frame: a per-node entry through its node's matrix composed down the parent
+/// hierarchy ([`crate::nmc_world_matrices`], as the GLB writer places render vertices), whole-object
 /// physics through the single geometry node when there is exactly one (as in [`crate::decomposed_physics`]),
 /// else as stored. Damage meshes and SDFs are not part of the volume.
 pub(crate) fn grid_json(source_path: &str, entries: &[PhysicsEntry], nodes: &[NmcNode]) -> Result<Option<Value>, Error> {
-    let geometry_nodes: Vec<&NmcNode> = nodes.iter().filter(|n| n.geometry_type == 0).collect();
+    let geometry_nodes: Vec<usize> = (0..nodes.len()).filter(|&i| nodes[i].geometry_type == 0).collect();
+    let world = crate::nmc_world_matrices(nodes);
+    let composed = |i: usize| world[i].unwrap_or(crate::NMC_IDENTITY);
     let mut shapes = Vec::new();
     for e in entries {
         let m = match e.node {
-            Some(i) => Some(
-                nodes.get(i as usize).ok_or_else(|| Error::Other(format!("physics grid: node {i} outside the NMC")))?.bone_to_world,
-            ),
-            None if geometry_nodes.len() == 1 => Some(geometry_nodes[0].bone_to_world),
+            Some(i) if (i as usize) < nodes.len() => Some(composed(i as usize)),
+            Some(i) => return Err(Error::Other(format!("physics grid: node {i} outside the NMC"))),
+            None if geometry_nodes.len() == 1 => Some(composed(geometry_nodes[0])),
             None => None,
         };
         let point = |p: &[f32; 3]| m.map_or(*p, |m| std::array::from_fn(|r| m[r][0] * p[0] + m[r][1] * p[1] + m[r][2] * p[2] + m[r][3]));

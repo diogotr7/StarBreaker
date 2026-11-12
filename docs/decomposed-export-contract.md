@@ -70,8 +70,13 @@ assets (`decomposed_physics.rs`):
   `$physics_object` node whose frame is the object's.
 - `root_entity.physics_grid` (vehicles; `physics_grid.rs`): the vehicle's physics-grid volume from DataCore
   `VehicleComponentParams.physicsGrid.physicsProxy` — `{ "source_path", "shapes": [...] }`, shapes as above but in
-  the root entity's frame (CryEngine Z-up metres) with trimesh `vertices` / `triangles` inline. Inside it an actor
-  belongs to the vehicle's grid, where the root entity's own colliders (its exterior hull) do not block it.
+  the root entity's frame (CryEngine Z-up metres) with trimesh `vertices` / `triangles` inline: each node's NMC
+  matrix composed down its parent hierarchy, as the GLB writer places render vertices (`nmc_world_matrices`; an
+  identity-or-zero matrix is identity). Each shape is its own closed volume. Inside it an actor belongs to the
+  vehicle's grid, where the root entity's own colliders (its exterior hull) do not block it.
+- Asset reuse (`existing_asset_paths`, the CLI's `--skip-existing-assets`) matches paths only: an existing GLB is
+  reused whether or not it was written with `include_physics`. Do not mix exports with and without physics in one
+  output root (the CLI and app always export without; the asset path carries no physics flag).
 
 ### Manifest fields
 

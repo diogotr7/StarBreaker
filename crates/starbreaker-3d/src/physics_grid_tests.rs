@@ -72,3 +72,26 @@ fn damage_data_is_not_a_volume_and_an_empty_volume_is_none() {
 fn per_node_entry_outside_the_nmc_is_an_error() {
     assert!(grid_json("g", &[trimesh(Some(4))], &[node(0, [0.0; 3])]).is_err());
 }
+
+#[test]
+fn grid_node_transforms_compose_down_the_parent_hierarchy() {
+    // NMC `bone_to_world` is the node's LOCAL matrix (lib.rs `flatten_nmc_to_world`): a grid node 2 m below a
+    // helper that is 10 m up sits at 8 m in the entity frame.
+    let helper = node(3, [0.0, 0.0, 10.0]);
+    let mut child = node(0, [0.0, 0.0, -2.0]);
+    child.parent_index = Some(0);
+    let grid = grid_json("g", &[trimesh(Some(1))], &[helper.clone(), child.clone()]).unwrap().unwrap();
+    assert_eq!(grid["shapes"][0]["vertices"][3], serde_json::json!([0.0, 0.0, 9.0]));
+    // Whole-object physics on the single geometry node composes the same way.
+    let grid = grid_json("g", &[trimesh(None)], &[helper, child]).unwrap().unwrap();
+    assert_eq!(grid["shapes"][0]["vertices"][3], serde_json::json!([0.0, 0.0, 9.0]));
+}
+
+#[test]
+fn zero_node_matrix_is_identity() {
+    // An all-zero NMC matrix means "no transform" everywhere else in the exporter (`is_identity_or_zero`).
+    let mut zero = node(0, [0.0; 3]);
+    zero.bone_to_world = [[0.0; 4]; 3];
+    let grid = grid_json("g", &[trimesh(Some(0))], &[zero]).unwrap().unwrap();
+    assert_eq!(grid["shapes"][0]["vertices"][1], serde_json::json!([1.0, 0.0, 0.0]));
+}
