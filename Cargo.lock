@@ -5181,6 +5181,7 @@ dependencies = [
  "starbreaker-datacore",
  "starbreaker-dds",
  "starbreaker-p4k",
+ "starbreaker-shadercache",
  "starbreaker-ui",
  "structured-zstd",
  "tokio",

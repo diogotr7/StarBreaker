@@ -17,6 +17,8 @@ pub(crate) struct GameData {
     p4k: Arc<MappedP4k>,
     dcb_bytes: &'static [u8],
     db: Arc<Database<'static>>,
+    /// The game's shader cache, opened on the first `shader_*` call.
+    shaders: std::sync::OnceLock<Result<Arc<crate::shaders::Shaders>, String>>,
 }
 
 const MAX_DATACORE_QUERY_RESULTS: usize = 32;
@@ -433,6 +435,7 @@ impl StarBreakerMcp {
             p4k,
             dcb_bytes,
             db: Arc::new(db),
+            shaders: std::sync::OnceLock::new(),
         })
     }
 
@@ -454,6 +457,12 @@ impl StarBreakerMcp {
         );
         *data_guard = Some(data.clone());
         data
+    }
+
+    /// The shader cache of the current `Data.p4k` (opened once per data load).
+    fn shaders(&self) -> Result<Arc<crate::shaders::Shaders>, String> {
+        let data = self.data();
+        data.shaders.get_or_init(|| crate::shaders::Shaders::open(&data.p4k_path).map(Arc::new)).clone()
     }
 
     fn switch_p4k_path(&self, path: PathBuf) -> anyhow::Result<Arc<GameData>> {
@@ -2097,6 +2106,38 @@ impl StarBreakerMcp {
                 }
             }
             Err(e) => format!("Query error: {e}"),
+        }
+    }
+
+    #[tool(description = "List the game's shader bins (Vulkan shader cache in Data.p4k): effects (.cfxb, one per shader family, e.g. HardSurface, MeshDecal) and includes (.cfib, e.g. layerLib, common). Optional substring filter.")]
+    fn shader_list(&self, Parameters(req): Parameters<crate::shaders::ShaderListRequest>) -> String {
+        match self.shaders() {
+            Ok(s) => s.list(req.filter.as_deref()),
+            Err(e) => e,
+        }
+    }
+
+    #[tool(description = "Decode one shader bin (effect or include) to readable HLSL, one statement per numbered line. Use grep (with context) to find a function or variable, or start/max_lines to page. Answers 'what does the engine do here' from the game's own shader source.")]
+    fn shader_source(&self, Parameters(req): Parameters<crate::shaders::ShaderSourceRequest>) -> String {
+        match self.shaders() {
+            Ok(s) => s.source(&req),
+            Err(e) => e,
+        }
+    }
+
+    #[tool(description = "Search every decoded shader bin for text (case-insensitive), e.g. a function name ('void SetGBufferBlending'), a uniform ('MeshInvBounds') or a define. Returns bin:line hits; follow up with shader_source and grep for context. The first call decodes every bin (a few seconds).")]
+    fn shader_search(&self, Parameters(req): Parameters<crate::shaders::ShaderSearchRequest>) -> String {
+        match self.shaders() {
+            Ok(s) => s.search(&req.query, req.limit),
+            Err(e) => e,
+        }
+    }
+
+    #[tool(description = "Compiled shader permutations of a family: without entry, its entry points with stage and permutation counts; with entry, the matching permutation paths (optionally filtered by a path substring, e.g. 'GL908') and the SPIR-V reflection of the first: descriptor bindings (set, binding, uniform-block members), stage inputs and outputs.")]
+    fn shader_reflect(&self, Parameters(req): Parameters<crate::shaders::ShaderReflectRequest>) -> String {
+        match self.shaders() {
+            Ok(s) => s.reflect(&req),
+            Err(e) => e,
         }
     }
 

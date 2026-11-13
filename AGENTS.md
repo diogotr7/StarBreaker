@@ -310,6 +310,12 @@ data without shelling out to the CLI. The registered set is the
   - `animation_binding_report` — why exported clips fail to bind in Blender (report-only)
   - `mannequin_dump` — an entity's Mannequin ADB + ControllerDef fragments
   - `riglogic_dump` — a `.RigLogic` file or a `.skin` RigLogic chunk as JSON
+- **Shaders** (the game's Vulkan shader cache, `starbreaker-shadercache`):
+  - `shader_list` — shader bins: effects (`.cfxb`, one per family) and includes (`.cfib`)
+  - `shader_source` — one bin decoded to HLSL, one statement per line; `grep` with context, or page with `start`
+  - `shader_search` — text across every decoded bin (find where a function or uniform is defined or used)
+  - `shader_reflect` — a family's entry points, or one entry's permutations and a variant's SPIR-V reflection (bindings, inputs, outputs)
+  - Use these to answer "how does the engine handle this" from the game's own shader source (see §Troubleshooting). Decoded source is game content: never commit it.
 - **Blender `.blend`:**
   - `blend_sdna`, `blend_block_inspect` — SDNA struct layouts and block hex dumps
   - `blend_python_diff` — binary diff of the `.blend` files a before/after script pair saves
