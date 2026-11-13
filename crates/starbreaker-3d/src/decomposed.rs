@@ -415,7 +415,8 @@ struct InteriorPlacementRecord {
     material_path: Option<String>,
     mesh_asset: String,
     material_sidecar: Option<String>,
-    entity_class_guid: Option<String>,
+    /// Container entity identity and links (`entity_class_guid` included).
+    identity: crate::types::PlacementIdentity,
     ui_bindings: Vec<UiBinding>,
     transform: [[f32; 4]; 4],
     /// Per-placement tint palette id that overrides the container's palette.
@@ -434,6 +435,7 @@ struct InteriorContainerRecord {
     placements: Vec<InteriorPlacementRecord>,
     lights: Vec<serde_json::Value>,
     room_volumes: Vec<serde_json::Value>,
+    proximity_sensors: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -1823,7 +1825,7 @@ pub(crate) fn write_decomposed_export(
                 material_path: precomp.normalized_material_path.clone(),
                 mesh_asset,
                 material_sidecar,
-                entity_class_guid: None,
+                identity: placement.identity.clone(),
                 ui_bindings,
                 transform: placement.transform,
                 palette_id: placement_palette_id,
@@ -1926,6 +1928,7 @@ pub(crate) fn write_decomposed_export(
             placements,
             lights,
             room_volumes: container.room_volumes.iter().map(|volume| volume.to_json()).collect(),
+            proximity_sensors: container.proximity_sensors.iter().map(|sensor| sensor.to_json()).collect(),
         });
 
         if container_count > 0 && total_interior_placements == 0 {
@@ -2377,7 +2380,11 @@ fn interior_container_json(container: &InteriorContainerRecord) -> serde_json::V
                 "material_path": placement.material_path,
                 "mesh_asset": placement.mesh_asset,
                 "material_sidecar": placement.material_sidecar,
-                "entity_class_guid": placement.entity_class_guid,
+                "entity_class_guid": placement.identity.entity_class_guid,
+                "entity_id": placement.identity.entity_id,
+                "links": placement.identity.links,
+                "loadout_owner_entity_id": placement.identity.loadout_owner_entity_id,
+                "item_port_name": placement.identity.item_port_name,
                 "ui_bindings": placement.ui_bindings.iter().map(ui_binding_json).collect::<Vec<_>>(),
                 "transform": placement.transform,
                 "palette_id": placement.palette_id,
@@ -2385,6 +2392,7 @@ fn interior_container_json(container: &InteriorContainerRecord) -> serde_json::V
         }).collect::<Vec<_>>(),
         "lights": container.lights,
         "room_volumes": container.room_volumes,
+        "proximity_sensors": container.proximity_sensors,
     })
 }
 
@@ -7822,7 +7830,13 @@ mod tests {
                 material_sidecar: Some(
                     "Data/Objects/Ships/Test/interior_panel.materials.json".into(),
                 ),
-                entity_class_guid: Some("1234".into()),
+                identity: crate::types::PlacementIdentity {
+                    entity_id: Some("door-id".into()),
+                    entity_class_guid: Some("1234".into()),
+                    links: vec!["target-id".into()],
+                    loadout_owner_entity_id: None,
+                    item_port_name: None,
+                },
                 ui_bindings: Vec::new(),
                 transform: [
                     [1.0, 0.0, 0.0, 0.0],
@@ -7834,6 +7848,7 @@ mod tests {
             }],
             lights: vec![serde_json::json!({ "name": "light_a" })],
             room_volumes: vec![serde_json::json!({ "kind": "box" })],
+            proximity_sensors: vec![serde_json::json!({ "entity_id": "sensor-id", "links": ["door-id"] })],
         };
 
         let value = build_scene_manifest_value(
@@ -7885,6 +7900,17 @@ mod tests {
         assert_eq!(
             value["interiors"][0]["placements"][0]["mesh_asset"],
             serde_json::json!("Data/Objects/Ships/Test/interior_panel.glb")
+        );
+        // Container entity identity: joins links, sensors and loadout items.
+        let placement = &value["interiors"][0]["placements"][0];
+        assert_eq!(placement["entity_id"], "door-id");
+        assert_eq!(placement["entity_class_guid"], "1234");
+        assert_eq!(placement["links"], serde_json::json!(["target-id"]));
+        assert!(placement["loadout_owner_entity_id"].is_null());
+        assert!(placement["item_port_name"].is_null());
+        assert_eq!(
+            value["interiors"][0]["proximity_sensors"][0]["links"],
+            serde_json::json!(["door-id"])
         );
         assert_eq!(
             value["package_rule"]["package_dir"],

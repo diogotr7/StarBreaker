@@ -6,6 +6,8 @@
 //! associated texture sets (`preload_interior_textures`). Also contains
 //! `tint_palette_hash` (hash for texture cache keys) and
 //! `expand_loadout_into_placements` (loadout→interior placement expansion).
+//! Placements carry their container entity identity and links, and containers
+//! their proximity sensors (resolved in `interior_entities.rs`).
 //! Public types: `LoadedInteriors`, `InteriorCgfEntry`, `InteriorContainerData`.
 
 use crate::socpak::light_component::LightResolver;
@@ -65,6 +67,8 @@ pub(crate) struct InteriorContainerData {
     pub room_volumes: Vec<crate::socpak::room_volume::RoomVolume>,
     /// Tint palette resolved from the socpak's IncludedObjects tint_palette_paths.
     pub palette: Option<mtl::TintPalette>,
+    /// Proximity sensors (walk-up triggers) of this container.
+    pub proximity_sensors: Vec<super::interior_entities::ProximitySensor>,
 }
 
 /// Discovery pass: parse socpaks to find unique CGF paths and placements.
@@ -641,7 +645,6 @@ pub(crate) fn build_interiors_from_payloads(
     light_resolver: &mut LightResolver<'_, '_>,
 ) -> LoadedInteriors {
     use std::collections::{HashMap, HashSet};
-    use starbreaker_common::CigGuid;
 
     let guid_geom_compiled = db.compile_rooted::<String>(
         "EntityClassDefinition.Components[SGeometryResourceParams].Geometry.Geometry.Geometry.path",
@@ -659,6 +662,7 @@ pub(crate) fn build_interiors_from_payloads(
     let mut nmc_cache: HashMap<String, Option<crate::nmc::NodeMeshCombo>> = HashMap::new();
     // Built lazily — only entities that resolve via GUID trigger loadout walks.
     let mut entity_index: Option<starbreaker_datacore::loadout::EntityIndex> = None;
+    let mut sensor_resolver = super::interior_entities::SensorResolver::new(db);
 
     for payload in payloads {
         log::debug!(
@@ -669,11 +673,17 @@ pub(crate) fn build_interiors_from_payloads(
         );
 
         let mut placements = Vec::new();
+        let mut proximity_sensors = Vec::new();
         let mut placement_keys: HashSet<(String, [u32; 16])> = HashSet::new();
         // Resolve each distinct per-object tint palette once per payload.
         let mut palette_cache: HashMap<String, Option<mtl::TintPalette>> = HashMap::new();
 
         for im in &payload.meshes {
+            // A walk-up trigger (e.g. a door's proximity sensor) is known by its
+            // class's sensor component; its geometry, if any, is placed as usual.
+            if let Some(sensor) = sensor_resolver.sensor(im) {
+                proximity_sensors.push(sensor);
+            }
             let (cgf_path, mtl_path) = if !im.cgf_path.is_empty() {
                 (im.cgf_path.clone(), im.material_path.clone())
             } else if let Some(guid_str) = &im.entity_class_guid {
@@ -728,18 +738,22 @@ pub(crate) fn build_interiors_from_payloads(
                     .unwrap_or(&cgf_path)
                     .to_string();
                 unique_cgfs.push(InteriorCgfEntry {
-                    animation_controller: im.entity_class_guid.as_deref()
-                        .and_then(|id| starbreaker_common::CigGuid::from_str(id).ok())
-                        .and_then(|id| db.record_by_id(&id))
-                        .or_else(|| im.entity_class_name.as_deref().and_then(|name| resolve_named_entity_record(db, name)))
-                        .and_then(|record| query_animation_controller_source(db, record))
-                        .filter(|source| !source.animation_database.is_empty()),
+                    animation_controller: super::interior_entities::mesh_animation_controller(db, im),
                     cgf_path: cgf_path.clone(),
                     material_path: mtl_path.clone().or_else(|| im.material_path.clone()),
                     name,
                 });
                 Some(idx)
             });
+            // The same geometry may first appear as a raw IncludedObjects
+            // placement (no class): the first placement spawned from a class
+            // with a controller supplies it.
+            if let Some(entry) = mesh_idx.and_then(|idx| unique_cgfs.get_mut(idx))
+                && entry.animation_controller.is_none()
+                && im.entity_class_guid.is_some()
+            {
+                entry.animation_controller = super::interior_entities::mesh_animation_controller(db, im);
+            }
 
             if let Some(idx) = mesh_idx {
                 let placement_key = (
@@ -761,37 +775,32 @@ pub(crate) fn build_interiors_from_payloads(
                     transform: im.transform,
                     palette,
                     ui_bindings,
+                    identity: super::interior_entities::placement_identity(im),
                 });
 
                 // Expand entity loadout attachments. Many interior entities
                 // (e.g. fire-extinguisher cabinets, kit lockers) carry their
                 // visible body in a child loadout entry attached at a named
                 // CryNode helper bone on the parent CGF, rather than on their
-                // own SGeometryResourceParams.
-                if let Some(guid_str) = &im.entity_class_guid {
-                    if let Ok(guid) = CigGuid::from_str(guid_str) {
-                        if let Some(parent_record) = db.record_by_id(&guid) {
-                            let idx_ref = entity_index.get_or_insert_with(|| {
-                                starbreaker_datacore::loadout::EntityIndex::new(db)
-                            });
-                            let tree = starbreaker_datacore::loadout::resolve_loadout_indexed(
-                                idx_ref,
-                                parent_record,
-                            );
-                            if !tree.root.children.is_empty() {
-                                expand_loadout_into_placements(
-                                    db,
-                                    p4k,
-                                    &tree.root.children,
-                                    mat4_from_array(&im.transform),
-                                    &cgf_path,
-                                    &mut nmc_cache,
-                                    &mut cgf_cache,
-                                    &mut unique_cgfs,
-                                    &mut placements,
-                                );
-                            }
-                        }
+                // own SGeometryResourceParams. An entity's own inline loadout
+                // (e.g. a door's control panels) replaces its class loadout.
+                if im.entity_class_guid.is_some() {
+                    let idx_ref = entity_index
+                        .get_or_insert_with(|| starbreaker_datacore::loadout::EntityIndex::new(db));
+                    let children = super::interior_entities::entity_loadout_nodes(idx_ref, db, im);
+                    if !children.is_empty() {
+                        expand_loadout_into_placements(
+                            db,
+                            p4k,
+                            &children,
+                            mat4_from_array(&im.transform),
+                            &cgf_path,
+                            im.entity.entity_id.as_deref(),
+                            &mut nmc_cache,
+                            &mut cgf_cache,
+                            &mut unique_cgfs,
+                            &mut placements,
+                        );
                     }
                 }
             }
@@ -823,6 +832,7 @@ pub(crate) fn build_interiors_from_payloads(
             // applied the generic `default` palette (a placeholder carrying a
             // Gemini weapon decal + near-black tints) to the whole interior.
             palette: None,
+            proximity_sensors,
         });
     }
 
@@ -1126,7 +1136,7 @@ fn entity_class_name_matches_record_short_name(entity_class_name: &str, record_s
         || entity_class_name.starts_with(&(record_short_name + "_"))
 }
 
-fn resolve_named_entity_record<'db>(
+pub(crate) fn resolve_named_entity_record<'db>(
     db: &'db Database,
     entity_class_name: &str,
 ) -> Option<&'db Record> {
@@ -1232,6 +1242,7 @@ pub(crate) fn expand_loadout_into_placements(
     children: &[starbreaker_datacore::loadout::LoadoutNode],
     parent_world: glam::Mat4,
     parent_cgf_path: &str,
+    loadout_owner_entity_id: Option<&str>,
     nmc_cache: &mut std::collections::HashMap<String, Option<crate::nmc::NodeMeshCombo>>,
     cgf_cache: &mut std::collections::HashMap<String, Option<usize>>,
     unique_cgfs: &mut Vec<InteriorCgfEntry>,
@@ -1263,6 +1274,7 @@ pub(crate) fn expand_loadout_into_placements(
                     &child.children,
                     parent_world,
                     parent_cgf_path,
+                    loadout_owner_entity_id,
                     nmc_cache,
                     cgf_cache,
                     unique_cgfs,
@@ -1312,6 +1324,12 @@ pub(crate) fn expand_loadout_into_placements(
                 transform: mat4_to_array(child_world),
                 palette: child_palette,
                 ui_bindings: ui_binding_for_loadout_node(db, child),
+                identity: crate::types::PlacementIdentity {
+                    entity_class_guid: Some(child.record.id.to_string()),
+                    loadout_owner_entity_id: loadout_owner_entity_id.map(str::to_string),
+                    item_port_name: Some(child.item_port_name.clone()).filter(|port| !port.is_empty()),
+                    ..Default::default()
+                },
             });
         }
 
@@ -1322,6 +1340,7 @@ pub(crate) fn expand_loadout_into_placements(
                 &child.children,
                 child_world,
                 &geom_owned,
+                loadout_owner_entity_id,
                 nmc_cache,
                 cgf_cache,
                 unique_cgfs,
@@ -1824,12 +1843,14 @@ mod tests {
                 transform: source_transform,
                 palette: None,
                 ui_bindings: vec![test_ui_binding()],
+                identity: Default::default(),
             },
             InteriorPlacement {
                 mesh_index: 1,
                 transform: target_transform,
                 palette: None,
                 ui_bindings: vec![test_ui_binding()],
+                identity: Default::default(),
             },
         ];
 
@@ -1854,12 +1875,14 @@ mod tests {
                 transform,
                 palette: None,
                 ui_bindings: vec![standard],
+                identity: Default::default(),
             },
             InteriorPlacement {
                 mesh_index: 1,
                 transform,
                 palette: None,
                 ui_bindings: vec![specialized],
+                identity: Default::default(),
             },
         ];
 
@@ -1885,12 +1908,14 @@ mod tests {
                 transform,
                 palette: None,
                 ui_bindings: vec![standard_a],
+                identity: Default::default(),
             },
             InteriorPlacement {
                 mesh_index: 1,
                 transform,
                 palette: None,
                 ui_bindings: vec![standard_b],
+                identity: Default::default(),
             },
         ];
 
@@ -1908,6 +1933,7 @@ mod tests {
             transform: identity,
             palette: None,
             ui_bindings: Vec::new(),
+            identity: Default::default(),
         };
         let mut interiors = LoadedInteriors {
             unique_cgfs: vec![
@@ -1935,6 +1961,7 @@ mod tests {
                     placements: vec![root_placement(0), root_placement(1)],
                     lights: Vec::new(),
                     palette: None,
+                    proximity_sensors: Vec::new(),
                 },
                 // The root entity's own interior attached at a hull helper bone
                 // (the RSI Aurora Mk2 `hardpoint_interior_oc` cabin case):
@@ -1948,6 +1975,7 @@ mod tests {
                     placements: vec![root_placement(0), root_placement(1)],
                     lights: Vec::new(),
                     palette: None,
+                    proximity_sensors: Vec::new(),
                 },
                 // A genuine child-entity container: its placements are in the
                 // child's frame and must be left untouched.
@@ -1960,6 +1988,7 @@ mod tests {
                     placements: vec![root_placement(0)],
                     lights: Vec::new(),
                     palette: None,
+                    proximity_sensors: Vec::new(),
                 },
             ],
         };

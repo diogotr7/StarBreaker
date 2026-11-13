@@ -50,6 +50,7 @@ pub(crate) use self::weapon_assembly::*;
 mod palette;
 pub use self::palette::*;
 mod interior_animation;
+pub(crate) mod interior_entities;
 pub(crate) use self::interior_animation::*;
 pub(crate) mod engine_glow;
 mod vehicle_xml;

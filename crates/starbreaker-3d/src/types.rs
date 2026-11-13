@@ -1077,6 +1077,36 @@ pub struct InteriorMesh {
     /// the render's `transitdisplay.panelLocation` variable so each lift-call
     /// console shows ITS floor name. `None` for non-transit screens.
     pub ui_location_loc_key: Option<String>,
+    /// The `.soc` entity's id, authored links and inline loadout (default for
+    /// `IncludedObjects` geometry, which is not an entity).
+    pub entity: SocEntityRef,
+}
+
+/// Identity, authored links and inline loadout of one `.soc` entity.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SocEntityRef {
+    /// `EntityCryGUID`: the entity's id within its object container. The
+    /// targets of other entities' `EntityLinks` name it.
+    pub entity_id: Option<String>,
+    /// `EntityLinks/Link@TargetCryGUID`, in authored order.
+    pub links: Vec<String>,
+    /// The entity's own `EntityComponentDefaultLoadout` manual entries, which
+    /// replace its class loadout. `None` when the entity authors none (the
+    /// class loadout applies); `Some(vec![])` when it authors an empty one.
+    pub inline_loadout: Option<Vec<InlineLoadoutEntry>>,
+}
+
+/// One `SItemPortLoadoutEntryParams` of an inline manual loadout.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InlineLoadoutEntry {
+    pub item_port_name: String,
+    /// `entityClassName`, empty when the entry references the class by GUID.
+    pub entity_class_name: String,
+    /// `entityClassReference` record GUID, when authored and non-null.
+    pub entity_class_guid: Option<String>,
+    /// The entry's own nested manual loadout; `None` when absent (the
+    /// attached entity's class loadout applies).
+    pub children: Option<Vec<InlineLoadoutEntry>>,
 }
 
 /// A resolved mesh placement from a .soc interior container.
@@ -1086,6 +1116,25 @@ pub struct InteriorPlacement {
     pub transform: [[f32; 4]; 4],
     pub palette: Option<crate::mtl::TintPalette>,
     pub ui_bindings: Vec<UiBinding>,
+    pub identity: PlacementIdentity,
+}
+
+/// Which container entity an interior placement is, and what it links to.
+/// Ids are `.soc` `EntityCryGUID`s, unique within one object container.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PlacementIdentity {
+    /// The placed entity's id; `None` for `IncludedObjects` geometry and
+    /// loadout-attached items (which are not `.soc` entities).
+    pub entity_id: Option<String>,
+    /// The entity class record the placement was spawned from.
+    pub entity_class_guid: Option<String>,
+    /// Ids the entity's `EntityLinks` target (e.g. the door a panel operates).
+    pub links: Vec<String>,
+    /// For a loadout-attached item: the container entity whose loadout
+    /// (directly or through nested items) attached it.
+    pub loadout_owner_entity_id: Option<String>,
+    /// For a loadout-attached item: the item port it occupies on its parent.
+    pub item_port_name: Option<String>,
 }
 
 /// All geometry and lights from a single socpak interior container.

@@ -27,6 +27,10 @@ mod light_field_tests;
 
 pub(crate) mod light_component;
 pub(crate) mod light_anchor;
+pub(crate) mod entity_links;
+#[cfg(test)]
+#[path = "socpak_entity_tests.rs"]
+mod entity_tests;
 mod room_containment;
 pub(crate) mod room_volume;
 #[path = "socpak_light_fields.rs"]
@@ -1122,6 +1126,7 @@ fn push_item_port_mesh(
         tint_palette_name: None,
         ui_canvas_guid: None,
         ui_location_loc_key: None,
+        entity: Default::default(),
     });
 }
 
@@ -1350,6 +1355,7 @@ fn included_objects_to_meshes(io: &IncludedObjects) -> Vec<InteriorMesh> {
                     .and_then(|i| io.tint_palette_paths.get(i as usize).cloned()),
                 ui_canvas_guid: None,
                 ui_location_loc_key: None,
+                entity: Default::default(),
             })
         })
         .collect()
@@ -1458,9 +1464,10 @@ fn process_entity_children(
         let attrs: HashMap<&str, &str> = xml.node_attributes(entity).collect();
         let entity_class = attrs.get("EntityClass").copied().unwrap_or("");
 
-        // Skip non-visual entities
+        // Skip non-visual entities. Proximity sensors (door triggers) are kept:
+        // their class resolves no geometry and the pipeline reads their trigger
+        // volume from DataCore.
         if SKIP_ENTITY_CLASSES.contains(&entity_class)
-            || entity_class.starts_with("Door_Ship_Sensor")
             || entity_class.starts_with("ChipSet_Light")
         {
             continue;
@@ -1500,28 +1507,37 @@ fn process_entity_children(
         // `OLD_TransitUIPanelExterior_ANVL` over the generic class canvas). Capture
         // it here so the UI binding renders the correct per-instance canvas.
         let ui_canvas_guid = extract_entity_ui_canvas(xml, entity);
+        // The entity is spawned from its class: inline geometry overrides only
+        // the class geometry, so the class (animation controller, loadout, UI)
+        // is kept either way.
+        let entity_class_guid = attrs
+            .get("EntityClassGUID")
+            .filter(|guid| is_nonzero_guid(guid))
+            .map(|guid| guid.to_string());
         if let Some(geom_path) = extract_entity_geometry(xml, entity) {
             meshes.push(InteriorMesh {
                 cgf_path: geom_path,
                 material_path,
                 transform,
-                entity_class_guid: None,
+                entity_class_guid,
                 entity_class_name: None,
                 tint_palette_name: None,
                 ui_canvas_guid,
                 ui_location_loc_key: None,
+                entity: entity_links::entity_ref(xml, entity),
             });
-        } else if let Some(guid) = attrs.get("EntityClassGUID") {
+        } else if entity_class_guid.is_some() {
             // No inline geometry — resolve via DataCore using EntityClassGUID
             meshes.push(InteriorMesh {
                 cgf_path: String::new(),
                 material_path,
                 transform,
-                entity_class_guid: Some(guid.to_string()),
+                entity_class_guid,
                 entity_class_name: None,
                 tint_palette_name: None,
                 ui_canvas_guid,
                 ui_location_loc_key: None,
+                entity: entity_links::entity_ref(xml, entity),
             });
         }
     }
@@ -2264,6 +2280,7 @@ mod tests {
             tint_palette_name: None,
             ui_canvas_guid: canvas.map(str::to_string),
             ui_location_loc_key: None,
+            entity: Default::default(),
         };
         let destinations = vec![
             super::TransitDestination {
@@ -2632,6 +2649,7 @@ mod tests {
             tint_palette_name: None,
             ui_canvas_guid: None,
             ui_location_loc_key: None,
+            entity: Default::default(),
         };
         let outside = InteriorMesh {
             cgf_path: String::new(),
@@ -2643,6 +2661,7 @@ mod tests {
             tint_palette_name: None,
             ui_canvas_guid: None,
             ui_location_loc_key: None,
+            entity: Default::default(),
         };
 
         let filtered = filter_item_port_meshes_to_editor_bounds(

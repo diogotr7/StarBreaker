@@ -141,6 +141,45 @@ child-attachment parents (`parent_entity_name`, `parent_node_name`),
 container's: the socpak object's own per-object tint palette, or a
 loadout-attached child's palette), and `ui_bindings[]`.
 
+Placements also carry the container entity they are
+(`pipeline/interior_entities.rs`, `socpak/entity_links.rs`):
+
+- `entity_class_guid` — the entity class record the placement was spawned
+  from: the `.soc` `EntityClassGUID` (also when the entity authors inline
+  geometry, which overrides only the class geometry), or the record of a
+  loadout-attached item; `null` for `IncludedObjects` geometry.
+- `entity_id` — the `.soc` `EntityCryGUID`; `null` for `IncludedObjects`
+  geometry and loadout-attached items. Ids are unique within one `interiors[]`
+  entry only: a container instanced several times repeats its ids, so joins
+  stay inside one entry.
+- `links[]` — the ids the entity's `EntityLinks` target, in authored order
+  (e.g. a door control panel links the door it operates). Targets that are not
+  exported (light chipsets, cameras) remain in the list.
+- `loadout_owner_entity_id`, `item_port_name` — for a loadout-attached item:
+  the `entity_id` of the container entity whose loadout (directly or through
+  nested items) attached it, and the port it occupies on its parent. An
+  entity's inline `EntityComponentDefaultLoadout` replaces its class loadout
+  (e.g. a door's control panels at `control_panel_a` / `control_panel_b`).
+
+Animated placements (an `.cga` whose class has `SAnimationControllerParams`)
+take their clips and Mannequin fragments from that class (see
+[Animation Records](#animation-records)).
+
+`proximity_sensors[]` lists the container's walk-up triggers: entities whose
+class has `SCItemProximitySensorParams` (recognised by that component, not by
+class name). Each carries `entity_id`, `entity_class`, `entity_class_guid`,
+`transform` (4×4 column-major, container-local: the frame of `placements[]`),
+`volume`, `exit_delay` (seconds, the class's `exitDelay`) and `links[]` (the
+ids the sensor drives, e.g. a door). `volume` is `{"kind": "box", "extent",
+"offset"}` from `SCItemProximitySensorBoxParams`, as authored, in the sensor
+frame. The `.soc` `Radius` of these entities equals `|extent|`, consistent
+with a box spanning `offset ± extent`; the half-size reading is inferred from
+that, not documented by the data. Other shape types are not exported (logged).
+
+A door's interactions therefore join as: its placement `entity_id` ←
+a panel placement's `links[]`, ← a panel placement's
+`loadout_owner_entity_id`, ← a sensor's `links[]`.
+
 `room_volumes[]` lists the extents of the rooms the container registers in
 `<name>/metadata/entitycomponentroom.xml`, one entry per `AreaComponent`
 segment that links a registered room GUID: `room` (GUID), `room_name` and
@@ -784,8 +823,12 @@ rig path, preserving sidecar names within ustar limits. Fragment animation IDs u
 the same namespace, and the sidecar carries `owner_entity`; `display_name` remains
 human-readable. This prevents a child's `door_open` from selecting an unrelated
 root animation. Interior controllers come from entity-class identity where
-available, otherwise an exact DataCore geometry-path relationship; conflicting
-controller definitions are left unresolved. Both catalogue and export use this
+available (a `.soc` entity's `EntityClassGUID`, kept when the entity authors
+inline geometry; the first class-spawned placement of a geometry supplies it
+when the geometry also appears as raw `IncludedObjects`), otherwise an exact
+DataCore geometry-path relationship; conflicting controller definitions are
+left unresolved. Interior clips are keyed per geometry, so every placement of
+that geometry (each a rig of its own) shares them. Both catalogue and export use this
 discovery and naming rule. Decomposed GLB interiors preserve the NMC hierarchy
 for the animated CGA category, leaving those vertices unbaked so transforms
 apply once; static CGF interiors retain the flat-mesh path.
