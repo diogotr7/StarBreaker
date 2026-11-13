@@ -332,8 +332,12 @@ fn attach_items(
     }
     Ok(())
 }
+/// Move a nested export's UI stamp (in its own package, or at the legacy
+/// shared `Data/UI/Generated/` root) into the player package.
 pub(super) fn relocate_provenance(file: &mut ExportedFile, package: &str) {
-    if file.relative_path == "Data/UI/Generated/.export_stamp.json" {
+    let path = file.relative_path.as_str();
+    let nested_package_stamp = path.starts_with("Packages/") && path.ends_with("/.export_stamp.json");
+    if nested_package_stamp || path == "Data/UI/Generated/.export_stamp.json" {
         file.relative_path = format!("{package}/.export_stamp.json");
     }
 }

@@ -476,19 +476,35 @@ fn target_a_custom_shape_scale_and_position_guard() {
 const STALE_EXPORT_MESSAGE: &str = "STALE EXPORT: Generated PNGs predate the current build — \
      re-export (~50s) before artifact comparison";
 
-/// The exporter writes `.export_stamp.json` at the `Data/UI/Generated/` root,
-/// next to the PNG tree. Derive that location from a compared source PNG so
-/// the guard follows wherever the export root lives.
-fn export_stamp_path(source_path: &std::path::Path) -> Option<PathBuf> {
-    source_path
-        .ancestors()
-        .find(|dir| {
-            dir.file_name().is_some_and(|name| name == "Generated")
-                && dir
-                    .parent()
-                    .is_some_and(|ui| ui.file_name().is_some_and(|name| name == "UI"))
-        })
-        .map(|generated_root| generated_root.join(".export_stamp.json"))
+/// The export stamp of a compared source PNG, and the export root it sits
+/// under. Each package writes `Packages/<package>/.export_stamp.json` (ships
+/// exported to one root share `Data/`); the stamp is the first one, by package
+/// name, that lists the PNG. An export written before that has its stamp at
+/// the shared `Data/UI/Generated/` root. Derived from the PNG's own path so the
+/// guard follows wherever the export root lives.
+fn find_export_stamp(source_path: &std::path::Path) -> Option<(PathBuf, PathBuf)> {
+    let generated_root = source_path.ancestors().find(|dir| {
+        dir.file_name().is_some_and(|name| name == "Generated")
+            && dir.parent().is_some_and(|ui| ui.file_name().is_some_and(|name| name == "UI"))
+    })?;
+    let export_root = generated_root.parent()?.parent()?.parent()?.to_path_buf();
+    let relative = source_path.strip_prefix(&export_root).ok()?.to_string_lossy().replace('\\', "/");
+    let mut stamps: Vec<PathBuf> = std::fs::read_dir(export_root.join("Packages"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path().join(".export_stamp.json"))
+        .filter(|path| path.is_file())
+        .collect();
+    stamps.sort();
+    let listing = stamps.into_iter().find(|path| {
+        std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .is_some_and(|stamp| !stamp["generated_files"][relative.as_str()].is_null())
+    });
+    let legacy = generated_root.join(".export_stamp.json");
+    listing.or_else(|| legacy.is_file().then_some(legacy)).map(|stamp| (stamp, export_root))
 }
 
 fn mtime_epoch_s(path: &std::path::Path) -> Option<u64> {
@@ -599,16 +615,42 @@ fn stale_export_verdict_newer_test_binary_fails() {
     );
 }
 
+/// A synthetic export root with one generated PNG; `stamps` are
+/// (package, generated paths it lists).
+fn stamp_root(tag: &str, stamps: &[(&str, &[&str])]) -> (PathBuf, PathBuf) {
+    let root = std::env::temp_dir().join(format!("sb_ui_stamp_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let png = root.join("Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_x.png");
+    std::fs::create_dir_all(png.parent().unwrap()).unwrap();
+    std::fs::write(&png, b"png").unwrap();
+    for (package, listed) in stamps {
+        let files: serde_json::Map<String, serde_json::Value> =
+            listed.iter().map(|p| (p.to_string(), serde_json::json!("digest"))).collect();
+        let dir = root.join("Packages").join(package);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".export_stamp.json"), serde_json::json!({ "generated_files": files }).to_string()).unwrap();
+    }
+    (root, png)
+}
+
+/// The stamp of a generated PNG is the package stamp that lists it (exports
+/// to one root share `Data/`, each package carries its own stamp).
 #[test]
-fn export_stamp_path_resolves_next_to_generated_root() {
-    let source = PathBuf::from(
-        "/ws/ships/Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_x.png",
-    );
-    assert_eq!(
-        export_stamp_path(&source),
-        Some(PathBuf::from("/ws/ships/Data/UI/Generated/.export_stamp.json"))
-    );
-    assert_eq!(export_stamp_path(&PathBuf::from("/ws/other/file.png")), None);
+fn export_stamp_is_the_package_stamp_listing_the_png() {
+    let listed = "Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_x.png";
+    let (root, png) = stamp_root("pkg", &[("A Other", &["Data/UI/Generated/ship/other/x.png"]), ("B Clipper", &[listed])]);
+    assert_eq!(find_export_stamp(&png), Some((root.join("Packages/B Clipper/.export_stamp.json"), root.clone())));
+    assert_eq!(find_export_stamp(&PathBuf::from("/ws/other/file.png")), None);
+}
+
+/// An export written before stamps moved into packages keeps its stamp at
+/// the shared `Data/UI/Generated/` root.
+#[test]
+fn export_stamp_falls_back_to_the_legacy_generated_root() {
+    let (root, png) = stamp_root("legacy", &[]);
+    let legacy = root.join("Data/UI/Generated/.export_stamp.json");
+    std::fs::write(&legacy, b"{}").unwrap();
+    assert_eq!(find_export_stamp(&png), Some((legacy, root)));
 }
 
 /// Fraction of pixels whose max per-channel difference exceeds `tolerance`.
@@ -678,8 +720,8 @@ fn manifest_targets_whole_image_colour_regression_guard() {
     // guard (v1). Targets skipped above for missing game data stay skipped — a
     // repo-only environment never reaches this check.
     if let Some((_, first_render_path, _)) = compared.first() {
-        let stamp_path = export_stamp_path(first_render_path).expect("generated UI stamp path");
-        let stamp_bytes = std::fs::read(&stamp_path).ok();
+        let found = find_export_stamp(first_render_path);
+        let stamp_bytes = found.as_ref().and_then(|(stamp_path, _)| std::fs::read(stamp_path).ok());
         let png_mtimes = compared
             .iter()
             .map(|(target, render_path, _)| {
@@ -692,11 +734,11 @@ fn manifest_targets_whole_image_colour_regression_guard() {
             .unwrap_or(0);
         let stamp: Option<serde_json::Value> = stamp_bytes.as_deref()
             .and_then(|bytes| serde_json::from_slice(bytes).ok());
-        let failure = if stamp.as_ref().is_some_and(|s| s["schema_version"] == 2) {
-            let export_root = stamp_path.parent().and_then(|p| p.parent())
-                .and_then(|p| p.parent()).and_then(|p| p.parent()).expect("export root");
+        let failure = if let (Some(stamp), Some((_, export_root))) =
+            (stamp.as_ref().filter(|s| s["schema_version"] == 2), found.as_ref())
+        {
             let sources: Vec<_> = compared.iter().map(|(_, path, _)| path.clone()).collect();
-            deterministic_stamp::check(stamp.as_ref().unwrap(), export_root, &sources)
+            deterministic_stamp::check(stamp, export_root, &sources)
                 .err().map(|message| format!("{STALE_EXPORT_MESSAGE} ({message})"))
         } else {
             stale_export_failure(stamp_bytes.as_deref(), &png_mtimes, test_binary_mtime)
