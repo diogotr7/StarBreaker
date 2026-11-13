@@ -1,0 +1,15 @@
+[package]
+name = "starbreaker-shadercache"
+version.workspace = true
+edition = "2024"
+
+[dependencies]
+starbreaker-p4k = { workspace = true }
+flate2 = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+rspirv = "0.13"
+
+[dev-dependencies]
+serde_json = { workspace = true }
+starbreaker-3d = { workspace = true }

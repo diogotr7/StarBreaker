@@ -1,10 +1,10 @@
 //! Search benchmarks. Auto-discovers Data.p4k via starbreaker-common; respects
 //! SC_DATA_P4K override. Skips silently if no archive can be found.
 
-use std::hint::black_box;
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use starbreaker_common::discover::find_p4k;
 use starbreaker_p4k::MappedP4k;
+use std::hint::black_box;
 
 fn bench_search(c: &mut Criterion) {
     let path = match find_p4k() {
@@ -23,13 +23,13 @@ fn bench_search(c: &mut Criterion) {
     group.sample_size(20);
 
     let cases: &[(&str, &str)] = &[
-        ("empty", ""),                  // empty (early-out)
-        ("single_letter_a", "a"),       // very wide match
-        ("ext_mtl", "mtl"),             // common extension fragment
-        ("prefix_data", "data"),        // common prefix
-        ("hornet", "hornet"),           // medium frequency
+        ("empty", ""),                        // empty (early-out)
+        ("single_letter_a", "a"),             // very wide match
+        ("ext_mtl", "mtl"),                   // common extension fragment
+        ("prefix_data", "data"),              // common prefix
+        ("hornet", "hornet"),                 // medium frequency
         ("multi_hornet_ship", "hornet ship"), // multi-token AND
-        ("ship_and_ext_xml", "gladius .xml"),  // ship name + extension
+        ("ship_and_ext_xml", "gladius .xml"), // ship name + extension
         ("ship_and_ext_mtl", "gladius .mtl"),
         ("ship_and_ext_dds", "aurora .dds"),
         ("three_token", "hornet glass mtl"),

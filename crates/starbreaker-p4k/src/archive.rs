@@ -424,9 +424,25 @@ fn locate_central_directory(
 
         // eocd64_offset is absolute — convert to buffer-relative
         let eocd64_abs = locator.eocd64_offset;
-        let eocd64_rel = eocd64_abs
+        let mut eocd64_rel = eocd64_abs
             .checked_sub(tail_file_offset)
             .ok_or(P4kError::EocdNotFound)? as usize;
+
+        // Embedded archives (CryEngine `.pak` stored inside Data.p4k) can carry a
+        // stale locator offset. If it does not land on an EOCD64 record, search
+        // backwards for the record instead of failing.
+        let sig = EOCD64_SIGNATURE.to_le_bytes();
+        let lands_on_record = eocd64_rel + sig.len() <= tail_data.len()
+            && tail_data[eocd64_rel..eocd64_rel + sig.len()] == sig;
+        if !lands_on_record {
+            let search_end = eocd_offset.saturating_sub(20).min(tail_data.len());
+            if let Some(pos) = tail_data[..search_end]
+                .windows(sig.len())
+                .rposition(|w| w == sig)
+            {
+                eocd64_rel = pos;
+            }
+        }
         let mut eocd64_reader = SpanReader::new_at(tail_data, eocd64_rel);
         let eocd64 = eocd64_reader.read_type::<Eocd64Record>()?;
 
@@ -464,7 +480,14 @@ fn parse_entries(
     let mut entries = Vec::with_capacity(total_entries as usize);
 
     for i in 0..total_entries {
-        entries.push(read_entry(&mut cd_reader, is_zip64)?);
+        // Embedded archives can carry a stale entry count (the CryEngine `.pak`
+        // inside Data.p4k reports 8 more entries than its directory holds), so
+        // stop cleanly once the directory is exhausted.
+        match read_entry(&mut cd_reader, is_zip64) {
+            Ok(entry) => entries.push(entry),
+            Err(_) if !entries.is_empty() => break,
+            Err(e) => return Err(e),
+        }
         if i % 10_000 == 0 {
             starbreaker_common::progress::report(
                 progress,
@@ -640,6 +663,38 @@ pub(crate) fn parse_central_directory_from_file(
     parse_entries(&cd_data, loc.total_entries, loc.is_zip64, progress)
 }
 
+/// Parse the ZIP central directory of an archive embedded at `base..base+size`
+/// inside a larger file.
+///
+/// Returned entries have their `offset` rebased into the host file, so they can
+/// be handed straight to [`P4kArchive::read_from_file_at`]. This is what reads
+/// the CryEngine `.pak` archives that ship stored inside `Data.p4k`.
+pub fn parse_entries_in_range(
+    file: &mut std::fs::File,
+    base: u64,
+    size: u64,
+    progress: Option<&starbreaker_common::Progress>,
+) -> Result<Vec<P4kEntry>, P4kError> {
+    let tail_size = (size as usize).min(22 + 65535 + 56 + 20);
+    let tail_offset = size - tail_size as u64;
+    file.seek(SeekFrom::Start(base + tail_offset))?;
+    let mut tail = vec![0u8; tail_size];
+    file.read_exact(&mut tail)?;
+
+    let loc = locate_central_directory(&tail, tail_offset)?;
+
+    file.seek(SeekFrom::Start(base + loc.cd_offset))?;
+    let mut cd_data = vec![0u8; loc.cd_size as usize];
+    file.read_exact(&mut cd_data)?;
+
+    let (mut entries, _, _, _, _) =
+        parse_entries(&cd_data, loc.total_entries, loc.is_zip64, progress)?;
+    for entry in &mut entries {
+        entry.offset += base;
+    }
+    Ok(entries)
+}
+
 /// Search backward from the end of data for the EOCD signature.
 fn find_eocd(data: &[u8]) -> Result<usize, P4kError> {
     // The EOCD record is at least 22 bytes, and at most 22 + 65535 bytes from the end
@@ -712,90 +767,89 @@ fn read_entry(reader: &mut SpanReader, is_zip64: bool) -> Result<P4kEntry, P4kEr
         let extra_data = reader.read_bytes(header.extra_field_length as usize)?;
         let mut extra_reader = SpanReader::new(extra_data);
 
-        // --- Extra field 0x0001: ZIP64 extended sizes ---
-        let tag1 = extra_reader.read_u16()?;
-        if tag1 != 0x0001 {
-            return Err(P4kError::Parse(
-                starbreaker_common::ParseError::UnexpectedValue {
-                    offset: extra_reader.position(),
-                    expected: "0x0001".to_string(),
-                    actual: format!("{:#06x}", tag1),
-                },
-            ));
-        }
-        let _zip64_data_size = extra_reader.read_u16()?;
+        // A standard ZIP entry only carries 0x0001 when a 32-bit field overflows;
+        // entries without it (e.g. the CryEngine `.pak` stored inside Data.p4k)
+        // are perfectly valid and keep their 32-bit fields.
+        let cig_extra =
+            extra_data.len() >= 4 && u16::from_le_bytes([extra_data[0], extra_data[1]]) == 0x0001;
+        if cig_extra {
+            // --- Extra field 0x0001: ZIP64 extended sizes ---
+            let tag1 = extra_reader.read_u16()?;
+            debug_assert_eq!(tag1, 0x0001);
+            let _zip64_data_size = extra_reader.read_u16()?;
 
-        // Read u64 values in order for fields that were 0xFFFFFFFF
-        if header.uncompressed_size == 0xFFFFFFFF {
-            uncompressed_size = extra_reader.read_u64()?;
-        }
-        if header.compressed_size == 0xFFFFFFFF {
-            compressed_size = extra_reader.read_u64()?;
-        }
-        if header.local_header_offset == 0xFFFFFFFF {
-            local_header_offset = extra_reader.read_u64()?;
-        }
-        if header.disk_number_start == 0xFFFF {
-            let _disk = extra_reader.read_u32()?;
-        }
+            // Read u64 values in order for fields that were 0xFFFFFFFF
+            if header.uncompressed_size == 0xFFFFFFFF {
+                uncompressed_size = extra_reader.read_u64()?;
+            }
+            if header.compressed_size == 0xFFFFFFFF {
+                compressed_size = extra_reader.read_u64()?;
+            }
+            if header.local_header_offset == 0xFFFFFFFF {
+                local_header_offset = extra_reader.read_u64()?;
+            }
+            if header.disk_number_start == 0xFFFF {
+                let _disk = extra_reader.read_u32()?;
+            }
 
-        // --- Extra field 0x5000: CIG custom ---
-        let tag2 = extra_reader.read_u16()?;
-        if tag2 != 0x5000 {
-            return Err(P4kError::Parse(
-                starbreaker_common::ParseError::UnexpectedValue {
-                    offset: extra_reader.position(),
-                    expected: "0x5000".to_string(),
-                    actual: format!("{:#06x}", tag2),
-                },
-            ));
-        }
-        let size_5000 = extra_reader.read_u16()?;
-        // The C# code advances by size - 4, but we already read the tag+size header
-        // outside the data portion. The "size" field here is the data length.
-        // Looking at the C# code: it reads tag, then size, then advances size - 4.
-        // This means the "size" includes 4 bytes already consumed (2 unknown u16 values?).
-        // Let's match C# exactly: advance(size - 4)
-        extra_reader.advance((size_5000 as usize).saturating_sub(4))?;
+            // --- Extra field 0x5000: CIG custom ---
+            let tag2 = extra_reader.read_u16()?;
+            if tag2 != 0x5000 {
+                return Err(P4kError::Parse(
+                    starbreaker_common::ParseError::UnexpectedValue {
+                        offset: extra_reader.position(),
+                        expected: "0x5000".to_string(),
+                        actual: format!("{:#06x}", tag2),
+                    },
+                ));
+            }
+            let size_5000 = extra_reader.read_u16()?;
+            // The C# code advances by size - 4, but we already read the tag+size header
+            // outside the data portion. The "size" field here is the data length.
+            // Looking at the C# code: it reads tag, then size, then advances size - 4.
+            // This means the "size" includes 4 bytes already consumed (2 unknown u16 values?).
+            // Let's match C# exactly: advance(size - 4)
+            extra_reader.advance((size_5000 as usize).saturating_sub(4))?;
 
-        // --- Extra field 0x5002: Encryption flag ---
-        let tag3 = extra_reader.read_u16()?;
-        if tag3 != 0x5002 {
-            return Err(P4kError::Parse(
-                starbreaker_common::ParseError::UnexpectedValue {
-                    offset: extra_reader.position(),
-                    expected: "0x5002".to_string(),
-                    actual: format!("{:#06x}", tag3),
-                },
-            ));
-        }
-        let size_5002 = extra_reader.read_u16()?;
-        if size_5002 != 6 {
-            return Err(P4kError::Parse(
-                starbreaker_common::ParseError::UnexpectedValue {
-                    offset: extra_reader.position(),
-                    expected: "6".to_string(),
-                    actual: format!("{}", size_5002),
-                },
-            ));
-        }
+            // --- Extra field 0x5002: Encryption flag ---
+            let tag3 = extra_reader.read_u16()?;
+            if tag3 != 0x5002 {
+                return Err(P4kError::Parse(
+                    starbreaker_common::ParseError::UnexpectedValue {
+                        offset: extra_reader.position(),
+                        expected: "0x5002".to_string(),
+                        actual: format!("{:#06x}", tag3),
+                    },
+                ));
+            }
+            let size_5002 = extra_reader.read_u16()?;
+            if size_5002 != 6 {
+                return Err(P4kError::Parse(
+                    starbreaker_common::ParseError::UnexpectedValue {
+                        offset: extra_reader.position(),
+                        expected: "6".to_string(),
+                        actual: format!("{}", size_5002),
+                    },
+                ));
+            }
 
-        let enc_flag = extra_reader.read_u16()?;
-        is_encrypted = enc_flag == 1;
+            let enc_flag = extra_reader.read_u16()?;
+            is_encrypted = enc_flag == 1;
 
-        // --- Extra field 0x5003: CIG custom ---
-        let tag4 = extra_reader.read_u16()?;
-        if tag4 != 0x5003 {
-            return Err(P4kError::Parse(
-                starbreaker_common::ParseError::UnexpectedValue {
-                    offset: extra_reader.position(),
-                    expected: "0x5003".to_string(),
-                    actual: format!("{:#06x}", tag4),
-                },
-            ));
+            // --- Extra field 0x5003: CIG custom ---
+            let tag4 = extra_reader.read_u16()?;
+            if tag4 != 0x5003 {
+                return Err(P4kError::Parse(
+                    starbreaker_common::ParseError::UnexpectedValue {
+                        offset: extra_reader.position(),
+                        expected: "0x5003".to_string(),
+                        actual: format!("{:#06x}", tag4),
+                    },
+                ));
+            }
+            let size_5003 = extra_reader.read_u16()?;
+            extra_reader.advance((size_5003 as usize).saturating_sub(4))?;
         }
-        let size_5003 = extra_reader.read_u16()?;
-        extra_reader.advance((size_5003 as usize).saturating_sub(4))?;
     } else {
         // Non-ZIP64: skip extra fields and file comment
         let skip = header.extra_field_length as usize;
@@ -1169,6 +1223,38 @@ mod tests {
     }
 
     #[test]
+    fn read_entry_accepts_standard_zip_without_zip64_extra() {
+        // A standard ZIP entry (as found in the CryEngine .pak stored inside
+        // Data.p4k): 32-bit sizes, an extra field that is *not* 0x0001.
+        let name = b"a.txt";
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&CENTRAL_DIR_SIGNATURE.to_le_bytes());
+        buf.extend_from_slice(&[20, 0, 20, 0]); // version made by / needed
+        buf.extend_from_slice(&[0, 0]); // flags
+        buf.extend_from_slice(&[0, 0]); // method = stored
+        buf.extend_from_slice(&[0, 0, 0, 0]); // last modified
+        buf.extend_from_slice(&[0, 0, 0, 0]); // crc32
+        buf.extend_from_slice(&3u32.to_le_bytes()); // compressed size
+        buf.extend_from_slice(&3u32.to_le_bytes()); // uncompressed size
+        buf.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        buf.extend_from_slice(&2u16.to_le_bytes()); // extra length: 1 unknown tag, 0 size
+        buf.extend_from_slice(&0u16.to_le_bytes()); // file comment length
+        buf.extend_from_slice(&0u16.to_le_bytes()); // disk number
+        buf.extend_from_slice(&0u16.to_le_bytes()); // internal attributes
+        buf.extend_from_slice(&0u32.to_le_bytes()); // external attributes
+        buf.extend_from_slice(&1234u32.to_le_bytes()); // local header offset
+        buf.extend_from_slice(name);
+        buf.extend_from_slice(&0x5455u16.to_le_bytes()); // unknown tag
+        buf.extend_from_slice(&0u16.to_le_bytes()); // zero-length payload
+
+        let mut reader = SpanReader::new(&buf);
+        let entry = read_entry(&mut reader, true).expect("standard entry parses");
+        assert_eq!(entry.name, "a.txt");
+        assert_eq!(entry.compressed_size, 3);
+        assert_eq!(entry.offset, 1234);
+        assert!(!entry.is_encrypted);
+    }
+
     fn read_entry_rejects_non_utf8_name() {
         // Hand-built non-ZIP64 CentralDirHeader with a 1-byte name 0xFF.
         // 46-byte CentralDirHeader header + 1-byte name + 0 extra + 0 comment.
@@ -1242,3 +1328,4 @@ mod tests {
         assert_eq!(archive.read(entry).expect("read stored payload"), payload);
     }
 }
+
