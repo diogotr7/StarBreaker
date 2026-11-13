@@ -153,6 +153,8 @@ pub(crate) struct GlbBuilder {
     pub buffer_views: Vec<json::buffer::View>,
     pub accessors: Vec<json::Accessor>,
     pub materials_json: Vec<json::Material>,
+    /// Decomposed GLBs preserve sidecar slot order, including unused gaps.
+    pub preserve_material_slots: bool,
     pub images_json: Vec<json::Image>,
     pub textures_json: Vec<json::Texture>,
     pub samplers_json: Vec<json::texture::Sampler>,
@@ -228,6 +230,7 @@ impl GlbBuilder {
             buffer_views: Vec::new(),
             accessors: Vec::new(),
             materials_json: Vec::new(),
+            preserve_material_slots: false,
             images_json: Vec::new(),
             textures_json: Vec::new(),
             samplers_json: Vec::new(),
@@ -1254,10 +1257,46 @@ impl GlbBuilder {
             if !container_children.is_empty() {
                 self.nodes_json[container_node_idx as usize].children = Some(container_children);
             }
-            container_scene_nodes.push(json::Index::new(container_node_idx));
+            match self.interior_container_parent(container) {
+                Some(parent_idx) => self.append_child_to_node(parent_idx, container_node_idx),
+                None => container_scene_nodes.push(json::Index::new(container_node_idx)),
+            }
         }
 
         (container_scene_nodes, all_lights)
+    }
+
+    /// Node an interior container hangs under: the helper it is authored on
+    /// (`parent_node_name`, matched like the NMC helper lookup that produced its
+    /// helper-relative transform), else its owning entity's node. `None` leaves
+    /// the container a scene root: it has no parent, or none of them has a node.
+    fn interior_container_parent(
+        &self,
+        container: &crate::pipeline::InteriorContainerData,
+    ) -> Option<u32> {
+        let helper = container.parent_node_name.as_deref().filter(|name| !name.is_empty());
+        let owner = container.parent_entity_name.as_deref().filter(|name| !name.is_empty());
+        let parent = helper
+            .and_then(|helper| {
+                self.node_name_to_idx.get(&helper.to_lowercase()).copied().or_else(|| {
+                    self.nodes_json.iter().position(|node| {
+                        node.name
+                            .as_deref()
+                            .is_some_and(|name| crate::pipeline::helper_node_name_matches(name, helper))
+                    })
+                    .map(|idx| idx as u32)
+                })
+            })
+            .or_else(|| owner.and_then(|owner| self.node_name_to_idx.get(&owner.to_lowercase()).copied()));
+        if parent.is_none() && (helper.is_some() || owner.is_some()) {
+            log::warn!(
+                "no node for interior container '{}' (helper {:?}, owner {:?}), attaching to root",
+                container.name,
+                helper,
+                owner
+            );
+        }
+        parent
     }
 
     /// Pack a mesh's vertex data, textures, and materials into the builder.
@@ -1399,6 +1438,7 @@ impl GlbBuilder {
 
         // Build materials with dedup
         let submesh_mat_indices = build_materials(
+            self.preserve_material_slots,
             &mesh.submeshes,
             materials,
             palette,
@@ -1678,18 +1718,40 @@ impl GlbBuilder {
                         } else {
                             (Checked::Valid(klp::Type::Point), None)
                         };
-                    klp::Light {
-                        color: l.color,
-                        intensity: l.intensity,
+                    Ok::<_, serde_json::Error>(klp::Light {
+                        // Neutral renderer colour when the source is unknown;
+                        // extras preserve null instead of inventing an authored RGB.
+                        color: match l.color {
+                            Some(color) => color,
+                            None => {
+                                log::warn!(
+                                    "Light {:?} has unknown colour; glTF uses neutral white",
+                                    l.name
+                                );
+                                [1.0; 3]
+                            }
+                        },
+                        // glTF requires a numeric intensity. Leave an unresolved source
+                        // dark in the renderer; extras retain the unknown value.
+                        intensity: match l.intensity {
+                            Some(value) => value,
+                            None => {
+                                log::warn!(
+                                    "Light {:?} has unknown intensity; glTF proxy disabled",
+                                    l.name
+                                );
+                                0.0
+                            }
+                        },
                         name: Some(l.name.clone()),
-                        range: Some(l.radius),
+                        range: l.radius.filter(|r| *r > 0.0),
                         type_,
                         spot,
                         extensions: None,
-                        extras: Default::default(),
-                    }
+                        extras: Some(serde_json::value::to_raw_value(l)?),
+                    })
                 })
-                .collect();
+                .collect::<Result<_, _>>()?;
             Some(json::extensions::root::Root {
                 khr_lights_punctual: Some(json::extensions::root::KhrLightsPunctual {
                     lights: gltf_lights,
@@ -2549,6 +2611,7 @@ fn material_uses_texture_transform(material: &json::Material) -> bool {
 
 /// Build deduplicated glTF materials for a set of submeshes.
 fn build_materials(
+    preserve_slots: bool,
     submeshes: &[SubMesh],
     materials: Option<&crate::mtl::MtlFile>,
     palette: Option<&crate::mtl::TintPalette>,
@@ -2563,6 +2626,39 @@ fn build_materials(
     experimental_textures: bool,
     preserve_textureless_decal_primitives: bool,
 ) -> Vec<u32> {
+    if preserve_slots {
+        if let Some(materials) = materials {
+            // Seed through the highest referenced sidecar slot, including gaps.
+            // These synthetic descriptors allocate materials, never geometry.
+            let slot_count = submeshes.iter().map(|s| s.material_id as usize + 1).max().unwrap_or(0);
+            let slots: Vec<_> = materials.materials.iter().take(slot_count).enumerate().map(|(i, material)| SubMesh {
+                material_id: i as u32,
+                source_material_id: Some(i as u32),
+                material_name: Some(material.name.clone()),
+                first_index: 0, num_indices: 0, first_vertex: 0, num_vertices: 0,
+                node_parent_index: 0,
+            }).collect();
+            let base_index = materials_json.len() as u32;
+            for sub in &slots {
+                let BuiltMaterial { mut material, .. } = build_material(
+                    sub, Some(materials), palette, textures,
+                    submaterial_texture_idx, submaterial_normal_idx, submaterial_roughness_idx,
+                    submaterial_emissive_idx, submaterial_occlusion_idx,
+                    experimental_textures, preserve_textureless_decal_primitives,
+                );
+                let name = &materials.materials[sub.material_id as usize].name;
+                let stem = materials.source_path.as_deref()
+                    .and_then(|p| p.rsplit(['\\', '/']).next())
+                    .map(|file| file.strip_suffix(".mtl").unwrap_or(file));
+                material.name = Some(match stem {
+                    Some(stem) => format!("{stem}_{name}_{:02}", sub.material_id),
+                    None => format!("{name}_{:02}", sub.material_id),
+                });
+                materials_json.push(material);
+            }
+            return submeshes.iter().map(|s| base_index + s.material_id).collect();
+        }
+    }
     submeshes
         .iter()
         .map(|sub| {

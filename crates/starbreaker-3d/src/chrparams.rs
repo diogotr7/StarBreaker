@@ -14,12 +14,21 @@
 //! </Params>
 //! ```
 //!
-//! - `#filepath` is the directory prefix used to resolve the `path` attributes
-//!   of subsequent entries when they are relative.
-//! - `$TracksDatabase` points to the `.dba` file containing the keyframe data
-//!   for every `.caf` listed below it.
+//! - `#filepath` is a running directive: it sets the directory that the
+//!   `path` of every entry declared after it is relative to, until the next
+//!   `#filepath`. A file may carry several (typically a second one scoping a
+//!   trailing wildcard rule), so the prefix is applied while reading — see
+//!   [`ChrParams::from_entries`] — and never kept as one per-file value.
+//! - `$TracksDatabase` / `$AnimEventDatabase` carry full engine paths to the
+//!   `.dba` holding the keyframe data and to the `.animevents` file.
 //! - All other entries map an event name (the key the engine binds to game
-//!   logic) to a `.caf` filename within the tracks database.
+//!   logic) to a `.caf` path, which names one clip of the tracks database.
+//! - Directive names compare case-insensitively (`#filePath`, `#Filepath`
+//!   occur in shipped files).
+//!
+//! The rules were checked against every `.chrparams` / `.dba` pair of a
+//! shipped archive: the path built this way names a clip of the declared
+//! tracks database wherever any reading of the entry does.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -35,11 +44,11 @@ pub struct ChrParams {
     pub tracks_database: Option<String>,
     /// `$AnimEventDatabase` path (`.animevents`) when present.
     pub anim_event_database: Option<String>,
-    /// Filepath prefix applied to relative `path` attributes (`#filepath`).
-    pub filepath_prefix: Option<String>,
-    /// Animation event name → `.caf` filename (or full path if absolute).
+    /// Animation event name → full engine `.caf` path (the declared `path`
+    /// under the `#filepath` in effect at its declaration).
     pub animations: BTreeMap<String, String>,
-    /// Animation event name → all declared `.caf` paths in declaration order.
+    /// Animation event name → all declared `.caf` paths (resolved like
+    /// `animations`) in declaration order.
     ///
     /// Some chrparams files may define the same event name multiple times for
     /// variant clips or fallback entries. `animations` preserves the first
@@ -53,14 +62,37 @@ impl ChrParams {
         let xml = starbreaker_cryxml::from_bytes(data)
             .map_err(|e| Error::Other(format!("CryXml parse: {e:?}")))?;
 
-        let mut out = ChrParams::default();
-        Self::walk(&xml, xml.root(), &mut out);
-        Ok(out)
+        let mut entries: Vec<(&str, &str)> = Vec::new();
+        Self::collect_entries(&xml, xml.root(), &mut entries);
+        Ok(Self::from_entries(entries))
     }
 
-    fn walk(xml: &CryXml, node: &starbreaker_cryxml::CryXmlNode, out: &mut ChrParams) {
-        let tag = xml.node_tag(node);
-        if tag.eq_ignore_ascii_case("Animation") {
+    /// Build the document from its `<Animation name path>` entries in
+    /// declaration order. Order matters: each event path is resolved against
+    /// the `#filepath` declared most recently before it.
+    pub fn from_entries<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
+        let mut out = ChrParams::default();
+        let mut filepath: Option<&str> = None;
+        for (name, path) in entries {
+            if name.eq_ignore_ascii_case("#filepath") {
+                filepath = Some(path);
+            } else if name.eq_ignore_ascii_case("$TracksDatabase") {
+                out.tracks_database = Some(path.to_string());
+            } else if name.eq_ignore_ascii_case("$AnimEventDatabase") {
+                out.anim_event_database = Some(path.to_string());
+            } else {
+                out.record_animation_path(name, &resolve_under(filepath, path));
+            }
+        }
+        out
+    }
+
+    fn collect_entries<'a>(
+        xml: &'a CryXml,
+        node: &'a starbreaker_cryxml::CryXmlNode,
+        out: &mut Vec<(&'a str, &'a str)>,
+    ) {
+        if xml.node_tag(node).eq_ignore_ascii_case("Animation") {
             let mut name: Option<&str> = None;
             let mut path: Option<&str> = None;
             for (k, v) in xml.node_attributes(node) {
@@ -71,20 +103,20 @@ impl ChrParams {
                 }
             }
             if let (Some(name), Some(path)) = (name, path) {
-                match name {
-                    "#filepath" => out.filepath_prefix = Some(path.to_string()),
-                    "$TracksDatabase" => out.tracks_database = Some(path.to_string()),
-                    "$AnimEventDatabase" => out.anim_event_database = Some(path.to_string()),
-                    _ => out.record_animation_path(name, path),
-                }
+                out.push((name, path));
             }
         }
         for child in xml.node_children(node) {
-            Self::walk(xml, child, out);
+            Self::collect_entries(xml, child, out);
         }
     }
 
     fn record_animation_path(&mut self, name: &str, path: &str) {
+        // Wildcard names declare mapping rules, not playable event identifiers.
+        // DBA-only clips remain discoverable through the metadata catalogue.
+        if name.contains(['*', '?']) {
+            return;
+        }
         let key = name.to_string();
         let value = path.to_string();
         self.animation_paths
@@ -93,25 +125,18 @@ impl ChrParams {
             .push(value.clone());
         self.animations.entry(key).or_insert(value);
     }
+}
 
-    /// Resolve a relative `.caf` path against the `#filepath` prefix.
-    /// If the path is already absolute (contains `/` or `\\` mid-string),
-    /// returns it as-is. Otherwise prepends the prefix.
-    pub fn resolved_caf_path(&self, raw_path: &str) -> String {
-        if raw_path.contains('/') || raw_path.contains('\\') {
-            return raw_path.to_string();
-        }
-        match self.filepath_prefix.as_deref() {
-            Some(prefix) => {
-                let sep = if prefix.ends_with('/') || prefix.ends_with('\\') {
-                    ""
-                } else {
-                    "/"
-                };
-                format!("{prefix}{sep}{raw_path}")
-            }
-            None => raw_path.to_string(),
-        }
+/// `path` under the `#filepath` directory in effect, joined by exactly one separator, or as
+/// given when no (or an empty)
+/// `#filepath` is in effect.
+fn resolve_under(filepath: Option<&str>, path: &str) -> String {
+    match filepath {
+        Some(dir) => match dir.trim_end_matches(['/', '\\']) {
+            "" => path.to_string(),
+            dir => format!("{dir}/{}", path.trim_start_matches(['/', '\\'])),
+        },
+        None => path.to_string(),
     }
 }
 
@@ -190,20 +215,125 @@ mod tests {
             Some("Animations/Spaceships/Ships/RSI/Scorpius.dba")
         );
         assert!(cp.animations.contains_key("landing_gear_extend"));
-        let resolved = cp.resolved_caf_path(cp.animations.get("landing_gear_extend").unwrap());
+        let resolved = cp.animations.get("landing_gear_extend").unwrap();
         assert!(resolved.ends_with("rsi_Scorpius_lg_deploy_r.caf"));
     }
 
-        #[test]
-        fn preserves_duplicate_animation_event_paths() {
-                let mut parsed = ChrParams::default();
-                parsed.record_animation_path("door_open", "door_open_a.caf");
-                parsed.record_animation_path("door_open", "door_open_b.caf");
+    #[test]
+    fn preserves_duplicate_animation_event_paths() {
+        let parsed = ChrParams::from_entries([
+            ("door_open", "synthetic/door_open_a.caf"),
+            ("door_open", "synthetic/door_open_b.caf"),
+        ]);
 
-                assert_eq!(parsed.animations.get("door_open"), Some(&"door_open_a.caf".to_string()));
-                assert_eq!(
-                        parsed.animation_paths.get("door_open"),
-                        Some(&vec!["door_open_a.caf".to_string(), "door_open_b.caf".to_string()])
-                );
-        }
+        assert_eq!(
+            parsed.animations.get("door_open"),
+            Some(&"synthetic/door_open_a.caf".to_string())
+        );
+        assert_eq!(
+            parsed.animation_paths.get("door_open"),
+            Some(&vec![
+                "synthetic/door_open_a.caf".to_string(),
+                "synthetic/door_open_b.caf".to_string()
+            ])
+        );
+    }
+
+    /// `#filepath` is a running directive: it applies to the entries declared
+    /// after it, until the next `#filepath`. A later directive (here the one
+    /// that scopes a wildcard rule) must not re-home the earlier events.
+    #[test]
+    fn filepath_applies_only_to_the_entries_that_follow_it() {
+        let parsed = ChrParams::from_entries([
+            ("#filepath", "Animations/Synthetic/ShipA"),
+            ("$TracksDatabase", "Animations/Synthetic/ShipA.dba"),
+            ("hatch_open", "hatch_open.caf"),
+            ("#filepath", "Animations/Synthetic/Shared"),
+            ("*", "*/*.caf"),
+            ("hatch_close", "hatch_close.caf"),
+        ]);
+
+        assert_eq!(
+            parsed.animations.get("hatch_open").map(String::as_str),
+            Some("Animations/Synthetic/ShipA/hatch_open.caf")
+        );
+        assert_eq!(
+            parsed.animations.get("hatch_close").map(String::as_str),
+            Some("Animations/Synthetic/Shared/hatch_close.caf")
+        );
+        assert_eq!(
+            parsed.animation_paths.get("hatch_open"),
+            Some(&vec!["Animations/Synthetic/ShipA/hatch_open.caf".to_string()])
+        );
+    }
+
+    /// Directive names are matched without regard to case (`#filePath`,
+    /// `#Filepath` both occur in shipped files) and never become events.
+    #[test]
+    fn directive_names_are_case_insensitive() {
+        let parsed = ChrParams::from_entries([
+            ("#filePath", "animations/synthetic/turret"),
+            ("$tracksdatabase", "animations/synthetic/turret.dba"),
+            ("$ANIMEVENTDATABASE", "animations/synthetic/turret.animevents"),
+            ("recoil", "turret_recoil.caf"),
+        ]);
+
+        assert_eq!(
+            parsed.animations.get("recoil").map(String::as_str),
+            Some("animations/synthetic/turret/turret_recoil.caf")
+        );
+        assert_eq!(parsed.animations.len(), 1, "directives are not events");
+        assert_eq!(
+            parsed.tracks_database.as_deref(),
+            Some("animations/synthetic/turret.dba")
+        );
+        assert_eq!(
+            parsed.anim_event_database.as_deref(),
+            Some("animations/synthetic/turret.animevents")
+        );
+    }
+
+    /// A `path` with sub-directories is still relative to the `#filepath` in
+    /// effect; only entries declared before any `#filepath` are used as given.
+    #[test]
+    fn filepath_prefixes_paths_with_subdirectories() {
+        let parsed = ChrParams::from_entries([
+            ("panel_open", "Animations/Synthetic/Loose/panel_open.caf"),
+            ("#filepath", "Animations/Synthetic/ShipB/"),
+            ("gear_extend", "exterior/gear_extend.caf"),
+        ]);
+
+        assert_eq!(
+            parsed.animations.get("panel_open").map(String::as_str),
+            Some("Animations/Synthetic/Loose/panel_open.caf")
+        );
+        assert_eq!(
+            parsed.animations.get("gear_extend").map(String::as_str),
+            Some("Animations/Synthetic/ShipB/exterior/gear_extend.caf")
+        );
+    }
+
+    #[test]
+    fn filepath_and_path_join_with_exactly_one_separator() {
+        let parsed = ChrParams::from_entries([
+            ("#filepath", "Animations/Synthetic/ShipC\\"),
+            ("door_open", "/door_open.caf"),
+            ("door_close", "\\interior\\door_close.caf"),
+            ("#filepath", ""),
+            ("hatch_open", "Animations/Synthetic/ShipD/hatch_open.caf"),
+        ]);
+
+        assert_eq!(
+            parsed.animations.get("door_open").map(String::as_str),
+            Some("Animations/Synthetic/ShipC/door_open.caf")
+        );
+        assert_eq!(
+            parsed.animations.get("door_close").map(String::as_str),
+            Some("Animations/Synthetic/ShipC/interior\\door_close.caf")
+        );
+        assert_eq!(
+            parsed.animations.get("hatch_open").map(String::as_str),
+            Some("Animations/Synthetic/ShipD/hatch_open.caf")
+        );
+    }
 }

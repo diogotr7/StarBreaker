@@ -1852,11 +1852,11 @@ def _apply_state_to_light(
     if intensity_candela_proxy is None:
         intensity_candela_proxy = state.get("intensity_cd")
     intensity_raw = state.get("intensity_raw")
-    temperature = float(state.get("temperature") or 6500.0)
+    temperature = float(state["temperature"]) if state.get("temperature") is not None else None
     use_temperature = bool(state.get("use_temperature"))
-    color = state.get("color") or [1.0, 1.0, 1.0]
+    color = state.get("color")
     if not (isinstance(color, (list, tuple)) and len(color) >= 3):
-        color = [1.0, 1.0, 1.0]
+        color = light.color
 
     light.energy = _light_energy_to_blender(
         float(intensity_candela_proxy) if intensity_candela_proxy is not None else 0.0,
@@ -1865,7 +1865,7 @@ def _apply_state_to_light(
         semantic_light_kind=_string_prop(light, PROP_LIGHT_SEMANTIC_KIND),
     )
 
-    if use_temperature:
+    if use_temperature and temperature is not None:
         # CryEngine's ``useTemperature`` flag tells the engine to discard the
         # authored RGB and render the blackbody colour at ``temperature``
         # (same as the exporter's kelvin_to_rgb). Compute the blackbody RGB
@@ -1877,7 +1877,10 @@ def _apply_state_to_light(
     light.color = (float(color[0]), float(color[1]), float(color[2]))
     light[PROP_LIGHT_ACTIVE_STATE] = state_name
     # Preserve temperature as a custom prop for round-tripping.
-    light["starbreaker_light_temperature"] = temperature
+    if temperature is not None:
+        light["starbreaker_light_temperature"] = temperature
+    elif "starbreaker_light_temperature" in light:
+        del light["starbreaker_light_temperature"]
     return True
 
 

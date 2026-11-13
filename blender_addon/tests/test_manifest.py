@@ -284,6 +284,26 @@ class ManifestTests(unittest.TestCase):
         )
         self.assertEqual(manifest.engine_glow_control.targets[0].source_material_index, 4)
 
+    def test_light_state_preserves_unknown_source_values(self) -> None:
+        light = LightRecord.from_value({"color": None, "radius": None, "intensity": None,
+                                       "intensity_raw": None, "affect_gi": None,
+                                       "affect_gi_mode": "FutureMode"})
+        self.assertIsNone(light.color)
+        self.assertIsNone(light.radius)
+        self.assertIsNone(light.intensity)
+        self.assertIsNone(light.intensity_raw)
+        self.assertIsNone(light.raw["affect_gi"])
+        self.assertEqual(light.raw["affect_gi_mode"], "FutureMode")
+        state = LightState.from_value({"intensity_raw": None, "temperature": None,
+                                       "intensity_cd": None, "intensity_candela_proxy": None})
+        self.assertIsNone(state.intensity_raw)
+        self.assertIsNone(state.intensity_cd)
+        self.assertIsNone(state.intensity_candela_proxy)
+        self.assertIsNone(state.temperature)
+        self.assertIsNone(state.use_temperature)
+        self.assertIsNone(state.light_style)
+        self.assertIsNone(state.color)
+
     def test_light_state_parses_explicit_intensity_semantics(self) -> None:
         state = LightState.from_value(
             {
@@ -445,6 +465,26 @@ class ManifestTests(unittest.TestCase):
             resolved = bundle.resolve_path("Data/Objects/thing_LOD0.glb")
             self.assertEqual(resolved, target)
             self.assertIsNone(bundle._path_index)
+
+
+
+
+
+class EntityLightsTests(unittest.TestCase):
+    def test_root_and_child_light_arrays_and_legacy_absence(self):
+        scene = SceneManifest.from_value({"root_entity": {"lights": [{"name": "root"}]},
+            "children": [{"lights": [{"name": "child"}]}], "interiors": [{"lights": [{"name": "interior"}]}]})
+        self.assertEqual([x.name for x in scene.root_entity.lights], ["root"])
+        self.assertEqual([x.name for x in scene.children[0].lights], ["child"])
+        self.assertEqual([x.name for x in scene.interiors[0].lights], ["interior"])
+        self.assertEqual(SceneInstanceRecord.from_value({}).lights, [])
+
+    def test_helper_local_light_frame_is_retained(self):
+        light = LightRecord.from_value({"parent_node_name": "joint", "parent_local_position": [1,2,3],
+                                       "parent_local_rotation": [1,0,0,0]})
+        self.assertEqual(light.parent_node_name, "joint")
+        self.assertEqual(light.parent_local_position, (1,2,3))
+        self.assertEqual(light.parent_local_rotation, (1,0,0,0))
 
 
 if __name__ == "__main__":

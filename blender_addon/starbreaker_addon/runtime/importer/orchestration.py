@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import math
 import uuid
+
+from .entity_lights import import_entity_lights
 from pathlib import Path
 from typing import Any, Callable
 
@@ -557,6 +559,7 @@ class OrchestrationMixin:
         self._advance_progress(f"Importing {self.package.scene.root_entity.entity_name}")
         root_anchor, root_nodes = self.instantiate_scene_instance(self.package.scene.root_entity, parent=package_root)
         self.node_index_by_entity_name[self.package.scene.root_entity.entity_name] = self._index_nodes(root_nodes)
+        import_entity_lights(self, self.package.scene.root_entity, root_anchor, root_nodes)
         root_anchor.parent = package_root
         scene_root_parent = self._scene_root_parent(root_nodes) or package_root
 
@@ -567,6 +570,7 @@ class OrchestrationMixin:
                 parent_node = self.node_index_by_entity_name.get(child.parent_entity_name, {}).get(child.parent_node_name or "")
             anchor, child_nodes = self.instantiate_scene_instance(child, parent=scene_root_parent, parent_node=parent_node)
             self.node_index_by_entity_name.setdefault(child.entity_name, {}).update(self._index_nodes(child_nodes))
+            import_entity_lights(self, child, anchor, child_nodes)
 
         for interior in self.package.scene.interiors:
             self._advance_progress(f"Preparing {interior.name}")
@@ -1123,9 +1127,10 @@ class OrchestrationMixin:
             intensity_raw=active_intensity_raw,
             semantic_light_kind=semantic_light_kind,
         )
-        light_data.color = light.color
+        if light.color is not None:
+            light_data.color = light.color
         light_data["starbreaker_light_semantic_kind"] = semantic_light_kind
-        if blender_light_type != "SUN" and hasattr(light_data, "cutoff_distance"):
+        if blender_light_type != "SUN" and light.radius is not None and hasattr(light_data, "cutoff_distance"):
             light_data.cutoff_distance = light.radius
         if blender_light_type == "AREA":
             light_data.shape = "RECTANGLE"
@@ -1147,6 +1152,11 @@ class OrchestrationMixin:
             light_data.shadow_soft_size = (max(float(light.radius or 0.0), 0.0) * 0.05)
             light_data.shadow_soft_size = min(max(light_data.shadow_soft_size, 0.01), 0.5)
 
+        # TODO(WP-R5b): retire legacy radius-based sizing above once old packages
+        # are no longer supported. Authored dimensions (including zero) take priority.
+        from .entity_lights import apply_authored_light_fields
+        apply_authored_light_fields(light_data, light)
+
         self._wire_light_gobo(light_data, light)
 
         # Phase 28: stash the full state map + active state name on the Light
@@ -1163,7 +1173,7 @@ class OrchestrationMixin:
                         "intensity_candela_proxy": s.intensity_candela_proxy,
                         "temperature": s.temperature,
                         "use_temperature": s.use_temperature,
-                        "color": list(s.color),
+                        "color": list(s.color) if s.color is not None else None,
                         "light_style": int(getattr(s, "light_style", 0) or 0),
                         "preset_tag": getattr(s, "preset_tag", None),
                     }

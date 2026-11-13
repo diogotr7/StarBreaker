@@ -256,5 +256,52 @@ class InstantiateSceneInstanceTests(unittest.TestCase):
         self.assertEqual(linked, [anchor])
 
 
+
+
+
+class EntityLightImportTests(unittest.TestCase):
+    def test_entity_helper_frames_and_missing_helper_fallback(self):
+        from starbreaker_addon.manifest import SceneInstanceRecord
+        module = _load_orchestration()
+        anchor, joint = object(), object()
+        calls = []
+        importer = SimpleNamespace(_index_nodes=lambda _: {"Joint": joint},
+                                   create_light=lambda light, parent: calls.append((light, parent)))
+        record = SceneInstanceRecord.from_value({"lights": [
+            {"name": "attached", "parent_node_name": "joint", "position": [8,9,10],
+             "direction_sc": [0,1,0], "parent_local_position": [1,2,3], "parent_local_rotation": [1,0,0,0]},
+            {"name": "unresolved", "parent_node_name": "absent", "position": [4,5,6]},
+        ]})
+        module.import_entity_lights(importer, record, anchor, [])
+        self.assertEqual(len(calls), 2)
+        self.assertIs(calls[0][1], joint)
+        self.assertEqual(calls[0][0].position, (1,2,3))
+        self.assertEqual(calls[0][0].rotation, (1,0,0,0))
+        self.assertIsNone(calls[0][0].direction_sc)
+        self.assertIs(calls[1][1], anchor)
+        self.assertEqual(calls[1][0].position, (4,5,6))
+
+    def test_scene_import_keeps_root_child_and_interior_lights_once(self):
+        from starbreaker_addon.manifest import SceneManifest
+        module = _load_orchestration()
+        scene = SceneManifest.from_value({"root_entity": {"entity_name": "root", "lights": [{"name": "root-light"}]},
+            "children": [{"entity_name": "child", "lights": [{"name": "child-light"}]}],
+            "interiors": [{"name": "room", "lights": [{"name": "interior-light"}]}]})
+        calls = []
+        noop = lambda *a, **k: None
+        importer = SimpleNamespace(package=SimpleNamespace(scene=scene, package_name="synthetic"),
+            package_root=_FakeObject("package", None), node_index_by_entity_name={},
+            _create_package_root=lambda _: _FakeObject("package", None),
+            _start_progress=noop, _ensure_runtime_shared_groups=noop, _advance_progress=noop,
+            instantiate_scene_instance=lambda *a, **k: (_FakeObject("anchor", None), []),
+            _index_nodes=lambda _: {}, _scene_root_parent=lambda _: None,
+            create_light=lambda light, parent: calls.append(light.name),
+            import_interior_container=lambda interior, _: calls.extend(l.name for l in interior.lights),
+            _bake_pom_mesh_bitangent_signs=noop, _apply_deferred_pom_background_bias=noop,
+            _flush_pending_view_layer_update=noop, _flush_pending_orphan_materials=noop, _emit_progress=noop)
+        module.OrchestrationMixin.import_scene(importer, prefer_cycles=False)
+        self.assertEqual(calls, ["root-light", "child-light", "interior-light"])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

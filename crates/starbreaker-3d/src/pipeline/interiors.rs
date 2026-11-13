@@ -6,8 +6,11 @@
 //! associated texture sets (`preload_interior_textures`). Also contains
 //! `tint_palette_hash` (hash for texture cache keys) and
 //! `expand_loadout_into_placements` (loadout→interior placement expansion).
+//! Placements carry their container entity identity and links, and containers
+//! their proximity sensors (resolved in `interior_entities.rs`).
 //! Public types: `LoadedInteriors`, `InteriorCgfEntry`, `InteriorContainerData`.
 
+use crate::socpak::light_component::LightResolver;
 use std::str::FromStr;
 
 use starbreaker_datacore::database::Database;
@@ -40,6 +43,7 @@ impl Default for LoadedInteriors {
 
 /// Metadata for one unique interior CGF (no mesh data).
 pub(crate) struct InteriorCgfEntry {
+    pub animation_controller: Option<crate::animation::AnimationControllerSource>,
     pub cgf_path: String,
     pub material_path: Option<String>,
     pub name: String,
@@ -59,8 +63,12 @@ pub(crate) struct InteriorContainerData {
     /// tints independently of the parent socpak's tint palette.
     pub placements: Vec<crate::types::InteriorPlacement>,
     pub lights: Vec<crate::types::LightInfo>,
+    /// Room extents in container-local space (see `socpak::room_volume`).
+    pub room_volumes: Vec<crate::socpak::room_volume::RoomVolume>,
     /// Tint palette resolved from the socpak's IncludedObjects tint_palette_paths.
     pub palette: Option<mtl::TintPalette>,
+    /// Proximity sensors (walk-up triggers) of this container.
+    pub proximity_sensors: Vec<super::interior_entities::ProximitySensor>,
 }
 
 /// Discovery pass: parse socpaks to find unique CGF paths and placements.
@@ -70,6 +78,7 @@ pub(crate) fn load_interiors(
     p4k: &MappedP4k,
     record: &Record,
     opts: &ExportOptions,
+    light_resolver: &mut LightResolver<'_, '_>,
 ) -> LoadedInteriors {
     use crate::socpak;
 
@@ -122,18 +131,21 @@ pub(crate) fn load_interiors(
                 reference_transform,
                 parent_entity_name,
                 parent_node_name,
+                helper_transform,
             )
         })
         .collect();
     let mut root_item_port_reference_candidates: std::collections::HashMap<String, Vec<[[f32; 4]; 4]>> =
         std::collections::HashMap::new();
-    for (container, _, reference_transform, _, _) in &container_instances {
+    for (container, _, reference_transform, _, _, _) in &container_instances {
         root_item_port_reference_candidates
             .entry(container.file_name.to_ascii_lowercase())
             .or_default()
             .push(*reference_transform);
     }
-    for (container, container_transform, _, parent_entity_name, parent_node_name) in &container_instances {
+    for (container, container_transform, _, parent_entity_name, parent_node_name, helper_transform) in
+        &container_instances
+    {
         let reference_candidates = root_item_port_reference_candidates
             .get(&container.file_name.to_ascii_lowercase())
             .map(Vec::as_slice)
@@ -154,14 +166,28 @@ pub(crate) fn load_interiors(
                     parent_node_name.clone(),
                     true,
                 );
+                // Only the container authored directly on the entity: its item ports are
+                // in that entity's frame. Nested child socpaks keep their `.soc` placement.
+                if let Some(root) = tree_payloads.first_mut() {
+                    socpak::light_anchor::anchor_group_lights_to_item_ports(
+                        &mut root.lights,
+                        root_container_owner_transform(*helper_transform, root.container_transform),
+                    );
+                }
                 payloads.append(&mut tree_payloads);
             }
             Err(e) => log::warn!("failed to load {}: {e}", container.file_name),
         }
     }
 
-    let mut loaded =
-        build_interiors_from_payloads(db, p4k, &payloads, opts.include_lights, opts.lod_level);
+    let mut loaded = build_interiors_from_payloads(
+        db,
+        p4k,
+        &payloads,
+        opts.include_lights,
+        opts.lod_level,
+        light_resolver,
+    );
     let removed = remove_root_geometry_duplicate_interior_placements(
         &mut loaded,
         &root_entity_name,
@@ -176,7 +202,7 @@ pub(crate) fn load_interiors(
     loaded
 }
 
-fn helper_node_name_matches(node_name: &str, helper_name: &str) -> bool {
+pub(crate) fn helper_node_name_matches(node_name: &str, helper_name: &str) -> bool {
     let node_name = node_name.to_ascii_lowercase();
     let helper_name = helper_name.to_ascii_lowercase();
     node_name == helper_name || node_name.ends_with(&format!("_{helper_name}"))
@@ -251,6 +277,7 @@ fn remove_root_geometry_duplicate_interior_placements(
             let new_index = compact.len();
             remap.insert(old_index, new_index);
             compact.push(InteriorCgfEntry {
+                animation_controller: entry.animation_controller.clone(),
                 cgf_path: entry.cgf_path.clone(),
                 material_path: entry.material_path.clone(),
                 name: entry.name.clone(),
@@ -268,6 +295,15 @@ fn remove_root_geometry_duplicate_interior_placements(
     interiors.unique_cgfs = compact;
 
     removed
+}
+
+/// Owner-entity-from-container transform of a root container instance: the
+/// container's final transform under the helper it is parented to, if any.
+fn root_container_owner_transform(
+    helper_transform: Option<glam::Mat4>,
+    container_transform: [[f32; 4]; 4],
+) -> glam::Mat4 {
+    helper_transform.unwrap_or(glam::Mat4::IDENTITY) * mat4_from_array(&container_transform)
 }
 
 fn compose_root_container_transform(
@@ -416,6 +452,7 @@ pub(crate) fn load_child_interiors(
     children: &[crate::types::ResolvedNode],
     root_container_names: &std::collections::HashSet<String>,
     opts: &ExportOptions,
+    light_resolver: &mut LightResolver<'_, '_>,
 ) -> LoadedInteriors {
     use crate::socpak;
 
@@ -525,7 +562,14 @@ pub(crate) fn load_child_interiors(
         );
     }
 
-    build_interiors_from_payloads(db, p4k, &payloads, opts.include_lights, opts.lod_level)
+    build_interiors_from_payloads(
+        db,
+        p4k,
+        &payloads,
+        opts.include_lights,
+        opts.lod_level,
+        light_resolver,
+    )
 }
 
 fn socpak_included(opts: &ExportOptions, path: &str) -> bool {
@@ -558,6 +602,7 @@ pub(crate) fn merge_interiors(target: &mut LoadedInteriors, source: LoadedInteri
             } else {
                 let index = target.unique_cgfs.len();
                 target.unique_cgfs.push(InteriorCgfEntry {
+                    animation_controller: entry.animation_controller.clone(),
                     cgf_path: entry.cgf_path.clone(),
                     material_path: entry.material_path.clone(),
                     name: entry.name.clone(),
@@ -597,9 +642,9 @@ pub(crate) fn build_interiors_from_payloads(
     payloads: &[crate::types::InteriorPayload],
     include_lights: bool,
     lod_level: u32,
+    light_resolver: &mut LightResolver<'_, '_>,
 ) -> LoadedInteriors {
     use std::collections::{HashMap, HashSet};
-    use starbreaker_common::CigGuid;
 
     let guid_geom_compiled = db.compile_rooted::<String>(
         "EntityClassDefinition.Components[SGeometryResourceParams].Geometry.Geometry.Geometry.path",
@@ -617,6 +662,7 @@ pub(crate) fn build_interiors_from_payloads(
     let mut nmc_cache: HashMap<String, Option<crate::nmc::NodeMeshCombo>> = HashMap::new();
     // Built lazily — only entities that resolve via GUID trigger loadout walks.
     let mut entity_index: Option<starbreaker_datacore::loadout::EntityIndex> = None;
+    let mut sensor_resolver = super::interior_entities::SensorResolver::new(db);
 
     for payload in payloads {
         log::debug!(
@@ -627,11 +673,17 @@ pub(crate) fn build_interiors_from_payloads(
         );
 
         let mut placements = Vec::new();
+        let mut proximity_sensors = Vec::new();
         let mut placement_keys: HashSet<(String, [u32; 16])> = HashSet::new();
         // Resolve each distinct per-object tint palette once per payload.
         let mut palette_cache: HashMap<String, Option<mtl::TintPalette>> = HashMap::new();
 
         for im in &payload.meshes {
+            // A walk-up trigger (e.g. a door's proximity sensor) is known by its
+            // class's sensor component; its geometry, if any, is placed as usual.
+            if let Some(sensor) = sensor_resolver.sensor(im) {
+                proximity_sensors.push(sensor);
+            }
             let (cgf_path, mtl_path) = if !im.cgf_path.is_empty() {
                 (im.cgf_path.clone(), im.material_path.clone())
             } else if let Some(guid_str) = &im.entity_class_guid {
@@ -686,12 +738,22 @@ pub(crate) fn build_interiors_from_payloads(
                     .unwrap_or(&cgf_path)
                     .to_string();
                 unique_cgfs.push(InteriorCgfEntry {
+                    animation_controller: super::interior_entities::mesh_animation_controller(db, im),
                     cgf_path: cgf_path.clone(),
                     material_path: mtl_path.clone().or_else(|| im.material_path.clone()),
                     name,
                 });
                 Some(idx)
             });
+            // The same geometry may first appear as a raw IncludedObjects
+            // placement (no class): the first placement spawned from a class
+            // with a controller supplies it.
+            if let Some(entry) = mesh_idx.and_then(|idx| unique_cgfs.get_mut(idx))
+                && entry.animation_controller.is_none()
+                && im.entity_class_guid.is_some()
+            {
+                entry.animation_controller = super::interior_entities::mesh_animation_controller(db, im);
+            }
 
             if let Some(idx) = mesh_idx {
                 let placement_key = (
@@ -713,37 +775,32 @@ pub(crate) fn build_interiors_from_payloads(
                     transform: im.transform,
                     palette,
                     ui_bindings,
+                    identity: super::interior_entities::placement_identity(im),
                 });
 
                 // Expand entity loadout attachments. Many interior entities
                 // (e.g. fire-extinguisher cabinets, kit lockers) carry their
                 // visible body in a child loadout entry attached at a named
                 // CryNode helper bone on the parent CGF, rather than on their
-                // own SGeometryResourceParams.
-                if let Some(guid_str) = &im.entity_class_guid {
-                    if let Ok(guid) = CigGuid::from_str(guid_str) {
-                        if let Some(parent_record) = db.record_by_id(&guid) {
-                            let idx_ref = entity_index.get_or_insert_with(|| {
-                                starbreaker_datacore::loadout::EntityIndex::new(db)
-                            });
-                            let tree = starbreaker_datacore::loadout::resolve_loadout_indexed(
-                                idx_ref,
-                                parent_record,
-                            );
-                            if !tree.root.children.is_empty() {
-                                expand_loadout_into_placements(
-                                    db,
-                                    p4k,
-                                    &tree.root.children,
-                                    mat4_from_array(&im.transform),
-                                    &cgf_path,
-                                    &mut nmc_cache,
-                                    &mut cgf_cache,
-                                    &mut unique_cgfs,
-                                    &mut placements,
-                                );
-                            }
-                        }
+                // own SGeometryResourceParams. An entity's own inline loadout
+                // (e.g. a door's control panels) replaces its class loadout.
+                if im.entity_class_guid.is_some() {
+                    let idx_ref = entity_index
+                        .get_or_insert_with(|| starbreaker_datacore::loadout::EntityIndex::new(db));
+                    let children = super::interior_entities::entity_loadout_nodes(idx_ref, db, im);
+                    if !children.is_empty() {
+                        expand_loadout_into_placements(
+                            db,
+                            p4k,
+                            &children,
+                            mat4_from_array(&im.transform),
+                            &cgf_path,
+                            im.entity.entity_id.as_deref(),
+                            &mut nmc_cache,
+                            &mut cgf_cache,
+                            &mut unique_cgfs,
+                            &mut placements,
+                        );
                     }
                 }
             }
@@ -757,14 +814,25 @@ pub(crate) fn build_interiors_from_payloads(
             parent_entity_name: payload.parent_entity_name.clone(),
             parent_node_name: payload.parent_node_name.clone(),
             container_transform: payload.container_transform,
+            room_volumes: payload.room_volumes.clone(),
             placements,
-            lights: if include_lights { payload.lights.clone() } else { Vec::new() },
+            lights: if include_lights {
+                payload
+                    .lights
+                    .iter()
+                    .cloned()
+                    .map(|light| light_resolver.resolve(light))
+                    .collect()
+            } else {
+                Vec::new()
+            },
             // Tint palettes are resolved per object placement above (each socpak
             // object indexes its own palette); there is no single container-wide
             // palette. The previous `tint_palette_names.first()` fallback wrongly
             // applied the generic `default` palette (a placeholder carrying a
             // Gemini weapon decal + near-black tints) to the whole interior.
             palette: None,
+            proximity_sensors,
         });
     }
 
@@ -1068,7 +1136,7 @@ fn entity_class_name_matches_record_short_name(entity_class_name: &str, record_s
         || entity_class_name.starts_with(&(record_short_name + "_"))
 }
 
-fn resolve_named_entity_record<'db>(
+pub(crate) fn resolve_named_entity_record<'db>(
     db: &'db Database,
     entity_class_name: &str,
 ) -> Option<&'db Record> {
@@ -1174,6 +1242,7 @@ pub(crate) fn expand_loadout_into_placements(
     children: &[starbreaker_datacore::loadout::LoadoutNode],
     parent_world: glam::Mat4,
     parent_cgf_path: &str,
+    loadout_owner_entity_id: Option<&str>,
     nmc_cache: &mut std::collections::HashMap<String, Option<crate::nmc::NodeMeshCombo>>,
     cgf_cache: &mut std::collections::HashMap<String, Option<usize>>,
     unique_cgfs: &mut Vec<InteriorCgfEntry>,
@@ -1205,6 +1274,7 @@ pub(crate) fn expand_loadout_into_placements(
                     &child.children,
                     parent_world,
                     parent_cgf_path,
+                    loadout_owner_entity_id,
                     nmc_cache,
                     cgf_cache,
                     unique_cgfs,
@@ -1241,6 +1311,7 @@ pub(crate) fn expand_loadout_into_placements(
                 .map(|(stem, _)| stem.to_string())
                 .unwrap_or_else(|| geom_owned.clone());
             unique_cgfs.push(InteriorCgfEntry {
+                animation_controller: query_animation_controller_source(db, &child.record).filter(|source| !source.animation_database.is_empty()),
                 cgf_path: geom_owned.clone(),
                 material_path: mtl_owned.clone(),
                 name,
@@ -1253,6 +1324,12 @@ pub(crate) fn expand_loadout_into_placements(
                 transform: mat4_to_array(child_world),
                 palette: child_palette,
                 ui_bindings: ui_binding_for_loadout_node(db, child),
+                identity: crate::types::PlacementIdentity {
+                    entity_class_guid: Some(child.record.id.to_string()),
+                    loadout_owner_entity_id: loadout_owner_entity_id.map(str::to_string),
+                    item_port_name: Some(child.item_port_name.clone()).filter(|port| !port.is_empty()),
+                    ..Default::default()
+                },
             });
         }
 
@@ -1263,6 +1340,7 @@ pub(crate) fn expand_loadout_into_placements(
                 &child.children,
                 child_world,
                 &geom_owned,
+                loadout_owner_entity_id,
                 nmc_cache,
                 cgf_cache,
                 unique_cgfs,
@@ -1308,7 +1386,12 @@ pub(crate) fn load_interior_mesh_asset(
         false,
     ) {
         Ok((mesh, mtl, _tex, nmc, _palette, _, _, _bones, _skeleton_source_path)) => {
-            let needs_bake = mesh
+            // CGA is the authored animated-geometry category. Decomposed GLB writes
+            // its NMC rig, so baking it here would apply those transforms twice.
+            let preserve_rig = opts.kind == ExportKind::Decomposed
+                && opts.format == ExportFormat::Glb
+                && entry.cgf_path.to_ascii_lowercase().ends_with(".cga");
+            let needs_bake = !preserve_rig && mesh
                 .scaling_min
                 .iter()
                 .zip(&mesh.model_min)
@@ -1508,7 +1591,14 @@ mod tests {
             &[],
         )
         .expect("elevators.socpak should load");
-        let interiors = build_interiors_from_payloads(&db, &p4k, &[payload], false, 0);
+        let interiors = build_interiors_from_payloads(
+            &db,
+            &p4k,
+            &[payload],
+            false,
+            0,
+            &mut crate::socpak::light_component::LightResolver::new(&db),
+        );
         let binding = interiors
             .containers
             .iter()
@@ -1753,12 +1843,14 @@ mod tests {
                 transform: source_transform,
                 palette: None,
                 ui_bindings: vec![test_ui_binding()],
+                identity: Default::default(),
             },
             InteriorPlacement {
                 mesh_index: 1,
                 transform: target_transform,
                 palette: None,
                 ui_bindings: vec![test_ui_binding()],
+                identity: Default::default(),
             },
         ];
 
@@ -1783,12 +1875,14 @@ mod tests {
                 transform,
                 palette: None,
                 ui_bindings: vec![standard],
+                identity: Default::default(),
             },
             InteriorPlacement {
                 mesh_index: 1,
                 transform,
                 palette: None,
                 ui_bindings: vec![specialized],
+                identity: Default::default(),
             },
         ];
 
@@ -1814,12 +1908,14 @@ mod tests {
                 transform,
                 palette: None,
                 ui_bindings: vec![standard_a],
+                identity: Default::default(),
             },
             InteriorPlacement {
                 mesh_index: 1,
                 transform,
                 palette: None,
                 ui_bindings: vec![standard_b],
+                identity: Default::default(),
             },
         ];
 
@@ -1837,15 +1933,18 @@ mod tests {
             transform: identity,
             palette: None,
             ui_bindings: Vec::new(),
+            identity: Default::default(),
         };
         let mut interiors = LoadedInteriors {
             unique_cgfs: vec![
                 InteriorCgfEntry {
+                    animation_controller: None,
                     cgf_path: "Data/Objects/Ships/Test/root.cga".to_string(),
                     material_path: None,
                     name: "root".to_string(),
                 },
                 InteriorCgfEntry {
+                    animation_controller: None,
                     cgf_path: "Data/Objects/Ships/Test/door.cga".to_string(),
                     material_path: None,
                     name: "door".to_string(),
@@ -1858,9 +1957,11 @@ mod tests {
                     parent_entity_name: None,
                     parent_node_name: None,
                     container_transform: identity,
+                    room_volumes: Vec::new(),
                     placements: vec![root_placement(0), root_placement(1)],
                     lights: Vec::new(),
                     palette: None,
+                    proximity_sensors: Vec::new(),
                 },
                 // The root entity's own interior attached at a hull helper bone
                 // (the RSI Aurora Mk2 `hardpoint_interior_oc` cabin case):
@@ -1870,9 +1971,11 @@ mod tests {
                     parent_entity_name: Some(root_entity_name.to_string()),
                     parent_node_name: Some("hardpoint_interior_oc".to_string()),
                     container_transform: identity,
+                    room_volumes: Vec::new(),
                     placements: vec![root_placement(0), root_placement(1)],
                     lights: Vec::new(),
                     palette: None,
+                    proximity_sensors: Vec::new(),
                 },
                 // A genuine child-entity container: its placements are in the
                 // child's frame and must be left untouched.
@@ -1881,9 +1984,11 @@ mod tests {
                     parent_entity_name: Some("Test_Child_Module".to_string()),
                     parent_node_name: Some("helper".to_string()),
                     container_transform: identity,
+                    room_volumes: Vec::new(),
                     placements: vec![root_placement(0)],
                     lights: Vec::new(),
                     palette: None,
+                    proximity_sensors: Vec::new(),
                 },
             ],
         };
@@ -1996,21 +2101,42 @@ mod tests {
             parent_entity_name: None,
             parent_node_name: None,
             meshes: Vec::new(),
+            room_volumes: Vec::new(),
             lights: vec![crate::types::LightInfo {
+                source_component: None,
+                // Synthetic fixture dimensions and flags.
+                bulb_radius_m: 0.25,
+                plane_width_m: None,
+                plane_height_m: None,
+                shadow_casting: Some(false),
+                max_shadow_cast_distance_m: None,
+                affects_this_area_only: Some(false),
+                affect_gi: Some(false),
+                affect_gi_mode: None,
+                attenuation_tweak: 1.0,
+                plane_softness: None,
+                fade_min_distance_m: None,
+                fade_max_distance_m: None,
+                importance: None,
+                importance_name: None,
+                glow_multiplier: Some(1.0),
+                intensity_candela_proxy_model: crate::types::light_proxy_model(),
+                attachment: None,
+                light_style: Some(0),
                 name: "Light".to_string(),
                 position: [0.0, 0.0, 0.0],
                 transform_basis: "cryengine_z_up".to_string(),
                 rotation: [1.0, 0.0, 0.0, 0.0],
                 direction_sc: [1.0, 0.0, 0.0],
-                color: [1.0, 1.0, 1.0],
-                light_type: "Omni".to_string(),
+                color: Some([1.0, 1.0, 1.0]),
+                light_type: Some("Omni".to_string()),
                 semantic_light_kind: "point".to_string(),
-                intensity_raw: 1.0,
+                intensity_raw: Some(1.0),
                 intensity_unit: "cryengine_authored_intensity".to_string(),
-                intensity_candela_proxy: 1.0,
-                intensity: 1.0,
-                radius: 1.0,
-                radius_m: 1.0,
+                intensity_candela_proxy: Some(1.0),
+                intensity: Some(1.0),
+                radius: Some(1.0),
+                radius_m: Some(1.0),
                 inner_angle: None,
                 outer_angle: None,
                 projector_texture: None,
@@ -2039,21 +2165,42 @@ mod tests {
             parent_entity_name: None,
             parent_node_name: None,
             meshes: Vec::new(),
+            room_volumes: Vec::new(),
             lights: vec![crate::types::LightInfo {
+                source_component: None,
+                // Synthetic fixture dimensions and flags.
+                bulb_radius_m: 0.25,
+                plane_width_m: None,
+                plane_height_m: None,
+                shadow_casting: Some(false),
+                max_shadow_cast_distance_m: None,
+                affects_this_area_only: Some(false),
+                affect_gi: Some(false),
+                affect_gi_mode: None,
+                attenuation_tweak: 1.0,
+                plane_softness: None,
+                fade_min_distance_m: None,
+                fade_max_distance_m: None,
+                importance: None,
+                importance_name: None,
+                glow_multiplier: Some(1.0),
+                intensity_candela_proxy_model: crate::types::light_proxy_model(),
+                attachment: None,
+                light_style: Some(0),
                 name: "Light".to_string(),
                 position: [0.0, 0.0, 0.0],
                 transform_basis: "cryengine_z_up".to_string(),
                 rotation: [1.0, 0.0, 0.0, 0.0],
                 direction_sc: [1.0, 0.0, 0.0],
-                color: [1.0, 1.0, 1.0],
-                light_type: "Omni".to_string(),
+                color: Some([1.0, 1.0, 1.0]),
+                light_type: Some("Omni".to_string()),
                 semantic_light_kind: "point".to_string(),
-                intensity_raw: 1.0,
+                intensity_raw: Some(1.0),
                 intensity_unit: "cryengine_authored_intensity".to_string(),
-                intensity_candela_proxy: 1.0,
-                intensity: 1.0,
-                radius: 1.0,
-                radius_m: 1.0,
+                intensity_candela_proxy: Some(1.0),
+                intensity: Some(1.0),
+                radius: Some(1.0),
+                radius_m: Some(1.0),
                 inner_angle: None,
                 outer_angle: None,
                 projector_texture: None,

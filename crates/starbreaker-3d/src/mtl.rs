@@ -1,3 +1,4 @@
+//! Authored CryEngine materials, shader families, texture semantics and emission factors.
 use crate::error::Error;
 use crate::ivo::material::MaterialName;
 use starbreaker_chunks::ChunkFile;
@@ -612,20 +613,69 @@ impl SubMaterial {
         }
     }
 
-    /// Emissive factor for glTF.
-    ///
-    /// CryEngine: EmissiveColor is the emission color, GlowAmount is the intensity
-    /// multiplier. If EmissiveColor is non-zero, the material intends to emit light.
-    /// GlowAmount defaults to 0 when absent from the MTL, but materials that set
-    /// EmissiveColor without explicit GlowAmount still expect to glow (at full intensity).
-    pub fn emissive_factor(&self) -> [f32; 3] {
-        let e = &self.emissive;
-        if e[0] > 0.0 || e[1] > 0.0 || e[2] > 0.0 {
-            let g = if self.glow > 0.0 { self.glow } else { 1.0 };
-            [e[0] * g, e[1] * g, e[2] * g]
+    /// A shader permutation selects emittance independently of texture filenames.
+    pub fn has_emittance_map(&self) -> bool {
+        self.decoded_string_gen_mask().tokens.iter().any(|token| {
+            matches!(token.as_str(), "EMITTANCE_MAP" | "MACRO_EMISSIVE_MAP")
+        })
+    }
+
+    /// Black Emissive is an untinted surface, not a black emission multiplier.
+    pub fn emissive_tint(&self) -> [f32; 3] {
+        if self.emissive.iter().any(|component| *component != 0.0) {
+            self.emissive
         } else {
-            [0.0, 0.0, 0.0]
+            [1.0; 3]
         }
+    }
+
+    /// Authored CryEngine material flags, independent of shader/mesh names.
+    pub fn material_flags(&self) -> u64 {
+        let Some(attr) = self.authored_attributes.iter().find(|a| a.name == "MtlFlags") else {
+            return 0; // An absent flag bitset has no enabled flags.
+        };
+        let value = attr.value.trim();
+        let parsed = if let Some(hex) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
+            i64::from_str_radix(hex, 16)
+        } else {
+            value.parse::<i64>()
+        };
+        parsed.map(|flags| flags as u64).unwrap_or_else(|error| {
+            log::warn!("Invalid authored MtlFlags {:?}: {error}", attr.value);
+            0
+        })
+    }
+
+    /// CryEngine MTL_FLAG_REQUIRE_FORWARD_RENDERING.
+    pub fn is_forward_rendered(&self) -> bool {
+        self.material_flags() & 0x8000 != 0
+    }
+
+    /// Authored MTL_FLAG_2SIDED, separate from the legacy decal-sidedness policy.
+    pub fn authored_two_sided(&self) -> bool {
+        self.material_flags() & 0x2 != 0
+    }
+
+    /// Glow overrides forward Illum cards, which override emittance-map strength.
+    pub fn emissive_strength(&self) -> f32 {
+        if self.glow > 0.0 {
+            self.glow
+        } else if matches!(self.shader_family(), ShaderFamily::Illum | ShaderFamily::HardSurface)
+            && self.is_forward_rendered()
+            && self.emissive.iter().any(|component| *component != 0.0)
+        {
+            1.0 // Emissive is applied once, as tint, never again as strength.
+        } else if self.has_emittance_map() {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Tint times authored emission strength, used by bundled glTF and screen
+    /// back-colour generation too. Surface colour is applied by the texture path.
+    pub fn emissive_factor(&self) -> [f32; 3] {
+        self.emissive_tint().map(|component| component * self.emissive_strength())
     }
 
     pub fn is_double_sided(&self) -> bool {
@@ -1015,6 +1065,8 @@ fn classify_texture_role(
     let has_stencil_semantics = flags.has_stencil_map || has_public_param(&["stencil"]);
     let has_height_semantics = flags.has_parallax_occlusion_mapping
         || has_public_param(&["pom", "height", "displacement"]);
+    // TODO(upstream): replace name-derived texture roles with shader/slot semantics;
+    // the MeshDecal classifier indirectly consumes these roles.
     let is_normal_like = texture_path_looks_normal_gloss(&binding.path);
     let is_breakup_like = has_name(&["breakup", "grime", "rust", "bleed", "dirt"]);
     let is_height_like = has_name(&["disp", "height", "pom"]);
@@ -1190,6 +1242,19 @@ pub fn extract_mtl_name(data: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emissive_requires_authored_glow() {
+        // Synthetic authored-attribute fixture: neutral Emissive is not energy.
+        for shader in ["Illum", "LayerBlend_V2", "MeshDecal"] {
+            for (glow, expected) in [("", [0.0; 3]), (" Glow=\"0\"", [0.0; 3]),
+                (" Glow=\"0.25\"", [0.125, 0.25, 0.0625])] {
+                let xml = format!("<Material Shader=\"{shader}\" Emissive=\"0.5,1,0.25\"{glow}/> ");
+                let parsed = parse_mtl(&crate::test_xml::encode(&xml)).unwrap();
+                assert_eq!(parsed.materials[0].emissive_factor(), expected, "{xml}");
+            }
+        }
+    }
 
     fn dummy_submaterial(shader: &str, string_gen_mask: &str) -> SubMaterial {
         SubMaterial {

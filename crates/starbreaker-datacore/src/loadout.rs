@@ -1,3 +1,7 @@
+//! Entity loadout resolution: walks `SEntityComponentDefaultLoadoutParams` into a
+//! [`LoadoutTree`] of [`LoadoutNode`]s with item-port helper placement
+//! (`resolve_loadout_indexed`), and resolves manual loadouts authored outside
+//! DataCore against a parent's item ports (`resolve_manual_loadout_indexed`).
 use crate::database::Database;
 use crate::query::compile::CompiledPath;
 use crate::query::value::Value;
@@ -695,6 +699,88 @@ pub fn resolve_loadout_indexed(idx: &EntityIndex, record: &Record) -> LoadoutTre
             children,
         },
     }
+}
+
+/// One entry of a manual loadout authored outside DataCore: an object
+/// container entity's own `EntityComponentDefaultLoadout`, which replaces its
+/// entity class's default loadout.
+#[derive(Debug, Clone, Default)]
+pub struct ManualLoadoutEntry {
+    pub item_port_name: String,
+    /// `entityClassName`; empty when the entry references the class by GUID.
+    pub entity_class_name: String,
+    /// `entityClassReference` record GUID.
+    pub entity_class_guid: Option<crate::types::CigGuid>,
+    /// The entry's nested manual loadout; `None` leaves the attached entity's
+    /// own class loadout.
+    pub children: Option<Vec<ManualLoadoutEntry>>,
+}
+
+/// Resolve manual loadout entries attached to `parent`, whose item port
+/// definitions place them (helper bone, offsets), exactly as a DataCore
+/// loadout of `parent` would be resolved.
+pub fn resolve_manual_loadout_indexed(
+    idx: &EntityIndex,
+    parent: &Record,
+    entries: &[ManualLoadoutEntry],
+) -> Vec<LoadoutNode> {
+    let mut nodes = manual_loadout_nodes(idx, entries, 0);
+    apply_port_info(idx.db, parent, &mut nodes);
+    resolve_sub_geometry(idx, &mut nodes);
+    nodes
+}
+
+fn manual_loadout_nodes(
+    idx: &EntityIndex,
+    entries: &[ManualLoadoutEntry],
+    depth: usize,
+) -> Vec<LoadoutNode> {
+    if depth >= MAX_LOADOUT_DEPTH {
+        return Vec::new();
+    }
+    let mut nodes = Vec::new();
+    for entry in entries {
+        let record = entry
+            .entity_class_guid
+            .as_ref()
+            .and_then(|guid| idx.db.record_by_id(guid))
+            .or_else(|| {
+                (!entry.entity_class_name.is_empty())
+                    .then(|| idx.find_record(&entry.entity_class_name))
+                    .flatten()
+            });
+        let Some(record) = record else {
+            log::warn!(
+                "manual loadout: {} -> {:?}/{:?} (entity not found)",
+                entry.item_port_name,
+                entry.entity_class_name,
+                entry.entity_class_guid
+            );
+            continue;
+        };
+        let children = match &entry.children {
+            Some(nested) => manual_loadout_nodes(idx, nested, depth + 1),
+            None => resolve_loadout_indexed(idx, record).root.children,
+        };
+        let (geometry_path, material_path) = idx.query_geometry_paths(record);
+        let full_name = idx.db.resolve_string2(record.name_offset);
+        nodes.push(LoadoutNode {
+            record: *record,
+            entity_name: full_name.rsplit('.').next().unwrap_or(full_name).to_owned(),
+            item_port_name: entry.item_port_name.clone(),
+            helper_bone_name: None,
+            no_rotation: false,
+            offset_position: [0.0; 3],
+            offset_rotation: [0.0; 3],
+            detach_direction: [0.0; 3],
+            port_flags: String::new(),
+            port_tags: String::new(),
+            geometry_path,
+            material_path,
+            children,
+        });
+    }
+    nodes
 }
 
 /// Nested item-port loadouts can stack through parent ship -> docking module ->

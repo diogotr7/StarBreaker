@@ -21,6 +21,23 @@ use starbreaker_p4k::{MappedP4k, P4kArchive};
 use crate::error::Error;
 use crate::types::{InteriorMesh, InteriorPayload, LightInfo, LightStateInfo};
 
+#[cfg(test)]
+#[path = "socpak_light_tests.rs"]
+mod light_field_tests;
+
+pub(crate) mod light_component;
+pub(crate) mod light_anchor;
+pub(crate) mod entity_links;
+#[cfg(test)]
+#[path = "socpak_entity_tests.rs"]
+mod entity_tests;
+mod room_containment;
+pub(crate) mod room_volume;
+#[path = "socpak_light_fields.rs"]
+pub(crate) mod light_fields;
+
+// TODO: retain the compatibility proxy until physical intensity calibration
+// establishes the relationship between authored intensity and bulb size.
 const LIGHT_AUTHORED_INTENSITY_SCALE: f32 = 1500.0;
 const AMBIENT_PROXY_DIRECT_FACTOR: f32 = 0.25;
 
@@ -218,8 +235,24 @@ pub fn load_interior_from_socpak(
         }
     }
 
+    // Room registry sidecar (`<name>/metadata/entitycomponentroom.xml`): the
+    // CryGUIDs of the container's rooms. Area shapes in the `.soc` that link
+    // one of them describe that room's extent (see `room_volume`).
+    let mut room_guids = HashSet::new();
+    for entry in inner.entries() {
+        let lowered = entry.name.to_ascii_lowercase().replace('\\', "/");
+        if !lowered.ends_with("metadata/entitycomponentroom.xml") {
+            continue;
+        }
+        match inner.read(entry) {
+            Ok(data) => room_guids.extend(room_volume::parse_room_registry(&data)),
+            Err(e) => log::warn!("failed to read {}: {e}", entry.name),
+        }
+    }
+
     let mut meshes = Vec::new();
     let mut lights = Vec::new();
+    let mut room_volumes = Vec::new();
     let mut tint_palette_names = Vec::new();
 
     for soc_entry in &soc_entries {
@@ -231,7 +264,7 @@ pub fn load_interior_from_socpak(
             }
         };
 
-        match parse_soc(&soc_data, &soc_entry.name, container_transform) {
+        match parse_soc(&soc_data, &soc_entry.name, container_transform, &room_guids) {
             Ok((mut payload, palette_names)) => {
                 associate_transit_locations(&mut payload.meshes, &transit_destinations);
                 log::debug!(
@@ -252,6 +285,12 @@ pub fn load_interior_from_socpak(
                         .into_iter()
                         .map(|light| transform_non_item_port_light(light, non_item_port_transform_delta)),
                 );
+                room_volumes.extend(
+                    payload
+                        .room_volumes
+                        .into_iter()
+                        .map(|volume| volume.transformed(non_item_port_transform_delta)),
+                );
                 if tint_palette_names.is_empty() {
                     tint_palette_names = palette_names;
                 }
@@ -268,6 +307,12 @@ pub fn load_interior_from_socpak(
         container_transform,
         root_item_port_reference_candidates,
     ));
+    if let Some((_, descriptor)) = read_root_container_xml(&inner, &name) {
+        light_anchor::assign_item_port_positions(
+            &mut lights,
+            &light_anchor::parse_item_port_positions(&descriptor),
+        );
+    }
 
     Ok(InteriorPayload {
         name,
@@ -275,6 +320,7 @@ pub fn load_interior_from_socpak(
         parent_node_name: None,
         meshes,
         lights,
+        room_volumes,
         container_transform,
         tint_palette_names,
     })
@@ -689,6 +735,7 @@ fn parse_soc(
     data: &[u8],
     name: &str,
     container_transform: [[f32; 4]; 4],
+    room_guids: &HashSet<String>,
 ) -> Result<(InteriorPayload, Vec<String>), Error> {
     let cf =
         ChunkFile::from_bytes(data).map_err(|e| Error::ChunkParse(format!("{name}.soc: {e}")))?;
@@ -701,6 +748,7 @@ fn parse_soc(
 
     let mut meshes = Vec::new();
     let mut lights = Vec::new();
+    let mut room_volumes = Vec::new();
     let mut palette_names = Vec::new();
 
     for chunk in crch_file.chunks() {
@@ -721,6 +769,7 @@ fn parse_soc(
                     let (entity_meshes, entity_lights) = extract_cryxml_entities(&xml);
                     meshes.extend(entity_meshes);
                     lights.extend(entity_lights);
+                    room_volumes.extend(room_volume::extract_room_volumes(&xml, room_guids));
                 }
                 Err(e) => log::warn!("failed to parse CryXMLB in {name}: {e}"),
             },
@@ -734,6 +783,7 @@ fn parse_soc(
         parent_node_name: None,
         meshes,
         lights,
+        room_volumes,
         container_transform,
         tint_palette_names: Vec::new(), // Set by caller from palette_names
     }, palette_names))
@@ -748,7 +798,7 @@ fn transform_non_item_port_mesh(
     mesh
 }
 
-fn transform_non_item_port_light(
+pub(crate) fn transform_non_item_port_light(
     mut light: LightInfo,
     non_item_port_transform_delta: [[f32; 4]; 4],
 ) -> LightInfo {
@@ -764,6 +814,13 @@ fn transform_non_item_port_light(
         transformed_position.y as f64,
         transformed_position.z as f64,
     ];
+    // The group origin lives in the light's frame and moves with it.
+    if let Some(group) = light.attachment.as_mut().and_then(|a| a.group_position.as_mut()) {
+        *group = delta
+            .transform_point3(glam::Vec3::from_array(group.map(|v| v as f32)))
+            .to_array()
+            .map(f64::from);
+    }
     let local_rotation = glam::Quat::from_xyzw(
         light.rotation[1] as f32,
         light.rotation[2] as f32,
@@ -792,25 +849,29 @@ fn transform_non_item_port_light(
     light
 }
 
+/// The container descriptor (`<name>.xml` at the socpak root): entry name and bytes.
+fn read_root_container_xml(inner: &P4kArchive, root_name: &str) -> Option<(String, Vec<u8>)> {
+    let root_xml_name = format!("{}.xml", root_name.to_ascii_lowercase());
+    let entry = inner.entries().iter().find(|entry| {
+        entry.name.replace('/', "\\").to_ascii_lowercase() == root_xml_name
+    })?;
+    match inner.read(entry) {
+        Ok(data) => Some((entry.name.clone(), data)),
+        Err(e) => {
+            log::warn!("failed to read {}: {e}", entry.name);
+            None
+        }
+    }
+}
+
 fn extract_root_item_port_meshes(
     inner: &P4kArchive,
     root_name: &str,
     container_transform: [[f32; 4]; 4],
     root_item_port_reference_candidates: &[[[f32; 4]; 4]],
 ) -> Vec<InteriorMesh> {
-    let root_xml_name = format!("{}.xml", root_name.to_ascii_lowercase());
-    let Some(entry) = inner.entries().iter().find(|entry| {
-        entry.name.replace('/', "\\").to_ascii_lowercase() == root_xml_name
-    }) else {
+    let Some((entry_name, data)) = read_root_container_xml(inner, root_name) else {
         return Vec::new();
-    };
-
-    let data = match inner.read(entry) {
-        Ok(data) => data,
-        Err(e) => {
-            log::warn!("failed to read {}: {e}", entry.name);
-            return Vec::new();
-        }
     };
 
     let root_bounds = parse_editor_bounds(&data).or_else(|| read_root_editor_bounds(inner, root_name));
@@ -829,7 +890,7 @@ fn extract_root_item_port_meshes(
     if !kept.is_empty() {
         log::debug!(
             "  root container xml '{}' → {} item-port entities",
-            entry.name,
+            entry_name,
             kept.len()
         );
     }
@@ -1065,6 +1126,7 @@ fn push_item_port_mesh(
         tint_palette_name: None,
         ui_canvas_guid: None,
         ui_location_loc_key: None,
+        entity: Default::default(),
     });
 }
 
@@ -1293,6 +1355,7 @@ fn included_objects_to_meshes(io: &IncludedObjects) -> Vec<InteriorMesh> {
                     .and_then(|i| io.tint_palette_paths.get(i as usize).cloned()),
                 ui_canvas_guid: None,
                 ui_location_loc_key: None,
+                entity: Default::default(),
             })
         })
         .collect()
@@ -1358,6 +1421,13 @@ const SKIP_ENTITY_CLASSES: &[&str] = &[
     "VehicleAudioPoint",
 ];
 
+/// Lights of a synthetic `.soc` entity document, for tests outside this module.
+#[cfg(test)]
+pub(crate) fn lights_from_soc_xml(xml: &str) -> Vec<LightInfo> {
+    let bytes = crate::test_xml::encode(xml);
+    extract_cryxml_entities(&starbreaker_cryxml::from_bytes(&bytes).unwrap()).1
+}
+
 fn extract_cryxml_entities(xml: &CryXml) -> (Vec<InteriorMesh>, Vec<LightInfo>) {
     let mut meshes = Vec::new();
     let mut lights = Vec::new();
@@ -1394,9 +1464,10 @@ fn process_entity_children(
         let attrs: HashMap<&str, &str> = xml.node_attributes(entity).collect();
         let entity_class = attrs.get("EntityClass").copied().unwrap_or("");
 
-        // Skip non-visual entities
+        // Skip non-visual entities. Proximity sensors (door triggers) are kept:
+        // their class resolves no geometry and the pipeline reads their trigger
+        // volume from DataCore.
         if SKIP_ENTITY_CLASSES.contains(&entity_class)
-            || entity_class.starts_with("Door_Ship_Sensor")
             || entity_class.starts_with("ChipSet_Light")
         {
             continue;
@@ -1417,11 +1488,13 @@ fn process_entity_children(
             || entity_class == "LightBox"
             || entity_class == "LightGroup"
             || entity_class == "LightGroupPoweredItem"
+            || has_light_group_component(xml, entity)
+            || find_entity_component_light(xml, entity).is_some()
         {
             let parsed_lights =
                 parse_light_entities(xml, entity, &attrs, &pos, &rot, &scale, entity_class);
             lights.extend(parsed_lights);
-            continue;
+            // Light components and geometry may coexist on the same entity.
         }
 
         // Try to extract geometry path from inline PropertiesDataCore
@@ -1434,28 +1507,37 @@ fn process_entity_children(
         // `OLD_TransitUIPanelExterior_ANVL` over the generic class canvas). Capture
         // it here so the UI binding renders the correct per-instance canvas.
         let ui_canvas_guid = extract_entity_ui_canvas(xml, entity);
+        // The entity is spawned from its class: inline geometry overrides only
+        // the class geometry, so the class (animation controller, loadout, UI)
+        // is kept either way.
+        let entity_class_guid = attrs
+            .get("EntityClassGUID")
+            .filter(|guid| is_nonzero_guid(guid))
+            .map(|guid| guid.to_string());
         if let Some(geom_path) = extract_entity_geometry(xml, entity) {
             meshes.push(InteriorMesh {
                 cgf_path: geom_path,
                 material_path,
                 transform,
-                entity_class_guid: None,
+                entity_class_guid,
                 entity_class_name: None,
                 tint_palette_name: None,
                 ui_canvas_guid,
                 ui_location_loc_key: None,
+                entity: entity_links::entity_ref(xml, entity),
             });
-        } else if let Some(guid) = attrs.get("EntityClassGUID") {
+        } else if entity_class_guid.is_some() {
             // No inline geometry — resolve via DataCore using EntityClassGUID
             meshes.push(InteriorMesh {
                 cgf_path: String::new(),
                 material_path,
                 transform,
-                entity_class_guid: Some(guid.to_string()),
+                entity_class_guid,
                 entity_class_name: None,
                 tint_palette_name: None,
                 ui_canvas_guid,
                 ui_location_loc_key: None,
+                entity: entity_links::entity_ref(xml, entity),
             });
         }
     }
@@ -1591,9 +1673,12 @@ fn parse_light_entities(
 
     // Single Light: PropertiesDataCore > EntityComponentLight
     if let Some(lc) = find_entity_component_light(xml, entity) {
-        if let Some(light) =
+        if let Some(mut light) =
             build_light_info_from_component(xml, &lc, &base_name, &base_pos, &base_rot)
         {
+            if let Some(source) = &mut light.source_component {
+                source.class = Some(entity_class.to_owned());
+            }
             return vec![light];
         }
     }
@@ -1718,41 +1803,76 @@ fn parse_light_group(
         }
     }
 
-    if lights.is_empty() {
-        // Fallback
-        lights.push(LightInfo {
-            name: base_name.to_string(),
-            position: *base_pos,
-            transform_basis: "cryengine_z_up".to_string(),
-            rotation: *base_rot,
-            direction_sc: quat_rotate_vec(base_rot, &[1.0, 0.0, 0.0]),
-            color: [1.0, 0.95, 0.9],
-            light_type: "Omni".to_string(),
-            semantic_light_kind: "point".to_string(),
-            intensity_raw: 1.0,
-            intensity_unit: "cryengine_authored_intensity".to_string(),
-            intensity_candela_proxy: authored_light_intensity_to_candela(1.0),
-            intensity: authored_light_intensity_to_candela(1.0),
-            radius: 5.0,
-            radius_m: 5.0,
-            inner_angle: None,
-            outer_angle: None,
-            projector_texture: None,
-            active_state: String::new(),
-            states: std::collections::BTreeMap::new(),
+    let helper = xml.node_children(entity)
+        .filter(|node| xml.node_tag(node) == "PropertiesDataCore")
+        .chain(std::iter::once(entity))
+        .flat_map(|node| xml.node_children(node))
+        .filter(|node| xml.node_tag(node) == "EntityComponentLightGroup")
+        .flat_map(|node| xml.node_attributes(node))
+        .find(|(key, value)| *key == "helper" && !value.is_empty())
+        .map(|(_, value)| value.to_owned());
+    let item_port = xml.node_children(entity)
+        .find(|node| xml.node_tag(node) == "TileAttachmentParams")
+        .and_then(|node| xml.node_attributes(node).find(|(key, _)| *key == "ItemPortName"))
+        .map(|(_, value)| value.to_owned());
+    let attachment_point = item_port
+        .as_deref()
+        .and_then(|value| value.rsplit_once('['))
+        .and_then(|(_, value)| value.strip_suffix(']'))
+        .map(str::to_owned);
+    for light in &mut lights {
+        light.attachment = Some(crate::types::LightAttachment {
+            group: base_name.to_owned(), helper: helper.clone(),
+            attachment_point: attachment_point.clone(),
+            item_port: item_port.clone(),
+            group_position: Some(*base_pos),
+            port_position: None,
         });
     }
     lights
+}
+
+#[cfg(test)]
+mod light_regressions {
+    #[test]
+    fn entity_with_light_and_geometry_preserves_both() {
+        let bytes = crate::test_xml::encode(r#"<Entities><Entity EntityClass="SyntheticProp" Name="mixed"><PropertiesDataCore><EntityGeometryResource><Geometry><Geometry><Geometry path="objects/synthetic.cgf"/></Geometry></Geometry></EntityGeometryResource><EntityComponentLight lightType="Omni"><defaultState intensity="0.25"/><sizeParams lightRadius="3"/></EntityComponentLight></PropertiesDataCore></Entity></Entities>"#);
+        let xml = starbreaker_cryxml::from_bytes(&bytes).unwrap();
+        let (meshes, lights) = super::extract_cryxml_entities(&xml);
+        assert_eq!(lights.len(), 1);
+        assert_eq!(meshes.len(), 1);
+        assert_eq!(meshes[0].cgf_path, "objects/synthetic.cgf");
+    }
+
+    #[test]
+    fn empty_light_group_does_not_invent_energy() {
+        let bytes = crate::test_xml::encode(r#"<Entities><Entity EntityClass="LightGroup" Name="synthetic"><EntityComponentLightGroup><BakedInLights/></EntityComponentLightGroup></Entity></Entities>"#);
+        let xml = starbreaker_cryxml::from_bytes(&bytes).unwrap();
+        assert!(super::extract_cryxml_entities(&xml).1.is_empty());
+    }
+
+    #[test]
+    fn component_driven_light_group_item_is_not_dropped() {
+        let bytes = crate::test_xml::encode(r#"<Entities><Entity EntityClass="LightGroupItem" Name="synthetic"><EntityComponentLightGroup><BakedInLights><Light><EntityComponentLight lightType="Omni" useTemperature="0"><defaultState intensity="0.125" temperature="5000" lightStyle="3"><color r="0.5" g="0.25" b="0.75"/></defaultState><sizeParams lightRadius="7"/></EntityComponentLight></Light></BakedInLights></EntityComponentLightGroup></Entity></Entities>"#);
+        let xml = starbreaker_cryxml::from_bytes(&bytes).unwrap();
+        let lights = super::extract_cryxml_entities(&xml).1;
+        assert_eq!(lights.len(), 1);
+        assert_eq!(lights[0].color, Some([0.5, 0.25, 0.75]));
+        assert_eq!(lights[0].radius_m, Some(7.0));
+        assert_eq!(lights[0].states["defaultState"].light_style, Some(3));
+    }
 }
 
 /// Build a LightInfo from an EntityComponentLight CryXML node.
 ///
 /// Expected structure:
 /// ```xml
-/// <EntityComponentLight lightType="..." intensity="..." radius="..." color="r,g,b" ...>
-///   <projectorParams texture="..." fov="..." nearPlane="..." />
-///   <colorParams colorTemperature="..." />
-///   <optionalParams .../>
+/// <EntityComponentLight lightType="..." useTemperature="..." affectGI="...">
+///   <sizeParams lightRadius="..." bulbRadius="..." planeWidth="..." planeHeight="..."/>
+///   <defaultState intensity="..." temperature="..."><color r="..." g="..." b="..."/></defaultState>
+///   <shadowParams shadowCasting="..." maxShadowCastDist="..."/>
+///   <fadeParams minDistance="..." maxDistance="..."/>
+///   <miscParams glowMultiplier="..." attenuationTweak="..." planeSoftness="..."/>
 /// </EntityComponentLight>
 /// ```
 fn build_light_info_from_component(
@@ -1762,218 +1882,146 @@ fn build_light_info_from_component(
     pos: &[f64; 3],
     rot: &[f64; 4],
 ) -> Option<LightInfo> {
-    // The EntityComponentLight carries top-level fields (lightType,
-    // useTemperature, etc.) directly. State-specific values (intensity,
-    // temperature, and the <color r g b> child element) live on dedicated
-    // state children: offState / defaultState / auxiliaryState /
-    // emergencyState / cinematicState. Star Citizen renders the "default"
-    // state for baked-in lights, so we read from <defaultState> only.
-    let component_attrs: HashMap<&str, &str> = xml
-        .node_attributes(component)
-        .filter(|(k, _)| *k != "__type")
-        .collect();
+    let source = light_component::LightComponent::from_xml(xml, component);
+    Some(build_light_info_from_fields(&source, name, pos, rot))
+}
 
-    let bool_truthy = |s: &str| matches!(s, "1" | "true" | "True" | "TRUE");
-    let use_temperature = component_attrs
-        .get("useTemperature")
-        .map(|s| bool_truthy(s))
-        .unwrap_or(false);
-    let light_type = component_attrs
-        .get("lightType")
-        .copied()
-        .unwrap_or("Omni")
-        .to_string();
-    let semantic_light_kind = semantic_light_kind_for_light(&light_type, None, None);
-
-    // CryEngine light components expose several runtime states
-    // (`offState` / `defaultState` / `auxiliaryState` / `emergencyState` /
-    // `cinematicState`). Each carries its own intensity, temperature, and
-    // <color r g b> child. Collect every authored state so downstream
-    // tools can switch between them; then pick the first with
-    // intensity > 0 (in fallback order) as the active state to expose on
-    // the flat `color` / `intensity` fields.
-    const ALL_STATES: &[&str] = &[
+fn build_light_info_from_fields(
+    source: &light_component::LightComponent,
+    name: &str,
+    pos: &[f64; 3],
+    rot: &[f64; 4],
+) -> LightInfo {
+    let use_temperature = source.boolean("useTemperature");
+    let light_type = source.attr("lightType").map(str::to_owned);
+    let semantic_light_kind =
+        semantic_light_kind_for_light(light_type.as_deref().unwrap_or(""), None, None);
+    let glow_multiplier = source.float("miscParams.glowMultiplier");
+    // Non-ambient lights do not use the glow multiplier in the compatibility proxy.
+    let proxy = |raw: Option<f32>| {
+        raw.and_then(|raw| {
+            if semantic_light_kind.eq_ignore_ascii_case("ambient_proxy") {
+                glow_multiplier.map(|glow| {
+                    authored_light_intensity_to_candela_semantic(raw, semantic_light_kind, glow)
+                })
+            } else {
+                Some(authored_light_intensity_to_candela(raw))
+            }
+        })
+    };
+    let mut states = std::collections::BTreeMap::new();
+    for tag in [
         "offState",
         "defaultState",
         "auxiliaryState",
         "emergencyState",
         "cinematicState",
-    ];
-    const STATE_PRIORITY: &[&str] = &[
-        "defaultState",
-        "auxiliaryState",
-        "emergencyState",
-        "cinematicState",
-    ];
-
-    let glow_multiplier = xml
-        .node_children(component)
-        .find(|c| xml.node_tag(c) == "miscParams")
-        .and_then(|misc| {
-            xml.node_attributes(misc)
-                .find(|(k, _)| *k == "glowMultiplier")
-                .and_then(|(_, v)| v.parse::<f32>().ok())
-        })
-        .unwrap_or(1.0);
-
-    let read_state = |tag: &str| -> Option<LightStateInfo> {
-        let node = xml
-            .node_children(component)
-            .find(|c| xml.node_tag(c) == tag)?;
-        let a: HashMap<&str, &str> = xml
-            .node_attributes(node)
-            .filter(|(k, _)| *k != "__type")
-            .collect();
-        let intensity_raw = a
-            .get("intensity")
-            .and_then(|s| s.parse::<f32>().ok())
-            .unwrap_or(0.0);
-        let temperature = a
-            .get("temperature")
-            .and_then(|s| s.parse::<f32>().ok())
-            .unwrap_or(6500.0);
-        let light_style = a
-            .get("lightStyle")
-            .and_then(|s| s.parse::<i32>().ok())
-            .unwrap_or(0);
-        let preset_tag = a.get("presetTag").copied().unwrap_or("").to_string();
-        let (cr, cg, cb) = xml
-            .node_children(node)
-            .find(|c| xml.node_tag(c) == "color")
-            .map(|c| {
-                let ca: HashMap<&str, &str> = xml
-                    .node_attributes(c)
-                    .filter(|(k, _)| *k != "__type")
-                    .collect();
-                let f = |k: &str| {
-                    ca.get(k)
-                        .and_then(|s| s.parse::<f32>().ok())
-                        .unwrap_or(1.0)
-                        .clamp(0.0, 1.0)
-                };
-                (f("r"), f("g"), f("b"))
-            })
-            .unwrap_or((1.0, 1.0, 1.0));
-        Some(LightStateInfo {
-            intensity_raw,
-            intensity_unit: "cryengine_authored_intensity".to_string(),
-            intensity_cd: authored_light_intensity_to_candela_semantic(
-                intensity_raw,
-                semantic_light_kind,
-                glow_multiplier,
-            ),
-            intensity_candela_proxy: authored_light_intensity_to_candela_semantic(
-                intensity_raw,
-                semantic_light_kind,
-                glow_multiplier,
-            ),
-            temperature,
-            use_temperature,
-            color: [cr, cg, cb],
-            light_style,
-            preset_tag,
-        })
-    };
-
-    let mut states: std::collections::BTreeMap<String, LightStateInfo> =
-        std::collections::BTreeMap::new();
-    for tag in ALL_STATES {
-        if let Some(s) = read_state(tag) {
-            states.insert((*tag).to_string(), s);
+    ] {
+        if !source.nodes.contains(&format!("{tag}.")) {
+            continue;
         }
+        let intensity_raw = source.float(&format!("{tag}.intensity"));
+        let temperature = source.float(&format!("{tag}.temperature"));
+        let color =
+            match ["r", "g", "b"].map(|channel| source.float(&format!("{tag}.color.{channel}"))) {
+                [Some(r), Some(g), Some(b)] => Some([r, g, b]),
+                _ => None,
+            };
+        states.insert(
+            tag.to_owned(),
+            LightStateInfo {
+                intensity_candela_proxy_model: crate::types::light_proxy_model(),
+                intensity_raw,
+                intensity_unit: "cryengine_authored_intensity".to_owned(),
+                intensity_cd: proxy(intensity_raw),
+                intensity_candela_proxy: proxy(intensity_raw),
+                temperature,
+                use_temperature,
+                color,
+                light_style: source
+                    .attr(&format!("{tag}.lightStyle"))
+                    .and_then(|v| v.parse().ok()),
+                preset_tag: source.attr(&format!("{tag}.presetTag")).map(str::to_owned),
+            },
+        );
     }
-
-    // Pick the active state via priority order.
-    let active_state_name = STATE_PRIORITY
-        .iter()
-        .find(|tag| {
-            states
-                .get(**tag)
-                .map(|s| s.intensity_raw > 0.0)
-                .unwrap_or(false)
-        })
-        .copied()
-        .unwrap_or("");
+    // Class states participate after merging. Explicit zero always wins.
+    let active_state_name = if states.contains_key("defaultState") {
+        "defaultState"
+    } else {
+        ["auxiliaryState", "emergencyState", "cinematicState"]
+            .into_iter()
+            .find(|tag| {
+                states
+                    .get(*tag)
+                    .is_some_and(|s| s.intensity_raw.is_some_and(|v| v > 0.0))
+            })
+            .unwrap_or("")
+    };
     let active = states.get(active_state_name);
-    let intensity_raw = active.map(|s| s.intensity_raw).unwrap_or(0.0);
-    let temperature = active.map(|s| s.temperature).unwrap_or(6500.0);
-    let (color_r, color_g, color_b) = active
-        .map(|s| (s.color[0], s.color[1], s.color[2]))
-        .unwrap_or((1.0, 1.0, 1.0));
-
-    let color = if use_temperature {
-        kelvin_to_rgb(temperature.clamp(1000.0, 40000.0))
-    } else {
-        [color_r, color_g, color_b]
+    let intensity_raw = active.and_then(|s| s.intensity_raw);
+    let temperature = active.and_then(|s| s.temperature);
+    let color = match (use_temperature, temperature) {
+        (Some(true), Some(temperature)) => Some(kelvin_to_rgb(temperature.clamp(1000.0, 40000.0))),
+        _ => active.and_then(|s| s.color),
     };
-
-    // sizeParams > lightRadius (attenuation radius).
-    let radius = xml
-        .node_children(component)
-        .find(|c| xml.node_tag(c) == "sizeParams")
-        .and_then(|sp| {
-            xml.node_attributes(sp)
-                .find(|(k, _)| *k == "lightRadius")
-                .and_then(|(_, v)| v.parse::<f32>().ok())
-        })
-        .filter(|r| *r > 0.0)
-        .unwrap_or(5.0);
-
-    // projectorParams > texture, FOV
-    let (projector_texture, fov) = xml
-        .node_children(component)
-        .find(|c| xml.node_tag(c) == "projectorParams")
-        .map(|pp| {
-            let a: HashMap<&str, &str> = xml
-                .node_attributes(pp)
-                .filter(|(k, _)| *k != "__type")
-                .collect();
-            let tex = a
-                .get("texture")
-                .map(|s| s.to_string())
-                .filter(|s| !s.is_empty());
-            let fov = a
-                .get("FOV")
-                .and_then(|s| s.parse::<f32>().ok())
-                .unwrap_or(0.0);
-            (tex, fov)
-        })
-        .unwrap_or((None, 0.0));
-
-    // Spot light half-angles
-    let (inner_angle, outer_angle) = if light_type == "Projector" && fov > 0.0 {
-        let outer = fov * 0.5;
-        let inner = outer * 0.8;
-        (Some(inner), Some(outer))
-    } else {
-        (None, None)
+    let radius = source.float("sizeParams.lightRadius");
+    let projector_texture = source
+        .attr("projectorParams.texture")
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    let (inner_angle, outer_angle) = match source.float("projectorParams.FOV") {
+        Some(fov) if light_type.as_deref() == Some("Projector") && fov > 0.0 => {
+            (Some(fov * 0.5 * 0.8), Some(fov * 0.5))
+        }
+        _ => (None, None),
     };
-
-    // CryEngine authored intensity → exported candela proxy.
-    let semantic_light_kind = semantic_light_kind_for_light(&light_type, inner_angle, outer_angle);
-    let candela = authored_light_intensity_to_candela_semantic(
-        intensity_raw,
-        semantic_light_kind,
+    let candela = proxy(intensity_raw);
+    LightInfo {
+        source_component: Some(source.clone()),
+        bulb_radius_m: source
+            .float("sizeParams.bulbRadius")
+            .unwrap_or_else(crate::types::default_bulb_radius),
+        plane_width_m: source.float("sizeParams.planeWidth"),
+        plane_height_m: source.float("sizeParams.planeHeight"),
+        shadow_casting: source.boolean("shadowParams.shadowCasting"),
+        max_shadow_cast_distance_m: source.float("shadowParams.maxShadowCastDist"),
+        affects_this_area_only: source.boolean("affectsThisAreaOnly"),
+        affect_gi: light_fields::affect_gi(
+            source.attr("affectGI"),
+            source.boolean("affectsObjects"),
+        ),
+        affect_gi_mode: source.attr("affectGI").map(str::to_owned),
+        attenuation_tweak: source
+            .float("miscParams.attenuationTweak")
+            .unwrap_or_else(crate::types::light_unit_multiplier),
+        plane_softness: source.float("miscParams.planeSoftness"),
+        fade_min_distance_m: source.float("fadeParams.minDistance"),
+        fade_max_distance_m: source.float("fadeParams.maxDistance"),
+        importance: source.attr("importance").and_then(|s| s.parse().ok()),
+        importance_name: source
+            .attr("importance")
+            .filter(|s| s.parse::<i32>().is_err())
+            .map(str::to_owned),
         glow_multiplier,
-    );
-    let direction_sc = quat_rotate_vec(rot, &[1.0, 0.0, 0.0]);
-
-    log::debug!(
-        "  Light '{name}' type={light_type} useTemp={use_temperature} \
-         temperature={temperature} intensity={intensity_raw} radius={radius} color={color:?}"
-    );
-
-    Some(LightInfo {
-        name: name.to_string(),
+        intensity_candela_proxy_model: crate::types::light_proxy_model(),
+        attachment: None,
+        light_style: active.and_then(|s| s.light_style),
+        name: name.to_owned(),
         position: *pos,
-        transform_basis: "cryengine_z_up".to_string(),
+        transform_basis: "cryengine_z_up".to_owned(),
         rotation: *rot,
-        direction_sc,
+        direction_sc: quat_rotate_vec(rot, &[1.0, 0.0, 0.0]),
         color,
+        semantic_light_kind: semantic_light_kind_for_light(
+            light_type.as_deref().unwrap_or(""),
+            inner_angle,
+            outer_angle,
+        )
+        .to_owned(),
         light_type,
-        semantic_light_kind: semantic_light_kind.to_string(),
         intensity_raw,
-        intensity_unit: "cryengine_authored_intensity".to_string(),
+        intensity_unit: "cryengine_authored_intensity".to_owned(),
         intensity_candela_proxy: candela,
         intensity: candela,
         radius,
@@ -1981,9 +2029,9 @@ fn build_light_info_from_component(
         inner_angle,
         outer_angle,
         projector_texture,
-        active_state: active_state_name.to_string(),
+        active_state: active_state_name.to_owned(),
         states,
-    })
+    }
 }
 
 fn semantic_light_kind_for_light(
@@ -2232,6 +2280,7 @@ mod tests {
             tint_palette_name: None,
             ui_canvas_guid: canvas.map(str::to_string),
             ui_location_loc_key: None,
+            entity: Default::default(),
         };
         let destinations = vec![
             super::TransitDestination {
@@ -2600,6 +2649,7 @@ mod tests {
             tint_palette_name: None,
             ui_canvas_guid: None,
             ui_location_loc_key: None,
+            entity: Default::default(),
         };
         let outside = InteriorMesh {
             cgf_path: String::new(),
@@ -2611,6 +2661,7 @@ mod tests {
             tint_palette_name: None,
             ui_canvas_guid: None,
             ui_location_loc_key: None,
+            entity: Default::default(),
         };
 
         let filtered = filter_item_port_meshes_to_editor_bounds(

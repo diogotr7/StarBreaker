@@ -1,3 +1,4 @@
+//! Mesh, entity, interior and authored light payloads shared by export pipelines.
 use crate::dequant;
 use crate::ivo::material::MaterialName;
 use crate::ivo::skin::{NormalData, PositionData, SkinMesh, TangentData};
@@ -884,9 +885,37 @@ pub struct EntityPayload {
     pub ui_bindings: Vec<UiBinding>,
 }
 
+/// Authored group attachment metadata, independent of the group's display name.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LightAttachment {
+    pub group: String,
+    pub helper: Option<String>,
+    pub attachment_point: Option<String>,
+    /// Full `TileAttachmentParams@ItemPortName`: the container-descriptor item
+    /// port this group is attached to. Internal to placement resolution.
+    #[serde(skip)]
+    pub item_port: Option<String>,
+    /// Group origin, in the same frame as the light's `position`.
+    #[serde(skip)]
+    pub group_position: Option<[f64; 3]>,
+    /// The named port's `interactionOffset`: the group origin in the frame of
+    /// the entity that owns the container (see `socpak::light_anchor`).
+    #[serde(skip)]
+    pub port_position: Option<[f64; 3]>,
+}
+
 /// A light extracted from a CryXMLB entity in a .soc file.
-#[derive(Debug, Clone)]
+/// Export resolves missing attributes from the entity class in DataCore. Optional
+/// source fields remain unknown if neither source supplies them; only bulb radius
+/// and attenuation tweak have documented engine defaults.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LightInfo {
+    #[serde(skip)]
+    pub(crate) source_component: Option<crate::socpak::light_component::LightComponent>,
+    #[serde(default)]
+    pub attachment: Option<LightAttachment>,
+    /// Active state's authored style, also preserved in states.
+    pub light_style: Option<i32>,
     pub name: String,
     /// Position in CryEngine coordinates (relative to container).
     pub position: [f64; 3],
@@ -897,22 +926,52 @@ pub struct LightInfo {
     /// Normalized forward direction in source SC space.
     pub direction_sc: [f64; 3],
     /// Color [r, g, b] normalized 0..1.
-    pub color: [f32; 3],
+    pub color: Option<[f32; 3]>,
     /// Source light type (for example: Omni, Projector).
-    pub light_type: String,
+    pub light_type: Option<String>,
     /// Normalized reusable light kind for downstream DCCs.
     pub semantic_light_kind: String,
     /// Raw CryEngine intensity on the flattened active record.
-    pub intensity_raw: f32,
+    pub intensity_raw: Option<f32>,
     /// Unit label for ``intensity_raw``.
     pub intensity_unit: String,
     /// Explicit label for the exporter's candela-style proxy value.
-    pub intensity_candela_proxy: f32,
-    pub intensity: f32,
+    pub intensity_candela_proxy: Option<f32>,
+    /// Compatibility proxy recipe, not a physical candela calibration.
+    #[serde(default = "light_proxy_model")]
+    pub intensity_candela_proxy_model: String,
+    pub intensity: Option<f32>,
     /// Attenuation radius in meters.
-    pub radius: f32,
+    pub radius: Option<f32>,
     /// Explicit metric label duplicate for downstream consumers.
-    pub radius_m: f32,
+    pub radius_m: Option<f32>,
+    /// CryEngine attenuation bulb radius (metres); documented engine default 0.05.
+    #[serde(default = "default_bulb_radius")]
+    pub bulb_radius_m: f32,
+    pub plane_width_m: Option<f32>,
+    pub plane_height_m: Option<f32>,
+    #[serde(default)]
+    pub shadow_casting: Option<bool>,
+    pub max_shadow_cast_distance_m: Option<f32>,
+    #[serde(default)]
+    pub affects_this_area_only: Option<bool>,
+    #[serde(default)]
+    pub affect_gi: Option<bool>,
+    /// Original boolean/enum spelling; affect_gi resolves InheritAffectsObjects.
+    /// Unknown modes or missing affectsObjects remain None.
+    pub affect_gi_mode: Option<String>,
+    #[serde(default = "light_unit_multiplier")]
+    pub attenuation_tweak: f32,
+    pub plane_softness: Option<f32>,
+    pub fade_min_distance_m: Option<f32>,
+    pub fade_max_distance_m: Option<f32>,
+    pub importance: Option<i32>,
+    /// Original named enum, when authored; importance is its DataCore option index.
+    /// Low-level SOC parsing without a database preserves the name and leaves the index null.
+    pub importance_name: Option<String>,
+    /// Authored miscParams multiplier, retained separately from the legacy proxy.
+    #[serde(default)]
+    pub glow_multiplier: Option<f32>,
     /// For spot lights: inner cone angle in degrees.
     pub inner_angle: Option<f32>,
     /// For spot lights: outer cone angle in degrees.
@@ -921,10 +980,12 @@ pub struct LightInfo {
     /// projector texture (authored under `<projectorParams texture="...">`).
     pub projector_texture: Option<String>,
     /// Name of the authored state whose values currently populate
-    /// `color` / `intensity` (first-non-zero of default → auxiliary →
-    /// emergency → cinematic). Empty if the component had no usable state.
+    /// `color` / `intensity`: defaultState whenever present after class inheritance,
+    /// including intensity 0.
+    /// Only if absent, use the first positive auxiliary → emergency → cinematic
+    /// state. Empty if no default or positive fallback is authored.
     pub active_state: String,
-    /// All authored CryEngine light states keyed by state name
+    /// All resolved CryEngine light states keyed by state name
     /// (`offState`, `defaultState`, `auxiliaryState`, `emergencyState`,
     /// `cinematicState`). Missing states are absent from the map. Lets
     /// downstream tools (Blender addon) switch live between authored
@@ -939,30 +1000,45 @@ pub struct LightInfo {
 /// `cinematicState`). Each carries its own `intensity`, `temperature`, and
 /// `<color r g b>` child. We preserve all of them so downstream consumers
 /// can switch between them at runtime.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LightStateInfo {
     /// Raw CryEngine intensity (pre-candela multiplier). Zero means the
     /// light is authored off in this state.
-    pub intensity_raw: f32,
+    pub intensity_raw: Option<f32>,
     /// Explicit unit label for ``intensity_raw``.
     pub intensity_unit: String,
-    /// Same value scaled by the glTF candela multiplier (× 200).
-    pub intensity_cd: f32,
+    /// Compatibility alias of intensity_candela_proxy, not measured candelas.
+    pub intensity_cd: Option<f32>,
     /// Explicit alias for the exporter-scaled candela-style proxy.
-    pub intensity_candela_proxy: f32,
-    /// Authored colour temperature in Kelvin.
-    pub temperature: f32,
+    pub intensity_candela_proxy: Option<f32>,
+    /// Compatibility recipe; ambient proxies additionally retain their legacy gain.
+    #[serde(default = "light_proxy_model")]
+    pub intensity_candela_proxy_model: String,
+    /// Resolved colour temperature in Kelvin; None when neither source supplies it.
+    pub temperature: Option<f32>,
     /// Mirrors the `useTemperature` flag on the parent component.
     /// When true, consumers should derive RGB from `temperature` instead
     /// of reading `color` directly.
-    pub use_temperature: bool,
+    pub use_temperature: Option<bool>,
     /// Authored linear RGB triple (0..1) from the `<color>` child. When
     /// `use_temperature` is true this is usually `[1,1,1]`.
-    pub color: [f32; 3],
+    pub color: Option<[f32; 3]>,
     /// CryEngine authored light style id (e.g. strobe patterns).
-    pub light_style: i32,
+    pub light_style: Option<i32>,
     /// Optional authored preset tag (e.g. ``fast`` / ``slow``).
-    pub preset_tag: String,
+    pub preset_tag: Option<String>,
+}
+
+pub(crate) fn default_bulb_radius() -> f32 {
+    0.05 // CryEngine Light.lua fAttenuationBulbSize default.
+}
+
+pub(crate) fn light_unit_multiplier() -> f32 {
+    1.0
+}
+
+pub(crate) fn light_proxy_model() -> String {
+    "raw_x1500".into()
 }
 
 /// A geometry placement from a .soc interior container.
@@ -1001,6 +1077,36 @@ pub struct InteriorMesh {
     /// the render's `transitdisplay.panelLocation` variable so each lift-call
     /// console shows ITS floor name. `None` for non-transit screens.
     pub ui_location_loc_key: Option<String>,
+    /// The `.soc` entity's id, authored links and inline loadout (default for
+    /// `IncludedObjects` geometry, which is not an entity).
+    pub entity: SocEntityRef,
+}
+
+/// Identity, authored links and inline loadout of one `.soc` entity.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SocEntityRef {
+    /// `EntityCryGUID`: the entity's id within its object container. The
+    /// targets of other entities' `EntityLinks` name it.
+    pub entity_id: Option<String>,
+    /// `EntityLinks/Link@TargetCryGUID`, in authored order.
+    pub links: Vec<String>,
+    /// The entity's own `EntityComponentDefaultLoadout` manual entries, which
+    /// replace its class loadout. `None` when the entity authors none (the
+    /// class loadout applies); `Some(vec![])` when it authors an empty one.
+    pub inline_loadout: Option<Vec<InlineLoadoutEntry>>,
+}
+
+/// One `SItemPortLoadoutEntryParams` of an inline manual loadout.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InlineLoadoutEntry {
+    pub item_port_name: String,
+    /// `entityClassName`, empty when the entry references the class by GUID.
+    pub entity_class_name: String,
+    /// `entityClassReference` record GUID, when authored and non-null.
+    pub entity_class_guid: Option<String>,
+    /// The entry's own nested manual loadout; `None` when absent (the
+    /// attached entity's class loadout applies).
+    pub children: Option<Vec<InlineLoadoutEntry>>,
 }
 
 /// A resolved mesh placement from a .soc interior container.
@@ -1010,6 +1116,25 @@ pub struct InteriorPlacement {
     pub transform: [[f32; 4]; 4],
     pub palette: Option<crate::mtl::TintPalette>,
     pub ui_bindings: Vec<UiBinding>,
+    pub identity: PlacementIdentity,
+}
+
+/// Which container entity an interior placement is, and what it links to.
+/// Ids are `.soc` `EntityCryGUID`s, unique within one object container.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PlacementIdentity {
+    /// The placed entity's id; `None` for `IncludedObjects` geometry and
+    /// loadout-attached items (which are not `.soc` entities).
+    pub entity_id: Option<String>,
+    /// The entity class record the placement was spawned from.
+    pub entity_class_guid: Option<String>,
+    /// Ids the entity's `EntityLinks` target (e.g. the door a panel operates).
+    pub links: Vec<String>,
+    /// For a loadout-attached item: the container entity whose loadout
+    /// (directly or through nested items) attached it.
+    pub loadout_owner_entity_id: Option<String>,
+    /// For a loadout-attached item: the item port it occupies on its parent.
+    pub item_port_name: Option<String>,
 }
 
 /// All geometry and lights from a single socpak interior container.
@@ -1026,6 +1151,9 @@ pub struct InteriorPayload {
     pub meshes: Vec<InteriorMesh>,
     /// Lights from CryXMLB entities.
     pub lights: Vec<LightInfo>,
+    /// Room extents (area shapes linked to the container's registered rooms),
+    /// in the same container-local space as `lights`.
+    pub room_volumes: Vec<crate::socpak::room_volume::RoomVolume>,
     /// 4×4 column-major transform for this container relative to hull.
     pub container_transform: [[f32; 4]; 4],
     /// Tint palette record names from IncludedObjects (e.g. "rsi_interior_zeus_base").

@@ -1,5 +1,5 @@
-//! Bone pose utilities: axis-swap, final-frame pose extraction, skeleton
-//! block selection, and pose-application.
+//! Bone pose utilities: native Y-up final-frame pose extraction and application,
+//! skeleton block selection, and the separate Blender sidecar axis conversion.
 
 use std::collections::{HashMap, HashSet};
 
@@ -10,15 +10,15 @@ use super::{AnimationClip, AnimationDatabase, parse_dba};
 /// Final-frame local TRS pose for a single bone.
 #[derive(Debug, Clone, Copy)]
 pub struct BonePose {
-    /// Local rotation as quaternion in Blender Z-up `wxyz` order.
-    pub rotation: [f32; 4],
-    /// Local position in Blender Z-up.
+    /// Local rotation in native CryEngine Y-up `wxyz` order, if keyed.
+    pub rotation: Option<[f32; 4]>,
+    /// Local position in native CryEngine Y-up, if keyed.
     pub position: Option<[f32; 3]>,
 }
 
 /// Convert a quaternion produced by the SmallTree48BitQuat decoder (CryEngine
 /// Y-up `xyzw` convention) into the Blender Z-up `wxyz` form used by our
-/// pipeline.
+/// animation sidecars. Skeleton pose baking must keep the native Y-up basis.
 ///
 /// Must match the position axis swap used by `clip_to_json` and the static
 /// import's `_scene_position_to_blender`: `(cx, cy, cz) → (cx, -cz, cy)`.
@@ -33,8 +33,9 @@ pub fn cry_xyzw_to_blender_wxyz(q: [f32; 4]) -> [f32; 4] {
 /// TRS keyed by bone CRC32 hash.
 ///
 /// `animation_name` is matched against the metadata strings stored in the
-/// DBA chunk (case-insensitive substring). Prefer [`find_block_for_skeleton`]
-/// for production use; this helper is kept for debugging.
+/// DBA chunk (case-insensitive substring). Production code pairs an event with
+/// the entry its CAF path names (`matching::clip_for_caf_path`); this helper is
+/// kept for debugging.
 pub fn read_dba_final_pose(
     dba_bytes: &[u8],
     animation_name: &str,
@@ -53,20 +54,18 @@ pub fn read_dba_final_pose(
 
 /// Build a final-frame `BonePose` map from a single animation clip.
 ///
-/// Quaternions are converted to Blender Z-up `wxyz` via
-/// [`cry_xyzw_to_blender_wxyz`] and positions get the same axis swap.
+/// Keep the skeleton's native CryEngine Y-up basis: reorder quaternions from
+/// `xyzw` to `wxyz`, leaving positions unchanged. Missing channels stay `None`
+/// so applying the pose preserves their bind components. The Blender axis
+/// conversion belongs only to animation sidecar serialization.
 pub fn clip_final_pose(clip: &AnimationClip) -> HashMap<u32, BonePose> {
     let mut poses = HashMap::with_capacity(clip.channels.len());
     for ch in &clip.channels {
-        let rotation = ch
-            .rotations
-            .last()
-            .map(|kf| cry_xyzw_to_blender_wxyz(kf.value))
-            .unwrap_or([1.0, 0.0, 0.0, 0.0]);
-        let position = ch.positions.last().map(|kf| {
-            let [x, y, z] = kf.value;
-            [x, -z, y]
+        let rotation = ch.rotations.last().map(|kf| {
+            let [x, y, z, w] = kf.value;
+            [w, x, y, z]
         });
+        let position = ch.positions.last().map(|kf| kf.value);
         poses.insert(ch.bone_hash, BonePose { rotation, position });
     }
     poses
@@ -74,6 +73,9 @@ pub fn clip_final_pose(clip: &AnimationClip) -> HashMap<u32, BonePose> {
 
 /// Pick the best matching animation clip in `db` for a given skeleton, by
 /// bone-hash signature.
+///
+/// Diagnostic only: a bone signature does not identify which animation an event
+/// plays (several entries animate the same bones). Exports pair by CAF path.
 ///
 /// A clip is a *candidate* iff every one of its channel bone hashes is present
 /// in the skeleton (clip bones ⊆ skeleton bones). The first candidate is
@@ -175,8 +177,9 @@ pub fn bone_name_hash(name: &str) -> u32 {
     crc32fast::hash(name.as_bytes())
 }
 
-/// Apply a final-frame `pose` to a slice of bones, overwriting both their
-/// local TRS and their cached world TRS. Returns the number of updated bones.
+/// Apply keyed native Y-up components to bones, preserving unkeyed local
+/// components and recomputing cached world TRS. Returns the number of bones
+/// with at least one applied component; inverse-bind transforms stay unchanged.
 pub fn apply_pose_to_skeleton<B: BoneTransforms>(
     bones: &mut [B],
     pose: &HashMap<u32, BonePose>,
@@ -185,11 +188,15 @@ pub fn apply_pose_to_skeleton<B: BoneTransforms>(
     for bone in bones.iter_mut() {
         let h = bone_name_hash(bone.name());
         if let Some(p) = pose.get(&h) {
-            bone.set_local_rotation_wxyz(p.rotation);
+            if let Some(rot) = p.rotation {
+                bone.set_local_rotation_wxyz(rot);
+            }
             if let Some(pos) = p.position {
                 bone.set_local_position(pos);
             }
-            updated += 1;
+            if p.rotation.is_some() || p.position.is_some() {
+                updated += 1;
+            }
         }
     }
     if updated == 0 {
@@ -233,4 +240,139 @@ pub fn apply_pose_to_skeleton<B: BoneTransforms>(
     }
 
     updated
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::animation::{BoneChannel, Keyframe, clip_to_json};
+    use crate::skeleton::Bone;
+
+    fn synthetic_bone(name: &str) -> Bone {
+        // Arbitrary synthetic bind transform, unrelated to any game asset.
+        Bone {
+            name: name.into(),
+            parent_index: None,
+            object_node_index: None,
+            local_position: [7.0, 8.0, 9.0],
+            local_rotation: [0.5, -0.5, 0.5, 0.5],
+            world_position: [7.0, 8.0, 9.0],
+            world_rotation: [0.5, -0.5, 0.5, 0.5],
+            bind_world_position: [7.0, 8.0, 9.0],
+            bind_world_rotation: [0.5, -0.5, 0.5, 0.5],
+        }
+    }
+
+    fn synthetic_clip(channels: Vec<BoneChannel>) -> AnimationClip {
+        AnimationClip {
+            name: "synthetic_pose".into(),
+            fps: 30.0,
+            channels,
+            start_rotation: None,
+            start_position: None,
+        }
+    }
+
+    #[test]
+    fn final_pose_preserves_unkeyed_bind_components() {
+        let mut bones = [
+            synthetic_bone("position_only"),
+            synthetic_bone("rotation_only"),
+            synthetic_bone("empty"),
+            synthetic_bone("absent"),
+        ];
+        let bind = bones.clone();
+        let clip = synthetic_clip(vec![
+            BoneChannel {
+                bone_hash: bone_name_hash("position_only"),
+                rotations: vec![],
+                positions: vec![Keyframe {
+                    time: 1.0,
+                    value: [2.0, 0.0, 0.0],
+                }],
+                rot_format_flags: 0,
+                pos_format_flags: 0,
+            },
+            BoneChannel {
+                bone_hash: bone_name_hash("rotation_only"),
+                rotations: vec![Keyframe {
+                    time: 1.0,
+                    value: [1.0, 0.0, 0.0, 0.0],
+                }],
+                positions: vec![],
+                rot_format_flags: 0,
+                pos_format_flags: 0,
+            },
+            BoneChannel {
+                bone_hash: bone_name_hash("empty"),
+                rotations: vec![],
+                positions: vec![],
+                rot_format_flags: 0,
+                pos_format_flags: 0,
+            },
+        ]);
+        apply_pose_to_skeleton(&mut bones, &clip_final_pose(&clip));
+        assert_eq!(bones[0].local_rotation, bind[0].local_rotation);
+        assert_eq!(bones[0].local_position, [2.0, 0.0, 0.0]);
+        assert_eq!(bones[1].local_position, bind[1].local_position);
+        assert_eq!(bones[1].local_rotation, [0.0, 1.0, 0.0, 0.0]);
+        for i in [2, 3] {
+            assert_eq!(bones[i].local_rotation, bind[i].local_rotation);
+            assert_eq!(bones[i].local_position, bind[i].local_position);
+        }
+    }
+
+    #[test]
+    fn final_pose_is_native_y_up_while_sidecar_stays_blender_z_up() {
+        let mut bones = [synthetic_bone("sampled")];
+        let bind = bones[0].clone();
+        // Synthetic unit quaternion with distinct Y/Z components and sign.
+        let clip = synthetic_clip(vec![BoneChannel {
+            bone_hash: bone_name_hash("sampled"),
+            rotations: vec![
+                Keyframe {
+                    time: 0.0,
+                    value: [0.0, 0.0, 0.0, 1.0],
+                },
+                Keyframe {
+                    time: 4.0,
+                    value: [0.0, 0.6, 0.0, 0.8],
+                },
+            ],
+            positions: vec![
+                Keyframe {
+                    time: 0.0,
+                    value: [0.0, 0.0, 0.0],
+                },
+                Keyframe {
+                    time: 4.0,
+                    value: [1.0, 2.0, -3.0],
+                },
+            ],
+            rot_format_flags: 0,
+            pos_format_flags: 0,
+        }]);
+        let before = serde_json::to_vec(&clip_to_json(&clip)).unwrap();
+        assert_eq!(
+            apply_pose_to_skeleton(&mut bones, &clip_final_pose(&clip)),
+            1
+        );
+        assert_eq!(bones[0].local_position, [1.0, 2.0, -3.0]);
+        assert_eq!(bones[0].local_rotation, [0.8, 0.0, 0.6, 0.0]);
+        assert_eq!(bones[0].world_position, bones[0].local_position);
+        assert_eq!(bones[0].world_rotation, bones[0].local_rotation);
+        assert_eq!(bones[0].bind_world_position, bind.bind_world_position);
+        assert_eq!(bones[0].bind_world_rotation, bind.bind_world_rotation);
+        let sidecar = clip_to_json(&clip);
+        assert_eq!(before, serde_json::to_vec(&sidecar).unwrap());
+        let key = format!("0x{:X}", bone_name_hash("sampled"));
+        assert_eq!(
+            sidecar["bones"][&key]["position"][1],
+            serde_json::json!([1.0, 3.0, 2.0])
+        );
+        assert_eq!(
+            sidecar["bones"][&key]["rotation"][1],
+            serde_json::json!([0.8_f32, 0.0, 0.0, 0.6_f32])
+        );
+    }
 }

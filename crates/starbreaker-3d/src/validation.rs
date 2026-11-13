@@ -1,4 +1,5 @@
 //! Validation framework for decomposed export output.
+//! Supports native Blend packages and GLB packages with JSON scene manifests.
 //!
 //! Provides comprehensive validation of export results against requirements:
 //! - Mesh files: count, structure, geometry
@@ -12,6 +13,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 
 use crate::error::Error;
+
+mod glb;
 
 /// Comprehensive validation report for decomposed export.
 #[derive(Debug, Clone)]
@@ -91,19 +94,10 @@ pub fn validate_decomposed_export(output_root: &Path) -> Result<ValidationReport
 
     validate_material_sidecars(output_root, &mut report)?;
 
-    // Validate scene.json if present
+    // Legacy root manifests and package manifests obey the same schema contract.
     let scene_json = output_root.join("scene.json");
     if scene_json.exists() {
-        if let Ok(data) = std::fs::read_to_string(&scene_json) {
-            if let Err(e) = serde_json::from_str::<serde_json::Value>(&data) {
-                report.add_error(format!("scene.json invalid JSON: {}", e));
-            } else {
-                report.add_metadata(
-                    "scene_json_size".to_string(),
-                    format!("{} bytes", data.len()),
-                );
-            }
-        }
+        validate_scene_json(&scene_json, &mut report);
     }
 
     if report.errors.is_empty() {
@@ -111,6 +105,27 @@ pub fn validate_decomposed_export(output_root: &Path) -> Result<ValidationReport
     }
 
     Ok(report)
+}
+
+/// Scene/material schemas are explicit integers; unknown or absent versions fail.
+fn validate_schema_version(value: &serde_json::Value, label: &str, report: &mut ValidationReport) {
+    if !matches!(value.get("version").and_then(serde_json::Value::as_u64), Some(1 | 2)) {
+        report.add_error(format!("{label}: unsupported or missing schema version {}; expected 1 or 2", value["version"]));
+    }
+}
+
+fn validate_scene_json(path: &Path, report: &mut ValidationReport) {
+    let label = path.display().to_string();
+    match std::fs::read_to_string(path) {
+        Ok(data) => match serde_json::from_str::<serde_json::Value>(&data) {
+            Ok(value) => {
+                validate_schema_version(&value, &label, report);
+                report.add_metadata("scene_json_size".into(), format!("{} bytes", data.len()));
+            }
+            Err(error) => report.add_error(format!("{label} invalid JSON: {error}")),
+        },
+        Err(error) => report.add_error(format!("{label} could not be read: {error}")),
+    }
 }
 
 /// Validate mesh files in the Data/Objects directory.
@@ -127,7 +142,7 @@ fn validate_mesh_files(objects_dir: &Path, report: &mut ValidationReport) -> Res
     report.add_metadata("mesh_files_found".to_string(), mesh_count.to_string());
 
     if mesh_count == 0 {
-        report.add_warning("No mesh .blend files found".to_string());
+        report.add_warning("No mesh .blend or .glb files found".to_string());
     }
 
     Ok(mesh_count)
@@ -145,6 +160,9 @@ fn validate_scene_blends(output_root: &Path, report: &mut ValidationReport) -> R
     }
 
     if scene_blends.is_empty() {
+        if glb::has_glb_manifests(output_root, report) {
+            return Ok(());
+        }
         report.add_error("scene.blend not found".to_string());
         return Ok(());
     }
@@ -201,7 +219,7 @@ fn collect_blend_files(dir: &Path, blend_files: &mut Vec<std::path::PathBuf>) {
             collect_blend_files(&path, blend_files);
         } else if path
             .extension()
-            .is_some_and(|extension| extension == "blend")
+            .is_some_and(|extension| extension == "blend" || extension == "glb")
         {
             blend_files.push(path);
         }
@@ -226,8 +244,11 @@ fn collect_named_files(dir: &Path, filename: &str, files: &mut Vec<std::path::Pa
     }
 }
 
-/// Validate a single mesh .blend file.
+/// Validate a single mesh .blend or .glb file.
 fn validate_single_mesh_file(path: &Path, report: &mut ValidationReport) -> Result<usize, Error> {
+    if path.extension().is_some_and(|extension| extension == "glb") {
+        return Ok(glb::validate_mesh(path, report));
+    }
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -285,6 +306,8 @@ fn validate_package_structure(
                         .and_then(|n| n.to_str())
                         .unwrap_or("unknown");
                     report.add_warning(format!("Package {} missing scene.json", pkg_name));
+                } else {
+                    validate_scene_json(&scene_json, report);
                 }
             }
         }
@@ -327,6 +350,7 @@ fn validate_material_sidecars(
             report.add_error(format!("Material sidecar {label} invalid JSON"));
             continue;
         };
+        validate_schema_version(&json, &label, report);
         validate_material_sidecar_value(
             output_root,
             &json,
@@ -1766,6 +1790,26 @@ mod tests {
     }
 
     #[test]
+    fn scene_and_material_schema_versions_accept_one_and_two_only() {
+        let root = create_test_export_dir("schema_versions");
+        let package = root.join("Packages/Synthetic");
+        let materials = root.join("Data/Materials");
+        fs::create_dir_all(&package).unwrap();
+        fs::create_dir_all(&materials).unwrap();
+        for version in [serde_json::json!(1), serde_json::json!(2), serde_json::json!(0),
+            serde_json::json!(3), serde_json::json!("2"), serde_json::Value::Null] {
+            let value = serde_json::json!({"version": version, "submaterials": []});
+            for file in [root.join("scene.json"), package.join("scene.json"), materials.join("synthetic.materials.json")] {
+                fs::write(file, value.to_string()).unwrap();
+            }
+            let report = validate_decomposed_export(&root).unwrap();
+            let errors: Vec<_> = report.errors.iter().filter(|e| e.contains("schema version")).collect();
+            assert_eq!(errors.len(), if version == 1 || version == 2 { 0 } else { 3 }, "{version}: {:?}", report.errors);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn validate_decomposed_export_valid_complete() {
         let root = create_test_export_dir("valid_complete");
 
@@ -1803,6 +1847,31 @@ mod tests {
     }
 
     #[test]
+    fn validate_decomposed_glb_without_scene_blend_and_reject_empty_mesh() {
+        let root = create_test_export_dir("decomposed_glb_without_blend");
+        let package = root.join("Packages/Synthetic");
+        let objects = root.join("Data/Objects");
+        fs::create_dir_all(&package).unwrap();
+        fs::create_dir_all(&objects).unwrap();
+        fs::write(package.join("scene.json"),
+            r#"{"version":1,"export_options":{"format":"Glb"},"root_entity":{"mesh_asset":"Data/Objects/synthetic.glb"}}"#).unwrap();
+        let mesh_path = objects.join("synthetic.glb");
+        let bytes = gltf::binary::Glb {
+            header: gltf::binary::Header { magic: *b"glTF", version: 2, length: 0 },
+            json: std::borrow::Cow::Borrowed(br#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[]}],"scene":0}"#),
+            bin: None,
+        }.to_vec().unwrap();
+        fs::write(&mesh_path, bytes).unwrap();
+        let valid = validate_decomposed_export(&root).unwrap();
+        assert!(valid.is_valid, "{:?}", valid.errors);
+        assert_eq!(valid.mesh_count, 1);
+        fs::write(&mesh_path, []).unwrap();
+        let invalid = validate_decomposed_export(&root).unwrap();
+        assert!(!invalid.is_valid);
+        assert!(invalid.errors.iter().any(|e| e.contains("synthetic.glb")));
+    }
+
+    #[test]
     fn validate_decomposed_export_accepts_structured_package_scene_blend() {
         let root = create_test_export_dir("structured_package_scene_blend");
 
@@ -1818,7 +1887,7 @@ mod tests {
         fs::create_dir_all(&package_dir).expect("Failed to create package dir");
         write_test_blend_file(&package_dir.join("scene.blend"))
             .expect("Failed to write package scene.blend");
-        fs::write(&package_dir.join("scene.json"), "{}").expect("Failed to write scene.json");
+        fs::write(&package_dir.join("scene.json"), r#"{"version":1}"#).expect("Failed to write scene.json");
 
         let report = validate_decomposed_export(&root).expect("Validation failed");
 
@@ -1947,7 +2016,7 @@ mod tests {
         for i in 1..=2 {
             let pkg_dir = packages_dir.join(format!("Package_{}", i));
             fs::create_dir_all(&pkg_dir).expect("Failed to create package");
-            fs::write(&pkg_dir.join("scene.json"), "{}").expect("Failed to write scene.json");
+            fs::write(&pkg_dir.join("scene.json"), r#"{"version":1}"#).expect("Failed to write scene.json");
         }
 
         // Write a valid scene.json
@@ -1993,6 +2062,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "derived_textures": [
@@ -2088,6 +2158,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [
@@ -2138,6 +2209,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [
@@ -2185,6 +2257,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [
@@ -2247,6 +2320,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [
@@ -2312,6 +2386,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [
@@ -2397,6 +2472,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [
@@ -2483,6 +2559,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [
@@ -2556,6 +2633,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [
@@ -2650,6 +2728,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [
@@ -2751,6 +2830,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [
@@ -2854,6 +2934,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [
@@ -2977,6 +3058,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [
@@ -3102,6 +3184,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "layer_manifest": [
@@ -3227,6 +3310,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [
@@ -3330,6 +3414,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [
@@ -3430,6 +3515,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [
@@ -3533,6 +3619,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [
@@ -3616,6 +3703,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [
@@ -3693,6 +3781,7 @@ mod tests {
         let material_dir = root.join("Data").join("Materials");
         fs::create_dir_all(&material_dir).expect("Failed to create material dir");
         let sidecar = serde_json::json!({
+            "version": 1,
             "submaterials": [
                 {
                     "texture_slots": [

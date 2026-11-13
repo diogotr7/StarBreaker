@@ -1,11 +1,11 @@
-//! Texture loading, PNG encode/decode, and material texture assembly.
+//! Texture loading, DDS pass-through, PNG encode/decode, and material assembly.
 //!
 //! Provides `PngCache` for deduplicated DDS→PNG transcoding, texture-transform
 //! helpers (`apply_transform`, `apply_stencil`, etc.), the layered/fallback
 //! texture-tag builders (`build_fallback_texture_tags`), and the top-level
 //! `load_material_textures` function that drives the full material texture pipeline.
 //! Public exports: `PngCache`, `cached_load`, `load_diffuse_texture`,
-//! `load_normal_texture`, `load_roughness_texture`, `decode_png`.
+//! `load_normal_texture`, `load_roughness_texture`, `load_package_texture_dds`, `decode_png`.
 
 use starbreaker_dds::DdsFile;
 use starbreaker_p4k::MappedP4k;
@@ -13,7 +13,7 @@ use starbreaker_p4k::MappedP4k;
 use crate::mtl;
 use crate::types::{MaterialTextures, TextureTransformInfo};
 
-use super::{P4kSiblingReader, datacore_path_to_p4k, try_load_mtl};
+use super::{TextureContainer, P4kSiblingReader, datacore_path_to_p4k, try_load_mtl};
 
 pub(crate) type PngCache = std::collections::HashMap<String, Option<Vec<u8>>>;
 
@@ -38,7 +38,9 @@ pub(crate) enum RoughnessTextureLoadError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RoughnessTextureLoad {
     pub(crate) png: Vec<u8>,
-    pub(crate) grayscale_png: Vec<u8>,
+    /// DDS smoothness or PNG grayscale roughness for decomposed export.
+    pub(crate) package_bytes: Vec<u8>,
+    pub(crate) container: TextureContainer,
     pub(crate) requested_mip: u32,
     pub(crate) selected_mip: u32,
     pub(crate) mip_selection: &'static str,
@@ -47,12 +49,12 @@ pub(crate) struct RoughnessTextureLoad {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) alpha_mip_count: u32,
-    pub(crate) smoothness_min: u8,
-    pub(crate) smoothness_max: u8,
-    pub(crate) smoothness_mean: u8,
-    pub(crate) roughness_min: u8,
-    pub(crate) roughness_max: u8,
-    pub(crate) roughness_mean: u8,
+    pub(crate) smoothness_min: Option<u8>,
+    pub(crate) smoothness_max: Option<u8>,
+    pub(crate) smoothness_mean: Option<u8>,
+    pub(crate) roughness_min: Option<u8>,
+    pub(crate) roughness_max: Option<u8>,
+    pub(crate) roughness_mean: Option<u8>,
 }
 
 impl RoughnessTextureLoadError {
@@ -782,6 +784,8 @@ pub(super) fn load_material_textures(
     include_normals: bool,
     experimental_textures: bool,
 ) -> MaterialTextures {
+    #[cfg(test)]
+    super::BUNDLED_TEXTURE_LOADS.with(|count| count.set(count.get() + 1));
     let mut textures = empty_material_textures(mtl.materials.len());
 
     for material in &mtl.materials {
@@ -1106,6 +1110,30 @@ pub(super) fn encode_png_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Option<
     Some(png_buf)
 }
 
+/// PNG signature + IHDR chunk (length, type, 13 data bytes, CRC).
+const PNG_IHDR_END: usize = 8 + 4 + 4 + 13 + 4;
+
+/// Record a texture's color encoding in its PNG: an `sRGB` chunk when the
+/// source DDS is read through an sRGB format, `gAMA` 1.0 when its values are
+/// linear. The pixel values are the stored ones either way; the chunk tells a
+/// consumer how the engine samples them (see [`DdsFile::is_srgb`]).
+pub(super) fn tag_png_color_encoding(mut png: Vec<u8>, srgb: bool) -> Vec<u8> {
+    let (kind, data): (&[u8; 4], Vec<u8>) = if srgb {
+        (b"sRGB", vec![0])
+    } else {
+        (b"gAMA", 100_000u32.to_be_bytes().to_vec())
+    };
+    let mut crc = crc32fast::Hasher::new();
+    crc.update(kind);
+    crc.update(&data);
+    let mut chunk = (data.len() as u32).to_be_bytes().to_vec();
+    chunk.extend_from_slice(kind);
+    chunk.extend_from_slice(&data);
+    chunk.extend_from_slice(&crc.finalize().to_be_bytes());
+    png.splice(PNG_IHDR_END..PNG_IHDR_END, chunk);
+    png
+}
+
 pub(crate) fn load_diffuse_texture(
     p4k: &MappedP4k,
     tif_path: &str,
@@ -1135,7 +1163,7 @@ pub(crate) fn load_diffuse_texture(
     let (w, h) = dds.dimensions(mip);
     let rgba = dds.decode_rgba(mip).ok()?;
 
-    encode_png_rgba(w, h, rgba)
+    encode_png_rgba(w, h, rgba).map(|png| tag_png_color_encoding(png, dds.is_srgb()))
 }
 
 /// Load a normal-gloss texture as a PNG while preserving DDNA smoothness in alpha.
@@ -1209,7 +1237,7 @@ pub(crate) fn load_roughness_texture(
     tif_path: &str,
     mip_level: u32,
 ) -> Option<Vec<u8>> {
-    load_roughness_texture_result(p4k, tif_path, mip_level)
+    load_roughness_texture_result(p4k, tif_path, mip_level, TextureContainer::Png)
         .ok()
         .map(|loaded| loaded.png)
 }
@@ -1218,6 +1246,7 @@ pub(crate) fn load_roughness_texture_result(
     p4k: &MappedP4k,
     tif_path: &str,
     mip_level: u32,
+    container: TextureContainer,
 ) -> Result<RoughnessTextureLoad, RoughnessTextureLoadError> {
     let dds_path = tif_path
         .strip_suffix(".tif")
@@ -1266,21 +1295,40 @@ pub(crate) fn load_roughness_texture_result(
         None => "unknown",
     };
 
-    let smoothness = dds
-        .decode_alpha_mip(mip)
-        .map_err(|_| RoughnessTextureLoadError::DecodeAlphaMip)?;
-    let smoothness_stats =
-        smoothness_statistics(&smoothness).ok_or(RoughnessTextureLoadError::DecodeAlphaMip)?;
-    let roughness = smoothness_to_perceptual_roughness(&smoothness);
-    let roughness_stats =
-        byte_statistics(&roughness).ok_or(RoughnessTextureLoadError::EncodePng)?;
-    let png = pack_perceptual_roughness_as_metallic_roughness_png(w, h, &roughness)
-        .ok_or(RoughnessTextureLoadError::EncodePng)?;
-    let grayscale_png = pack_perceptual_roughness_as_grayscale_roughness_png(w, h, &roughness)
-        .ok_or(RoughnessTextureLoadError::EncodePng)?;
+    // Pass-through performs no decode or PNG encode, including statistics. Keep
+    // structural provenance and omit pixel statistics for compressed smoothness.
+    let dds_bytes = (container == TextureContainer::Dds)
+        .then(|| starbreaker_dds::package::write_package_dds(&dds, mip_level, true))
+        .flatten();
+    let (png, package_bytes, container, smoothness_stats, roughness_stats) = if let Some(bytes) =
+        dds_bytes
+    {
+        (Vec::new(), bytes, TextureContainer::Dds, None, None)
+    } else {
+        let smoothness = dds
+            .decode_alpha_mip(mip)
+            .map_err(|_| RoughnessTextureLoadError::DecodeAlphaMip)?;
+        let smoothness_stats =
+            smoothness_statistics(&smoothness).ok_or(RoughnessTextureLoadError::DecodeAlphaMip)?;
+        let roughness = smoothness_to_perceptual_roughness(&smoothness);
+        let roughness_stats =
+            byte_statistics(&roughness).ok_or(RoughnessTextureLoadError::EncodePng)?;
+        let png = pack_perceptual_roughness_as_metallic_roughness_png(w, h, &roughness)
+            .ok_or(RoughnessTextureLoadError::EncodePng)?;
+        let grayscale_png = pack_perceptual_roughness_as_grayscale_roughness_png(w, h, &roughness)
+            .ok_or(RoughnessTextureLoadError::EncodePng)?;
+        (
+            png,
+            grayscale_png,
+            TextureContainer::Png,
+            Some(smoothness_stats),
+            Some(roughness_stats),
+        )
+    };
     Ok(RoughnessTextureLoad {
         png,
-        grayscale_png,
+        package_bytes,
+        container,
         requested_mip: mip_level,
         selected_mip: mip as u32,
         mip_selection,
@@ -1289,12 +1337,12 @@ pub(crate) fn load_roughness_texture_result(
         width: w,
         height: h,
         alpha_mip_count: dds.alpha_mip_data.len() as u32,
-        smoothness_min: smoothness_stats.0,
-        smoothness_max: smoothness_stats.1,
-        smoothness_mean: smoothness_stats.2,
-        roughness_min: roughness_stats.0,
-        roughness_max: roughness_stats.1,
-        roughness_mean: roughness_stats.2,
+        smoothness_min: smoothness_stats.map(|stats| stats.0),
+        smoothness_max: smoothness_stats.map(|stats| stats.1),
+        smoothness_mean: smoothness_stats.map(|stats| stats.2),
+        roughness_min: roughness_stats.map(|stats| stats.0),
+        roughness_max: roughness_stats.map(|stats| stats.1),
+        roughness_mean: roughness_stats.map(|stats| stats.2),
     })
 }
 
@@ -1418,6 +1466,44 @@ fn texture_path_looks_normal_gloss(path: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Chunk types of a PNG in file order.
+    fn png_chunks(png: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let mut chunks = Vec::new();
+        let mut at = 8;
+        while at + 12 <= png.len() {
+            let len = u32::from_be_bytes(png[at..at + 4].try_into().unwrap()) as usize;
+            let kind = String::from_utf8_lossy(&png[at + 4..at + 8]).into_owned();
+            chunks.push((kind, png[at + 8..at + 8 + len].to_vec()));
+            at += 12 + len;
+        }
+        chunks
+    }
+
+    #[test]
+    fn generic_texture_png_records_its_color_encoding() {
+        let pixels = vec![10, 20, 30, 255, 200, 100, 50, 128];
+        let plain = encode_png_rgba(2, 1, pixels.clone()).unwrap();
+        assert!(
+            png_chunks(&plain)
+                .iter()
+                .all(|(kind, _)| kind != "sRGB" && kind != "gAMA"),
+            "the encoder writes no color chunk of its own"
+        );
+        for (srgb, kind, data) in [
+            (true, "sRGB", vec![0u8]),
+            (false, "gAMA", 100_000u32.to_be_bytes().to_vec()),
+        ] {
+            let tagged = tag_png_color_encoding(plain.clone(), srgb);
+            let chunks = png_chunks(&tagged);
+            assert_eq!(chunks[0].0, "IHDR");
+            assert_eq!(chunks[1], (kind.to_string(), data));
+            assert_eq!(chunks.len(), png_chunks(&plain).len() + 1);
+            // A valid PNG (chunk CRC included) whose pixels are the stored values.
+            let decoded = decode_png(&tagged).expect("tagged PNG decodes");
+            assert_eq!(decoded.into_raw(), pixels);
+        }
+    }
+
     fn test_material() -> mtl::SubMaterial {
         mtl::SubMaterial {
             name: String::new(),
@@ -1535,4 +1621,37 @@ mod tests {
             "Data/Objects/Test_ddna_cache/panel_diff.tif"
         ));
     }
+}
+
+pub(crate) fn load_package_texture_dds(
+    p4k: &MappedP4k,
+    source: &str,
+    mip: u32,
+    normal: bool,
+    alpha: bool,
+) -> Option<Vec<u8>> {
+    if source.starts_with('$') || (normal && !crate::mtl::texture_path_looks_normal_gloss(source)) {
+        return None;
+    }
+    let path = source
+        .strip_suffix(".tif")
+        .map(|s| format!("{s}.dds"))
+        .unwrap_or_else(|| source.to_owned());
+    let path = crate::pipeline::datacore_path_to_p4k(&path);
+    let entry = p4k.entry_case_insensitive(&path)?;
+    let bytes = p4k.read(entry).ok()?;
+    let siblings = crate::pipeline::P4kSiblingReader {
+        p4k,
+        base_path: path,
+    };
+    let dds = starbreaker_dds::DdsFile::from_split(&bytes, &siblings).ok()?;
+    if normal
+        && !matches!(
+            starbreaker_dds::resolve_format(&dds.header.pixel_format, dds.dxt10_header.as_ref()),
+            Ok(starbreaker_dds::DxgiFormat::BC5Unorm | starbreaker_dds::DxgiFormat::BC5Snorm)
+        )
+    {
+        return None;
+    }
+    starbreaker_dds::package::write_package_dds(&dds, mip, alpha)
 }

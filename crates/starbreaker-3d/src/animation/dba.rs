@@ -1,9 +1,10 @@
-//! DBA (Animation Database) parsing.
+//! DBA (Animation Database) parsing with full and endpoint-only inspection modes.
 //!
 //! DBA files pack multiple animation clips; block-level parsing is shared
-//! with CAF via [`super::caf::parse_animation_blocks`].
+//! with CAF via [`super::caf::parse_animation_blocks_mode`]. Metadata entry `i`
+//! names block `i`; an undecodable block leaves a gap instead of shifting the rest.
 
-use super::caf::parse_animation_blocks;
+use super::caf::parse_animation_blocks_mode;
 use super::chunk_types;
 use super::{AnimationClip, AnimationDatabase, BoneChannel};
 use crate::error::Error;
@@ -31,6 +32,10 @@ struct DbaMetaEntry {
 
 /// Parse a `.dba` file from raw bytes.
 pub fn parse_dba(data: &[u8]) -> Result<AnimationDatabase, Error> {
+    parse_dba_mode(data, false)
+}
+
+pub(super) fn parse_dba_mode(data: &[u8], endpoints: bool) -> Result<AnimationDatabase, Error> {
     let chunk_file = ChunkFile::from_bytes(data)?;
     let ivo = match &chunk_file {
         ChunkFile::Ivo(ivo) => ivo,
@@ -56,7 +61,7 @@ pub fn parse_dba(data: &[u8]) -> Result<AnimationDatabase, Error> {
         .map(|c| parse_dba_metadata(ivo.chunk_data(c)))
         .unwrap_or_default();
 
-    let mut blocks = parse_animation_blocks(data_bytes)?;
+    let mut blocks = parse_animation_blocks_mode(data_bytes, endpoints)?;
     if !meta_entries.is_empty() && blocks.len() > meta_entries.len() {
         log::warn!(
             "DBA parse produced {} blocks but metadata lists {}; truncating to metadata count",
@@ -72,7 +77,7 @@ pub fn parse_dba(data: &[u8]) -> Result<AnimationDatabase, Error> {
 }
 
 fn match_dba_metadata_to_blocks(
-    blocks: Vec<Vec<BoneChannel>>,
+    blocks: Vec<Option<Vec<BoneChannel>>>,
     meta_entries: &[(String, DbaMetaEntry)],
 ) -> Vec<AnimationClip> {
     if blocks.is_empty() {
@@ -82,6 +87,7 @@ fn match_dba_metadata_to_blocks(
         return blocks
             .into_iter()
             .enumerate()
+            .filter_map(|(i, channels)| Some((i, channels?)))
             .map(|(i, channels)| AnimationClip {
                 name: format!("anim_{i}"),
                 fps: 30.0,
@@ -103,8 +109,12 @@ fn match_dba_metadata_to_blocks(
     // Mismatches in num_controllers between metadata and block at the same
     // index indicate either a parser bug or a corrupt DBA. Log a warning and
     // fall back to a positional name so the clip is still exported.
+    //
+    // A block that failed to decode (`None`) yields no clip, and the blocks
+    // after it keep their index, so they keep their own metadata entry.
     let mut clips: Vec<AnimationClip> = Vec::with_capacity(blocks.len());
     for (i, channels) in blocks.into_iter().enumerate() {
+        let Some(channels) = channels else { continue };
         let (name, fps, start_rotation, start_position) = match meta_entries.get(i) {
             Some((name, meta)) => {
                 if (meta.num_controllers as usize) != channels.len() {
@@ -249,7 +259,28 @@ fn parse_dba_metadata(data: &[u8]) -> Vec<(String, DbaMetaEntry)> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_dba_metadata;
+    use super::{DbaMetaEntry, match_dba_metadata_to_blocks, parse_dba_metadata};
+
+    #[test]
+    fn block_after_an_undecodable_one_keeps_its_own_metadata_entry() {
+        let entry = |name: &str, fps| {
+            (
+                name.to_string(),
+                DbaMetaEntry {
+                    fps,
+                    num_controllers: 0,
+                    end_frame: 0,
+                    start_rotation: [0.0, 0.0, 0.0, 1.0],
+                    start_position_xy: [0.0, 0.0],
+                },
+            )
+        };
+        let meta = [entry("synthetic/first.caf", 24), entry("synthetic/second.caf", 60)];
+        let clips = match_dba_metadata_to_blocks(vec![None, Some(Vec::new())], &meta);
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0].name, "synthetic/second.caf");
+        assert_eq!(clips[0].fps, 60.0);
+    }
 
     #[test]
     fn parse_dba_metadata_returns_empty_when_entry_span_overflows() {

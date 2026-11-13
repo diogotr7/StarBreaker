@@ -1691,6 +1691,8 @@ pub async fn export_socpaks(
             ui_only_files: false,
             socpak_path_filter: request.socpak_path_filter.as_ref().map(normalize_socpak_path_filter),
             geometry_tag: None,
+            texture_container: starbreaker_3d::TextureContainer::Png,
+            include_physics: false,
         };
         let output_root = PathBuf::from(&request.output_dir);
         let mut file_count = 0usize;
@@ -1974,6 +1976,8 @@ pub async fn start_export(
         decomposed_package_subdir: None,
         socpak_path_filter: None,
         geometry_tag: request.geometry_tag.clone(),
+        texture_container: starbreaker_3d::TextureContainer::Png,
+        include_physics: false,
     };
 
     log::info!(

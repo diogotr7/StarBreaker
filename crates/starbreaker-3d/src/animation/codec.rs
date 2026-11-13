@@ -5,6 +5,14 @@
 
 use crate::error::Error;
 
+/// Encoded value sizes and inactive-axis sentinel shared by full/sparse decoders.
+pub(super) const UNCOMPRESSED_QUAT_STRIDE: usize = 16;
+pub(super) const SMALL_TREE_QUAT_STRIDE: usize = 6;
+pub(super) const FLOAT_POSITION_STRIDE: usize = 12;
+pub(super) const SNORM_POSITION_STRIDE: usize = 6;
+pub(super) const SNORM_HEADER_SIZE: usize = 24;
+pub(super) const FLT_MAX_SENTINEL: f32 = 3.0e38;
+
 // ── Time key reading ────────────────────────────────────────────────────────
 
 pub(crate) fn read_time_keys(
@@ -133,7 +141,7 @@ pub(super) fn read_rotation_keys(
 }
 
 fn read_uncompressed_quats(data: &[u8], offset: usize, count: usize) -> Result<Vec<[f32; 4]>, Error> {
-    let size = count * 16;
+    let size = count * UNCOMPRESSED_QUAT_STRIDE;
     if offset + size > data.len() {
         return Err(Error::Other(format!(
             "Uncompressed quats overflow at 0x{offset:x}"
@@ -141,7 +149,7 @@ fn read_uncompressed_quats(data: &[u8], offset: usize, count: usize) -> Result<V
     }
     Ok((0..count)
         .map(|i| {
-            let o = offset + i * 16;
+            let o = offset + i * UNCOMPRESSED_QUAT_STRIDE;
             [
                 f32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]),
                 f32::from_le_bytes([data[o + 4], data[o + 5], data[o + 6], data[o + 7]]),
@@ -158,7 +166,7 @@ fn read_small_tree_48bit_quats(
     offset: usize,
     count: usize,
 ) -> Result<Vec<[f32; 4]>, Error> {
-    let size = count * 6;
+    let size = count * SMALL_TREE_QUAT_STRIDE;
     if offset + size > data.len() {
         return Err(Error::Other(format!(
             "SmallTree48BitQuat overflow at 0x{offset:x}"
@@ -166,7 +174,7 @@ fn read_small_tree_48bit_quats(
     }
     Ok((0..count)
         .map(|i| {
-            let o = offset + i * 6;
+            let o = offset + i * SMALL_TREE_QUAT_STRIDE;
             let s0 = u16::from_le_bytes([data[o], data[o + 1]]);
             let s1 = u16::from_le_bytes([data[o + 2], data[o + 3]]);
             let s2 = u16::from_le_bytes([data[o + 4], data[o + 5]]);
@@ -217,7 +225,7 @@ pub(super) fn read_position_keys(
     match pos_format {
         // Uncompressed float Vec3 (12 bytes per key)
         0xC0 => {
-            let size = count * 12;
+            let size = count * FLOAT_POSITION_STRIDE;
             if offset + size > data.len() {
                 return Err(Error::Other(format!(
                     "Float positions overflow at 0x{offset:x}"
@@ -225,7 +233,7 @@ pub(super) fn read_position_keys(
             }
             Ok((0..count)
                 .map(|i| {
-                    let o = offset + i * 12;
+                    let o = offset + i * FLOAT_POSITION_STRIDE;
                     [
                         f32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]),
                         f32::from_le_bytes([data[o + 4], data[o + 5], data[o + 6], data[o + 7]]),
@@ -255,7 +263,7 @@ fn read_snorm_full_positions(
     offset: usize,
     count: usize,
 ) -> Result<Vec<[f32; 3]>, Error> {
-    if offset + 24 + count * 6 > data.len() {
+    if offset + SNORM_HEADER_SIZE + count * SNORM_POSITION_STRIDE > data.len() {
         return Err(Error::Other(format!(
             "SNORM full positions overflow at 0x{offset:x}"
         )));
@@ -265,7 +273,7 @@ fn read_snorm_full_positions(
 
     Ok((0..count)
         .map(|i| {
-            let o = offset + 24 + i * 6;
+            let o = offset + SNORM_HEADER_SIZE + i * SNORM_POSITION_STRIDE;
             let ux = u16::from_le_bytes([data[o], data[o + 1]]);
             let uy = u16::from_le_bytes([data[o + 2], data[o + 3]]);
             let uz = u16::from_le_bytes([data[o + 4], data[o + 5]]);
@@ -298,7 +306,7 @@ pub(crate) fn read_snorm_packed_positions(
     offset: usize,
     count: usize,
 ) -> Result<Vec<[f32; 3]>, Error> {
-    if offset + 24 > data.len() {
+    if offset + SNORM_HEADER_SIZE > data.len() {
         return Err(Error::Other(format!(
             "SNORM packed header overflow at 0x{offset:x}"
         )));
@@ -306,7 +314,6 @@ pub(crate) fn read_snorm_packed_positions(
     let scale = read_vec3(data, offset);
     let pos_offset = read_vec3(data, offset + 12);
 
-    const FLT_MAX_SENTINEL: f32 = 3.0e38;
     let active: [bool; 3] = [
         scale[0].abs() < FLT_MAX_SENTINEL,
         scale[1].abs() < FLT_MAX_SENTINEL,
@@ -314,7 +321,7 @@ pub(crate) fn read_snorm_packed_positions(
     ];
     let n_active = active.iter().filter(|&&a| a).count();
     let total_bytes = count * n_active * 2;
-    let data_start = offset + 24;
+    let data_start = offset + SNORM_HEADER_SIZE;
     if total_bytes > 0 && data_start + total_bytes > data.len() {
         return Err(Error::Other(format!(
             "SNORM packed positions overflow at 0x{offset:x}"

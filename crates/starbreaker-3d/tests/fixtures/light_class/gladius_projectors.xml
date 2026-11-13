@@ -1,0 +1,51 @@
+<Entities>
+  <Entity Name="Light-089" Radius="10" Pos="2.2364470000000001,0.21824900000000014,-0.86636500000000005" Rotate="0.92968565,-0.05023098,0.17517594,0.32011688" EntityClass="Light" EntityClassGUID="4d9b25df-2a9b-4d6f-aaf0-d421bc8b7e60" EntityCryGUID="4e5918cc-01a9-3634-c721-3d885936f8be" CastShadowMinSpec="13">
+    <PropertiesDataCore __fullyInstanced="0" __version="2">
+      <EntityComponentLight __type="LightComponentParams" lightType="Projector">
+        <sizeParams __type="LightSizeParams" bulbRadius="0.1" planeWidth="0.60000002" planeHeight="0.02" />
+        <defaultState __type="LightStateParams_Default" intensity="0.2">
+          <color __type="RGB" r="0.031895999" g="0.29613799" b="0.65837502" />
+        </defaultState>
+        <auxiliaryState __type="LightStateParams_Aux" intensity="0.0049999999">
+          <color __type="RGB" r="0.031895999" g="0.29613799" b="0.65837502" />
+        </auxiliaryState>
+        <emergencyState __type="LightStateParams_Emergency" intensity="0.0049999999">
+          <color __type="RGB" r="0.031895999" g="0.29613799" b="0.65837502" />
+        </emergencyState>
+        <projectorParams __type="LightProjectorParams" texture="textures/lights/light_ies_5.dds" FOV="155" focusedBeam="0" />
+        <fadeParams __type="LightFadeParams" maxDistance="75" maxFade="50" />
+      </EntityComponentLight>
+    </PropertiesDataCore>
+    <Tags>
+      <Tag TagId="849b8481-5893-4301-964e-4f39f3e27ad8" />
+      <Tag TagId="f5ab0fbd-391d-49ba-8891-773a1d5ea6f5" />
+    </Tags>
+    <RenderProxy AllowBakedRendering="1" />
+  </Entity>
+  <Entity Name="Light-088" Radius="10" Pos="-2.2152850000000002,0.261374,-0.86079400000000006" Rotate="0.30423814,-0.27231914,0.080665037,0.90927148" EntityClass="Light" EntityClassGUID="4d9b25df-2a9b-4d6f-aaf0-d421bc8b7e60" EntityCryGUID="4d9244fd-3b70-f9c2-b966-62bc61a30d8b" CastShadowMinSpec="13">
+    <PropertiesDataCore __fullyInstanced="0" __version="2">
+      <EntityComponentLight __type="LightComponentParams" lightType="Projector">
+        <sizeParams __type="LightSizeParams" bulbRadius="0.1" planeWidth="0.60000002" planeHeight="0.02" />
+        <defaultState __type="LightStateParams_Default" intensity="0.2">
+          <color __type="RGB" r="0.031895999" g="0.29613799" b="0.65837502" />
+        </defaultState>
+        <auxiliaryState __type="LightStateParams_Aux" intensity="0.0049999999">
+          <color __type="RGB" r="0.031895999" g="0.29613799" b="0.65837502" />
+        </auxiliaryState>
+        <emergencyState __type="LightStateParams_Emergency" intensity="0.0049999999">
+          <color __type="RGB" r="0.031895999" g="0.29613799" b="0.65837502" />
+        </emergencyState>
+        <projectorParams __type="LightProjectorParams" texture="textures/lights/light_ies_5.dds" FOV="155" focusedBeam="0" />
+        <fadeParams __type="LightFadeParams" maxDistance="75" maxFade="50" />
+      </EntityComponentLight>
+    </PropertiesDataCore>
+    <Tags>
+      <Tag TagId="849b8481-5893-4301-964e-4f39f3e27ad8" />
+      <Tag TagId="f5ab0fbd-391d-49ba-8891-773a1d5ea6f5" />
+    </Tags>
+    <RenderProxy AllowBakedRendering="1" />
+    <GeomLinks>
+      <LightGeomLink EntityCryGUID="4128cb46-829e-8ec7-65fe-0ad7d61deba4" SubObjectName="AEGS_Gladius_Nose_DecalGlow_mesh" />
+    </GeomLinks>
+  </Entity>
+</Entities>

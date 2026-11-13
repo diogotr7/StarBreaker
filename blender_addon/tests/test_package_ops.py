@@ -284,6 +284,21 @@ def _load_package_ops() -> tuple[types.ModuleType, types.ModuleType]:
 
 
 class PackageOpsTests(unittest.TestCase):
+    def test_unknown_light_temperature_keeps_authored_color(self) -> None:
+        from unittest.mock import patch
+        light = FakeObject("synthetic")
+        light.type = "POINT"
+        light["starbreaker_light_temperature"] = 4321.0
+        light[self.package_ops.PROP_LIGHT_STATES_JSON] = json.dumps({"defaultState": {
+            "temperature": None, "use_temperature": True,
+            "color": [0.25, 0.5, 0.75], "intensity_cd": 0.0}})
+        utils = types.ModuleType("sb_pkg_test_runtime.importer.utils")
+        utils._light_energy_to_blender = lambda *args, **kwargs: 0.0
+        with patch.dict(sys.modules, {utils.__name__: utils}):
+            self.assertTrue(self.package_ops._apply_state_to_light(light, "defaultState"))
+        self.assertEqual(light.color, (0.25, 0.5, 0.75))
+        self.assertNotIn("starbreaker_light_temperature", light)
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.package_ops, cls.bpy = _load_package_ops()

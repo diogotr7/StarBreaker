@@ -18,11 +18,17 @@ use crate::nmc;
 use crate::types::MaterialTextures;
 
 mod textures;
+
+#[cfg(test)]
+thread_local! {
+    /// Observe bundled texture loads on a dedicated single-thread test pool.
+    pub(crate) static BUNDLED_TEXTURE_LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 use self::textures::*;
 pub(crate) use self::textures::cached_load;
 pub(crate) use self::textures::{
     PngCache, RoughnessCache, cached_load_keyed, load_diffuse_texture, load_normal_texture,
-    load_roughness_texture, load_roughness_texture_result, png_cache_key,
+    load_roughness_texture, load_roughness_texture_result, load_package_texture_dds, png_cache_key,
 };
 mod interiors;
 pub(crate) use self::interiors::*;
@@ -34,6 +40,7 @@ pub(crate) use self::child_payload::*;
 mod loadout;
 pub use self::loadout::resolve_loadout_meshes;
 pub(crate) use self::loadout::*;
+mod default_pose;
 pub(crate) mod entity_export;
 mod geometry_variant;
 pub(crate) use self::entity_export::*;
@@ -43,9 +50,21 @@ pub(crate) use self::weapon_assembly::*;
 mod palette;
 pub use self::palette::*;
 mod interior_animation;
+pub(crate) mod interior_entities;
 pub(crate) use self::interior_animation::*;
+pub(crate) mod engine_glow;
+mod vehicle_xml;
 mod vehicle;
 pub use self::vehicle::*;
+mod vehicle_lights;
+pub use vehicle_lights::VehicleLightPort;
+pub(crate) use vehicle_lights::load_owner_light_ports;
+mod light_catalogue;
+pub use light_catalogue::{EntityLight, LightCatalogue, entity_light_catalogue};
+pub(crate) use light_catalogue::collect_entity_lights;
+pub(crate) mod animation_sources;
+mod clip_catalogue;
+pub use clip_catalogue::entity_clip_catalogue;
 mod glb_assembly;
 pub(crate) use self::glb_assembly::path_is_shield_related;
 pub use self::glb_assembly::{assemble_glb_with_loadout, assemble_glb_with_loadout_with_progress};
@@ -73,7 +92,7 @@ pub(crate) struct PreloadedTextureKey {
 }
 
 /// How materials are represented in the export.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum MaterialMode {
     /// No material data. Plain white surfaces.
     None,
@@ -90,7 +109,7 @@ pub enum MaterialMode {
 }
 
 /// Top-level export kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ExportKind {
     /// Bundled scene export using a single-file artifact such as GLB.
     Bundled,
@@ -99,7 +118,7 @@ pub enum ExportKind {
 }
 
 /// Output format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ExportFormat {
     /// Standard render export (GLB with materials).
     Glb,
@@ -109,8 +128,19 @@ pub enum ExportFormat {
     Blend,
 }
 
+/// Storage container for decomposed source textures. Bundled exports remain PNG.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum TextureContainer {
+    #[default]
+    Png,
+    Dds,
+}
+impl TextureContainer {
+    fn is_png(&self) -> bool { *self == Self::Png }
+}
+
 /// Options for controlling the export pipeline.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ExportOptions {
     /// Top-level export kind.
     pub kind: ExportKind,
@@ -132,6 +162,13 @@ pub struct ExportOptions {
     pub lod_level: u32,
     /// Texture mip level (0 = full resolution, 2 = 1/4 res, 4 = 1/16 res).
     pub texture_mip: u32,
+    /// Pass supported decomposed textures through as DDS; PNG retains upstream behavior.
+    #[serde(skip_serializing_if = "TextureContainer::is_png")]
+    pub texture_container: TextureContainer,
+    /// Decomposed mesh GLBs carry the source's CryPhysics collision geometry (`StatObjPhysics`) as glTF node
+    /// `extras.sc_physics` (docs/decomposed-export-contract.md); false keeps upstream output unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_physics: bool,
     /// Worker threads for parallel export phases. 0 = auto/all available cores, 1 = sequential.
     pub threads: usize,
     /// Export animation clips into decomposed scene sidecars.
@@ -149,9 +186,11 @@ pub struct ExportOptions {
     /// still keeping shared assets under `Data/...`.
     pub decomposed_package_subdir: Option<String>,
     /// Decomposed fast path: emit only UI-generated images and required scene manifests.
+    /// Projected texture paths in this mode remain PNG-only.
     pub ui_only_files: bool,
     /// Optional normalized lowercase socpak paths to include during inherited
     /// interior discovery. `None` exports every discovered container.
+    #[serde(serialize_with = "crate::export_stamp::serialize_socpak_filter")]
     pub socpak_path_filter: Option<HashSet<String>>,
     pub geometry_tag: Option<String>,
 }
@@ -169,6 +208,8 @@ impl Default for ExportOptions {
             include_shields: false,
             lod_level: 1,
             texture_mip: 2,
+            texture_container: TextureContainer::Png,
+            include_physics: false,
             threads: 0,
             include_animations: false,
             apply_default_animation_pose: true,
@@ -358,8 +399,14 @@ pub fn socpaks_to_glb(
         }
     }
 
-    let interiors =
-        build_interiors_from_payloads(db, p4k, &payloads, opts.include_lights, opts.lod_level);
+    let interiors = build_interiors_from_payloads(
+        db,
+        p4k,
+        &payloads,
+        opts.include_lights,
+        opts.lod_level,
+        &mut crate::socpak::light_component::LightResolver::new(db),
+    );
 
     let no_tex_opts = ExportOptions {
         material_mode: MaterialMode::Colors,
@@ -425,6 +472,7 @@ pub fn socpaks_to_glb(
         &crate::gltf::GlbOptions {
             material_mode: opts.material_mode,
             preserve_textureless_decal_primitives: false,
+            preserve_material_slots: false,
             metadata: crate::gltf::GlbMetadata {
                 entity_name: None,
                 geometry_path: None,
@@ -494,11 +542,7 @@ where
     use crate::socpak;
 
     ensure_supported_export_options(opts)?;
-    if opts.kind != ExportKind::Decomposed || opts.format != ExportFormat::Blend {
-        return Err(Error::UnsupportedExportFormat(
-            "socpak decomposed blend export requires kind=Decomposed and format=Blend".to_string(),
-        ));
-    }
+    check_socpak_decomposed_options(opts)?;
 
     let identity = glam::Mat4::IDENTITY.to_cols_array_2d();
     let mut payloads = Vec::new();
@@ -534,8 +578,14 @@ where
         }
     }
 
-    let mut interiors =
-        build_interiors_from_payloads(db, p4k, &payloads, opts.include_lights, opts.lod_level);
+    let mut interiors = build_interiors_from_payloads(
+        db,
+        p4k,
+        &payloads,
+        opts.include_lights,
+        opts.lod_level,
+        &mut crate::socpak::light_component::LightResolver::new(db),
+    );
     // Animated interior entities (`.cga` doors/elevators with a sibling
     // `.chrparams`) become decomposed children so their skeletal `.caf` clips are
     // extracted by the existing animation pipeline; this also removes them from
@@ -564,15 +614,27 @@ where
         root_palette: None,
         available_palettes: Vec::new(),
         root_bones: Vec::new(),
-        root_skeleton_source_path: None,
+        animation_sources: crate::animation::rig_sources::rig_sources(None, children.iter().filter_map(|child| {
+            child.skeleton_source_path.as_ref().map(|path| (child.entity_name.clone(), path.clone()))
+        })),
         root_animation_controller: None,
         children,
         interiors,
         paint_variants: Vec::new(),
         animations: Vec::new(),
+        physics_grid: None,
     };
 
     write_decomposed_export_blend(db, p4k, input, opts, None, None, None, None)
+}
+
+/// Socpak packages are decomposed exports; the mesh format is the caller's (`Blend` native assets, or `Glb` mesh
+/// assets through the shared decomposed exporter, as for entities).
+pub(crate) fn check_socpak_decomposed_options(opts: &ExportOptions) -> Result<(), Error> {
+    if opts.kind != ExportKind::Decomposed {
+        return Err(Error::UnsupportedExportFormat("socpak package export requires kind=Decomposed".to_string()));
+    }
+    Ok(())
 }
 
 fn empty_socpak_scene_root_mesh() -> crate::types::Mesh {
@@ -762,7 +824,13 @@ pub fn dump_hierarchy(
     let _ = write!(out, "  ],\n");
 
     // Interior containers
-    let interiors = load_interiors(db, p4k, record, &ExportOptions::default());
+    let interiors = load_interiors(
+        db,
+        p4k,
+        record,
+        &ExportOptions::default(),
+        &mut crate::socpak::light_component::LightResolver::new(db),
+    );
     let _ = write!(out, "  \"interiors\": [\n");
     for container in &interiors.containers {
         let _ = write!(
@@ -811,6 +879,15 @@ pub fn dump_hierarchy(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn socpak_packages_accept_glb_and_blend_but_not_bundled() {
+        let decomposed = |format| ExportOptions { kind: ExportKind::Decomposed, format, ..Default::default() };
+        assert!(super::check_socpak_decomposed_options(&decomposed(ExportFormat::Glb)).is_ok());
+        assert!(super::check_socpak_decomposed_options(&decomposed(ExportFormat::Blend)).is_ok());
+        let bundled = ExportOptions { kind: ExportKind::Bundled, format: ExportFormat::Glb, ..Default::default() };
+        assert!(super::check_socpak_decomposed_options(&bundled).is_err());
+    }
+
     use super::*;
 
     use starbreaker_datacore::types::{CigGuid, StringId, StringId2};

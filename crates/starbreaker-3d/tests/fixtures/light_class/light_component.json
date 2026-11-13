@@ -1,0 +1,140 @@
+{
+  "__type": "LightComponentParams",
+  "active": true,
+  "affectGI": "InheritAffectsObjects",
+  "affectsFog": true,
+  "affectsObjects": true,
+  "affectsThisAreaOnly": true,
+  "aiExtender": null,
+  "auxiliaryState": {
+    "__type": "LightStateParams_Aux",
+    "color": {
+      "__type": "RGB",
+      "b": 1.0,
+      "g": 1.0,
+      "r": 1.0
+    },
+    "intensity": 1.0,
+    "lightStyle": 0,
+    "presetTag": "",
+    "temperature": 6600.0
+  },
+  "cinematicState": {
+    "__type": "LightStateParams_Cinematic",
+    "color": {
+      "__type": "RGB",
+      "b": 1.0,
+      "g": 1.0,
+      "r": 1.0
+    },
+    "intensity": 1.0,
+    "lightStyle": 0,
+    "presetTag": "",
+    "temperature": 6600.0
+  },
+  "clipBoxParams": {
+    "__type": "LightClipBoxParams",
+    "autoDetectClipBox": false,
+    "useClipBox": false
+  },
+  "defaultState": {
+    "__type": "LightStateParams_Default",
+    "color": {
+      "__type": "RGB",
+      "b": 1.0,
+      "g": 1.0,
+      "r": 1.0
+    },
+    "intensity": 1.0,
+    "lightStyle": 0,
+    "presetTag": "",
+    "temperature": 6600.0
+  },
+  "distantImposter": true,
+  "emergencyState": {
+    "__type": "LightStateParams_Emergency",
+    "color": {
+      "__type": "RGB",
+      "b": 1.0,
+      "g": 1.0,
+      "r": 1.0
+    },
+    "intensity": 1.0,
+    "lightStyle": 0,
+    "presetTag": "",
+    "temperature": 6600.0
+  },
+  "enabledWithGI": "Always",
+  "fadeParams": {
+    "__type": "LightFadeParams",
+    "maxDistance": 0.0,
+    "maxFade": 0.0,
+    "minDistance": 0.0,
+    "minFade": 0.0
+  },
+  "flareParams": {
+    "__type": "LightFlareParams",
+    "attachToSun": false,
+    "flare": "",
+    "flareEnabled": false,
+    "flareFOV": 360.0,
+    "flareScale": 1.0
+  },
+  "groupParams": {
+    "__type": "LightGroupParams",
+    "flickerOn": false,
+    "temperatureTransition": false,
+    "transitionDelayId": -1,
+    "useRandomDelayId": false
+  },
+  "ignoreLightFlickerEntities": false,
+  "importance": "Standard",
+  "lightType": "Omni",
+  "miscParams": {
+    "__type": "LightMiscParams",
+    "attenuationTweak": 1.0,
+    "fogMultiplier": 1.0,
+    "forceKeepEntity": false,
+    "glowMultiplier": 1.0,
+    "linkIgnoresColor": false,
+    "planeSoftness": 1.0,
+    "specularMultiplier": 1.0
+  },
+  "offState": {
+    "__type": "LightStateParams_Off",
+    "presetTag": ""
+  },
+  "projectorParams": {
+    "FOV": 90.0,
+    "__type": "LightProjectorParams",
+    "focusedBeam": true,
+    "texture": "textures/lights/generic/spot_075.tif"
+  },
+  "shadowParams": {
+    "__type": "LightShadowParams",
+    "constantBias": 1.0,
+    "disableScreenSpaceShadow": false,
+    "maxShadowCastDist": 15.0,
+    "projectorNearPlane": 0.0,
+    "resolutionScale": 1.0,
+    "shadowCasting": false,
+    "slopeBiasMultiplier": 1.0
+  },
+  "sizeParams": {
+    "__type": "LightSizeParams",
+    "bulbRadius": 0.05000000074505806,
+    "lightRadius": 10.0,
+    "planeHeight": 1.0,
+    "planeWidth": 1.0
+  },
+  "styleParams": {
+    "__type": "LightStyleParams",
+    "angularSpeed": 0.0,
+    "animationPhase": 0,
+    "animationSpeed": 1.0,
+    "lightanimation": "",
+    "randomAnimationPhase": false
+  },
+  "tagBasedStates": [],
+  "useTemperature": false
+}

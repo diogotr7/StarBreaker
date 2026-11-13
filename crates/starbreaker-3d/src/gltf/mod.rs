@@ -1,9 +1,10 @@
+//! GLB scene assembly, including stable sidecar material slots for decomposed meshes.
 mod animation;
 mod glb_builder;
 
 use gltf_json as json;
 use json::validation::Checked;
-use starbreaker_common::progress::{Progress, report as report_progress};
+use starbreaker_common::progress::{Progress, report_checked as report_progress};
 
 use crate::error::Error;
 use crate::nmc::NodeMeshCombo;
@@ -61,6 +62,8 @@ pub struct GlbLoaders<'a> {
 pub struct GlbOptions {
     pub material_mode: crate::pipeline::MaterialMode,
     pub preserve_textureless_decal_primitives: bool,
+    /// Preserve sidecar slots for a decomposed mesh; independent of metadata labels.
+    pub preserve_material_slots: bool,
     pub metadata: GlbMetadata,
     pub fallback_palette: Option<crate::mtl::TintPalette>,
 }
@@ -175,12 +178,13 @@ pub fn write_glb_with_progress(
     progress: Option<&Progress>,
 ) -> Result<Vec<u8>, Error> {
     let mut builder = GlbBuilder::new();
+    builder.preserve_material_slots = opts.preserve_material_slots;
     // The root's instance name; decomposed GLBs are shared assets and carry
     // no instance metadata.
     let root_name = opts.metadata.entity_name.clone().filter(|_| opts.metadata.export_options.kind != "Decomposed");
 
     log::info!("[mem-phase] start write_glb");
-    report_progress(progress, 0.05, "Packing root mesh");
+    report_progress(progress, 0.05, "Packing root mesh")?;
     // ---- Pack root entity (drop textures after packing) ----
     let root_without_geometry = input.root_mesh.as_ref().is_some_and(|m| m.positions.is_empty())
         && input.root_nmc.as_ref().is_none_or(|n| n.nodes.is_empty());
@@ -225,7 +229,7 @@ pub fn write_glb_with_progress(
         "[mem-phase] root packed, bin={}MB",
         builder.bin.len() / 1_048_576
     );
-    report_progress(progress, 0.20, "Packing child meshes");
+    report_progress(progress, 0.20, "Packing child meshes")?;
     // ---- Skeleton bone nodes ----
     if !hierarchy_covers_bones(input.root_nmc.as_ref(), &input.skeleton_bones) {
         builder.attach_skeleton_bones(&input.skeleton_bones, &scene_nodes);
@@ -249,7 +253,7 @@ pub fn write_glb_with_progress(
         );
         if num_children > 0 {
             let fraction = (i + 1) as f32 / num_children as f32;
-            report_progress(progress, 0.20 + 0.40 * fraction, "Packing child meshes");
+            report_progress(progress, 0.20 + 0.40 * fraction, "Packing child meshes")?;
         }
         if (i + 1) % 20 == 0 || i + 1 == num_children {
             log::info!(
@@ -267,7 +271,7 @@ pub fn write_glb_with_progress(
     );
     builder.add_animations(&input.animations)?;
     if num_children == 0 {
-        report_progress(progress, 0.60, "Packing interiors");
+        report_progress(progress, 0.60, "Packing interiors")?;
     }
     // ---- Interior mesh instancing ----
     let (interior_scene_nodes, all_lights) = builder.attach_interiors(
@@ -282,7 +286,7 @@ pub fn write_glb_with_progress(
         "[mem-phase] interiors done, bin={}MB",
         builder.bin.len() / 1_048_576
     );
-    report_progress(progress, 0.80, "Finalizing GLB");
+    report_progress(progress, 0.80, "Finalizing GLB")?;
 
     // ---- Entity + palette extras on root node ----
     {
@@ -325,12 +329,14 @@ pub fn write_glb_with_progress(
         }
     }
 
-    report_progress(progress, 0.95, "Finalizing GLB");
+    report_progress(progress, 0.95, "Finalizing GLB")?;
     builder.finalize(scene_nodes, all_lights, &opts.metadata)
 }
 
 #[cfg(test)]
 mod tests_anim;
+#[cfg(test)]
+mod tests_interiors;
 #[cfg(test)]
 mod tests_rig;
 
@@ -397,6 +403,7 @@ mod tests {
         GlbOptions {
             material_mode: crate::pipeline::MaterialMode::None,
             preserve_textureless_decal_primitives: false,
+            preserve_material_slots: false,
             metadata: GlbMetadata {
                 entity_name: None,
                 geometry_path: None,
@@ -1079,6 +1086,64 @@ mod tests {
             },
             &default_opts(),
         )
+    }
+
+    #[test]
+    fn decomposed_glb_retains_unused_material_slots_without_primitives() {
+        let mut mesh = triangle_mesh();
+        mesh.submeshes[0].material_id = 3;
+        mesh.submeshes[0].source_material_id = Some(3);
+        let mut materials = shared_material_file();
+        let template = materials.materials[0].clone();
+        materials.materials = (0..5).map(|i| {
+            let mut material = template.clone();
+            material.name = format!("slot_{i}");
+            material
+        }).collect();
+        let mut opts = default_opts();
+        opts.material_mode = crate::pipeline::MaterialMode::Colors;
+        // Deliberately keep Bundled metadata: only the explicit flag controls slots.
+        opts.preserve_material_slots = true;
+        let bytes = write_glb(
+            GlbInput { root_mesh: Some(mesh), root_materials: Some(materials),
+                root_textures: None, root_nmc: None, root_palette: None,
+                skeleton_bones: Vec::new(), children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(), animations: Vec::new() },
+            &mut GlbLoaders { load_textures: &mut |_, _| None, load_interior_mesh: &mut |_| None },
+            &opts,
+        ).unwrap();
+        let doc = glb_json(&bytes);
+        assert_eq!(doc["materials"].as_array().unwrap().len(), 4);
+        for i in 0..4 {
+            assert_eq!(doc["materials"][i]["name"], format!("shared_slot_{i}_{i:02}"));
+        }
+        assert_eq!(doc["meshes"][0]["primitives"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["meshes"][0]["primitives"][0]["material"], 3);
+    }
+
+    #[test]
+    fn bundled_material_count_ignores_metadata_kind() {
+        let render = |kind: &str| {
+            let mut mesh = triangle_mesh();
+            mesh.submeshes[0].material_id = 3;
+            let mut materials = shared_material_file();
+            let template = materials.materials[0].clone();
+            materials.materials = (0..5).map(|i| {
+                let mut material = template.clone(); material.name = format!("slot_{i}"); material
+            }).collect();
+            let mut opts = default_opts();
+            opts.material_mode = crate::pipeline::MaterialMode::Colors;
+            opts.metadata.export_options.kind = kind.into();
+            let bytes = write_glb(
+                GlbInput { root_mesh: Some(mesh), root_materials: Some(materials), root_textures: None,
+                    root_nmc: None, root_palette: None, skeleton_bones: Vec::new(), children: Vec::new(),
+                    interiors: crate::pipeline::LoadedInteriors::default(), animations: Vec::new() },
+                &mut GlbLoaders { load_textures: &mut |_, _| None, load_interior_mesh: &mut |_| None }, &opts,
+            ).unwrap();
+            glb_json(&bytes)["materials"].as_array().unwrap().len()
+        };
+        assert_eq!(render("Bundled"), 1);
+        assert_eq!(render("Decomposed"), render("Bundled"));
     }
 
     #[test]

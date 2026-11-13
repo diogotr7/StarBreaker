@@ -1,6 +1,11 @@
+//! Geometry parsing, clip catalogues and public StarBreaker export entry points.
 pub mod dequant;
 pub(crate) mod decomposed;
+pub(crate) mod decomposed_physics;
+pub(crate) mod physics_class;
+pub(crate) mod physics_grid;
 pub mod error;
+mod export_stamp;
 pub(crate) mod gltf;
 pub(crate) mod included_objects;
 pub mod ivo;
@@ -9,6 +14,7 @@ pub mod mesh_rig;
 pub mod parity;
 pub mod mtl;
 pub mod material_slots;
+mod material_semantics;
 pub mod nmc;
 pub(crate) mod pipeline;
 pub mod skeleton;
@@ -22,17 +28,20 @@ pub mod validation;
 pub mod ui_pipeline;
 #[cfg(test)]
 pub(crate) mod test_p4k;
+#[cfg(test)]
+pub(crate) mod test_xml;
 
 pub use error::Error;
 pub use included_objects::{IncludedObject, IncludedObjects};
 pub use pipeline::{
-    DecomposedExport, ExportFormat, ExportKind, ExportOptions, ExportResult, ExportedFile,
+    DecomposedExport, ExportFormat, ExportKind, ExportOptions, TextureContainer, ExportResult, ExportedFile,
     ExportedFileKind, MaterialMode,
     assemble_glb_with_loadout, assemble_glb_with_loadout_with_progress,
     dump_hierarchy, inspect_socpak_hierarchy, load_invisible_ports, query_animation_controller_source,
     resolve_loadout_meshes, socpaks_to_decomposed_blend,
     socpaks_to_decomposed_blend_with_progress, socpaks_to_glb, SocpakExportProgress,
     SocpakHierarchyNode,
+    EntityLight, LightCatalogue, VehicleLightPort, entity_light_catalogue,
 };
 pub use types::Mesh;
 pub use validation::{ValidationReport, validate_decomposed_export};
@@ -191,7 +200,7 @@ fn mat3x4_mul(a: &[[f32; 4]; 3], b: &[[f32; 4]; 3]) -> [[f32; 4]; 3] {
     r
 }
 
-const NMC_IDENTITY: [[f32; 4]; 3] = [
+pub(crate) const NMC_IDENTITY: [[f32; 4]; 3] = [
     [1.0, 0.0, 0.0, 0.0],
     [0.0, 1.0, 0.0, 0.0],
     [0.0, 0.0, 1.0, 0.0],
@@ -211,7 +220,9 @@ fn nmc_matrix_is_identity_or_zero(m: &[[f32; 4]; 3]) -> bool {
 /// builder: each node's `bone_to_world` is its LOCAL matrix composed down the
 /// parent hierarchy; a submesh's triangles (its INDEX range) reference shared
 /// per-node-local positions, transformed by that node's composed world matrix.
-fn flatten_nmc_to_world(mesh: &Mesh, nodes: &[nmc::NmcNode]) -> Mesh {
+/// Each NMC node's matrix composed down the parent hierarchy (`bone_to_world` is the node's LOCAL matrix; an
+/// identity-or-zero matrix is identity). `None` for a node whose parent chain does not resolve.
+pub(crate) fn nmc_world_matrices(nodes: &[nmc::NmcNode]) -> Vec<Option<[[f32; 4]; 3]>> {
     // Composed world matrix per node (parents resolved first via a fixpoint
     // pass — NMC parent indices are not guaranteed to precede children).
     let local: Vec<[[f32; 4]; 3]> = nodes
@@ -248,6 +259,11 @@ fn flatten_nmc_to_world(mesh: &Mesh, nodes: &[nmc::NmcNode]) -> Mesh {
             break;
         }
     }
+    world
+}
+
+fn flatten_nmc_to_world(mesh: &Mesh, nodes: &[nmc::NmcNode]) -> Mesh {
+    let world = nmc_world_matrices(nodes);
 
     let apply = |m: &[[f32; 4]; 3], p: [f32; 3]| -> [f32; 3] {
         [
@@ -394,6 +410,7 @@ pub fn skin_to_glb(data: &[u8], metadata: Option<&[u8]>) -> Result<Vec<u8>, Erro
         &gltf::GlbOptions {
             material_mode: pipeline::MaterialMode::None,
             preserve_textureless_decal_primitives: false,
+            preserve_material_slots: false,
             metadata: gltf::GlbMetadata {
                 entity_name: None,
                 geometry_path: None,
@@ -591,3 +608,5 @@ mod nmc_flatten_tests {
         mx - mn
     }
 }
+
+pub use pipeline::entity_clip_catalogue;

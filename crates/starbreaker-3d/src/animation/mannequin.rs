@@ -15,6 +15,7 @@ pub fn annotate_animation_fragments_json(
     let fragments_by_clip = read_mannequin_fragments_by_clip(p4k, &source.animation_database, &scopes)?;
 
     for clip in clips.iter_mut() {
+        if clip.get("owner_entity").is_some() { continue; } // already annotated in the child controller namespace
         let Some(name) = clip.get("name").and_then(|value| value.as_str()) else {
             continue;
         };

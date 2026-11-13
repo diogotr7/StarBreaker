@@ -22,6 +22,8 @@
 //! u16 boundaries).
 
 mod codec;
+mod endpoints;
+pub mod catalogue;
 pub mod pose;
 pub mod caf;
 pub mod dba;
@@ -36,6 +38,8 @@ pub use dba::parse_dba;
 pub mod binding_report;
 pub mod serialise;
 pub mod mannequin;
+pub(crate) mod rig_sources;
+pub(crate) mod extraction;
 pub mod matching;
 pub use serialise::{
     annotate_animations_json_with_blend_modes, classify_bone_blend_modes,
@@ -45,10 +49,7 @@ pub use serialise::{
 pub use mannequin::{
     annotate_animation_fragments_json, dump_mannequin_adb_to_json,
 };
-pub use matching::{
-    caf_anchored_remap_decisions, extract_animations_for_skeleton_json,
-    ClipMatchDecision,
-};
+pub use matching::extract_animations_for_skeleton_json;
 
 // ── Public types ────────────────────────────────────────────────────────────
 
@@ -133,3 +134,5 @@ pub(super) mod chunk_types {
 #[cfg(test)]
 mod bake_tests;
 
+#[cfg(test)]
+mod catalogue_tests;

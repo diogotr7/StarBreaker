@@ -76,6 +76,7 @@ fn opts(material_mode: crate::pipeline::MaterialMode) -> GlbOptions {
     GlbOptions {
         material_mode,
         preserve_textureless_decal_primitives: false,
+        preserve_material_slots: false,
         metadata: GlbMetadata {
             entity_name: None,
             geometry_path: None,

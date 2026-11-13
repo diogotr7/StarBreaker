@@ -93,59 +93,13 @@ pub fn load_invisible_ports(
 ) -> std::collections::HashSet<String> {
     let mut invisible = std::collections::HashSet::new();
 
-    // Query vehicleDefinition and modification from DataCore.
-    let veh_def = db
-        .compile_path::<String>(
-            record.struct_id(),
-            "Components[VehicleComponentParams].vehicleDefinition",
-        )
-        .ok()
-        .and_then(|c| db.query_single::<String>(&c, record).ok().flatten());
-
-    let veh_def = match veh_def {
-        Some(ref s) if !s.is_empty() => s,
-        _ => return invisible,
-    };
-
-    let modification = db
-        .compile_path::<String>(
-            record.struct_id(),
-            "Components[VehicleComponentParams].modification",
-        )
-        .ok()
-        .and_then(|c| db.query_single::<String>(&c, record).ok().flatten())
-        .unwrap_or_default();
-
-    // Load base vehicle XML from p4k.
-    let base_p4k = datacore_path_to_p4k(veh_def);
-    if let Some(data) = p4k
-        .entry_case_insensitive(&base_p4k)
-        .and_then(|e| p4k.read(e).ok())
-    {
-        if let Ok(xml) = starbreaker_cryxml::from_bytes(&data) {
-            collect_invisible_ports_from_xml(&xml, xml.root(), &mut invisible);
+    super::vehicle_xml::visit_vehicle_xml(db, p4k, record, |xml, modification| {
+        if modification {
+            collect_invisible_ports_from_xml_override(xml, xml.root(), &mut invisible);
+        } else {
+            collect_invisible_ports_from_xml(xml, xml.root(), &mut invisible);
         }
-    }
-
-    // Load modification XML if present.
-    if !modification.is_empty() {
-        // Base: "scripts/.../foo.xml" → Modification: "scripts/.../Modifications/foo_bar.xml"
-        if let Some(slash) = veh_def.rfind('/').or_else(|| veh_def.rfind('\\')) {
-            let dir = &veh_def[..slash];
-            let stem = &veh_def[slash + 1..].trim_end_matches(".xml").trim_end_matches(".XML");
-            let mod_path = format!("{dir}/Modifications/{stem}_{modification}.xml");
-            let mod_p4k = datacore_path_to_p4k(&mod_path);
-            if let Some(data) = p4k
-                .entry_case_insensitive(&mod_p4k)
-                .and_then(|e| p4k.read(e).ok())
-            {
-                if let Ok(xml) = starbreaker_cryxml::from_bytes(&data) {
-                    // Modification overrides: re-collect, allowing override of base flags.
-                    collect_invisible_ports_from_xml_override(&xml, xml.root(), &mut invisible);
-                }
-            }
-        }
-    }
+    });
 
     if !invisible.is_empty() {
         log::info!("Vehicle XML: {} invisible ports", invisible.len());

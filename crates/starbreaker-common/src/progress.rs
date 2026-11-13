@@ -2,6 +2,8 @@
 //!
 //! The UI creates a root [`Progress`] and polls it with [`Progress::get`];
 //! heavy functions take `Option<&Progress>` and report through it.
+//! Opt-in checked reports call a borrowed observer and return `Cancelled` when
+//! it requests a stop, including through nested sub-progress ranges.
 //! [`Progress::sub`] returns a child that borrows its parent and maps its own
 //! 0..1 range onto a slice of the parent's. The borrow is the `'a` lifetime
 //! parameter, so the compiler rejects a child that would outlive its parent:
@@ -19,6 +21,11 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use parking_lot::Mutex;
 
+/// Cooperative stop requested by a checked progress observer.
+#[derive(Debug, thiserror::Error)]
+#[error("operation cancelled")]
+pub struct Cancelled;
+
 /// Thread-safe progress state. Pass `Option<&Progress>` to heavy functions.
 /// `None` means no reporting (zero cost). The UI creates one and polls it.
 pub struct Progress<'a> {
@@ -27,6 +34,7 @@ pub struct Progress<'a> {
     stage: Mutex<String>,
     /// If set, this progress writes scaled values into a parent.
     parent: Option<(&'a Progress<'a>, f32, f32)>,  // (parent, base, range)
+    observer: Option<&'a (dyn Fn(f32, &str) -> bool + Sync)>,
 }
 
 impl<'a> Progress<'a> {
@@ -35,7 +43,27 @@ impl<'a> Progress<'a> {
             value: AtomicU32::new(0),
             stage: Mutex::new(String::new()),
             parent: None,
+            observer: None,
         }
+    }
+
+    /// Observe checked reports synchronously. False requests cancellation.
+    /// The observer may run on the reporting worker; it must not block or panic.
+    pub fn with_callback(observer: &'a (dyn Fn(f32, &str) -> bool + Sync)) -> Self {
+        Self { observer: Some(observer), ..Self::new() }
+    }
+
+    /// Report a phase boundary and stop before starting its work when requested.
+    pub fn report_checked(&self, fraction: f32, message: &str) -> Result<(), Cancelled> {
+        let fraction = fraction.clamp(0.0, 1.0);
+        if let Some((parent, base, range)) = self.parent {
+            return parent.report_checked(base + fraction * range, message);
+        }
+        self.report(fraction, message);
+        if self.observer.is_some_and(|callback| !callback(fraction, message)) {
+            return Err(Cancelled);
+        }
+        Ok(())
     }
 
     /// Update progress. `fraction` is 0.0–1.0.
@@ -72,6 +100,7 @@ impl<'a> Progress<'a> {
             value: AtomicU32::new(0),
             stage: Mutex::new(String::new()),
             parent: Some((self, from, to - from)),
+            observer: None,
         }
     }
 }
@@ -87,9 +116,30 @@ pub fn report(progress: Option<&Progress>, fraction: f32, message: &str) {
     }
 }
 
+/// Checked counterpart to `report`; callers propagate the stop with `?`.
+pub fn report_checked(progress: Option<&Progress>, fraction: f32, message: &str) -> Result<(), Cancelled> {
+    progress.map_or(Ok(()), |p| p.report_checked(fraction, message))
+}
+
 #[cfg(test)]
 mod tests {
     use super::Progress;
+
+    #[test]
+    fn checked_subprogress_propagates_worker_cancellation() {
+        let callback = |fraction: f32, phase: &str| {
+            assert!((fraction - 0.4).abs() < 0.0001);
+            assert_eq!(phase, "worker");
+            false
+        };
+        let root = Progress::with_callback(&callback);
+        let sub = root.sub(0.2, 0.6);
+        std::thread::scope(|scope| {
+            assert!(scope.spawn(|| sub.report_checked(0.5, "worker")).join().unwrap().is_err());
+        });
+        assert!(Progress::new().report_checked(0.5, "ordinary").is_ok());
+        assert!(super::report_checked(None, 0.5, "absent").is_ok());
+    }
 
     #[test]
     fn progress_reports_are_monotonic() {

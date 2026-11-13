@@ -49,6 +49,10 @@ def _as_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _optional_float(value: Any) -> float | None:
+    return None if value is None else float(value)
+
+
 def _float_tuple(value: Any, length: int) -> tuple[float, ...]:
     if not isinstance(value, (list, tuple)):
         return tuple(0.0 for _ in range(length))
@@ -451,28 +455,28 @@ class LightState:
     from the exporter's ``states`` map and are used both to populate the
     light datablock at import time and to switch between states at runtime.
     """
-    intensity_raw: float
+    intensity_raw: float | None
     intensity_unit: str | None
-    intensity_cd: float
-    intensity_candela_proxy: float
-    temperature: float
-    use_temperature: bool
-    color: Color3
-    light_style: int
+    intensity_cd: float | None
+    intensity_candela_proxy: float | None
+    temperature: float | None
+    use_temperature: bool | None
+    color: Color3 | None
+    light_style: int | None
     preset_tag: str | None
 
     @classmethod
     def from_value(cls, value: Any) -> LightState:
         data = _as_dict(value)
         return cls(
-            intensity_raw=_as_float(data.get("intensity_raw")),
+            intensity_raw=_optional_float(data.get("intensity_raw")),
             intensity_unit=_as_str(data.get("intensity_unit")),
-            intensity_cd=_as_float(data.get("intensity_cd")),
-            intensity_candela_proxy=_as_float(data.get("intensity_candela_proxy") or data.get("intensity_cd")),
-            temperature=_as_float(data.get("temperature")),
-            use_temperature=bool(data.get("use_temperature", False)),
-            color=_float_tuple(data.get("color"), 3),  # type: ignore[arg-type]
-            light_style=int(data.get("light_style", 0) or 0),
+            intensity_cd=_optional_float(data.get("intensity_cd")),
+            intensity_candela_proxy=_optional_float(data.get("intensity_candela_proxy", data.get("intensity_cd"))),
+            temperature=_optional_float(data.get("temperature")),
+            use_temperature=bool(data["use_temperature"]) if data.get("use_temperature") is not None else None,
+            color=_float_tuple(data["color"], 3) if data.get("color") is not None else None,  # type: ignore[arg-type]
+            light_style=int(data["light_style"]) if data.get("light_style") is not None else None,
             preset_tag=_as_str(data.get("preset_tag")),
         )
 
@@ -480,15 +484,15 @@ class LightState:
 @dataclass(frozen=True)
 class LightRecord:
     name: str
-    color: Color3
+    color: Color3 | None
     light_type: str | None
     semantic_light_kind: str | None
-    intensity: float
-    intensity_raw: float
+    intensity: float | None
+    intensity_raw: float | None
     intensity_unit: str | None
-    intensity_candela_proxy: float
-    radius: float
-    radius_m: float
+    intensity_candela_proxy: float | None
+    radius: float | None
+    radius_m: float | None
     position: Vec3
     transform_basis: str | None
     rotation: Vec4
@@ -499,6 +503,9 @@ class LightRecord:
     active_state: str | None
     states: dict[str, LightState]
     raw: JsonDict
+    parent_node_name: str | None = None
+    parent_local_position: Vec3 | None = None
+    parent_local_rotation: Vec4 | None = None
 
     @classmethod
     def from_value(cls, value: Any) -> LightRecord:
@@ -510,15 +517,15 @@ class LightRecord:
         }
         return cls(
             name=str(data.get("name", "")),
-            color=_float_tuple(data.get("color"), 3),  # type: ignore[arg-type]
+            color=_float_tuple(data["color"], 3) if data.get("color") is not None else None,  # type: ignore[arg-type]
             light_type=_as_str(data.get("light_type")),
             semantic_light_kind=_as_str(data.get("semantic_light_kind")),
-            intensity=_as_float(data.get("intensity")),
-            intensity_raw=_as_float(data.get("intensity_raw")),
+            intensity=_optional_float(data.get("intensity")),
+            intensity_raw=_optional_float(data.get("intensity_raw")),
             intensity_unit=_as_str(data.get("intensity_unit")),
-            intensity_candela_proxy=_as_float(data.get("intensity_candela_proxy") or data.get("intensity")),
-            radius=_as_float(data.get("radius")),
-            radius_m=_as_float(data.get("radius_m") or data.get("radius")),
+            intensity_candela_proxy=_optional_float(data.get("intensity_candela_proxy", data.get("intensity"))),
+            radius=_optional_float(data.get("radius")),
+            radius_m=_optional_float(data.get("radius_m", data.get("radius"))),
             position=_float_tuple(data.get("position"), 3),  # type: ignore[arg-type]
             transform_basis=_as_str(data.get("transform_basis")),
             rotation=_float_tuple(data.get("rotation"), 4),  # type: ignore[arg-type]
@@ -529,6 +536,11 @@ class LightRecord:
             active_state=_as_str(data.get("active_state")),
             states=states,
             raw=data,
+            parent_node_name=_as_str(data.get("parent_node_name")),
+            parent_local_position=_float_tuple(data["parent_local_position"], 3)
+            if data.get("parent_local_position") is not None else None,
+            parent_local_rotation=_float_tuple(data["parent_local_rotation"], 4)
+            if data.get("parent_local_rotation") is not None else None,
         )
 
 
@@ -592,6 +604,7 @@ class SceneInstanceRecord:
     material_sidecar: str | None
     mesh_asset: str | None
     palette_id: str | None
+    lights: list[LightRecord] = field(default_factory=list)
     ui_bindings: list[JsonDict] = field(default_factory=list)
     decal_host_channel: str | None = None
     decal_host_rgb: Color3 | None = None
@@ -617,6 +630,7 @@ class SceneInstanceRecord:
             material_sidecar=_normalize_relative_path(_as_str(data.get("material_sidecar"))),
             mesh_asset=_normalize_relative_path(_as_str(data.get("mesh_asset"))),
             palette_id=_as_str(data.get("palette_id")),
+            lights=[LightRecord.from_value(item) for item in data.get("lights", [])],
             ui_bindings=[_as_dict(item) for item in data.get("ui_bindings", []) if _as_dict(item)],
             decal_host_channel=_as_str(data.get("decal_host_channel")),
             decal_host_rgb=_float_tuple(data.get("decal_host_rgb"), 3)

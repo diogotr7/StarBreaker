@@ -97,10 +97,17 @@ if [[ "$FULL" == 1 ]]; then
   STAMP="$EXPORT_ROOT/Data/UI/Generated/.export_stamp.json"
   SCENE="${UI_CHECK_SCENE:-$EXPORT_ROOT/Packages/DRAK Clipper_LOD1_TEX2/scene.json}"
   if [[ -f "$STAMP" ]]; then
-    AGE_MIN=$(( ( $(date +%s) - $(python3 -c "import json;print(json.load(open('$STAMP'))['written_at_epoch_s'])") ) / 60 ))
-    echo "export stamp age: ${AGE_MIN}min"
-    if (( AGE_MIN > 30 )); then
-      echo "WARNING: export stamp is ${AGE_MIN}min old — if the ui test binaries rebuild now, the staleness guard WILL fail; re-export first (~50s)." >&2
+    # v2 stores deterministic input/content identities; the visual guard below
+    # verifies these. Only legacy stamps have an age to report.
+    STAMP_TIME=$(python3 -I -c 'import json,sys; s=json.load(open(sys.argv[1])); print("content" if s.get("schema_version") == 2 else s["written_at_epoch_s"])' "$STAMP")
+    if [[ "$STAMP_TIME" == content ]]; then
+      echo "export stamp v2: source/content identity checked by visual guard"
+    else
+      AGE_MIN=$(( ( $(date +%s) - STAMP_TIME ) / 60 ))
+      echo "export stamp age: ${AGE_MIN}min"
+      if (( AGE_MIN > 30 )); then
+        echo "WARNING: legacy export stamp is ${AGE_MIN}min old — re-export if the visual guard reports staleness." >&2
+      fi
     fi
   else
     echo "WARNING: no export stamp at $STAMP — the visual guard will fail unless game data is absent (skip path)." >&2

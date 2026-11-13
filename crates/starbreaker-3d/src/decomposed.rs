@@ -1,10 +1,12 @@
+//! Shared decomposed scene, material, texture and animation package generation.
+//! GLB mesh assets retain the shared sidecar's material slot indices.
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
 use gltf_json as json;
 use rayon::prelude::*;
-use starbreaker_common::progress::{Progress, report as report_progress};
+use starbreaker_common::progress::{Progress, report_checked as report_progress};
 use starbreaker_dds;
 use starbreaker_datacore::Database;
 use starbreaker_p4k::MappedP4k;
@@ -17,7 +19,7 @@ use crate::mtl::{
 use crate::nmc::NodeMeshCombo;
 use crate::pipeline::{
     DecomposedExport, ExportFormat, ExportOptions, ExportedFile, ExportedFileKind,
-    InteriorCgfEntry, LoadedInteriors, MaterialMode, PngCache, RoughnessCache,
+    InteriorCgfEntry, LoadedInteriors, MaterialMode, PngCache, RoughnessCache, TextureContainer,
 };
 use crate::skeleton::Bone;
 use crate::types::{EntityPayload, Mesh, UiBinding};
@@ -35,7 +37,7 @@ pub(crate) struct DecomposedInput {
     pub root_palette: Option<TintPalette>,
     pub available_palettes: Vec<TintPalette>,
     pub root_bones: Vec<Bone>,
-    pub root_skeleton_source_path: Option<String>,
+    pub animation_sources: Vec<crate::animation::rig_sources::RigSource>,
     pub root_animation_controller: Option<crate::animation::AnimationControllerSource>,
     pub children: Vec<EntityPayload>,
     pub interiors: LoadedInteriors,
@@ -43,6 +45,8 @@ pub(crate) struct DecomposedInput {
     pub paint_variants: Vec<crate::mtl::PaintVariant>,
     /// Animation clips over the root skeleton and morph targets.
     pub animations: Vec<crate::clip::Clip>,
+    /// `root_entity.physics_grid` (see [`crate::physics_grid`]); only with `include_physics`.
+    pub physics_grid: Option<serde_json::Value>,
 }
 
 pub(crate) type ExistingInteriorAssetMap = HashMap<String, (String, Option<String>)>;
@@ -140,6 +144,8 @@ pub(crate) struct DecomposedMaterialView {
 
 #[derive(Debug, Clone)]
 struct SceneInstanceRecord {
+    /// DataCore SAttachableComponentParams.AttachDef.Type; absent for non-item attachments.
+    item_type: Option<String>,
     entity_name: String,
     geometry_path: String,
     material_path: String,
@@ -409,7 +415,8 @@ struct InteriorPlacementRecord {
     material_path: Option<String>,
     mesh_asset: String,
     material_sidecar: Option<String>,
-    entity_class_guid: Option<String>,
+    /// Container entity identity and links (`entity_class_guid` included).
+    identity: crate::types::PlacementIdentity,
     ui_bindings: Vec<UiBinding>,
     transform: [[f32; 4]; 4],
     /// Per-placement tint palette id that overrides the container's palette.
@@ -427,6 +434,8 @@ struct InteriorContainerRecord {
     container_transform: [[f32; 4]; 4],
     placements: Vec<InteriorPlacementRecord>,
     lights: Vec<serde_json::Value>,
+    room_volumes: Vec<serde_json::Value>,
+    proximity_sensors: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -486,8 +495,10 @@ fn package_relative_path(package_name: &str, file_name: &str) -> String {
     format!("Packages/{package_name}/{file_name}")
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct EngineGlowTargetRecord {
+    property_links: Vec<crate::pipeline::engine_glow::GlowPropertyLink>,
+    static_glow: f32,
     entity_name: String,
     geometry_path: String,
     mesh_asset: String,
@@ -502,6 +513,7 @@ fn build_thruster_engine_glow_targets(
     materials: Option<&MtlFile>,
     material_sidecar: Option<&str>,
     sidecar_original_indices: &[u32],
+    glow_effect_materials: &crate::pipeline::engine_glow::GlowMaterialBindings,
     entity_name: &str,
     geometry_path: &str,
     mesh_asset: &str,
@@ -543,10 +555,14 @@ fn build_thruster_engine_glow_targets(
             if !source_indices.contains(&source_index) {
                 return None;
             }
-            if !is_engine_glow_material(material) {
-                return None;
-            }
+            // Static emission alone is not a runtime engine-control binding.
+            // The upstream join has already checked selectors and card/map capability.
+            let property_links = glow_effect_materials
+                .get(&source_index)
+                .filter(|links| !links.is_empty())?;
             Some(EngineGlowTargetRecord {
+                property_links: property_links.clone(),
+                static_glow: material.glow,
                 entity_name: entity_name.to_string(),
                 geometry_path: normalize_requested_source_path(geometry_path),
                 mesh_asset: mesh_asset.to_string(),
@@ -562,21 +578,19 @@ fn build_thruster_engine_glow_targets(
         .collect()
 }
 
-fn is_engine_glow_material(material: &SubMaterial) -> bool {
-    if !matches!(
-        material.shader_family(),
-        ShaderFamily::Illum | ShaderFamily::HardSurface
-    ) {
-        return false;
-    }
-    let emissive_factor = material.emissive_factor();
-    let has_emissive_energy =
-        emissive_factor.iter().any(|component| *component > 0.0) || material.glow > 0.0;
-    let has_emissive_texture = material.texture_slots.iter().any(|slot| {
-        let lowered = slot.path.to_ascii_lowercase();
-        lowered.contains("glow") || lowered.contains("emissive")
-    });
-    has_emissive_energy || has_emissive_texture
+/// Union of authored output bounds. An unbounded link keeps that bound unknown.
+fn engine_glow_range(targets: &[EngineGlowTargetRecord]) -> (Option<f32>, Option<f32>) {
+    let bounds = |lower: bool| -> Option<f32> {
+        let values: Option<Vec<f32>> = targets
+            .iter()
+            .flat_map(|target| {
+                target.property_links.iter()
+                    .map(|link| if lower { link.minimum } else { link.maximum })
+            })
+            .collect();
+        values.and_then(|values| values.into_iter().reduce(if lower { f32::min } else { f32::max }))
+    };
+    (bounds(true), bounds(false))
 }
 
 fn should_export_engine_glow_targets(child: &crate::types::EntityPayload) -> bool {
@@ -1088,7 +1102,7 @@ pub(crate) fn write_decomposed_export(
             }
             _ => HashMap::new(),
         };
-    let mut texture_cache: HashMap<(String, TextureFlavor), String> = HashMap::new();
+    let mut texture_cache: HashMap<(String, TextureFlavor, TextureContainer), String> = HashMap::new();
     // Memo for the DDNA→roughness derivation (exported ref + status metadata);
     // shared across root/paint/child/interior sidecars so each DDNA source is
     // decoded and statistics-scanned exactly once per export.
@@ -1121,7 +1135,7 @@ pub(crate) fn write_decomposed_export(
     let liveries_manifest_path = package_relative_path(&package_name, "liveries.json");
     let total_start = Instant::now();
     let mut phase_start = Instant::now();
-    report_progress(progress, ROOT_ASSETS_START, "Writing root assets");
+    report_progress(progress, ROOT_ASSETS_START, "Writing root assets")?;
     let root_palette_id = input
         .root_palette
         .as_ref()
@@ -1149,12 +1163,14 @@ pub(crate) fn write_decomposed_export(
                 &input.entity_name,
                 &input.geometry_path,
                 &root_material_view.mesh,
-                root_material_view.glb_materials.as_ref(),
+                root_material_view.sidecar_materials.as_ref(),
+                &root_material_view.sidecar_original_indices,
                 root_material_view.glb_nmc.as_ref(),
                 &input.root_bones,
                 opts.lod_level,
                 opts.format,
                 existing_asset_paths,
+                opts.include_physics,
             )
         })
         .transpose()?;
@@ -1186,6 +1202,7 @@ pub(crate) fn write_decomposed_export(
                 opts.texture_mip,
                 existing_asset_paths,
                 &mut mtl_cache,
+                opts.texture_container,
             )
         }
     }).map(|path| normalize_material_source_for_manifest(p4k, &path));
@@ -1243,6 +1260,7 @@ pub(crate) fn write_decomposed_export(
                     opts.texture_mip,
                     existing_asset_paths,
                     &mut mtl_cache,
+                    opts.texture_container,
                 )
             }
         }).map(|path| normalize_material_source_for_manifest(p4k, &path));
@@ -1270,7 +1288,7 @@ pub(crate) fn write_decomposed_export(
     );
     phase_start = Instant::now();
 
-    report_progress(progress, CHILD_ASSETS_START, "Writing child assets");
+    report_progress(progress, CHILD_ASSETS_START, "Writing child assets")?;
 
     let resolved_child_transforms = resolve_child_instance_transforms(&input);
     let mut child_instances = Vec::with_capacity(input.children.len());
@@ -1353,12 +1371,14 @@ pub(crate) fn write_decomposed_export(
             &child.entity_name,
             &child.geometry_path,
             &child_material_view.mesh,
-            child_material_view.glb_materials.as_ref(),
+            child_material_view.sidecar_materials.as_ref(),
+            &child_material_view.sidecar_original_indices,
             child_material_view.glb_nmc.as_ref(),
             &child.bones,
             opts.lod_level,
             opts.format,
             existing_asset_paths,
+            opts.include_physics,
         )?;
         let material_sidecar = child_material_view.sidecar_materials.as_ref().map(|materials| {
             if opts.ui_only_files {
@@ -1388,6 +1408,7 @@ pub(crate) fn write_decomposed_export(
                     opts.texture_mip,
                     existing_asset_paths,
                     &mut mtl_cache,
+                    opts.texture_container,
                 )
             }
         }).map(|path| normalize_material_source_for_manifest(p4k, &path));
@@ -1397,6 +1418,13 @@ pub(crate) fn write_decomposed_export(
                 child_material_view.sidecar_materials.as_ref(),
                 material_sidecar.as_deref(),
                 &child_material_view.sidecar_original_indices,
+                &crate::pipeline::engine_glow::glow_effect_materials(
+                    db,
+                    &child.entity_name,
+                    &child.mesh,
+                    child.nmc.as_ref(),
+                    child.materials.as_ref(),
+                )?,
                 &child.entity_name,
                 &child.geometry_path,
                 &mesh_asset,
@@ -1426,6 +1454,7 @@ pub(crate) fn write_decomposed_export(
 
         let resolved_transform = resolved_child_transforms[index];
         child_instances.push(SceneInstanceRecord {
+            item_type: child.attach_def_type.clone(),
             entity_name: child.entity_name.clone(),
             geometry_path: normalize_source_path(p4k, &child.geometry_path),
             material_path: normalize_source_path(p4k, &child.material_path),
@@ -1451,7 +1480,7 @@ pub(crate) fn write_decomposed_export(
                 progress,
                 CHILD_ASSETS_START + (CHILD_ASSETS_END - CHILD_ASSETS_START) * fraction,
                 "Writing child assets",
-            );
+            )?;
         }
     }
     let mut dedupe = HashSet::new();
@@ -1470,7 +1499,7 @@ pub(crate) fn write_decomposed_export(
             .then(a.source_material_index.cmp(&b.source_material_index))
     });
     if child_count == 0 {
-        report_progress(progress, CHILD_ASSETS_END, "Writing interior assets");
+        report_progress(progress, CHILD_ASSETS_END, "Writing interior assets")?;
     }
     log::info!(
         "[timing][decomposed] child_assets: {:.2}s ({} children, parallel ui render {:.2}s)",
@@ -1482,6 +1511,17 @@ pub(crate) fn write_decomposed_export(
 
     let mut interior_asset_cache: HashMap<String, (String, Option<String>)> = HashMap::new();
     let mut failed_interior_asset_cache: HashSet<String> = HashSet::new();
+    let mut light_rigs = HashMap::new();
+    if let Some(nmc) = &input.root_nmc { light_rigs.insert(input.entity_name.clone(), nmc); }
+    for child in &input.children {
+        if let Some(nmc) = &child.nmc { light_rigs.insert(child.entity_name.clone(), nmc); }
+    }
+    let mut light_owners: Vec<_> = light_rigs.keys().cloned().collect();
+    if !light_owners.contains(&input.entity_name) { light_owners.push(input.entity_name.clone()); }
+    let mut light_ports = crate::pipeline::load_owner_light_ports(db, p4k, &light_owners)?;
+    let resolved_lights = crate::pipeline::collect_entity_lights(
+        &input.entity_name, &light_rigs, &light_ports, &input.interiors);
+    let mut entity_light_records: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
     let mut interior_records = Vec::with_capacity(input.interiors.containers.len());
     let mut interior_placement_elapsed = std::time::Duration::ZERO;
     let mut interior_asset_resolve_elapsed = std::time::Duration::ZERO;
@@ -1626,7 +1666,7 @@ pub(crate) fn write_decomposed_export(
                         progress,
                         CHILD_ASSETS_END + (INTERIOR_ASSETS_END - CHILD_ASSETS_END) * fraction,
                         "Writing interior assets",
-                    );
+                    )?;
                 }
                 continue;
             }
@@ -1655,7 +1695,7 @@ pub(crate) fn write_decomposed_export(
                     interior_asset_cache.insert(cache_key.clone(), reusable.clone());
                     reusable
                 } else {
-                    let Some((mesh, materials, _nmc)) = load_interior_mesh(entry) else {
+                    let Some((mesh, materials, nmc)) = load_interior_mesh(entry) else {
                         interior_asset_resolve_elapsed += asset_resolve_start.elapsed();
                         log::warn!("failed to build decomposed interior asset for {}", entry.cgf_path);
                         failed_interior_asset_cache.insert(cache_key);
@@ -1667,14 +1707,14 @@ pub(crate) fn write_decomposed_export(
                                 progress,
                                 CHILD_ASSETS_END + (INTERIOR_ASSETS_END - CHILD_ASSETS_END) * fraction,
                                 "Writing interior assets",
-                            );
+                            )?;
                         }
                         continue;
                     };
                     let interior_material_view = build_decomposed_material_view(
                         &mesh,
                         materials.as_ref(),
-                        None,
+                        if entry.cgf_path.to_ascii_lowercase().ends_with(".cga") && opts.format == ExportFormat::Glb { nmc.as_ref() } else { None },
                         opts.include_nodraw,
                         opts.include_shields,
                     );
@@ -1730,6 +1770,7 @@ pub(crate) fn write_decomposed_export(
                                 opts.texture_mip,
                                 existing_asset_paths,
                                 &mut mtl_cache,
+                                opts.texture_container,
                             )
                         }
                     }).map(|path| normalize_material_source_for_manifest(p4k, &path));
@@ -1747,15 +1788,16 @@ pub(crate) fn write_decomposed_export(
                             &entry.name,
                             &entry.cgf_path,
                             &interior_material_view.mesh,
-                            interior_material_view.glb_materials.as_ref(),
-                            // Interior meshes already follow the bundled flat-mesh path.
-                            // Preserving the raw NMC hierarchy here makes decomposed interiors
-                            // diverge from the reference import and can double-apply placement transforms.
+                            interior_material_view.sidecar_materials.as_ref(),
+                            &interior_material_view.sidecar_original_indices,
+                            // Animated CGA interiors retain their receiving hierarchy; the loader
+                            // leaves their vertices unbaked. Static CGFs retain the flat path.
                             interior_material_view.glb_nmc.as_ref(),
                             &[],
                             opts.lod_level,
                             opts.format,
                             existing_asset_paths,
+                            opts.include_physics,
                         )?
                     };
                     interior_asset_cache.insert(cache_key, (mesh_asset.clone(), material_sidecar.clone()));
@@ -1783,7 +1825,7 @@ pub(crate) fn write_decomposed_export(
                 material_path: precomp.normalized_material_path.clone(),
                 mesh_asset,
                 material_sidecar,
-                entity_class_guid: None,
+                identity: placement.identity.clone(),
                 ui_bindings,
                 transform: placement.transform,
                 palette_id: placement_palette_id,
@@ -1796,19 +1838,19 @@ pub(crate) fn write_decomposed_export(
                     progress,
                     CHILD_ASSETS_END + (INTERIOR_ASSETS_END - CHILD_ASSETS_END) * fraction,
                     "Writing interior assets",
-                );
+                )?;
             }
         }
         interior_placement_elapsed += placement_start.elapsed();
 
         let mut lights = Vec::with_capacity(container.lights.len());
         let light_start = Instant::now();
-        for light in &container.lights {
+        for (light_index, light) in container.lights.iter().enumerate() {
             // Extract the projector (gobo) texture.
             // ONLY for Projector lights (spot lights). Point lights (Omni) should never have gobos.
             // Priority: EXR (for HDR formats like BC6H) -> PNG (for SDR formats) -> white PNG fallback
             // EXR preserves float values >1.0, allowing Blender to sample full HDR energy.
-            let projector_texture_export = if light.light_type == "Projector" {
+            let projector_texture_export = if light.light_type.as_deref() == Some("Projector") {
                 light.projector_texture.as_deref().and_then(|src| {
                     let normalized = normalize_source_path(p4k, src);
                     let exr_path = replace_extension(&normalized, ".exr");
@@ -1833,6 +1875,7 @@ pub(crate) fn write_decomposed_export(
                         TextureFlavor::Generic,
                         opts.texture_mip,
                         existing_asset_paths,
+                        TextureContainer::Png,
                     )
                     .is_some()
                     {
@@ -1841,6 +1884,7 @@ pub(crate) fn write_decomposed_export(
                             src,
                             TextureFlavor::Generic,
                             opts.texture_mip,
+                            TextureContainer::Png,
                         ));
                     }
 
@@ -1857,46 +1901,21 @@ pub(crate) fn write_decomposed_export(
             } else {
                 None
             };
-            lights.push(serde_json::json!({
-                "name": light.name,
-                "position": light.position,
-                "transform_basis": light.transform_basis,
-                "rotation": light.rotation,
-                "direction_sc": light.direction_sc,
-                "color": light.color,
-                "light_type": light.light_type,
-                "semantic_light_kind": light.semantic_light_kind,
-                "intensity_raw": light.intensity_raw,
-                "intensity_unit": light.intensity_unit,
-                "intensity_candela_proxy": light.intensity_candela_proxy,
-                "intensity": light.intensity,
-                "radius": light.radius,
-                "radius_m": light.radius_m,
-                "inner_angle": light.inner_angle,
-                "outer_angle": light.outer_angle,
-                "projector_texture": projector_texture_export,
-                "active_state": light.active_state,
-                "states": light
-                    .states
-                    .iter()
-                    .map(|(name, s)| {
-                        (
-                            name.clone(),
-                            serde_json::json!({
-                                "intensity_raw": s.intensity_raw,
-                                "intensity_unit": s.intensity_unit,
-                                "intensity_cd": s.intensity_cd,
-                                "intensity_candela_proxy": s.intensity_candela_proxy,
-                                "temperature": s.temperature,
-                                "use_temperature": s.use_temperature,
-                                "color": s.color,
-                                "light_style": s.light_style,
-                                "preset_tag": s.preset_tag,
-                            }),
-                        )
-                    })
-                    .collect::<serde_json::Map<_, _>>(),
-            }));
+            let resolved = resolved_lights.iter().find(|record|
+                record.source_container_index == index && record.source_light_index == light_index);
+            // Vehicle groups with a resolved rig attachment live on their owning entity.
+            // Other SOC lights retain the existing container-local contract, without duplication.
+            if let Some(record) = resolved.filter(|r| r.parent_node_name.is_some()) {
+                let mut value = serde_json::to_value(record)?;
+                value["projector_texture"] = serde_json::json!(projector_texture_export);
+                entity_light_records.entry(record.owner_entity.clone()).or_default().push(value);
+            } else {
+                let mut value = serde_json::to_value(light)?;
+                value["projector_texture"] = serde_json::json!(projector_texture_export);
+                value["source_container_index"] = serde_json::json!(index);
+                value["source_light_index"] = serde_json::json!(light_index);
+                lights.push(value);
+            }
         }
         interior_light_elapsed += light_start.elapsed();
 
@@ -1908,6 +1927,8 @@ pub(crate) fn write_decomposed_export(
             container_transform: container.container_transform,
             placements,
             lights,
+            room_volumes: container.room_volumes.iter().map(|volume| volume.to_json()).collect(),
+            proximity_sensors: container.proximity_sensors.iter().map(|sensor| sensor.to_json()).collect(),
         });
 
         if container_count > 0 && total_interior_placements == 0 {
@@ -1916,11 +1937,11 @@ pub(crate) fn write_decomposed_export(
                 progress,
                 CHILD_ASSETS_END + (INTERIOR_ASSETS_END - CHILD_ASSETS_END) * fraction,
                 "Writing interior assets",
-            );
+            )?;
         }
     }
     if container_count == 0 {
-        report_progress(progress, INTERIOR_ASSETS_END, "Writing manifests");
+        report_progress(progress, INTERIOR_ASSETS_END, "Writing manifests")?;
     }
     log::info!(
         "[timing][decomposed] interior_placements: {:.2}s",
@@ -1952,95 +1973,13 @@ pub(crate) fn write_decomposed_export(
     phase_start = Instant::now();
 
     let root_animations = if opts.include_animations {
-        let mut clips: Vec<serde_json::Value> = Vec::new();
-        // Map from clip name → index in `clips`, used to merge same-named clips
-        // from different child skeletons (e.g. landing_gear_extend from front/left/right CHRs).
-        let mut name_to_index = std::collections::HashMap::<String, usize>::new();
-
-        let mut append_from_skeleton = |skeleton_path: &str, include_unmatched: bool, allow_bone_subset_fallback: bool, namespace: Option<&str>| {
-            match crate::animation::extract_animations_for_skeleton_json(p4k, skeleton_path, include_unmatched, allow_bone_subset_fallback) {
-                Ok(Some(serde_json::Value::Array(values))) => {
-                    for mut clip in values {
-                        let original = clip
-                            .get("name")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        // Socpak interior children (`namespace = Some(entity stem)`):
-                        // key each clip by entity-type so different entities'
-                        // identically-named clips (every door's `door_open`) don't
-                        // merge, and attach a human-readable panel label. Instances of
-                        // the same entity-type share the key and still merge.
-                        let name = match namespace {
-                            Some(stem) if !original.is_empty() => {
-                                let key = interior_clip_key(stem, &original);
-                                if let Some(object) = clip.as_object_mut() {
-                                    object.insert(
-                                        "name".to_string(),
-                                        serde_json::Value::String(key.clone()),
-                                    );
-                                    object.insert(
-                                        "display_name".to_string(),
-                                        serde_json::Value::String(humanize_animation_label(
-                                            stem, &original,
-                                        )),
-                                    );
-                                }
-                                key
-                            }
-                            _ => original,
-                        };
-                        if name.is_empty() {
-                            clips.push(clip);
-                        } else if let Some(&existing_idx) = name_to_index.get(&name) {
-                            // Merge bone channels from this clip into the existing one.
-                            if let (Some(serde_json::Value::Object(new_bones)), Some(existing_clip)) =
-                                (clip.get_mut("bones").map(|b| b.take()), clips.get_mut(existing_idx))
-                            {
-                                if let Some(serde_json::Value::Object(existing_bones)) =
-                                    existing_clip.get_mut("bones")
-                                {
-                                    for (k, v) in new_bones {
-                                        if let Some(existing_value) = existing_bones.get_mut(&k) {
-                                            merge_animation_channel_values(existing_value, v, &name, &k);
-                                        } else {
-                                            existing_bones.insert(k, v);
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            let idx = clips.len();
-                            name_to_index.insert(name, idx);
-                            clips.push(clip);
-                        }
-                    }
-                }
-                Ok(Some(_)) => {}
-                Ok(None) => {}
-                Err(error) => {
-                    log::warn!(
-                        "[anim] failed to extract animations for skeleton '{}': {}",
-                        skeleton_path,
-                        error
-                    );
-                }
-            }
-        };
-
-        if let Some(skeleton_path) = input.root_skeleton_source_path.as_deref() {
-            append_from_skeleton(skeleton_path, true, false, None);
-        }
-        // With no root skeleton (the socpak interior case — ships always have a
-        // root rig), children are independent interior entities; namespace their
-        // clips per entity-type so distinct mechanisms stay separate.
-        let namespace_children = input.root_skeleton_source_path.is_none();
-        for child in &input.children {
-            if let Some(skeleton_path) = child.skeleton_source_path.as_deref() {
-                let namespace = namespace_children.then_some(child.entity_name.as_str());
-                append_from_skeleton(skeleton_path, false, true, namespace);
+        let mut collection = crate::animation::rig_sources::ClipCollection::default();
+        for source in &input.animation_sources {
+            for clip in crate::animation::rig_sources::read_source_clips(p4k, source, false).into_iter().flatten() {
+                collection.append(source, clip);
             }
         }
+        let mut clips: Vec<serde_json::Value> = collection.clips.into_iter().map(|clip| clip.value).collect();
 
         // Component animation tracks (doors, ladders, beds, …) live in a shared
         // .dba; the root-skeleton sweep stamps the blocks whose nodes are not in
@@ -2119,7 +2058,7 @@ pub(crate) fn write_decomposed_export(
     );
     phase_start = Instant::now();
 
-    let scene_manifest = build_scene_manifest_value(
+    let mut scene_manifest = build_scene_manifest_value(
         &input.entity_name,
         &package_name,
         &normalize_source_path(p4k, &input.geometry_path),
@@ -2135,8 +2074,23 @@ pub(crate) fn write_decomposed_export(
         input.weapon_assembly.as_ref(),
         opts,
     );
-    report_progress(progress, INTERIOR_ASSETS_END, "Writing manifests");
-    insert_ui_export_stamp(&mut files);
+    scene_manifest["root_entity"]["lights"] = serde_json::json!(
+        entity_light_records.remove(&input.entity_name).unwrap_or_default());
+    scene_manifest["root_entity"]["vehicle_light_ports"] = serde_json::json!(light_ports.remove(&input.entity_name).unwrap_or_default());
+    if let Some(grid) = &input.physics_grid {
+        scene_manifest["root_entity"]["physics_grid"] = grid.clone();
+    }
+    for child in scene_manifest["children"].as_array_mut().expect("children array") {
+        let name = child["entity_name"].as_str().expect("child name").to_owned();
+        child["lights"] = serde_json::json!(entity_light_records.remove(&name).unwrap_or_default());
+        child["vehicle_light_ports"] = serde_json::json!(light_ports.get(&name).cloned().unwrap_or_default());
+    }
+    if !entity_light_records.is_empty() {
+        return Err(Error::Other("resolved light owner is absent from the scene instances".into()));
+    }
+    report_progress(progress, INTERIOR_ASSETS_END, "Writing manifests")?;
+    insert_ui_export_stamp(&mut files, &crate::export_stamp::archive_build_id(p4k)?,
+        &input.entity_name, opts)?;
     insert_json_file(&mut files, scene_manifest_path, scene_manifest);
     if !opts.ui_only_files {
         finalize_palette_records(
@@ -2147,6 +2101,7 @@ pub(crate) fn write_decomposed_export(
             &mut texture_cache,
             opts.texture_mip,
             existing_asset_paths,
+            opts.texture_container,
         );
         if let Some(diagnostics) = input.weapon_assembly_diagnostics.as_ref() {
             insert_json_file(
@@ -2187,7 +2142,7 @@ fn classify_exported_file_kind(relative_path: &str) -> ExportedFileKind {
         ExportedFileKind::MaterialSidecar
     } else if relative_path.ends_with(".glb") || relative_path.ends_with(".blend") {
         ExportedFileKind::MeshAsset
-    } else if relative_path.ends_with(".png") {
+    } else if relative_path.ends_with(".png") || relative_path.ends_with(".dds") {
         ExportedFileKind::TextureAsset
     } else {
         ExportedFileKind::PackageManifest
@@ -2211,7 +2166,7 @@ fn build_scene_manifest_value(
     opts: &ExportOptions,
 ) -> serde_json::Value {
     let mut manifest = serde_json::json!({
-        "version": 1,
+        "version": 2,
         "export_kind": "Decomposed",
         "package_rule": {
             "root": "caller_selected_export_root",
@@ -2252,16 +2207,22 @@ fn build_scene_manifest_value(
         manifest["weapon_assembly"] = weapon_assembly.clone();
     }
     if !engine_glow_targets.is_empty() {
+        let (minimum, maximum) = engine_glow_range(engine_glow_targets);
         manifest["controls"] = serde_json::json!({
             "engine_glow": {
                 "label": "Engine Glow",
-                "units": "emission_strength",
-                "min_strength": 0.0,
-                "max_strength": 200.0,
-                "default_strength": 0.0,
+                "units": "material_property_glow",
+                "min_strength": minimum,
+                "max_strength": maximum,
+                "default_strength": minimum,
                 "targets": engine_glow_targets
                     .iter()
                     .map(|target| serde_json::json!({
+                        "multiplier": target.property_links.iter().map(|link| link.multiplier).collect::<Vec<_>>(),
+                        "minimum": target.property_links.iter().map(|link| link.minimum).collect::<Vec<_>>(),
+                        "maximum": target.property_links.iter().map(|link| link.maximum).collect::<Vec<_>>(),
+                        "property_links": target.property_links,
+                        "static_glow": target.static_glow,
                         "entity_name": target.entity_name,
                         "geometry_path": target.geometry_path,
                         "mesh_asset": target.mesh_asset,
@@ -2401,6 +2362,7 @@ fn scene_instance_json(instance: &SceneInstanceRecord) -> serde_json::Value {
         "offset_rotation": instance.offset_rotation,
         "detach_direction": instance.detach_direction,
         "port_flags": instance.port_flags,
+        "item_type": instance.item_type,
         "ui_bindings": instance.ui_bindings.iter().map(ui_binding_json).collect::<Vec<_>>(),
     })
 }
@@ -2418,13 +2380,19 @@ fn interior_container_json(container: &InteriorContainerRecord) -> serde_json::V
                 "material_path": placement.material_path,
                 "mesh_asset": placement.mesh_asset,
                 "material_sidecar": placement.material_sidecar,
-                "entity_class_guid": placement.entity_class_guid,
+                "entity_class_guid": placement.identity.entity_class_guid,
+                "entity_id": placement.identity.entity_id,
+                "links": placement.identity.links,
+                "loadout_owner_entity_id": placement.identity.loadout_owner_entity_id,
+                "item_port_name": placement.identity.item_port_name,
                 "ui_bindings": placement.ui_bindings.iter().map(ui_binding_json).collect::<Vec<_>>(),
                 "transform": placement.transform,
                 "palette_id": placement.palette_id,
             })
         }).collect::<Vec<_>>(),
         "lights": container.lights,
+        "room_volumes": container.room_volumes,
+        "proximity_sensors": container.proximity_sensors,
     })
 }
 
@@ -2464,13 +2432,15 @@ fn write_mesh_asset(
     p4k: &MappedP4k,
     fallback_name: &str,
     geometry_path: &str,
-    _mesh: &Mesh,
-    _materials: Option<&MtlFile>,
-    _nmc: Option<&NodeMeshCombo>,
-    _bones: &[Bone],
+    mesh: &Mesh,
+    materials: Option<&MtlFile>,
+    sidecar_original_indices: &[u32],
+    nmc: Option<&NodeMeshCombo>,
+    bones: &[Bone],
     lod_level: u32,
     format: ExportFormat,
     existing_asset_paths: Option<&HashSet<String>>,
+    include_physics: bool,
 ) -> Result<String, Error> {
     let requested_path =
         mesh_asset_relative_path(p4k, geometry_path, fallback_name, lod_level, format);
@@ -2479,14 +2449,75 @@ fn write_mesh_asset(
     {
         return Ok(requested_path);
     }
-    Ok(insert_binary_file(files, requested_path, Vec::new()))
+    // The GLB decomposed format writes the per-mesh GLB
+    // (untextured, material names preserved for sidecar slot mapping);
+    // the Blend format keeps the placeholder that blend assembly fills later.
+    let bytes = if format == ExportFormat::Glb {
+        // The shared sidecar contains all visible source slots, while the mesh
+        // view compacts its used slots. Restore sidecar indices for GLB output.
+        let mut mesh = mesh.clone();
+        if materials.is_some() {
+            for submesh in &mut mesh.submeshes {
+                let source = submesh.source_material_id.unwrap_or(submesh.material_id);
+                let slot = sidecar_original_indices.iter().position(|&i| i == source)
+                    .ok_or_else(|| Error::Other(format!("mesh material {source} missing from sidecar for {geometry_path}")))?;
+                submesh.material_id = slot as u32;
+                submesh.source_material_id = Some(slot as u32);
+            }
+        }
+        crate::gltf::write_glb(
+            crate::gltf::GlbInput {
+                root_mesh: Some(mesh),
+                root_materials: materials.cloned(),
+                root_textures: None,
+                root_nmc: nmc.cloned(),
+                root_palette: None,
+                skeleton_bones: bones.to_vec(),
+                children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
+            },
+            &mut crate::gltf::GlbLoaders {
+                load_textures: &mut |_, _| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &crate::gltf::GlbOptions {
+                material_mode: crate::pipeline::MaterialMode::Colors,
+                preserve_textureless_decal_primitives: true,
+                preserve_material_slots: true,
+                metadata: crate::gltf::GlbMetadata {
+                    entity_name: None,
+                    geometry_path: Some(geometry_path.to_string()),
+                    material_path: None,
+                    export_options: crate::gltf::ExportOptionsMetadata {
+                        kind: "Decomposed".to_string(),
+                        material_mode: "Colors".to_string(),
+                        format: "Glb".to_string(),
+                        lod_level,
+                        texture_mip: 0,
+                        include_attachments: false,
+                        include_interior: false,
+                    },
+                },
+                fallback_palette: None,
+            },
+        )?
+    } else {
+        Vec::new()
+    };
+    let bytes = if include_physics && format == ExportFormat::Glb {
+        crate::decomposed_physics::attach_source_physics(p4k, geometry_path, nmc, bytes)?
+    } else {
+        bytes
+    };
+    Ok(insert_binary_file(files, requested_path, bytes))
 }
 
 fn write_material_sidecar(
     files: &mut OutputFiles,
     p4k: &MappedP4k,
     png_cache: &mut PngCache,
-    texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    texture_cache: &mut HashMap<(String, TextureFlavor, TextureContainer), String>,
     ddna_status_cache: &mut HashMap<String, (Option<TextureExportRef>, TextureDerivationStatus)>,
     roughness_cache: &RoughnessCache,
     palettes_manifest_path: &str,
@@ -2498,6 +2529,7 @@ fn write_material_sidecar(
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
     mtl_cache: &mut HashMap<String, Option<MtlFile>>,
+    texture_container: TextureContainer,
 ) -> String {
     let source_material_path = canonical_material_source_path(
         p4k,
@@ -2539,6 +2571,7 @@ fn write_material_sidecar(
                 existing_asset_paths,
                 mtl_cache,
                 &source_material_path,
+                texture_container,
             )
         })
         .collect::<Vec<_>>();
@@ -2611,7 +2644,7 @@ fn extract_material_entry(
     files: &mut OutputFiles,
     p4k: &MappedP4k,
     png_cache: &mut PngCache,
-    texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    texture_cache: &mut HashMap<(String, TextureFlavor, TextureContainer), String>,
     ddna_status_cache: &mut HashMap<String, (Option<TextureExportRef>, TextureDerivationStatus)>,
     roughness_cache: &RoughnessCache,
     material: &SubMaterial,
@@ -2619,6 +2652,7 @@ fn extract_material_entry(
     existing_asset_paths: Option<&HashSet<String>>,
     mtl_cache: &mut HashMap<String, Option<MtlFile>>,
     source_material_path: &str,
+    texture_container: TextureContainer,
 ) -> ExtractedMaterialEntry {
     let mut derived_texture_exports = Vec::new();
     let mut ddna_derivations = Vec::new();
@@ -2632,6 +2666,7 @@ fn extract_material_entry(
             &path,
             texture_mip,
             existing_asset_paths,
+            texture_container,
         );
         if let Some(roughness_texture) = roughness_texture {
             derived_texture_exports.push(roughness_texture);
@@ -2655,6 +2690,7 @@ fn extract_material_entry(
                 texture_mip,
                 existing_asset_paths,
                 &ddna_smoothness_sources,
+                texture_container,
             )
         })
         .collect::<Vec<_>>();
@@ -2670,6 +2706,7 @@ fn extract_material_entry(
             TextureFlavor::Generic,
             texture_mip,
             existing_asset_paths,
+            texture_container,
         ) {
             direct_texture_exports.push(TextureExportRef {
                 role: "diffuse".to_string(),
@@ -2700,7 +2737,9 @@ fn extract_material_entry(
             TextureFlavor::Normal,
             texture_mip,
             existing_asset_paths,
+            texture_container,
         ) {
+            let stores_alpha = !export_path.ends_with(".dds");
             direct_texture_exports.push(TextureExportRef {
                 role: "normal_gloss".to_string(),
                 source_path: normalize_source_path(p4k, path),
@@ -2713,6 +2752,7 @@ fn extract_material_entry(
                     TextureSemanticRole::NormalGloss,
                     &ddna_smoothness_sources,
                 )
+                .filter(|_| stores_alpha)
                 .map(str::to_string),
                 alpha_channel: ddna_alpha_channel_for_exported_source(
                     p4k,
@@ -2720,6 +2760,7 @@ fn extract_material_entry(
                     TextureSemanticRole::NormalGloss,
                     &ddna_smoothness_sources,
                 )
+                .filter(|_| stores_alpha)
                 .map(str::to_string),
                 derived_from_texture_identity: None,
                 derived_from_semantic: None,
@@ -2755,6 +2796,7 @@ fn extract_material_entry(
                         &path,
                         texture_mip,
                         existing_asset_paths,
+                        texture_container,
                     );
                     if roughness_texture.is_none() {
                         roughness_texture = candidate;
@@ -2780,6 +2822,7 @@ fn extract_material_entry(
                                 texture_mip,
                                 existing_asset_paths,
                                 &layer_ddna_smoothness_sources,
+                                texture_container,
                             )
                         })
                         .collect::<Vec<_>>()
@@ -2797,6 +2840,7 @@ fn extract_material_entry(
                         TextureFlavor::Generic,
                         texture_mip,
                         existing_asset_paths,
+                        texture_container,
                     )
                 });
             let normal_path = layer_sub.and_then(|sub| sub.normal_tex.as_deref());
@@ -2810,6 +2854,7 @@ fn extract_material_entry(
                     TextureFlavor::Normal,
                     texture_mip,
                     existing_asset_paths,
+                    texture_container,
                 )
             });
             let roughness_export_path = roughness_texture
@@ -2855,7 +2900,7 @@ fn build_material_sidecar_value(
         preferred_blender_material_names(&materials.materials, source_stem);
 
     serde_json::json!({
-        "version": 1,
+        "version": 2,
         "source_material_path": source_material_path,
         "normalized_export_relative_path": relative_path,
         "authored_material_set": {
@@ -2930,7 +2975,7 @@ fn build_submaterial_json(
         .collect::<Vec<_>>();
     let screen_effects = screen_effects_json(material, &semantic_slots);
 
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "index": index,
         "submaterial_name": material.name,
         "blender_material_name": blender_material_name,
@@ -3039,20 +3084,25 @@ fn build_submaterial_json(
             "layer_palette_routed": material.layers.iter().any(|layer| layer.palette_tint > 0),
             "layered": !material.layers.is_empty(),
         },
-    })
+    });
+    value["emissive"] = crate::material_semantics::emissive(material);
+    value["alpha_config"] = crate::material_semantics::alpha_config(material);
+    value["decal"] = crate::material_semantics::decal(material).unwrap_or(serde_json::Value::Null);
+    value
 }
 
 fn build_slot_export_value(
     files: &mut OutputFiles,
     p4k: &MappedP4k,
     png_cache: &mut PngCache,
-    texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    texture_cache: &mut HashMap<(String, TextureFlavor, TextureContainer), String>,
     binding: &SemanticTextureBinding,
     material: &SubMaterial,
     source_material_path: &str,
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
     ddna_smoothness_sources: &HashSet<String>,
+    texture_container: TextureContainer,
 ) -> serde_json::Value {
     let source_path = slot_source_path(Some(p4k), binding);
     let export_flavor = slot_texture_flavor(binding.role);
@@ -3081,6 +3131,7 @@ fn build_slot_export_value(
             export_flavor,
             texture_mip,
             existing_asset_paths,
+            texture_container,
         )
     };
 
@@ -3122,7 +3173,7 @@ fn build_slot_export_value(
         &binding.path,
         binding.role,
         ddna_smoothness_sources,
-    ) {
+    ).filter(|_| export_path.as_deref().is_none_or(|path| !path.ends_with(".dds"))) {
         value.insert(
             "alpha_semantic".to_string(),
             serde_json::json!(alpha_semantic),
@@ -3133,7 +3184,7 @@ fn build_slot_export_value(
         &binding.path,
         binding.role,
         ddna_smoothness_sources,
-    ) {
+    ).filter(|_| export_path.as_deref().is_none_or(|path| !path.ends_with(".dds"))) {
         value.insert(
             "alpha_channel".to_string(),
             serde_json::json!(alpha_channel),
@@ -3169,7 +3220,7 @@ fn generated_ui_texture_for_binding(
     _files: &mut OutputFiles,
     _p4k: &MappedP4k,
     _png_cache: &mut PngCache,
-    _texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    _texture_cache: &mut HashMap<(String, TextureFlavor, TextureContainer), String>,
     material: &SubMaterial,
     binding: &SemanticTextureBinding,
     _source_material_path: &str,
@@ -3608,19 +3659,37 @@ fn export_texture_asset(
     files: &mut OutputFiles,
     p4k: &MappedP4k,
     png_cache: &mut PngCache,
-    texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    texture_cache: &mut HashMap<(String, TextureFlavor, TextureContainer), String>,
     source_path: &str,
     flavor: TextureFlavor,
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
+    texture_container: TextureContainer,
 ) -> Option<String> {
     let normalized_source = normalize_source_path(p4k, source_path);
-    let cache_key = texture_cache_key(&normalized_source, flavor);
+    let cache_key = texture_cache_key(&normalized_source, flavor, texture_container);
     if let Some(existing) = texture_cache.get(&cache_key) {
         return Some(existing.clone());
     }
 
-    let requested_path = texture_relative_path(p4k, source_path, flavor, texture_mip);
+    if texture_container == TextureContainer::Dds {
+        if let Some(bytes) = load_texture_dds(p4k, source_path, flavor, texture_mip) {
+            let path =
+                texture_relative_path(p4k, source_path, flavor, texture_mip, TextureContainer::Dds);
+            let stored = if existing_asset_paths
+                .is_some_and(|paths| paths.contains(&path.to_ascii_lowercase()))
+            {
+                path
+            } else {
+                insert_binary_file(files, path, bytes)
+            };
+            texture_cache.insert(cache_key, stored.clone());
+            return Some(stored);
+        }
+    }
+
+    let requested_path =
+        texture_relative_path(p4k, source_path, flavor, texture_mip, TextureContainer::Png);
     if existing_asset_paths
         .is_some_and(|paths| paths.contains(&requested_path.to_ascii_lowercase()))
     {
@@ -3660,8 +3729,27 @@ fn export_texture_asset(
     Some(stored_path)
 }
 
-fn texture_cache_key(normalized_source: &str, flavor: TextureFlavor) -> (String, TextureFlavor) {
-    (normalized_source.to_ascii_lowercase(), flavor)
+fn load_texture_dds(
+    p4k: &MappedP4k,
+    source: &str,
+    flavor: TextureFlavor,
+    mip: u32,
+) -> Option<Vec<u8>> {
+    crate::pipeline::load_package_texture_dds(
+        p4k,
+        source,
+        mip,
+        flavor == TextureFlavor::Normal,
+        flavor == TextureFlavor::Roughness,
+    )
+}
+
+fn texture_cache_key(
+    normalized_source: &str,
+    flavor: TextureFlavor,
+    container: TextureContainer,
+) -> (String, TextureFlavor, TextureContainer) {
+    (normalized_source.to_ascii_lowercase(), flavor, container)
 }
 
 /// Decode one P4k texture to its package PNG: `(relative path, bytes)`, at
@@ -3680,7 +3768,16 @@ pub(crate) fn texture_png(
         png_cache,
         crate::pipeline::load_diffuse_texture,
     )?;
-    Some((texture_relative_path(p4k, source_path, TextureFlavor::Generic, texture_mip), bytes))
+    Some((
+        texture_relative_path(
+            p4k,
+            source_path,
+            TextureFlavor::Generic,
+            texture_mip,
+            TextureContainer::Png,
+        ),
+        bytes,
+    ))
 }
 
 fn register_palette(
@@ -3719,9 +3816,10 @@ fn finalize_palette_records(
     files: &mut OutputFiles,
     p4k: &MappedP4k,
     png_cache: &mut PngCache,
-    texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    texture_cache: &mut HashMap<(String, TextureFlavor, TextureContainer), String>,
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
+    texture_container: TextureContainer,
 ) {
     for record in records.values_mut() {
         let Some(source_path) = record.palette.decal_texture.as_deref() else {
@@ -3736,6 +3834,7 @@ fn finalize_palette_records(
             TextureFlavor::Generic,
             texture_mip,
             existing_asset_paths,
+            texture_container,
         );
     }
 }
@@ -3960,22 +4059,35 @@ fn texture_relative_path(
     source_path: &str,
     flavor: TextureFlavor,
     mip: u32,
+    texture_container: TextureContainer,
 ) -> String {
     let normalized = normalize_source_path(p4k, source_path);
-    texture_relative_path_from_normalized(&normalized, flavor, mip)
+    texture_relative_path_from_normalized(&normalized, flavor, mip, texture_container)
 }
 
 fn texture_relative_path_from_normalized(
     normalized: &str,
     flavor: TextureFlavor,
     mip: u32,
+    texture_container: TextureContainer,
 ) -> String {
-    let base = match flavor {
-        TextureFlavor::Generic => replace_extension(&normalized, ".png"),
-        TextureFlavor::Normal => replace_extension(&normalized, ".png"),
-        TextureFlavor::Roughness => {
-            insert_stem_suffix(&replace_extension(&normalized, ".png"), "_roughness")
-        }
+    let extension = if texture_container == TextureContainer::Dds {
+        ".dds"
+    } else {
+        ".png"
+    };
+    let base = replace_extension(normalized, extension);
+    let base = if flavor == TextureFlavor::Roughness {
+        insert_stem_suffix(
+            &base,
+            if texture_container == TextureContainer::Dds {
+                "_smoothness"
+            } else {
+                "_roughness"
+            },
+        )
+    } else {
+        base
     };
     insert_stem_suffix(&base, &format!("_TEX{mip}"))
 }
@@ -4129,52 +4241,20 @@ pub(crate) fn sanitize_identifier(value: &str) -> String {
         .collect()
 }
 
-/// Marker written next to the generated UI PNGs on every export that produced
-/// them. The starbreaker-ui visual guard reads it to hard-fail comparisons
-/// against PNGs that predate the current build (the stale-export trap —
-/// `crates/starbreaker-ui/docs/ui-process-improvements.md` ledger item 20).
+/// Content provenance next to generated UI PNGs. The Blender importer ignores
+/// this auxiliary file; the UI visual guard verifies source and payload hashes.
 const UI_EXPORT_STAMP_PATH: &str = "Data/UI/Generated/.export_stamp.json";
 
-/// Insert `.export_stamp.json` when this export produced any generated UI
-/// file. Skipped otherwise so an export without UI screens cannot pass off
-/// another ship's stale PNGs as fresh. Never fails: every field degrades to a
-/// sentinel ("unknown" / 0) rather than erroring the export.
-fn insert_ui_export_stamp(files: &mut OutputFiles) {
-    let has_generated_ui = files
-        .iter()
-        .any(|(path, _)| path.starts_with("Data/UI/Generated/"));
-    if !has_generated_ui {
-        return;
-    }
-    let written_at_epoch_s = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let git_describe = std::process::Command::new("git")
-        .args(["describe", "--always", "--dirty"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".to_string());
-    let binary_built_at_epoch_s = std::env::current_exe()
-        .and_then(|path| path.metadata())
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|mtime| mtime.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    insert_json_file(
-        files,
-        UI_EXPORT_STAMP_PATH.to_string(),
-        serde_json::json!({
-            "written_at_epoch_s": written_at_epoch_s,
-            "git_describe": git_describe,
-            "binary_built_at_epoch_s": binary_built_at_epoch_s,
-        }),
-    );
+fn insert_ui_export_stamp(
+    files: &mut OutputFiles, build_id: &str, entity: &str, opts: &ExportOptions,
+) -> Result<(), Error> {
+    let generated: Vec<_> = files.iter()
+        .filter(|(path, _)| path.starts_with("Data/UI/Generated/"))
+        .map(|(path, bytes)| (path.as_str(), bytes.as_slice())).collect();
+    if generated.is_empty() { return Ok(()); }
+    let stamp = crate::export_stamp::stamp(build_id, entity, opts, generated.into_iter())?;
+    insert_json_file(files, UI_EXPORT_STAMP_PATH.to_owned(), stamp);
+    Ok(())
 }
 
 /// The export's output file map plus an index that makes per-segment case
@@ -4872,6 +4952,7 @@ pub(crate) fn prewarm_decomposed_textures(
     p4k: &MappedP4k,
     assets: &[(MtlFile, String, String)],
     texture_mip: u32,
+    texture_container: TextureContainer,
 ) -> (PngCache, HashMap<String, Option<MtlFile>>) {
     // Resolve source materials + collect keys serially (cheap .mtl parses,
     // deduped via a local mtl cache). Texture DECODE is the expensive part and
@@ -4879,8 +4960,13 @@ pub(crate) fn prewarm_decomposed_textures(
     let mut mtl_cache: HashMap<String, Option<MtlFile>> = HashMap::new();
     let mut requests: HashSet<(String, TextureFlavor)> = HashSet::new();
     for (materials, material_path, geometry_path) in assets {
-        let source_material_path =
-            canonical_material_source_path(p4k, materials, material_path, geometry_path, &mut mtl_cache);
+        let source_material_path = canonical_material_source_path(
+            p4k,
+            materials,
+            material_path,
+            geometry_path,
+            &mut mtl_cache,
+        );
         let (sidecar_materials, _indices) = canonical_sidecar_materials_from_source(
             p4k,
             &source_material_path,
@@ -4895,6 +4981,10 @@ pub(crate) fn prewarm_decomposed_textures(
     let jobs: Vec<(String, TextureFlavor)> = requests.into_iter().collect();
     let png_cache: PngCache = jobs
         .par_iter()
+        .filter(|(path, flavor)| {
+            texture_container != TextureContainer::Dds
+                || load_texture_dds(p4k, path, *flavor, texture_mip).is_none()
+        })
         .map(|(path, flavor)| match flavor {
             TextureFlavor::Generic => (
                 crate::pipeline::png_cache_key(path, texture_mip, ""),
@@ -4931,6 +5021,7 @@ pub(crate) fn prewarm_decomposed_roughness(
     p4k: &MappedP4k,
     assets: &[(MtlFile, String, String)],
     texture_mip: u32,
+    texture_container: TextureContainer,
 ) -> RoughnessCache {
     use rayon::prelude::*;
     let mut sources: HashSet<String> = HashSet::new();
@@ -4946,7 +5037,12 @@ pub(crate) fn prewarm_decomposed_roughness(
         .map(|src| {
             (
                 src.clone(),
-                crate::pipeline::load_roughness_texture_result(p4k, src, texture_mip),
+                crate::pipeline::load_roughness_texture_result(
+                    p4k,
+                    src,
+                    texture_mip,
+                    texture_container,
+                ),
             )
         })
         .collect()
@@ -4964,6 +5060,7 @@ fn ddna_roughness_texture_ref(
     p4k: &MappedP4k,
     source_path: &str,
     export_path: String,
+    container: TextureContainer,
 ) -> TextureExportRef {
     TextureExportRef {
         role: "roughness".to_string(),
@@ -4979,10 +5076,32 @@ fn ddna_roughness_texture_ref(
         derived_from_channel: ddna_alpha_channel(source_path, TextureSemanticRole::NormalGloss)
             .map(str::to_string),
         value_channel: Some("r".to_string()),
-        value_transform: Some("sqrt_one_minus".to_string()),
-        packed_texture_format: Some("roughness_grayscale".to_string()),
-        packed_channel_semantics: Some(roughness_grayscale_channel_semantics()),
-        constant_channel_values: Some(roughness_grayscale_constant_channels()),
+        value_transform: Some(
+            if container == TextureContainer::Dds {
+                "identity"
+            } else {
+                "sqrt_one_minus"
+            }
+            .to_string(),
+        ),
+        packed_texture_format: Some(
+            if container == TextureContainer::Dds {
+                "smoothness"
+            } else {
+                "roughness_grayscale"
+            }
+            .to_string(),
+        ),
+        packed_channel_semantics: Some(if container == TextureContainer::Dds {
+            BTreeMap::from([("r".into(), "smoothness".into())])
+        } else {
+            roughness_grayscale_channel_semantics()
+        }),
+        constant_channel_values: if container == TextureContainer::Dds {
+            None
+        } else {
+            Some(roughness_grayscale_constant_channels())
+        },
     }
 }
 
@@ -5002,12 +5121,13 @@ fn roughness_grayscale_constant_channels() -> BTreeMap<String, String> {
 fn export_ddna_roughness_asset_with_status(
     files: &mut OutputFiles,
     p4k: &MappedP4k,
-    texture_cache: &mut HashMap<(String, TextureFlavor), String>,
+    texture_cache: &mut HashMap<(String, TextureFlavor, TextureContainer), String>,
     ddna_status_cache: &mut HashMap<String, (Option<TextureExportRef>, TextureDerivationStatus)>,
     roughness_cache: &RoughnessCache,
     source_path: &str,
     texture_mip: u32,
     existing_asset_paths: Option<&HashSet<String>>,
+    texture_container: TextureContainer,
 ) -> (Option<TextureExportRef>, TextureDerivationStatus) {
     let Some(_) = ddna_texture_identity(source_path) else {
         return (
@@ -5050,10 +5170,11 @@ fn export_ddna_roughness_asset_with_status(
     }
 
     let normalized_source = normalize_source_path(p4k, source_path);
-    let cache_key = texture_cache_key(&normalized_source, TextureFlavor::Roughness);
-    let requested_path =
-        texture_relative_path(p4k, source_path, TextureFlavor::Roughness, texture_mip);
-
+    let cache_key = texture_cache_key(
+        &normalized_source,
+        TextureFlavor::Roughness,
+        texture_container,
+    );
     // Consult the prewarmed pure-decode cache (keyed by RAW source path) before
     // decoding. This is the ONLY roughness_cache use — the `ddna_status_cache`
     // memo above and all `files`/`texture_cache` inserts below stay serial, so a
@@ -5062,9 +5183,21 @@ fn export_ddna_roughness_asset_with_status(
         .get(source_path)
         .cloned()
         .unwrap_or_else(|| {
-            crate::pipeline::load_roughness_texture_result(p4k, source_path, texture_mip)
+            crate::pipeline::load_roughness_texture_result(
+                p4k,
+                source_path,
+                texture_mip,
+                texture_container,
+            )
         }) {
         Ok(loaded) => {
+            let requested_path = texture_relative_path(
+                p4k,
+                source_path,
+                TextureFlavor::Roughness,
+                texture_mip,
+                loaded.container,
+            );
             let selected_mip = loaded.selected_mip;
             let requested_mip = loaded.requested_mip;
             let mip_selection = loaded.mip_selection;
@@ -5087,7 +5220,7 @@ fn export_ddna_roughness_asset_with_status(
                 texture_cache.insert(cache_key, requested_path.clone());
                 requested_path
             } else {
-                let stored_path = insert_binary_file(files, requested_path, loaded.grayscale_png);
+                let stored_path = insert_binary_file(files, requested_path, loaded.package_bytes);
                 texture_cache.insert(cache_key, stored_path.clone());
                 stored_path
             };
@@ -5096,6 +5229,7 @@ fn export_ddna_roughness_asset_with_status(
                     p4k,
                     source_path,
                     stored_path.clone(),
+                    loaded.container,
                 )),
                 ddna_roughness_derivation_status(
                     p4k,
@@ -5111,12 +5245,12 @@ fn export_ddna_roughness_asset_with_status(
                     Some(width),
                     Some(height),
                     Some(alpha_mip_count),
-                    Some(smoothness_min),
-                    Some(smoothness_max),
-                    Some(smoothness_mean),
-                    Some(roughness_min),
-                    Some(roughness_max),
-                    Some(roughness_mean),
+                    smoothness_min,
+                    smoothness_max,
+                    smoothness_mean,
+                    roughness_min,
+                    roughness_max,
+                    roughness_mean,
                 ),
             )
         }
@@ -5170,6 +5304,14 @@ fn ddna_roughness_derivation_status(
     roughness_max: Option<u8>,
     roughness_mean: Option<u8>,
 ) -> TextureDerivationStatus {
+    let container = if export_path
+        .as_deref()
+        .is_some_and(|path| path.ends_with(".dds"))
+    {
+        TextureContainer::Dds
+    } else {
+        TextureContainer::Png
+    };
     TextureDerivationStatus {
         role: "roughness".to_string(),
         source_path: normalize_source_path(p4k, source_path),
@@ -5181,10 +5323,32 @@ fn ddna_roughness_derivation_status(
         derived_from_channel: ddna_alpha_channel(source_path, TextureSemanticRole::NormalGloss)
             .map(str::to_string),
         value_channel: Some("r".to_string()),
-        value_transform: Some("sqrt_one_minus".to_string()),
-        packed_texture_format: Some("roughness_grayscale".to_string()),
-        packed_channel_semantics: Some(roughness_grayscale_channel_semantics()),
-        constant_channel_values: Some(roughness_grayscale_constant_channels()),
+        value_transform: Some(
+            if container == TextureContainer::Dds {
+                "identity"
+            } else {
+                "sqrt_one_minus"
+            }
+            .to_string(),
+        ),
+        packed_texture_format: Some(
+            if container == TextureContainer::Dds {
+                "smoothness"
+            } else {
+                "roughness_grayscale"
+            }
+            .to_string(),
+        ),
+        packed_channel_semantics: Some(if container == TextureContainer::Dds {
+            BTreeMap::from([("r".into(), "smoothness".into())])
+        } else {
+            roughness_grayscale_channel_semantics()
+        }),
+        constant_channel_values: if container == TextureContainer::Dds {
+            None
+        } else {
+            Some(roughness_grayscale_constant_channels())
+        },
         status: status.to_string(),
         reason: reason.map(str::to_string),
         export_path,
@@ -5205,7 +5369,7 @@ fn ddna_roughness_derivation_status(
     }
 }
 
-fn string_value_to_json(value: &str) -> serde_json::Value {
+pub(crate) fn string_value_to_json(value: &str) -> serde_json::Value {
     if value.eq_ignore_ascii_case("true") {
         return serde_json::Value::Bool(true);
     }
@@ -5226,14 +5390,14 @@ fn string_value_to_json(value: &str) -> serde_json::Value {
 /// `door_open` — no longer merge into one), while instances of the same
 /// entity-type share a key (so they still merge into a single clip). The double
 /// underscore separates the entity stem from the action unambiguously.
-fn interior_clip_key(entity_stem: &str, clip_name: &str) -> String {
+pub(crate) fn interior_clip_key(entity_stem: &str, clip_name: &str) -> String {
     format!("{entity_stem}__{clip_name}")
 }
 
 /// Human-readable panel label for a socpak interior animation: the title-cased
 /// entity stem plus the title-cased clip action. Purely generic (split on `_`,
 /// capitalise each token) — no asset-specific token stripping.
-fn humanize_animation_label(entity_stem: &str, clip_name: &str) -> String {
+pub(crate) fn humanize_animation_label(entity_stem: &str, clip_name: &str) -> String {
     fn titlecase(value: &str) -> String {
         value
             .split('_')
@@ -5251,12 +5415,20 @@ fn humanize_animation_label(entity_stem: &str, clip_name: &str) -> String {
     format!("{} — {}", titlecase(entity_stem), titlecase(clip_name))
 }
 
-fn merge_animation_channel_values(
+pub(crate) fn merge_animation_channel_values(
     existing_value: &mut serde_json::Value,
     incoming_value: serde_json::Value,
     clip_name: &str,
     channel_key: &str,
 ) {
+    // A channel entry is one channel or a flat list of variants. An incoming list joins
+    // variant by variant, so a list never ends up nested inside a list.
+    if let serde_json::Value::Array(incoming_variants) = incoming_value {
+        for variant in incoming_variants {
+            merge_animation_channel_values(existing_value, variant, clip_name, channel_key);
+        }
+        return;
+    }
     if *existing_value == incoming_value {
         return;
     }
@@ -5642,7 +5814,34 @@ mod tests {
         assert_eq!(arr.len(), 2);
     }
 
-    fn sample_submaterial() -> SubMaterial {
+    #[test]
+    fn merge_animation_channel_values_joins_an_incoming_variant_list_flat() {
+        let (a, b, c) = (
+            serde_json::json!({"position": [[1.0, 2.0, 3.0]], "source": 0}),
+            serde_json::json!({"position": [[4.0, 5.0, 6.0]], "source": 1}),
+            serde_json::json!({"position": [[7.0, 8.0, 9.0]], "source": 1}),
+        );
+        // One channel meets a variant list: three variants, never a list inside a list.
+        let mut existing = a.clone();
+        merge_animation_channel_values(
+            &mut existing,
+            serde_json::json!([b.clone(), c.clone()]),
+            "open",
+            "0x1",
+        );
+        assert_eq!(existing, serde_json::json!([a.clone(), b.clone(), c.clone()]));
+        // Two lists that share a variant: each distinct variant once, in merge order.
+        let mut existing = serde_json::json!([a.clone(), b.clone()]);
+        merge_animation_channel_values(
+            &mut existing,
+            serde_json::json!([b.clone(), c.clone()]),
+            "open",
+            "0x1",
+        );
+        assert_eq!(existing, serde_json::json!([a, b, c]));
+    }
+
+    pub(super) fn sample_submaterial() -> SubMaterial {
         SubMaterial {
             name: "hull_panel".into(),
             shader: "LayerBlend_V2".into(),
@@ -5781,7 +5980,7 @@ mod tests {
         }
     }
 
-    fn sample_mesh(submeshes: Vec<crate::types::SubMesh>) -> Mesh {
+    pub(super) fn sample_mesh(submeshes: Vec<crate::types::SubMesh>) -> Mesh {
         let index_count = submeshes
             .iter()
             .map(|submesh| submesh.first_index + submesh.num_indices)
@@ -5929,6 +6128,7 @@ mod tests {
                 "Data/Objects/FPS_Weapons/Test/brfl_fps_behr_p6lr_ddna.dds",
                 TextureFlavor::Roughness,
                 2,
+                TextureContainer::Png,
             ),
             "Data/Objects/FPS_Weapons/Test/brfl_fps_behr_p6lr_ddna_roughness_TEX2.png"
         );
@@ -5988,15 +6188,16 @@ mod tests {
     #[test]
     fn texture_cache_key_normalizes_case_by_flavor() {
         assert_eq!(
-            texture_cache_key("Data/Objects/Test/PANEL_DDNA.dds", TextureFlavor::Roughness),
+            texture_cache_key("Data/Objects/Test/PANEL_DDNA.dds", TextureFlavor::Roughness, TextureContainer::Png),
             (
                 "data/objects/test/panel_ddna.dds".to_string(),
-                TextureFlavor::Roughness
+                TextureFlavor::Roughness,
+                TextureContainer::Png
             )
         );
         assert_ne!(
-            texture_cache_key("Data/Objects/Test/PANEL_DDNA.dds", TextureFlavor::Normal),
-            texture_cache_key("Data/Objects/Test/PANEL_DDNA.dds", TextureFlavor::Roughness)
+            texture_cache_key("Data/Objects/Test/PANEL_DDNA.dds", TextureFlavor::Normal, TextureContainer::Png),
+            texture_cache_key("Data/Objects/Test/PANEL_DDNA.dds", TextureFlavor::Roughness, TextureContainer::Png)
         );
     }
 
@@ -6015,7 +6216,9 @@ mod tests {
             .map(|e| e.name.clone())
             .find(|n| {
                 n.to_ascii_lowercase().ends_with("_ddna.dds")
-                    && crate::pipeline::load_roughness_texture_result(&p4k, n, 0).is_ok()
+                    && crate::pipeline::load_roughness_texture_result(&p4k, n, 0,
+                    TextureContainer::Png,
+                ).is_ok()
             })
             .expect("a decodable ddna source");
 
@@ -6026,12 +6229,15 @@ mod tests {
         let empty = RoughnessCache::new();
         let cold = export_ddna_roughness_asset_with_status(
             &mut f0, &p4k, &mut tc0, &mut sc0, &empty, &src, 0, None,
+            TextureContainer::Png,
         );
 
         // Prewarmed path: cache pre-seeded with the pure decode result.
         let warm_cache: RoughnessCache = std::iter::once((
             src.clone(),
-            crate::pipeline::load_roughness_texture_result(&p4k, &src, 0),
+            crate::pipeline::load_roughness_texture_result(&p4k, &src, 0,
+            TextureContainer::Png,
+        ),
         ))
         .collect();
         let mut f1 = OutputFiles::new();
@@ -6039,11 +6245,14 @@ mod tests {
         let mut sc1 = HashMap::new();
         let warm = export_ddna_roughness_asset_with_status(
             &mut f1, &p4k, &mut tc1, &mut sc1, &warm_cache, &src, 0, None,
+            TextureContainer::Png,
         );
 
         assert_eq!(cold.0, warm.0, "exported ref must match the cold path");
         assert_eq!(cold.1, warm.1, "derivation status must match the cold path");
-        let rel = texture_relative_path(&p4k, &src, TextureFlavor::Roughness, 0);
+        let rel = texture_relative_path(&p4k, &src, TextureFlavor::Roughness, 0,
+        TextureContainer::Png,
+    );
         assert!(
             f1.contains_key(&rel),
             "roughness PNG must be inserted on the prewarmed path"
@@ -7523,14 +7732,16 @@ mod tests {
             "Data/UI/Generated/ship/test/Test/screen.png".to_string(),
             vec![0u8],
         );
-        insert_ui_export_stamp(&mut files);
+        insert_ui_export_stamp(&mut files, "synthetic-build", "synthetic-entity", &ExportOptions::default()).unwrap();
         let stamp = files
             .get(UI_EXPORT_STAMP_PATH)
             .expect("stamp written alongside generated UI files");
         let value: serde_json::Value = serde_json::from_slice(stamp).expect("stamp parses");
-        assert!(value["written_at_epoch_s"].as_u64().is_some_and(|s| s > 0));
-        assert!(value["git_describe"].as_str().is_some_and(|s| !s.is_empty()));
-        assert!(value["binary_built_at_epoch_s"].is_u64());
+        assert_eq!(value["schema_version"], 2);
+        assert_eq!(value["archive_build_id"], "synthetic-build");
+        assert_eq!(value["exporter"]["source_sha256"], crate::export_stamp::SOURCE_SHA256);
+        assert!(value["generated_files"]["Data/UI/Generated/ship/test/Test/screen.png"].is_string());
+        assert!(value.get("written_at_epoch_s").is_none());
     }
 
     #[test]
@@ -7541,7 +7752,7 @@ mod tests {
             "Packages/Test/scene.json".to_string(),
             b"{}".to_vec(),
         );
-        insert_ui_export_stamp(&mut files);
+        insert_ui_export_stamp(&mut files, "synthetic-build", "synthetic-entity", &ExportOptions::default()).unwrap();
         assert!(!files.contains_key(UI_EXPORT_STAMP_PATH));
     }
 
@@ -7575,6 +7786,7 @@ mod tests {
     #[test]
     fn scene_manifest_uses_relative_asset_paths_for_children_and_interiors() {
         let child = SceneInstanceRecord {
+            item_type: Some("Seat".into()), // synthetic category fixture
             entity_name: "child_a".into(),
             geometry_path: "Data/Objects/Ships/Test/child.skin".into(),
             material_path: "Data/Objects/Ships/Test/child.mtl".into(),
@@ -7596,6 +7808,10 @@ mod tests {
             port_flags: "invisible uneditable".into(),
             ui_bindings: Vec::new(),
         };
+        assert!(scene_instance_json(&child).as_object().unwrap().contains_key("item_type"));
+        assert_eq!(scene_instance_json(&child)["item_type"], "Seat");
+        let unknown = SceneInstanceRecord { item_type: None, ..child.clone() };
+        assert!(scene_instance_json(&unknown)["item_type"].is_null());
         let interior = InteriorContainerRecord {
             name: "interior_main".into(),
             parent_entity_name: Some("child_entity".into()),
@@ -7614,7 +7830,13 @@ mod tests {
                 material_sidecar: Some(
                     "Data/Objects/Ships/Test/interior_panel.materials.json".into(),
                 ),
-                entity_class_guid: Some("1234".into()),
+                identity: crate::types::PlacementIdentity {
+                    entity_id: Some("door-id".into()),
+                    entity_class_guid: Some("1234".into()),
+                    links: vec!["target-id".into()],
+                    loadout_owner_entity_id: None,
+                    item_port_name: None,
+                },
                 ui_bindings: Vec::new(),
                 transform: [
                     [1.0, 0.0, 0.0, 0.0],
@@ -7625,6 +7847,8 @@ mod tests {
                 palette_id: None,
             }],
             lights: vec![serde_json::json!({ "name": "light_a" })],
+            room_volumes: vec![serde_json::json!({ "kind": "box" })],
+            proximity_sensors: vec![serde_json::json!({ "entity_id": "sensor-id", "links": ["door-id"] })],
         };
 
         let value = build_scene_manifest_value(
@@ -7677,6 +7901,17 @@ mod tests {
             value["interiors"][0]["placements"][0]["mesh_asset"],
             serde_json::json!("Data/Objects/Ships/Test/interior_panel.glb")
         );
+        // Container entity identity: joins links, sensors and loadout items.
+        let placement = &value["interiors"][0]["placements"][0];
+        assert_eq!(placement["entity_id"], "door-id");
+        assert_eq!(placement["entity_class_guid"], "1234");
+        assert_eq!(placement["links"], serde_json::json!(["target-id"]));
+        assert!(placement["loadout_owner_entity_id"].is_null());
+        assert!(placement["item_port_name"].is_null());
+        assert_eq!(
+            value["interiors"][0]["proximity_sensors"][0]["links"],
+            serde_json::json!(["door-id"])
+        );
         assert_eq!(
             value["package_rule"]["package_dir"],
             serde_json::json!("Packages/ARGO MOLE")
@@ -7726,6 +7961,14 @@ mod tests {
         );
     }
 
+    fn synthetic_glow_link(multiplier: f32, minimum: f32, maximum: f32) -> crate::pipeline::engine_glow::GlowPropertyLink {
+        use crate::pipeline::engine_glow::{GlowPropertyLink, GlowModifier};
+        GlowPropertyLink { effect_kind: "tagEffects".into(), effect_index: 0, property_link_index: 0,
+            submesh_name: "arbitrary".into(), parameter_record_id: None, tag_record_id: None,
+            modifiers: vec![GlowModifier::Multiplier { multiplier }, GlowModifier::MinMax { minimum, maximum }],
+            multiplier: Some(multiplier), minimum: Some(minimum), maximum: Some(maximum) }
+    }
+
     #[test]
     fn scene_manifest_includes_engine_glow_controls() {
         let value = build_scene_manifest_value(
@@ -7740,6 +7983,8 @@ mod tests {
             &[],
             &[],
             &[EngineGlowTargetRecord {
+                property_links: vec![synthetic_glow_link(3.0, 2.0, 17.0), synthetic_glow_link(7.0, 4.0, 29.0)],
+                static_glow: 0.0,
                 material_sidecar: "Data/Objects/Ships/Test/root.materials.json".into(),
                 entity_name: "DRAK_Clipper_Thruster_Main".into(),
                 geometry_path: "Data/Objects/Spaceships/Thrusters/DRAK/test_thruster.cga".into(),
@@ -7756,12 +8001,17 @@ mod tests {
 
         assert_eq!(
             value["controls"]["engine_glow"]["default_strength"],
-            serde_json::json!(0.0)
+            serde_json::json!(2.0)
         );
         assert_eq!(
             value["controls"]["engine_glow"]["targets"][0]["geometry_path"],
             serde_json::json!("Data/Objects/Spaceships/Thrusters/DRAK/test_thruster.cga")
         );
+        assert_eq!(value["controls"]["engine_glow"]["min_strength"], 2.0);
+        assert_eq!(value["controls"]["engine_glow"]["max_strength"], 29.0);
+        assert_eq!(value["controls"]["engine_glow"]["targets"][0]["multiplier"], serde_json::json!([3.0, 7.0]));
+        assert_eq!(value["controls"]["engine_glow"]["targets"][0]["minimum"], serde_json::json!([2.0, 4.0]));
+        assert_eq!(value["controls"]["engine_glow"]["targets"][0]["maximum"], serde_json::json!([17.0, 29.0]));
         assert_eq!(
             value["controls"]["engine_glow"]["targets"][0]["source_material_index"],
             serde_json::json!(7)
@@ -7769,11 +8019,12 @@ mod tests {
     }
 
     #[test]
-    fn engine_glow_targets_follow_datacore_thruster_entity_material_bindings() {
+    fn static_emission_without_glow_link_is_not_engine_control_target() {
         let mut glow_material = sample_submaterial();
         glow_material.name = "Glow_Thrusters".into();
         glow_material.shader = "Illum".into();
         glow_material.glow = 1.0;
+        glow_material.emissive = [0.5, 0.25, 0.75]; // Synthetic positive emission.
 
         let materials = MtlFile {
             materials: vec![glow_material],
@@ -7796,23 +8047,46 @@ mod tests {
             Some(&materials),
             Some("Data/Objects/Ships/Test/root.materials.json"),
             &[5],
+            &HashMap::new(),
             "DRAK_Test_Thruster_Main",
             "Objects/Spaceships/Thrusters/DRAK/test_thruster.cga",
             "Data/Objects/Spaceships/Thrusters/DRAK/test_thruster_LOD0.blend",
         );
 
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].entity_name, "DRAK_Test_Thruster_Main");
-        assert_eq!(
-            targets[0].geometry_path,
-            "Data/Objects/Spaceships/Thrusters/DRAK/test_thruster.cga"
-        );
-        assert_eq!(
-            targets[0].mesh_asset,
-            "Data/Objects/Spaceships/Thrusters/DRAK/test_thruster_LOD0.blend"
-        );
-        assert_eq!(targets[0].source_material_index, 5);
-        assert_eq!(targets[0].submaterial_name, "Glow_Thrusters");
+        assert!(targets.is_empty(), "static emission is not a runtime Glow link");
+    }
+
+    #[test]
+    fn authored_glow_effect_enables_zero_static_emission_on_bound_material_only() {
+        let mut material = sample_submaterial();
+        material.name = "arbitrary".into();
+        material.shader = "Illum".into();
+        material.emissive = [0.0; 3];
+        material.glow = 0.0;
+        assert_eq!(material.emissive_factor(), [0.0; 3]);
+        let materials = MtlFile {
+            materials: vec![material],
+            source_path: None,
+            paint_override: None,
+            material_set: Default::default(),
+        };
+        let mesh = sample_mesh(vec![crate::types::SubMesh {
+            material_name: None,
+            material_id: 0,
+            source_material_id: Some(7),
+            first_index: 0,
+            num_indices: 3,
+            first_vertex: 0,
+            num_vertices: 3,
+            node_parent_index: 0,
+        }]);
+        for (ids, expected) in [(HashMap::from([(7, vec![synthetic_glow_link(3.0, 2.0, 17.0)])]), 1), (HashMap::from([(9, vec![synthetic_glow_link(3.0, 2.0, 17.0)])]), 0), (HashMap::new(), 0)] {
+            let targets = build_thruster_engine_glow_targets(
+                &mesh, Some(&materials), Some("synthetic.materials.json"),
+                &[7], &ids, "synthetic", "synthetic.cga", "synthetic.glb",
+            );
+            assert_eq!(targets.len(), expected);
+        }
     }
 
     #[test]
@@ -8207,3 +8481,7 @@ mod tests {
     // they require a real `MappedP4k` because the builders adopt P4K-entry
     // casing (there is no in-memory archive to assert literal casing against).
 }
+
+#[cfg(test)]
+#[path = "decomposed_texture_tests.rs"]
+mod texture_container_tests;

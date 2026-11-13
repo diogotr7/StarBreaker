@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use starbreaker_common::progress::{Progress, report as report_progress};
+use starbreaker_common::progress::{Progress, report_checked as report_progress};
 use starbreaker_datacore::database::Database;
 use starbreaker_datacore::types::Record;
 use starbreaker_p4k::MappedP4k;
@@ -20,6 +20,33 @@ use crate::nmc::NodeMeshCombo;
 use crate::types::MaterialTextures;
 
 use super::*;
+
+/// Material loading policy at the assembly entry point. The first mode also
+/// controls child texture loading during attachment flattening and landing gear;
+/// the second controls the child geometry payloads.
+fn assembly_material_modes(opts: &ExportOptions, is_fps_weapon: bool) -> (MaterialMode, MaterialMode) {
+    // DDS pass-through must run before any bundled decode/PNG conversion,
+    // including the FPS weapon path and all of its attachments.
+    let defer_textures = opts.kind == ExportKind::Decomposed
+        && (!is_fps_weapon || opts.texture_container == TextureContainer::Dds);
+    let payload_material_mode = if defer_textures {
+        MaterialMode::Colors
+    } else {
+        opts.material_mode
+    };
+    let child_material_mode = if defer_textures {
+        MaterialMode::Colors
+    } else if is_fps_weapon {
+        opts.material_mode
+    } else {
+        match opts.material_mode {
+            _ if opts.kind == ExportKind::Decomposed => MaterialMode::Colors,
+            MaterialMode::None => MaterialMode::None,
+            _ => MaterialMode::Colors,
+        }
+    };
+    (payload_material_mode, child_material_mode)
+}
 
 pub fn assemble_glb_with_loadout(
     db: &Database,
@@ -57,13 +84,10 @@ pub fn assemble_glb_with_loadout_with_progress(
     let assembly_kind = classify_entity_kind(db, record);
     let is_fps_weapon = assembly_kind == EntityAssemblyKind::FpsWeapon;
 
-    report_progress(progress, LOADOUT_STAGE_START, "Resolving loadout");
+    report_progress(progress, LOADOUT_STAGE_START, "Resolving loadout")?;
     let phase_start = Instant::now();
-    let payload_material_mode = if opts.kind == ExportKind::Decomposed && !is_fps_weapon {
-        MaterialMode::Colors
-    } else {
-        opts.material_mode
-    };
+    let (payload_material_mode, child_material_mode) =
+        assembly_material_modes(opts, is_fps_weapon);
     let payload_opts = ExportOptions {
         material_mode: payload_material_mode,
         ..opts.clone()
@@ -71,6 +95,11 @@ pub fn assemble_glb_with_loadout_with_progress(
 
     log::info!("[mem-pipeline] resolving loadout meshes...");
     let resolved = resolve_loadout_meshes(db, p4k, record, tree, &payload_opts)?;
+    let animation_sources = if opts.include_animations {
+        super::animation_sources::discover_animation_sources(
+            db, p4k, record, resolved.geometry_path.as_deref(), &resolved.children, opts,
+        )
+    } else { Vec::new() };
     log::info!(
         "[mem-pipeline] resolved: {} children",
         resolved.children.len()
@@ -80,7 +109,7 @@ pub fn assemble_glb_with_loadout_with_progress(
         phase_start.elapsed().as_secs_f32()
     );
 
-    report_progress(progress, ROOT_EXPORT_STAGE_START, "Exporting root mesh");
+    report_progress(progress, ROOT_EXPORT_STAGE_START, "Exporting root mesh")?;
     let phase_start = Instant::now();
     let localization = load_localization_map(p4k);
     let paint_display_names = build_paint_display_name_map(db, &localization);
@@ -136,27 +165,14 @@ pub fn assemble_glb_with_loadout_with_progress(
     // Landing gear CDF geometry attaches to NMC helper bones (e.g. hardpoint_landing_gear_front).
     // Adding them as EntityPayloads lets the existing scene graph handle positioning.
     // Children skip textures to save memory, but never exceed the user's material mode.
-    let child_payload_material_mode = if opts.kind == ExportKind::Decomposed && !is_fps_weapon {
-        MaterialMode::Colors
-    } else {
-        opts.material_mode
-    };
-    let child_material_mode = if is_fps_weapon {
-        opts.material_mode
-    } else {
-        match opts.material_mode {
-            _ if opts.kind == ExportKind::Decomposed => MaterialMode::Colors,
-            MaterialMode::None => MaterialMode::None,
-            _ => MaterialMode::Colors,
-        }
-    };
+    let child_payload_material_mode = payload_material_mode;
     let child_opts = ExportOptions {
         material_mode: child_material_mode,
         ..payload_opts.clone()
     };
     let gear_parts = query_landing_gear(db, record);
     let mut child_payloads: Vec<EntityPayload> = Vec::new();
-    report_progress(progress, FLATTEN_STAGE_START, "Flattening attachments");
+    report_progress(progress, FLATTEN_STAGE_START, "Flattening attachments")?;
     let phase_start = Instant::now();
     if opts.include_attachments {
         let mut gear_cache: HashMap<String, LandingGearAsset> = HashMap::new();
@@ -288,12 +304,13 @@ pub fn assemble_glb_with_loadout_with_progress(
     } else {
         None
     };
-    report_progress(progress, ASSEMBLY_STAGE_START, "Discovering interiors");
+    report_progress(progress, ASSEMBLY_STAGE_START, "Discovering interiors")?;
 
     // Interior discovery (no mesh loading — JIT during GLB packing).
     let phase_start = Instant::now();
+    let mut light_resolver = crate::socpak::light_component::LightResolver::new(db);
     let mut loaded_interiors = if opts.include_interior && !opts.format.is_stl() {
-        load_interiors(db, p4k, record, opts)
+        load_interiors(db, p4k, record, opts, &mut light_resolver)
     } else {
         LoadedInteriors::default()
     };
@@ -310,6 +327,7 @@ pub fn assemble_glb_with_loadout_with_progress(
             &resolved.children,
             &root_container_names,
             opts,
+            &mut light_resolver,
         );
         merge_interiors(&mut loaded_interiors, child_interiors);
     }
@@ -369,7 +387,7 @@ pub fn assemble_glb_with_loadout_with_progress(
         } else {
             "Packing GLB"
         },
-    );
+    )?;
     let preloaded_interior_mesh_indices: std::collections::HashMap<String, usize> =
         loaded_interiors
             .unique_cgfs
@@ -452,6 +470,12 @@ pub fn assemble_glb_with_loadout_with_progress(
         let decomposed_progress =
             progress.map(|progress| progress.sub(ASSEMBLY_STAGE_START, ASSEMBLY_STAGE_END));
 
+        // WP-P3: the vehicle's physics-grid volume, beside the colliders in the mesh assets.
+        let physics_grid = if opts.include_physics {
+            crate::physics_grid::query_physics_grid(db, p4k, record)?
+        } else {
+            None
+        };
         let decomposed_input = crate::decomposed::DecomposedInput {
             entity_name: resolved.entity_name.clone(),
             geometry_path: geometry_path.clone(),
@@ -469,12 +493,13 @@ pub fn assemble_glb_with_loadout_with_progress(
             root_palette: root_palette.clone(),
             available_palettes,
             root_bones,
-            root_skeleton_source_path,
+            animation_sources,
             root_animation_controller,
             children: child_payloads,
             interiors: loaded_interiors,
             paint_variants,
             animations: Vec::new(),
+            physics_grid,
         };
 
         let phase_start = Instant::now();
@@ -493,7 +518,7 @@ pub fn assemble_glb_with_loadout_with_progress(
             phase_start.elapsed().as_secs_f32()
         );
 
-        report_progress(progress, ASSEMBLY_STAGE_END, "Writing structured package");
+        report_progress(progress, ASSEMBLY_STAGE_END, "Writing structured package")?;
 
         return Ok(ExportResult {
             kind: opts.kind,
@@ -527,6 +552,7 @@ pub fn assemble_glb_with_loadout_with_progress(
         &crate::gltf::GlbOptions {
             material_mode: opts.material_mode,
             preserve_textureless_decal_primitives: false,
+            preserve_material_slots: false,
             metadata: crate::gltf::GlbMetadata {
                 entity_name: Some(resolved.entity_name.clone()),
                 geometry_path: Some(geometry_path.clone()),
@@ -550,7 +576,7 @@ pub fn assemble_glb_with_loadout_with_progress(
         phase_start.elapsed().as_secs_f32()
     );
 
-    report_progress(progress, ASSEMBLY_STAGE_END, "Writing bundled file");
+    report_progress(progress, ASSEMBLY_STAGE_END, "Writing bundled file")?;
 
     log::info!(
         "[timing] TOTAL export time: {:.2}s",
@@ -593,6 +619,53 @@ fn select_root_nmc(
 mod tests {
     use super::*;
     use crate::nmc::{NmcNode, NodeMeshCombo};
+
+    #[test]
+    fn assembly_entry_defers_dds_weapon_and_child_textures() {
+        for material_mode in [MaterialMode::Textures, MaterialMode::All] {
+            let opts = ExportOptions {
+                kind: ExportKind::Decomposed,
+                texture_container: TextureContainer::Dds,
+                material_mode,
+                ..Default::default()
+            };
+            let (root_and_child_textures, child_payloads) = assembly_material_modes(&opts, true);
+            assert_eq!(root_and_child_textures, MaterialMode::Colors);
+            assert_eq!(child_payloads, MaterialMode::Colors);
+        }
+    }
+
+    #[test]
+    fn assembly_entry_preserves_png_and_bundled_weapon_modes() {
+        for kind in [ExportKind::Decomposed, ExportKind::Bundled] {
+            for material_mode in [
+                MaterialMode::None,
+                MaterialMode::Colors,
+                MaterialMode::Textures,
+                MaterialMode::All,
+            ] {
+                let opts = ExportOptions {
+                    kind,
+                    material_mode,
+                    ..Default::default()
+                };
+                assert_eq!(
+                    assembly_material_modes(&opts, true),
+                    (material_mode, material_mode)
+                );
+                if kind == ExportKind::Bundled {
+                    let opts = ExportOptions {
+                        texture_container: TextureContainer::Dds,
+                        ..opts
+                    };
+                    assert_eq!(
+                        assembly_material_modes(&opts, true),
+                        (material_mode, material_mode)
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn exported_root_nmc_takes_priority_over_loadout_probe_nmc() {
