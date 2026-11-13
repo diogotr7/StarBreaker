@@ -69,6 +69,12 @@ assets (`decomposed_physics.rs`):
 - Nodes the export drops (`filter_nmc_hierarchy`, e.g. `$proxy_*`) that carry colliders are recreated as
   transform-only nodes. Whole-object physics (`0xFFFF`) sits on the object's single geometry node, else on a
   `$physics_object` node whose frame is the object's.
+- A character definition (`.cdf`, CryXmlB) carries no physics chunk: its mesh asset gets the physics of each
+  attachment's `Binding` file (in 4.10.2 all 148 distinct `CA_BONE` `.cgf` / `.cga` parts of the 1 703 `.cdf`
+  carry `StatObjPhysics`). A `CA_BONE` part's records sit under the glTF node of its `BoneName` (the frame its
+  rigid render part moves with; per-node records on transform-only recreations of the part's NMC nodes,
+  whole-object records on a matrix-less `$physics_object` child); a part on no bone, or on a bone the GLB lacks,
+  sits in the object's frame as above. Each such record carries `source`, the attachment's `Binding` path.
 - `root_entity.physics_grid` (vehicles; `physics_grid.rs`): the vehicle's physics-grid volume from DataCore
   `VehicleComponentParams.physicsGrid.physicsProxy` — `{ "source_path", "shapes": [...] }`, shapes as above but in
   the root entity's frame (CryEngine Z-up metres) with trimesh `vertices` / `triangles` inline: each node's NMC

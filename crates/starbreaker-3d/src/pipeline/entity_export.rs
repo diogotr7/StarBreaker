@@ -482,8 +482,16 @@ pub(crate) fn resolve_geometry_files(
             path: p4k_path.clone(),
         })?;
     let data = p4k.read(entry).map_err(Error::P4k)?;
+    parse_character_definition(geometry_path, &data)
+}
 
-    let xml = starbreaker_cryxml::from_bytes(&data)
+/// The parts of a CryXmlB character definition (`.cdf`): every `<Attachment>` `Binding`, with the `BoneName` a
+/// `CA_BONE` attachment is bound to, and the `<Model File>` skeleton. `geometry_path` names it in errors.
+pub(crate) fn parse_character_definition(
+    geometry_path: &str,
+    data: &[u8],
+) -> Result<ResolvedGeometry, Error> {
+    let xml = starbreaker_cryxml::from_bytes(data)
         .map_err(|e| Error::Other(format!("Failed to parse CDF {geometry_path}: {e}")))?;
 
     let root = xml.root();

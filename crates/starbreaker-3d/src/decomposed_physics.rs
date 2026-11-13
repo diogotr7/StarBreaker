@@ -9,7 +9,9 @@
 //! geometry type 0: 96 of 111 sampled `.cga` with whole-object physics, none also with per-node physics), so it
 //! moves with that node (an animated door leaf); otherwise it sits on a `$physics_object` child of the first content
 //! root whose matrix undoes that root's, so its frame is the object's. A record whose node name gives a collision
-//! class ([`crate::physics_class`]) carries it as `class`. Contract: docs/decomposed-export-contract.md.
+//! class ([`crate::physics_class`]) carries it as `class`. A CryXmlB character definition (`.cdf`) has no chunks:
+//! [`attach_character_physics`] adds its attachments' physics, a `CA_BONE` part's in its bone's glTF node, each
+//! record carrying its part file as `source`. Contract: docs/decomposed-export-contract.md.
 use crate::error::Error;
 use crate::ivo::physics::{PhysicsEntry, PhysicsGeometry, read_physics};
 use crate::nmc::{NmcNode, NodeMeshCombo};
@@ -18,9 +20,24 @@ use starbreaker_p4k::MappedP4k;
 
 /// The GLB with the physics of `geometry_path` attached; unchanged when the source carries none.
 pub(crate) fn attach_source_physics(p4k: &MappedP4k, geometry_path: &str, nmc: Option<&NodeMeshCombo>, glb: Vec<u8>) -> Result<Vec<u8>, Error> {
-    let p4k_path = crate::pipeline::datacore_path_to_p4k(geometry_path);
-    let Some(entry) = p4k.entry_case_insensitive(&p4k_path) else { return Ok(glb) };
-    let bytes = p4k.read(entry).map_err(|e| Error::Other(format!("{geometry_path}: {e}")))?;
+    let mut read = |path: &str| -> Result<Option<Vec<u8>>, Error> {
+        let Some(entry) = p4k.entry_case_insensitive(&crate::pipeline::datacore_path_to_p4k(path)) else { return Ok(None) };
+        p4k.read(entry).map(Some).map_err(|e| Error::Other(format!("{path}: {e}")))
+    };
+    attach_physics_from(&mut read, geometry_path, nmc, glb)
+}
+
+/// [`attach_source_physics`] over `read` (a DataCore-style path to the file's bytes, `None` when absent).
+pub(crate) fn attach_physics_from(
+    read: &mut dyn FnMut(&str) -> Result<Option<Vec<u8>>, Error>,
+    geometry_path: &str,
+    nmc: Option<&NodeMeshCombo>,
+    glb: Vec<u8>,
+) -> Result<Vec<u8>, Error> {
+    let Some(bytes) = read(geometry_path)? else { return Ok(glb) };
+    if starbreaker_cryxml::is_cryxmlb(&bytes) {
+        return attach_character_physics_from(read, geometry_path, &bytes, glb);
+    }
     match read_physics(&bytes).map_err(|e| Error::Other(format!("{geometry_path}: {e}")))? {
         Some(entries) if !entries.is_empty() => {
             let source = crate::nmc::parse_nmc_full(&bytes).map(|(nodes, _)| nodes);
@@ -28,6 +45,70 @@ pub(crate) fn attach_source_physics(p4k: &MappedP4k, geometry_path: &str, nmc: O
         }
         _ => Ok(glb),
     }
+}
+
+/// A CryXmlB character definition (`.cdf`) holds no geometry of its own: its physics is that of the files its
+/// attachments bind (`CA_BONE` `.cgf` / `.cga` parts carry `StatObjPhysics`). A part file the archive lacks adds
+/// none, as its mesh adds no render geometry (`load_geometry_parts`).
+fn attach_character_physics_from(
+    read: &mut dyn FnMut(&str) -> Result<Option<Vec<u8>>, Error>,
+    geometry_path: &str,
+    bytes: &[u8],
+    glb: Vec<u8>,
+) -> Result<Vec<u8>, Error> {
+    let character = crate::pipeline::parse_character_definition(geometry_path, bytes)?;
+    let mut parts = Vec::new();
+    for part in character.parts {
+        let Some(part_bytes) = read(&part.path)? else { continue };
+        let entries = read_physics(&part_bytes).map_err(|e| Error::Other(format!("{geometry_path}: {}: {e}", part.path)))?;
+        if let Some(entries) = entries.filter(|e| !e.is_empty()) {
+            let source = crate::nmc::parse_nmc_full(&part_bytes).map(|(nodes, _)| nodes);
+            parts.push(AttachmentPhysics { path: part.path, bone: part.bone_name, entries, source });
+        }
+    }
+    if parts.is_empty() {
+        return Ok(glb);
+    }
+    attach_character_physics(glb, &parts).map_err(|e| Error::Other(format!("{geometry_path}: {e}")))
+}
+
+/// The physics of one character attachment's file.
+pub(crate) struct AttachmentPhysics {
+    /// The attachment's `Binding`; records carry it as `source`.
+    pub path: String,
+    /// The `BoneName` a `CA_BONE` attachment is rigidly bound to.
+    pub bone: Option<String>,
+    pub entries: Vec<PhysicsEntry>,
+    /// The part file's NMC (physics keys index it); none of its nodes are in the character's GLB.
+    pub source: Option<Vec<NmcNode>>,
+}
+
+/// Where a source's dropped NMC roots and its `$physics_object` hang.
+#[derive(Clone, Copy)]
+enum Anchor {
+    /// The first content root, its matrix undone: the object's frame.
+    Object,
+    /// A glTF node whose frame is the source's (a bone a `CA_BONE` attachment is bound to).
+    Node(usize),
+}
+
+/// Add each attachment's records to a character's mesh-asset GLB. A part bound to a bone sits in that bone's
+/// glTF node (matched by name, case-insensitively, as `load_geometry_parts` matches skeleton bones): the frame its
+/// rigid render vertices move with. A part on no bone, or on a bone the GLB lacks (whose render vertices the merge
+/// leaves unmoved), sits in the object's frame.
+pub(crate) fn attach_character_physics(glb: Vec<u8>, parts: &[AttachmentPhysics]) -> Result<Vec<u8>, Error> {
+    let (mut root, mut bin) = split_glb(&glb)?;
+    for part in parts {
+        let bone_node = part.bone.as_deref().and_then(|bone| {
+            root["nodes"].as_array()?.iter().position(|n| n["name"].as_str().is_some_and(|name| name.eq_ignore_ascii_case(bone)))
+        });
+        let anchor = bone_node.map_or(Anchor::Object, Anchor::Node);
+        let source = part.source.as_deref().unwrap_or(&[]);
+        let mut aligned = vec![None; source.len()];
+        add_records(&mut root, &mut bin, &part.entries, source, &mut aligned, anchor, Some(&part.path))
+            .map_err(|e| Error::Other(format!("{}: {e}", part.path)))?;
+    }
+    finish_glb(root, bin)
 }
 
 /// Add `entries` to a GLB written by `crate::gltf::write_glb` for one mesh asset. `source` is the file's full
@@ -53,13 +134,28 @@ pub(crate) fn attach_physics(glb: Vec<u8>, entries: &[PhysicsEntry], source: Opt
     if next != kept.len() {
         return Err(Error::Other(format!("physics: GLB nodes do not follow the source NMC ({next} of {} aligned)", kept.len())));
     }
+    add_records(&mut root, &mut bin, entries, source, &mut aligned, Anchor::Object, None)?;
+    finish_glb(root, bin)
+}
+
+/// Place `entries` (keys index `source`; `aligned[i]` is source node `i`'s glTF node, if written) in the GLB.
+/// `origin`, when given, is recorded as each record's `source`.
+fn add_records(
+    root: &mut Value,
+    bin: &mut Vec<u8>,
+    entries: &[PhysicsEntry],
+    source: &[NmcNode],
+    aligned: &mut [Option<usize>],
+    anchor: Anchor,
+    origin: Option<&str>,
+) -> Result<(), Error> {
     let geometry_nodes: Vec<usize> = (0..source.len()).filter(|&i| source[i].geometry_type == 0).collect();
     let object_node = (geometry_nodes.len() == 1).then(|| geometry_nodes[0]);
     let mut records: Vec<(Option<usize>, Value)> = Vec::new();
     for e in entries {
         let source_node = e.node.map(usize::from).or(object_node);
         let target = match source_node {
-            Some(n) if n < source.len() => Some(gltf_node(&mut root, source, &mut aligned, n)?),
+            Some(n) if n < source.len() => Some(gltf_node(root, source, aligned, n, anchor)?),
             Some(n) => return Err(Error::Other(format!("physics: node {n} outside the NMC ({} nodes)", source.len()))),
             None => None,
         };
@@ -71,7 +167,7 @@ pub(crate) fn attach_physics(glb: Vec<u8>, entries: &[PhysicsEntry], source: Opt
             PhysicsGeometry::Capsule { center, axis, radius, half_height } =>
                 json!({"kind": "capsule", "center": center, "axis": axis, "radius": radius, "half_height": half_height}),
             PhysicsGeometry::Trimesh { vertices, triangles, .. } => {
-                let mesh = push_trimesh(&mut root, &mut bin, vertices, triangles, e)?;
+                let mesh = push_trimesh(root, bin, vertices, triangles, e)?;
                 json!({"kind": "trimesh", "mesh": mesh, "vertices": vertices.len(), "triangles": triangles.len()})
             }
             PhysicsGeometry::DamageMesh { bytes } => json!({"kind": "damage_mesh", "bytes": bytes}),
@@ -81,6 +177,9 @@ pub(crate) fn attach_physics(glb: Vec<u8>, entries: &[PhysicsEntry], source: Opt
         if let Some(class) = source_node.and_then(|n| crate::physics_class::collision_class(&source[n].name)) {
             r["class"] = json!(class);
         }
+        if let Some(origin) = origin {
+            r["source"] = json!(origin);
+        }
         records.push((target, r));
     }
     let object: Vec<Value> = records.iter().filter(|(t, _)| t.is_none()).map(|(_, r)| r.clone()).collect();
@@ -88,27 +187,32 @@ pub(crate) fn attach_physics(glb: Vec<u8>, entries: &[PhysicsEntry], source: Opt
         push_record(&mut root["nodes"][target.unwrap()], r);
     }
     if !object.is_empty() {
-        add_object_node(&mut root, object)?;
+        add_object_node(root, object, anchor)?;
     }
+    Ok(())
+}
+
+fn finish_glb(mut root: Value, mut bin: Vec<u8>) -> Result<Vec<u8>, Error> {
     while bin.len() % 4 != 0 { bin.push(0); }
     root["buffers"][0]["byteLength"] = json!(bin.len());
     join_glb(&root, &bin)
 }
 
 /// The glTF node of source NMC node `i`, recreating a dropped node (and dropped ancestors) as transform-only.
-fn gltf_node(root: &mut Value, source: &[NmcNode], aligned: &mut [Option<usize>], i: usize) -> Result<usize, Error> {
+fn gltf_node(root: &mut Value, source: &[NmcNode], aligned: &mut [Option<usize>], i: usize, anchor: Anchor) -> Result<usize, Error> {
     if let Some(index) = aligned[i] { return Ok(index); }
     let node = &source[i];
     let local: Option<Vec<f64>> = (!crate::gltf::is_identity_or_zero(&node.bone_to_world))
         .then(|| crate::gltf::mat3x4_to_gltf(&node.bone_to_world).iter().map(|&v| f64::from(v)).collect());
     let parent = match node.parent_index.map(usize::from).filter(|&p| p < source.len() && p != i) {
-        Some(p) => Some(gltf_node(root, source, aligned, p)?),
+        Some(p) => Some(gltf_node(root, source, aligned, p, anchor)?),
         None => None,
     };
-    let (parent, matrix) = match parent {
-        Some(p) => (p, local),
+    let (parent, matrix) = match (parent, anchor) {
+        (Some(p), _) => (p, local),
+        (None, Anchor::Node(p)) => (p, local),
         // A dropped NMC root: under the first content root, with that root's matrix undone (as `$physics_object`).
-        None => {
+        (None, Anchor::Object) => {
             let content = content_root(root)?;
             let undo = root["nodes"][content]["matrix"].as_array()
                 .map(|m| invert_affine(&m.iter().map(|v| v.as_f64().unwrap_or(f64::NAN)).collect::<Vec<_>>()))
@@ -151,11 +255,15 @@ fn push_record(node: &mut Value, record: Value) {
 }
 
 /// Whole-object physics: a child of the first content root (under the coordinate wrapper) with that root's
-/// matrix inverted, so the records sit in the object's frame without changing the wrapper's children.
-fn add_object_node(root: &mut Value, records: Vec<Value>) -> Result<(), Error> {
-    let content = content_root(root)?;
+/// matrix inverted, so the records sit in the object's frame without changing the wrapper's children; or, for
+/// [`Anchor::Node`], a plain child of that node.
+fn add_object_node(root: &mut Value, records: Vec<Value>, anchor: Anchor) -> Result<(), Error> {
     let mut node = json!({"name": "$physics_object", "extras": {"sc_physics": records}});
-    if let Some(m) = root["nodes"][content]["matrix"].as_array() {
+    let content = match anchor {
+        Anchor::Node(p) => p,
+        Anchor::Object => content_root(root)?,
+    };
+    if let (Anchor::Object, Some(m)) = (anchor, root["nodes"][content]["matrix"].as_array()) {
         let m: Vec<f64> = m.iter().map(|v| v.as_f64().unwrap_or(f64::NAN)).collect();
         node["matrix"] = json!(invert_affine(&m).ok_or_else(|| Error::Other("physics: singular content root matrix".into()))?);
     }

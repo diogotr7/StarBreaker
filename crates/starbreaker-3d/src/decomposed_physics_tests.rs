@@ -126,3 +126,97 @@ fn records_carry_the_collision_class_of_their_node() {
     assert_eq!(root["nodes"][1]["extras"]["sc_physics"][0]["class"], "interaction");
     assert!(root["nodes"][0]["extras"]["sc_physics"][0].get("class").is_none(), "ordinary colliders carry no class");
 }
+
+/// A minimal IVO chunk file: `chunks` as (type, data) after the 16-byte header and the 16-byte table entries.
+fn ivo(chunks: &[(u32, Vec<u8>)]) -> Vec<u8> {
+    let mut b = Vec::new();
+    for v in [0x6F76_6923u32, 0x900, chunks.len() as u32, 16] { b.extend(v.to_le_bytes()); }
+    let mut offset = 16 + 16 * chunks.len() as u64;
+    for (kind, data) in chunks {
+        b.extend(kind.to_le_bytes());
+        b.extend(0u32.to_le_bytes());
+        b.extend(offset.to_le_bytes());
+        offset += data.len() as u64;
+    }
+    for (_, data) in chunks { b.extend(data); }
+    b
+}
+/// A `StatObjPhysics` chunk with one whole-object (`0xFFFF`, part 1) sphere of `radius` at the origin.
+fn sphere_physics(radius: f32) -> Vec<u8> {
+    let mut blob = Vec::new();
+    for v in [2i32, 0] { blob.extend(v.to_le_bytes()); }
+    let volume = 4.0 / 3.0 * std::f32::consts::PI * radius.powi(3);
+    for v in [1.0f32, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, volume] { blob.extend(v.to_le_bytes()); }
+    for v in [1i32, 0, 0, 0, 4] { blob.extend(v.to_le_bytes()); }
+    for v in [0.0f32, 0.0, 0.0, radius] { blob.extend(v.to_le_bytes()); }
+    blob.resize(156, 0);
+    let mut chunk = vec![0u8; 80];
+    chunk[40..44].copy_from_slice(&1u32.to_le_bytes());
+    chunk.extend((blob.len() as u32).to_le_bytes());
+    chunk.extend(0x0001_FFFFu32.to_le_bytes());
+    chunk.extend(blob);
+    ivo(&[(starbreaker_chunks::known_types::ivo::STATOBJ_PHYSICS, chunk)])
+}
+/// Content root `body` (translated by (1, 2, 3)) with the bone node `display_01` (translated by (0, 0, 4)) under it.
+fn character_glb() -> Vec<u8> {
+    let t = |x: f64, y: f64, z: f64| json!([1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, x, y, z, 1.0]);
+    let root = json!({
+        "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [2]}],
+        "nodes": [
+            {"name": "body", "matrix": t(1.0, 2.0, 3.0), "children": [1]},
+            {"name": "display_01", "matrix": t(0.0, 0.0, 4.0)},
+            {"name": "CryEngine_Z_up", "children": [0]}
+        ],
+        "buffers": [{"byteLength": 4}], "bufferViews": [], "accessors": [], "meshes": []
+    });
+    join_glb(&root, &[1, 2, 3, 4]).unwrap()
+}
+const CHARACTER: &str = r#"<CharacterDefinition><Model File="objects/synthetic/rig.chr"/><AttachmentList>
+<Attachment Type="CA_SKIN" AName="body" Binding="objects/synthetic/body.skin"/>
+<Attachment Type="CA_BONE" AName="display" Binding="objects/synthetic/display.cgf" BoneName="DISPLAY_01"/>
+<Attachment Type="CA_BONE" AName="loose" Binding="objects/synthetic/loose.cgf" BoneName="bone_not_in_rig"/>
+</AttachmentList></CharacterDefinition>"#;
+fn reader(files: Vec<(&'static str, Vec<u8>)>) -> impl FnMut(&str) -> Result<Option<Vec<u8>>, Error> {
+    let files: std::collections::HashMap<&str, Vec<u8>> = files.into_iter().collect();
+    move |path: &str| Ok(files.get(path).cloned())
+}
+
+#[test]
+fn a_character_definition_carries_the_physics_of_its_attachments() {
+    let mut read = reader(vec![
+        ("objects/synthetic/body.cdf", crate::test_xml::encode(CHARACTER)),
+        ("objects/synthetic/body.skin", ivo(&[])),
+        ("objects/synthetic/display.cgf", sphere_physics(0.5)),
+        ("objects/synthetic/loose.cgf", sphere_physics(2.0)),
+    ]);
+    let out = attach_physics_from(&mut read, "objects/synthetic/body.cdf", None, character_glb()).unwrap();
+    let (root, _) = split_glb(&out).unwrap();
+    let nodes = root["nodes"].as_array().unwrap();
+    let child_named = |parent: usize, name: &str| {
+        root["nodes"][parent]["children"].as_array().into_iter().flatten()
+            .map(|c| c.as_u64().unwrap() as usize).find(|&c| nodes[c]["name"] == name)
+    };
+    // A CA_BONE attachment's physics sits in its bone's frame, the frame its rigid render part is bound in.
+    let on_bone = child_named(1, "$physics_object").expect("record node under the bone");
+    assert!(nodes[on_bone].get("matrix").is_none(), "the attachment frame is the bone frame");
+    let r = &nodes[on_bone]["extras"]["sc_physics"][0];
+    assert_eq!((r["kind"].as_str(), r["radius"].as_f64()), (Some("sphere"), Some(0.5)));
+    assert_eq!(r["source"], "objects/synthetic/display.cgf");
+    // A bone the GLB lacks leaves its part unmoved (as the mesh merge does): the object's frame.
+    let on_object = child_named(0, "$physics_object").expect("record node under the content root");
+    let m = nodes[on_object]["matrix"].as_array().unwrap();
+    assert_eq!((m[12].as_f64(), m[13].as_f64(), m[14].as_f64()), (Some(-1.0), Some(-2.0), Some(-3.0)));
+    assert_eq!(nodes[on_object]["extras"]["sc_physics"][0]["radius"].as_f64(), Some(2.0));
+    assert_eq!(nodes[on_object]["extras"]["sc_physics"][0]["source"], "objects/synthetic/loose.cgf");
+}
+
+#[test]
+fn a_character_definition_without_attachment_physics_leaves_the_glb_unchanged() {
+    let mut read = reader(vec![
+        ("objects/synthetic/body.cdf", crate::test_xml::encode(CHARACTER)),
+        ("objects/synthetic/body.skin", ivo(&[])),
+        ("objects/synthetic/display.cgf", ivo(&[])),
+    ]);
+    let glb = character_glb();
+    assert_eq!(attach_physics_from(&mut read, "objects/synthetic/body.cdf", None, glb.clone()).unwrap(), glb);
+}
