@@ -5,8 +5,7 @@ Extracted from ``runtime/_legacy.py``. Owns:
 * Manifest layer surface group connection
   (``_connect_manifest_layer_surface_group``, ``_connect_layer_surface_group``,
   ``_link_group_input``).
-* Detail texture wiring (``_detail_texture_channels``, ``_apply_detail_color``,
-  ``_apply_detail_gloss``).
+* Detail texture wiring (``_detail_texture_channels``).
 * HardSurface stencil overlay (``_hard_surface_stencil_overlay_sockets``).
 * Wear/damage factor sockets (``_wear_strength``,
   ``_layered_wear_factor_socket``, ``_layered_damage_factor_socket``,
@@ -232,7 +231,8 @@ class LayersMixin:
         label: str,
     ) -> Any:
         detail_color_socket = detail_channels.get("red") if detail_channels is not None else None
-        detail_height_socket = detail_channels.get("green") if detail_channels is not None else None
+        detail_normal_x_socket = detail_channels.get("green") if detail_channels is not None else None
+        detail_normal_y_socket = detail_channels.get("alpha") if detail_channels is not None else None
         detail_gloss_socket = detail_channels.get("blue") if detail_channels is not None else None
 
         group_node = nodes.new("ShaderNodeGroup")
@@ -258,7 +258,7 @@ class LayersMixin:
         )
         self._set_socket_default(
             _input_socket(group_node, "Detail Bump Strength"),
-            _detail_strength_or_zero(detail_bump_strength, detail_height_socket),
+            _detail_strength_or_zero(detail_bump_strength, detail_normal_x_socket),
         )
         self._set_socket_default(_input_socket(group_node, "Normal Color"), (0.5, 0.5, 1.0, 1.0))
         self._set_socket_default(_input_socket(group_node, "Roughness Source"), 0.45)
@@ -314,9 +314,8 @@ class LayersMixin:
         self._link_group_input(
             links, detail_color_socket, group_node, "Detail Color Mask"
         )
-        self._link_group_input(
-            links, detail_height_socket, group_node, "Detail Height Mask"
-        )
+        self._link_group_input(links, detail_normal_x_socket, group_node, "Detail Normal X")
+        self._link_group_input(links, detail_normal_y_socket, group_node, "Detail Normal Y")
         self._link_group_input(
             links, detail_gloss_socket, group_node, "Detail Gloss Mask"
         )
@@ -402,70 +401,6 @@ class LayersMixin:
             "alpha": group_node.outputs["Alpha"],
         }
 
-    def _apply_detail_color(
-        self,
-        nodes: bpy.types.Nodes,
-        links: bpy.types.NodeLinks,
-        color_socket: Any,
-        detail_channels: dict[str, Any] | None,
-        *,
-        strength: float,
-        x: int,
-        y: int,
-    ) -> Any:
-        if (
-            color_socket is None
-            or detail_channels is None
-            or detail_channels.get("red") is None
-            or strength <= 0.0
-        ):
-            return color_socket
-        grayscale = nodes.new("ShaderNodeValToRGB")
-        grayscale.location = (x, y)
-        links.new(detail_channels["red"], grayscale.inputs[0])
-        white = self._value_color_socket(nodes, (1.0, 1.0, 1.0, 1.0), x=x, y=y - 120)
-        tint_mix = nodes.new("ShaderNodeMixRGB")
-        tint_mix.location = (x + 180, y)
-        tint_mix.blend_type = "MIX"
-        tint_mix.inputs[0].default_value = max(0.0, min(1.0, strength))
-        self._link_color_output(white, tint_mix.inputs[1])
-        links.new(grayscale.outputs[0], tint_mix.inputs[2])
-        return self._multiply_color_socket(
-            nodes, links, color_socket, tint_mix.outputs[0], x=x + 360, y=y
-        )
-
-    def _apply_detail_gloss(
-        self,
-        nodes: bpy.types.Nodes,
-        links: bpy.types.NodeLinks,
-        roughness_socket: Any,
-        detail_channels: dict[str, Any] | None,
-        *,
-        strength: float,
-        x: int,
-        y: int,
-    ) -> Any:
-        if (
-            roughness_socket is None
-            or detail_channels is None
-            or detail_channels.get("blue") is None
-            or strength <= 0.0
-        ):
-            return roughness_socket
-        detail_value = nodes.new("ShaderNodeMix")
-        detail_value.location = (x, y)
-        if hasattr(detail_value, "data_type"):
-            detail_value.data_type = "FLOAT"
-        detail_value.inputs[0].default_value = max(0.0, min(1.0, strength))
-        detail_value.inputs[2].default_value = 1.0
-        links.new(detail_channels["blue"], detail_value.inputs[3])
-        return self._multiply_value_socket(
-            nodes, links, roughness_socket, detail_value.outputs[0], x=x + 180, y=y
-        )
-
-    # ------------------------------------------------------------------
-    # HardSurface stencil overlay
-    # ------------------------------------------------------------------
     def _hard_surface_stencil_overlay_sockets(
         self,
         nodes: bpy.types.Nodes,

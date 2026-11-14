@@ -21,6 +21,7 @@ import bpy
 
 from ..constants import POM_DETAIL_DEFAULT, SCENE_POM_DETAIL_PROP, pom_detail_settings
 
+from .detail_group import DETAIL_NORMAL_FLAT, build_detail_gloss_roughness, build_detail_normal_color
 from .wear_group import (
     WEAR_INPUT_SIGNATURE,
     WEAR_INPUT_SOCKETS,
@@ -153,7 +154,7 @@ class GroupsMixin:
     def _ensure_runtime_layer_surface_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime LayerSurface",
-            "layer_surface_v9",
+            "layer_surface_v10",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -162,14 +163,15 @@ class GroupsMixin:
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime LayerSurface",
-            signature="layer_surface_v9",
+            signature="layer_surface_v10",
             inputs=[
                 ("Base Color", "NodeSocketColor"),
                 ("Base Alpha", "NodeSocketFloat"),
                 ("Palette Color", "NodeSocketColor"),
                 ("Tint Color", "NodeSocketColor"),
                 ("Detail Color Mask", "NodeSocketFloat"),
-                ("Detail Height Mask", "NodeSocketFloat"),
+                ("Detail Normal X", "NodeSocketFloat"),
+                ("Detail Normal Y", "NodeSocketFloat"),
                 ("Detail Gloss Mask", "NodeSocketFloat"),
                 ("Detail Diffuse Strength", "NodeSocketFloat"),
                 ("Detail Gloss Strength", "NodeSocketFloat"),
@@ -191,7 +193,7 @@ class GroupsMixin:
                 ("Metallic", "NodeSocketFloat"),
             ],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "layer_surface_v9":
+        if group_tree.get("starbreaker_runtime_built_signature") == "layer_surface_v10":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -250,19 +252,8 @@ class GroupsMixin:
         links.new(_output_socket(group_input, "Roughness Source"), palette_scaled_roughness.inputs[0])
         links.new(palette_roughness.outputs["Roughness"], palette_scaled_roughness.inputs[1])
 
-        detail_gloss = nodes.new("ShaderNodeMix")
-        detail_gloss.location = (80, -240)
-        if hasattr(detail_gloss, "data_type"):
-            detail_gloss.data_type = "FLOAT"
-        links.new(_output_socket(group_input, "Detail Gloss Strength"), detail_gloss.inputs[0])
-        detail_gloss.inputs[2].default_value = 1.0
-        links.new(_output_socket(group_input, "Detail Gloss Mask"), detail_gloss.inputs[3])
-
-        roughness = nodes.new("ShaderNodeMath")
-        roughness.location = (280, -240)
-        roughness.operation = "MULTIPLY"
-        links.new(palette_scaled_roughness.outputs[0], roughness.inputs[0])
-        links.new(detail_gloss.outputs[0], roughness.inputs[1])
+        # Detail gloss, as LayerAttribs_DetailOverlay (smoothness space).
+        roughness = build_detail_gloss_roughness(nodes, links, group_input, palette_scaled_roughness.outputs[0])
 
         specular = nodes.new("ShaderNodeMath")
         specular.location = (-320, -420)
@@ -273,7 +264,10 @@ class GroupsMixin:
 
         normal_map = nodes.new("ShaderNodeNormalMap")
         normal_map.location = (-520, -620)
-        links.new(_output_socket(group_input, "Normal Color"), _input_socket(normal_map, "Color"))
+        # Detail normals (G, A) added to the base normal, as AddDetailNormals.
+        links.new(build_detail_normal_color(nodes, links, group_input), _input_socket(normal_map, "Color"))
+        for name in ("Detail Normal X", "Detail Normal Y"):
+            _set_group_input_default(group_input, name, DETAIL_NORMAL_FLAT)
         normal_alpha = nodes.new("ShaderNodeMath")
         normal_alpha.location = (-720, -640)
         normal_alpha.label = "Normal strength x base alpha"
@@ -285,12 +279,6 @@ class GroupsMixin:
         if strength_input is not None:
             links.new(normal_alpha.outputs[0], strength_input)
 
-        bump = nodes.new("ShaderNodeBump")
-        bump.location = (-320, -620)
-        links.new(_output_socket(group_input, "Detail Bump Strength"), bump.inputs[0])
-        links.new(_output_socket(group_input, "Detail Height Mask"), bump.inputs[2])
-        links.new(_output_socket(normal_map, "Normal"), bump.inputs[3])
-
         metallic_color_mix = nodes.new("ShaderNodeMixRGB")
         metallic_color_mix.location = (-120, 220)
         metallic_color_mix.blend_type = "MIX"
@@ -300,11 +288,11 @@ class GroupsMixin:
 
         links.new(metallic_color_mix.outputs[0], group_output.inputs["Color"])
         links.new(_output_socket(group_input, "Base Alpha"), group_output.inputs["Alpha"])
-        links.new(roughness.outputs[0], group_output.inputs["Roughness"])
+        links.new(roughness, group_output.inputs["Roughness"])
         links.new(specular.outputs[0], group_output.inputs["Specular"])
-        links.new(bump.outputs[0], group_output.inputs["Normal"])
+        links.new(_output_socket(normal_map, "Normal"), group_output.inputs["Normal"])
         links.new(_output_socket(group_input, "Metallic"), group_output.inputs["Metallic"])
-        group_tree["starbreaker_runtime_built_signature"] = "layer_surface_v9"
+        group_tree["starbreaker_runtime_built_signature"] = "layer_surface_v10"
         return group_tree
 
     def _ensure_runtime_hard_surface_group(self) -> bpy.types.ShaderNodeTree:

@@ -171,7 +171,7 @@ def _managed_material_runtime_graph_is_sane(material: bpy.types.Material) -> boo
         for strength_name, mask_name in (
             ("Detail Diffuse Strength", "Detail Color Mask"),
             ("Detail Gloss Strength", "Detail Gloss Mask"),
-            ("Detail Bump Strength", "Detail Height Mask"),
+            ("Detail Bump Strength", "Detail Normal X"),
         ):
             strength_input = node.inputs.get(strength_name)
             mask_input = node.inputs.get(mask_name)
