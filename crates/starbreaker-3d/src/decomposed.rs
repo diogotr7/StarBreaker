@@ -2089,7 +2089,8 @@ pub(crate) fn write_decomposed_export(
         return Err(Error::Other("resolved light owner is absent from the scene instances".into()));
     }
     report_progress(progress, INTERIOR_ASSETS_END, "Writing manifests")?;
-    insert_ui_export_stamp(&mut files, &crate::export_stamp::archive_build_id(p4k)?,
+    let package_dir = scene_manifest_path.rsplit_once('/').map_or("", |(dir, _)| dir).to_owned();
+    insert_ui_export_stamp(&mut files, &package_dir, &crate::export_stamp::archive_build_id(p4k)?,
         &input.entity_name, opts)?;
     insert_json_file(&mut files, scene_manifest_path, scene_manifest);
     if !opts.ui_only_files {
@@ -4241,19 +4242,22 @@ pub(crate) fn sanitize_identifier(value: &str) -> String {
         .collect()
 }
 
-/// Content provenance next to generated UI PNGs. The Blender importer ignores
-/// this auxiliary file; the UI visual guard verifies source and payload hashes.
-const UI_EXPORT_STAMP_PATH: &str = "Data/UI/Generated/.export_stamp.json";
+/// File name of the content provenance of an export's generated UI PNGs,
+/// written in the export's package (`Packages/<package>/`): ships exported to
+/// one root share `Data/`, so a stamp there would describe only the last
+/// export. The Blender importer ignores it; the UI visual guard verifies its
+/// source and payload hashes.
+const UI_EXPORT_STAMP_NAME: &str = ".export_stamp.json";
 
 fn insert_ui_export_stamp(
-    files: &mut OutputFiles, build_id: &str, entity: &str, opts: &ExportOptions,
+    files: &mut OutputFiles, package_dir: &str, build_id: &str, entity: &str, opts: &ExportOptions,
 ) -> Result<(), Error> {
     let generated: Vec<_> = files.iter()
         .filter(|(path, _)| path.starts_with("Data/UI/Generated/"))
         .map(|(path, bytes)| (path.as_str(), bytes.as_slice())).collect();
     if generated.is_empty() { return Ok(()); }
     let stamp = crate::export_stamp::stamp(build_id, entity, opts, generated.into_iter())?;
-    insert_json_file(files, UI_EXPORT_STAMP_PATH.to_owned(), stamp);
+    insert_json_file(files, format!("{package_dir}/{UI_EXPORT_STAMP_NAME}"), stamp);
     Ok(())
 }
 
@@ -7732,10 +7736,13 @@ mod tests {
             "Data/UI/Generated/ship/test/Test/screen.png".to_string(),
             vec![0u8],
         );
-        insert_ui_export_stamp(&mut files, "synthetic-build", "synthetic-entity", &ExportOptions::default()).unwrap();
+        insert_ui_export_stamp(&mut files, "Packages/Synthetic", "synthetic-build", "synthetic-entity", &ExportOptions::default()).unwrap();
+        // Each package carries its own stamp: ships exported to one root share
+        // Data/, so a stamp there was overwritten by every later export.
+        assert!(!files.contains_key("Data/UI/Generated/.export_stamp.json"), "not in the shared Data/ tree");
         let stamp = files
-            .get(UI_EXPORT_STAMP_PATH)
-            .expect("stamp written alongside generated UI files");
+            .get("Packages/Synthetic/.export_stamp.json")
+            .expect("stamp written in the package");
         let value: serde_json::Value = serde_json::from_slice(stamp).expect("stamp parses");
         assert_eq!(value["schema_version"], 2);
         assert_eq!(value["archive_build_id"], "synthetic-build");
@@ -7752,8 +7759,8 @@ mod tests {
             "Packages/Test/scene.json".to_string(),
             b"{}".to_vec(),
         );
-        insert_ui_export_stamp(&mut files, "synthetic-build", "synthetic-entity", &ExportOptions::default()).unwrap();
-        assert!(!files.contains_key(UI_EXPORT_STAMP_PATH));
+        insert_ui_export_stamp(&mut files, "Packages/Test", "synthetic-build", "synthetic-entity", &ExportOptions::default()).unwrap();
+        assert!(!files.contains_key("Packages/Test/.export_stamp.json"));
     }
 
     #[test]

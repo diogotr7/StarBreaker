@@ -132,6 +132,19 @@ fn nested_provenance_is_scoped_to_its_package() {
     assert_eq!(file.bytes, b"synthetic");
 }
 
+/// A nested item export writes its stamp in its own package; the player kit
+/// keeps one stamp, in the player package.
+#[test]
+fn nested_package_stamp_moves_to_the_player_package() {
+    let mut file = crate::ExportedFile {
+        relative_path: "Packages/item_package/.export_stamp.json".into(),
+        bytes: b"synthetic".to_vec(),
+        kind: crate::ExportedFileKind::PackageManifest,
+    };
+    export::relocate_provenance(&mut file, "Packages/synthetic");
+    assert_eq!(file.relative_path, "Packages/synthetic/.export_stamp.json");
+}
+
 #[test]
 fn nested_assets_are_rebased_without_changing_source_paths() {
     let mut scene = json!({"mesh_asset":"Data/Objects/synthetic.glb","material_sidecar":"Data/Objects/synthetic.materials.json","geometry_path":"Objects/synthetic.skin"});

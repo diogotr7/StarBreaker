@@ -1036,8 +1036,9 @@ host SWF, screen aspect) is rendered once and reused across placements. When
 two bindings map to the same path, the first file written wins.
 
 Every export that produced generated UI files also writes
-`Data/UI/Generated/.export_stamp.json` (write time and `git describe`), which
-the starbreaker-ui visual guard uses to reject stale PNGs.
+`Packages/<package>/.export_stamp.json` (see *Deterministic generated-UI
+provenance* below), which the starbreaker-ui visual guard uses to reject stale
+PNGs.
 
 ### Render pipeline
 
@@ -1121,16 +1122,24 @@ across the three locations, preventing duplicate light creation.
 
 ## Deterministic generated-UI provenance
 
-When an export contains generated UI files, `Data/UI/Generated/.export_stamp.json`
-uses schema version 2. It records `archive_build_id` from the adjacent install
+When an export contains generated UI files, it writes
+`Packages/<package>/.export_stamp.json` (schema version 2) in its own package:
+ships exported to one root share `Data/`, so a stamp there would describe only
+the last export. Exports written before this kept it at
+`Data/UI/Generated/.export_stamp.json`; the visual guard still reads that as a
+fallback. The stamp records `archive_build_id` from the adjacent install
 `build_manifest.id` (`Data.BuildId`), or a SHA-256 of sorted archive-directory
 entries when the manifest is absent; `exporter` (crate name/version and a
 compile-time source SHA-256); `entity`; every serialized export `options` field;
 and `generated_files` mapping generated paths to SHA-256 payload digests. Set-valued
 options are sorted before serialization. Malformed build manifests are errors.
 
-The source digest includes workspace manifests/lockfile and crate source/build
-inputs, with workspace-relative names. It contains no checkout path, hostname,
+The source digest includes the workspace manifest and lockfile and the source
+and build inputs (`Cargo.toml`, `build.rs`, `src/`, `build_support/`) of
+`starbreaker-3d` and the workspace crates it depends on, transitively (normal
+and build dependencies), with workspace-relative names. Other crates, and every
+crate's tests and fixtures, are not exporter inputs: changing them changes
+neither the digest nor triggers a rebuild of the exporter. It contains no checkout path, hostname,
 Git working-directory state, wall clock or executable timestamp. Identical inputs
 produce identical stamp bytes across independent exports and executable consumers.
 
