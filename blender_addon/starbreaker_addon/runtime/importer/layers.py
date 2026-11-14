@@ -29,8 +29,8 @@ import bpy
 
 from ...manifest import LayerManifestEntry, PaletteRecord, SubmaterialRecord
 from ...palette import palette_finish_glossiness_factor, palette_finish_specular
-from ...templates import representative_textures
 from ..constants import SCENE_WEAR_STRENGTH_PROP
+from ..wear_utils import primary_layer_wear_params
 from ..node_utils import _input_socket, _output_socket, _refresh_group_node_sockets
 from ..record_utils import (
     _authored_attribute_triplet,
@@ -543,7 +543,7 @@ class LayersMixin:
             value = float(raw_value)
         except (TypeError, ValueError):
             value = 0.0
-        return max(0.0, min(2.0, value))
+        return max(0.0, min(1.0, value))
 
     def _hard_surface_angle_factor_socket(
         self,
@@ -620,34 +620,35 @@ class LayersMixin:
         x: int,
         y: int,
     ) -> Any:
-        textures = representative_textures(submaterial)
-        has_vertex_colors = submaterial.decoded_feature_flags.has_vertex_colors
-        wear_base = _float_public_param(submaterial, "WearBlendBase", "DamagePerObjectWear")
-        mask_node = None
-        if not has_vertex_colors:
-            mask_node = self._image_node(nodes, textures["mask"], x=x - 220, y=y, is_color=False)
-        if not has_vertex_colors and mask_node is None and wear_base <= 0.0:
+        # Star Engine HardSurface wear (runtime.wear_utils): the primary
+        # layer's TexSlot8 blend map thresholds max(WearBlendBase, instance
+        # wear) minus the vertex-alpha wear.
+        primary_layer = submaterial.layer_manifest[0] if submaterial.layer_manifest else None
+        params = primary_layer_wear_params(primary_layer)
+        if params is None:
             return None
+        blend_node = self._image_node(nodes, params.blend_map_path, x=x - 220, y=y, is_color=False)
+        if blend_node is None:
+            return None
+        self._apply_uv_tiling(nodes, links, blend_node, params.tiling, x=x - 540, y=y)
 
         group_node = nodes.new("ShaderNodeGroup")
         group_node.node_tree = self._ensure_runtime_wear_input_group()
         _refresh_group_node_sockets(group_node)
         group_node.location = (x, y)
         group_node.label = "StarBreaker Wear"
-        self._set_socket_default(_input_socket(group_node, "Wear Mask"), 0.0)
+        has_vertex_colors = submaterial.decoded_feature_flags.has_vertex_colors
+        self._set_socket_default(_input_socket(group_node, "Blend Falloff"), params.falloff)
+        self._set_socket_default(
+            _input_socket(group_node, "Wear Blend Base"), _float_public_param(submaterial, "WearBlendBase")
+        )
+        self._set_socket_default(_input_socket(group_node, "Instance Wear"), self._wear_strength())
         self._set_socket_default(
             _input_socket(group_node, "Use Vertex Colors"), 1.0 if has_vertex_colors else 0.0
         )
-        self._set_socket_default(
-            _input_socket(group_node, "Wear Base"),
-            max(0.0, wear_base if wear_base > 0.0 else 1.0),
-        )
-        self._set_socket_default(_input_socket(group_node, "Wear Strength"), self._wear_strength())
+        self._set_socket_default(_input_socket(group_node, "Remap Start"), params.remap_start)
         self._set_socket_default(_input_socket(group_node, "Use Damage"), 0.0)
-
-        if not has_vertex_colors and mask_node is not None:
-            self._link_group_input(links, mask_node.outputs[0], group_node, "Wear Mask")
-
+        self._link_group_input(links, blend_node.outputs[0], group_node, "Blend Map")
         return _output_socket(group_node, "Wear Factor")
 
     def _layered_damage_factor_socket(
@@ -669,10 +670,7 @@ class LayersMixin:
         _refresh_group_node_sockets(group_node)
         group_node.location = (x, y)
         group_node.label = "StarBreaker Damage"
-        self._set_socket_default(_input_socket(group_node, "Wear Mask"), 0.0)
         self._set_socket_default(_input_socket(group_node, "Use Vertex Colors"), 0.0)
-        self._set_socket_default(_input_socket(group_node, "Wear Base"), 0.0)
-        self._set_socket_default(_input_socket(group_node, "Wear Strength"), 0.0)
         self._set_socket_default(_input_socket(group_node, "Use Damage"), 1.0)
         return _output_socket(group_node, "Damage Factor")
 
