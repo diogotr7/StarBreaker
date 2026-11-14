@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-pub use starbreaker_common::discover::{ENV_P4K as ENV_VAR, DiscoverError as FindError};
+pub use starbreaker_common::discover::{DiscoverError as FindError, ENV_P4K as ENV_VAR};
 
 /// Find the Data.p4k file, checking the env var first, then default locations.
 pub fn find_p4k() -> Result<(PathBuf, String), FindError> {
@@ -24,7 +24,10 @@ pub fn open_p4k() -> Result<crate::MappedP4k, OpenError> {
 #[derive(Debug)]
 pub enum OpenError {
     Find(FindError),
-    Open { path: PathBuf, source: crate::P4kError },
+    Open {
+        path: PathBuf,
+        source: crate::P4kError,
+    },
 }
 
 impl std::fmt::Display for OpenError {

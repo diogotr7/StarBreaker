@@ -3,7 +3,9 @@ use parking_lot::Mutex;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use crate::archive::{DirEntry, P4kArchive, P4kEntry, cmp_lower_against, hash_path, parse_central_directory_from_file};
+use crate::archive::{
+    DirEntry, P4kArchive, P4kEntry, cmp_lower_against, hash_path, parse_central_directory_from_file,
+};
 use crate::error::P4kError;
 
 /// A P4k archive backed by a pool of file handles.
@@ -188,8 +190,8 @@ impl MappedP4k {
         let sorted = &self.sorted_index;
         let entries = &self.entries;
 
-        let mut pos = sorted
-            .partition_point(|&idx| entries[idx as usize].name.as_str() < prefix.as_str());
+        let mut pos =
+            sorted.partition_point(|&idx| entries[idx as usize].name.as_str() < prefix.as_str());
 
         let mut result = Vec::new();
 

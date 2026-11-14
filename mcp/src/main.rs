@@ -3,6 +3,7 @@ use rmcp::ServiceExt;
 
 mod blend_debug;
 mod riglogic;
+mod shaders;
 mod tools;
 mod ui_variant_styles;
 

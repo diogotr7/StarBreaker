@@ -53,7 +53,10 @@ fn main() {
     }
 
     let total_uncompressed: u64 = entries.iter().map(|e| e.uncompressed_size).sum();
-    eprintln!("total uncompressed: {:.1} MB", total_uncompressed as f64 / 1_048_576.0);
+    eprintln!(
+        "total uncompressed: {:.1} MB",
+        total_uncompressed as f64 / 1_048_576.0
+    );
     eprintln!("threads: {}", rayon::current_num_threads());
     eprintln!("mode: {}", mode);
 
@@ -72,14 +75,12 @@ fn main() {
 
         match mode.as_str() {
             "shared" => {
-                entries.par_iter().for_each(|entry| {
-                    match p4k.read(entry) {
-                        Ok(data) => {
-                            bytes.fetch_add(data.len() as u64, Ordering::Relaxed);
-                        }
-                        Err(_) => {
-                            errors.fetch_add(1, Ordering::Relaxed);
-                        }
+                entries.par_iter().for_each(|entry| match p4k.read(entry) {
+                    Ok(data) => {
+                        bytes.fetch_add(data.len() as u64, Ordering::Relaxed);
+                    }
+                    Err(_) => {
+                        errors.fetch_add(1, Ordering::Relaxed);
                     }
                 });
             }

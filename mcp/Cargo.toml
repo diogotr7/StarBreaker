@@ -30,3 +30,4 @@ starbreaker-chunks = { workspace = true }
 starbreaker-dds = { workspace = true }
 starbreaker-3d = { workspace = true }
 starbreaker-ui = { workspace = true }
+starbreaker-shadercache = { workspace = true }

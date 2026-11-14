@@ -7,7 +7,7 @@ pub(crate) mod posread;
 pub mod types;
 mod v2;
 
-pub use archive::{DirEntry, P4kArchive, P4kEntry};
+pub use archive::{DirEntry, P4kArchive, P4kEntry, parse_entries_in_range};
 pub use discover::{find_p4k, open_p4k};
 pub use error::P4kError;
 pub use owned::MappedP4k;

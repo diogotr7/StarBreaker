@@ -66,6 +66,7 @@ starbreaker-dds = { path = "crates/starbreaker-dds" }
 starbreaker-dna = { path = "crates/starbreaker-dna" }
 starbreaker-gfx = { path = "crates/starbreaker-gfx" }
 starbreaker-p4k = { path = "crates/starbreaker-p4k" }
+starbreaker-shadercache = { path = "crates/starbreaker-shadercache" }
 starbreaker-ui = { path = "crates/starbreaker-ui" }
 starbreaker-wem = { path = "crates/starbreaker-wem" }
 starbreaker-wwise = { path = "crates/starbreaker-wwise" }
