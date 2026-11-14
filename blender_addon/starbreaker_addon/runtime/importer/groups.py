@@ -21,6 +21,13 @@ import bpy
 
 from ..constants import POM_DETAIL_DEFAULT, SCENE_POM_DETAIL_PROP, pom_detail_settings
 
+from .wear_group import (
+    WEAR_INPUT_SIGNATURE,
+    WEAR_INPUT_SOCKETS,
+    WEAR_MATH_NODE_COUNT,
+    WEAR_OUTPUT_SOCKETS,
+    build_wear_input_graph,
+)
 from ..node_utils import (
     _input_socket,
     _output_socket,
@@ -776,101 +783,34 @@ class GroupsMixin:
         return group_tree
 
     def _ensure_runtime_wear_input_group(self) -> bpy.types.ShaderNodeTree:
-        """Helper group for wear/damage vertex-color routing.
+        """Engine HardSurface wear (``runtime.wear_utils``; graph in ``wear_group``).
 
-        Inputs:
-            Wear Mask           float  (from optional mask texture; used when Use Vertex Colors = 0)
-            Use Vertex Colors   float  (0 = mask-based, 1 = vertex-color COLOR_0.R invert)
-            Wear Base           float  (multiplier, from WearBlendBase/DamagePerObjectWear)
-            Wear Strength       float  (global wear multiplier)
-            Use Damage          float  (0 = force damage 0, 1 = pass COLOR_0.B through)
-
-        Outputs:
-            Wear Factor    float
-            Damage Factor  float
+        Inputs: Blend Map (primary layer TexSlot8 sample), Blend Falloff
+        (layer WearDirtBlendFalloff), Wear Blend Base, Instance Wear, Use
+        Vertex Colors (COLOR_0 alpha = vertex wear), Remap Start (shading
+        model remap; 0 = none), Use Damage. Outputs: Wear Factor, Damage Factor.
         """
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Wear Input",
-            "wear_input_v1",
+            WEAR_INPUT_SIGNATURE,
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
                 "ShaderNodeVertexColor": 1,
-                "ShaderNodeSeparateColor": 1,
+                "ShaderNodeSeparateColor": 2,
+                "ShaderNodeMath": WEAR_MATH_NODE_COUNT,
             },
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Wear Input",
-            signature="wear_input_v1",
-            inputs=[
-                ("Wear Mask", "NodeSocketFloat"),
-                ("Use Vertex Colors", "NodeSocketFloat"),
-                ("Wear Base", "NodeSocketFloat"),
-                ("Wear Strength", "NodeSocketFloat"),
-                ("Use Damage", "NodeSocketFloat"),
-            ],
-            outputs=[
-                ("Wear Factor", "NodeSocketFloat"),
-                ("Damage Factor", "NodeSocketFloat"),
-            ],
+            signature=WEAR_INPUT_SIGNATURE,
+            inputs=WEAR_INPUT_SOCKETS,
+            outputs=WEAR_OUTPUT_SOCKETS,
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "wear_input_v1":
+        if group_tree.get("starbreaker_runtime_built_signature") == WEAR_INPUT_SIGNATURE:
             return group_tree
-        nodes = group_tree.nodes
-        links = group_tree.links
-
-        # Vertex color source: COLOR_0, separate into R/G/B.
-        vc_node = nodes.new("ShaderNodeVertexColor")
-        vc_node.location = (-720, 120)
-        vc_node.layer_name = "Color"
-        separate = nodes.new("ShaderNodeSeparateColor")
-        separate.location = (-520, 120)
-        links.new(vc_node.outputs[0], separate.inputs[0])
-
-        # Invert R (Aurora COLOR_0 red: 1.0 = pristine paint).
-        invert = nodes.new("ShaderNodeMath")
-        invert.location = (-320, 200)
-        invert.operation = "SUBTRACT"
-        invert.use_clamp = True
-        invert.inputs[0].default_value = 1.0
-        links.new(_output_socket(separate, "Red"), invert.inputs[1])
-
-        # Pick vertex-based or mask-based source.
-        select_source = nodes.new("ShaderNodeMix")
-        select_source.location = (-120, 120)
-        if hasattr(select_source, "data_type"):
-            select_source.data_type = "FLOAT"
-        links.new(_output_socket(group_input, "Use Vertex Colors"), select_source.inputs[0])
-        links.new(_output_socket(group_input, "Wear Mask"), select_source.inputs[2])
-        links.new(invert.outputs[0], select_source.inputs[3])
-
-        # Multiply by Wear Base.
-        mul_base = nodes.new("ShaderNodeMath")
-        mul_base.location = (100, 120)
-        mul_base.operation = "MULTIPLY"
-        mul_base.use_clamp = True
-        links.new(select_source.outputs[0], mul_base.inputs[0])
-        links.new(_output_socket(group_input, "Wear Base"), mul_base.inputs[1])
-
-        # Multiply by Wear Strength.
-        mul_strength = nodes.new("ShaderNodeMath")
-        mul_strength.location = (300, 120)
-        mul_strength.operation = "MULTIPLY"
-        mul_strength.use_clamp = True
-        links.new(mul_base.outputs[0], mul_strength.inputs[0])
-        links.new(_output_socket(group_input, "Wear Strength"), mul_strength.inputs[1])
-
-        # Damage path: COLOR_0.B gated by Use Damage.
-        damage_gate = nodes.new("ShaderNodeMath")
-        damage_gate.location = (-320, -200)
-        damage_gate.operation = "MULTIPLY"
-        damage_gate.use_clamp = True
-        links.new(_output_socket(separate, "Blue"), damage_gate.inputs[0])
-        links.new(_output_socket(group_input, "Use Damage"), damage_gate.inputs[1])
-
-        links.new(mul_strength.outputs[0], group_output.inputs["Wear Factor"])
-        links.new(damage_gate.outputs[0], group_output.inputs["Damage Factor"])
-        group_tree["starbreaker_runtime_built_signature"] = "wear_input_v1"
+        build_wear_input_graph(group_tree.nodes, group_tree.links, group_input, group_output)
+        group_tree["starbreaker_runtime_built_signature"] = WEAR_INPUT_SIGNATURE
         return group_tree
 
     def _ensure_runtime_iridescence_input_group(self) -> bpy.types.ShaderNodeTree:

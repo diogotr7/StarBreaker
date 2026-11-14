@@ -1683,20 +1683,18 @@ def register() -> None:
         bpy.types.Scene,
         SCENE_WEAR_STRENGTH_PROP,
         FloatProperty(
-            name="Wear Strength",
+            name="Instance Wear",
             description=(
-                "Scale layered wear contribution for imported StarBreaker "
-                "layered materials. Default is 0 because vertex-colour-driven "
-                "wear on ship hulls would otherwise blend the primary paint "
-                "toward a worn-grey layer on every import, which does not "
-                "match the default in-game appearance of a freshly spawned "
-                "ship. Raise this slider to expose the authored wear layer."
+                "Per-object wear, as the engine's instance wear: layered "
+                "HardSurface wear uses max(material WearBlendBase, this) "
+                "minus the vertex wear. 0 is a freshly spawned ship (the "
+                "material's own authored wear still shows); 1 is fully worn"
             ),
             default=0.0,
             min=0.0,
-            max=2.0,
+            max=1.0,
             soft_min=0.0,
-            soft_max=2.0,
+            soft_max=1.0,
         ),
     )
     setattr(
