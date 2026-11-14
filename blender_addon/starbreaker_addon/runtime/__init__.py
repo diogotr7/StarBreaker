@@ -63,6 +63,8 @@ from .constants import (
     pom_detail_settings,
 )
 from .importer import PackageImporter
+from .package_append import PackageAppendError, append_package
+from .package_location import PackageLocationError
 from .importer.groups import apply_pom_detail_mode
 from .package_ops import (
     apply_decal_offsets_to_package_root,

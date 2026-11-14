@@ -3812,6 +3812,70 @@ class MaterialReuseTests(unittest.TestCase):
             else:
                 bpy.path = original_path
 
+    def test_image_node_stores_texture_relative_to_host_blend_and_reuses_it(self) -> None:
+        import bpy
+        import os
+        import tempfile
+
+        class FakeImage:
+            def __init__(self, filepath: str):
+                self.filepath_raw = filepath
+                self.library = None
+                self.colorspace_settings = types.SimpleNamespace(name="sRGB")
+                self.alpha_mode = "STRAIGHT"
+
+            @property
+            def filepath(self) -> str:
+                return self.filepath_raw
+
+        class FakeImages(list):
+            def load(self, filepath: str, *, check_existing: bool = True):
+                image = FakeImage(filepath)
+                self.append(image)
+                return image
+
+        def abspath(filepath, library=None):
+            if filepath.startswith("//"):
+                return os.path.join(os.path.dirname(bpy.data.filepath), filepath[2:])
+            return filepath
+
+        class ImageNodeImporter(MaterialsMixin):
+            def __init__(self, root: Path) -> None:
+                self.package = types.SimpleNamespace(
+                    resolve_path=lambda value: root / value,
+                    scene=types.SimpleNamespace(raw={"assembly_kind": "fps_weapon"}),
+                )
+
+        original_images = getattr(bpy.data, "images", None)
+        original_filepath = getattr(bpy.data, "filepath", None)
+        original_path = getattr(bpy, "path", None)
+        bpy.data.images = FakeImages()
+        bpy.path = types.SimpleNamespace(abspath=abspath)
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                export_root = Path(temp_dir) / "exports" / "ships"
+                export_root.mkdir(parents=True)
+                (export_root / "shared.png").write_bytes(b"not a real png; existence is enough")
+                bpy.data.filepath = str(Path(temp_dir) / "scenes" / "hangar.blend")
+                importer = ImageNodeImporter(export_root)
+
+                first = importer._image_node(FakeNodes(), "shared.png", x=0, y=0, is_color=True)
+                second = importer._image_node(FakeNodes(), "shared.png", x=0, y=0, is_color=True)
+
+                self.assertEqual(first.image.filepath_raw, "//../exports/ships/shared.png")
+                self.assertIs(second.image, first.image)
+                self.assertEqual(len(bpy.data.images), 1)
+        finally:
+            bpy.data.images = original_images
+            if original_filepath is None:
+                del bpy.data.filepath
+            else:
+                bpy.data.filepath = original_filepath
+            if original_path is None:
+                delattr(bpy, "path")
+            else:
+                bpy.path = original_path
+
     def test_illum_opacity_decal_straight_alpha_image_forces_refresh(self) -> None:
         submaterial = SubmaterialRecord.from_value(
             {

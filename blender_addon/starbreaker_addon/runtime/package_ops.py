@@ -49,6 +49,7 @@ from .constants import (
     PROP_SUBMATERIAL_JSON,
     PROP_TEMPLATE_PATH,
 )
+from .package_location import export_root_from_linked_meshes
 from .animation_fps import (
     FPS_POLICY_ADAPT_SCENE,
     describe_reconciliation,
@@ -1016,22 +1017,10 @@ def resolve_package_scene_path(package_root: bpy.types.Object) -> Path:
     raw_path = Path(scene_path)
     if raw_path.is_absolute():
         return raw_path
-
-    blend_file = Path(bpy.data.filepath) if getattr(bpy.data, "filepath", "") else None
-    search_roots: list[Path] = []
-    if blend_file is not None:
-        blend_parent = blend_file.parent
-        search_roots.append(blend_parent)
-        search_roots.extend(blend_parent.parents)
-    search_roots.append(Path.cwd())
-
-    for root in search_roots:
-        candidate = (root / raw_path).resolve()
-        if candidate.is_file():
-            return candidate
-    if blend_file is not None:
-        return (blend_file.parent / raw_path).resolve()
-    return raw_path.resolve()
+    # The scene path is export-root relative; the export root itself is never
+    # stored, so derive it from the libraries the package's meshes link to.
+    export_root = export_root_from_linked_meshes(package_root, bpy.path.abspath)
+    return export_root / raw_path
 
 
 def _scene_instance_from_object(obj: bpy.types.Object) -> SceneInstanceRecord | None:
