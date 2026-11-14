@@ -146,7 +146,7 @@ class GroupsMixin:
     def _ensure_runtime_layer_surface_group(self) -> bpy.types.ShaderNodeTree:
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime LayerSurface",
-            "layer_surface_v8",
+            "layer_surface_v9",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -155,7 +155,7 @@ class GroupsMixin:
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime LayerSurface",
-            signature="layer_surface_v8",
+            signature="layer_surface_v9",
             inputs=[
                 ("Base Color", "NodeSocketColor"),
                 ("Base Alpha", "NodeSocketFloat"),
@@ -184,7 +184,7 @@ class GroupsMixin:
                 ("Metallic", "NodeSocketFloat"),
             ],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "layer_surface_v8":
+        if group_tree.get("starbreaker_runtime_built_signature") == "layer_surface_v9":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -203,20 +203,25 @@ class GroupsMixin:
         links.new(tint.outputs[0], palette_mix.inputs[1])
         links.new(_output_socket(group_input, "Palette Color"), palette_mix.inputs[2])
 
-        detail_gray = nodes.new("ShaderNodeValToRGB")
-        detail_gray.location = (-720, 40)
-        links.new(_output_socket(group_input, "Detail Color Mask"), detail_gray.inputs[0])
+        # Detail diffuse, as Star Engine's LayerAttribs_DetailOverlay: the
+        # detail map's red channel is centred on mid-grey (UnpackDetailMap:
+        # 2R - 1), and albedo += albedo * (2R - 1) * DetailDiffuse, i.e. the
+        # colour is multiplied by 1 + (2R - 1) * DetailDiffuse.
+        detail_signed = nodes.new("ShaderNodeMath")
+        detail_signed.location = (-720, 40)
+        detail_signed.label = "Detail 2R - 1"
+        detail_signed.operation = "MULTIPLY_ADD"
+        links.new(_output_socket(group_input, "Detail Color Mask"), detail_signed.inputs[0])
+        detail_signed.inputs[1].default_value = 2.0
+        detail_signed.inputs[2].default_value = -1.0
 
-        white = nodes.new("ShaderNodeRGB")
-        white.location = (-720, -120)
-        white.outputs[0].default_value = (1.0, 1.0, 1.0, 1.0)
-
-        detail_mix = nodes.new("ShaderNodeMixRGB")
+        detail_mix = nodes.new("ShaderNodeMath")
         detail_mix.location = (-520, 40)
-        detail_mix.blend_type = "MIX"
-        links.new(_output_socket(group_input, "Detail Diffuse Strength"), detail_mix.inputs[0])
-        links.new(white.outputs[0], detail_mix.inputs[1])
-        links.new(detail_gray.outputs[0], detail_mix.inputs[2])
+        detail_mix.label = "Detail diffuse multiplier"
+        detail_mix.operation = "MULTIPLY_ADD"
+        links.new(detail_signed.outputs[0], detail_mix.inputs[0])
+        links.new(_output_socket(group_input, "Detail Diffuse Strength"), detail_mix.inputs[1])
+        detail_mix.inputs[2].default_value = 1.0
 
         final_color = nodes.new("ShaderNodeMixRGB")
         final_color.location = (-320, 220)
@@ -292,7 +297,7 @@ class GroupsMixin:
         links.new(specular.outputs[0], group_output.inputs["Specular"])
         links.new(bump.outputs[0], group_output.inputs["Normal"])
         links.new(_output_socket(group_input, "Metallic"), group_output.inputs["Metallic"])
-        group_tree["starbreaker_runtime_built_signature"] = "layer_surface_v8"
+        group_tree["starbreaker_runtime_built_signature"] = "layer_surface_v9"
         return group_tree
 
     def _ensure_runtime_hard_surface_group(self) -> bpy.types.ShaderNodeTree:
