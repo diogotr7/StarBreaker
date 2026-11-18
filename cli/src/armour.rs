@@ -4,8 +4,9 @@
 //! picked by entity class name (`--wear`, placed on the ports that accept
 //! them — `character::wear`) and/or come from a loadout XML (`--loadout`);
 //! the wearer is a CHF (`--chf`) or the game's default character of
-//! `--gender`. Output: a GLB, or a decomposed `.blend` package. Single
-//! pieces export with `entity export <item> --geometry-tag Male|Female`.
+//! `--gender`. Output: a GLB, or a decomposed package (`.blend` meshes, or
+//! `.glb` with `--format glb`). Single pieces export with
+//! `entity export <item> --geometry-tag Male|Female`.
 
 use std::path::PathBuf;
 
@@ -31,9 +32,12 @@ pub enum ArmourCommand {
         /// Wear the pieces on this character (`.chf`) instead of the default one.
         #[arg(long)]
         chf: Option<PathBuf>,
-        /// `glb` (one file) or `package` (decomposed `.blend` package).
+        /// `glb` (one file) or `package` (decomposed package; mesh format from `--format`).
         #[arg(long, default_value = "glb", value_parser = ["glb", "package"])]
         kind: String,
+        /// Package mesh format (`--kind package` only).
+        #[arg(long, value_enum, default_value = "blend")]
+        format: crate::common::DecomposedFormat,
         /// Path to Data.p4k [default: auto-discover via SC_DATA_P4K]
         #[arg(long)]
         p4k: Option<PathBuf>,
@@ -51,7 +55,7 @@ fn parse_gender(s: &str) -> std::result::Result<Gender, String> {
 
 impl ArmourCommand {
     pub fn run(self) -> Result<()> {
-        let Self::Export { output, wear, gender, chf, kind, p4k, texture_mip, character } = self;
+        let Self::Export { output, wear, gender, chf, kind, format, p4k, texture_mip, character } = self;
         let (p4k, dcb_bytes) = load_dcb_bytes(p4k.as_deref(), None)?;
         let p4k = p4k.ok_or_else(|| CliError::InvalidInput("Data.p4k is required".into()))?;
         let db = starbreaker_datacore::Database::from_bytes(&dcb_bytes)?;
@@ -93,7 +97,10 @@ impl ArmourCommand {
         let name = output.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "armour".into());
         let opts = starbreaker_3d::ExportOptions {
             kind: starbreaker_3d::ExportKind::Decomposed,
-            format: starbreaker_3d::ExportFormat::Blend,
+            format: match format {
+                crate::common::DecomposedFormat::Glb => starbreaker_3d::ExportFormat::Glb,
+                crate::common::DecomposedFormat::Blend => starbreaker_3d::ExportFormat::Blend,
+            },
             texture_mip,
             ..starbreaker_3d::ExportOptions::default()
         };

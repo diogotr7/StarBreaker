@@ -438,7 +438,15 @@ fn resolve_sub_geometry(idx: &EntityIndex, children: &mut [LoadoutNode]) {
             child.geometry_path = Some(m.geometry_path.clone());
             if !m.material_path.is_empty() { child.material_path = Some(m.material_path.clone()); }
         } else if variants.len() > 1 {
-            if has_multiple_geometry_variants(&variants) {
+            if !should_use_unclaimed_sub_geometry_fallback(child.geometry_path.as_deref()) {
+                // A selector miss is normal when the item has its own geometry
+                // (e.g. a magazine's tabledisplay/empty variants): it keeps it.
+                log::debug!(
+                    "  SubGeometry: {} kept default geometry {} after selector miss",
+                    child.entity_name,
+                    child.geometry_path.as_deref().unwrap_or("")
+                );
+            } else if has_multiple_geometry_variants(&variants) {
                 log::warn!(
                     "  SubGeometry: {} has {} variants but none matched port='{}' bone='{}' tags='{}'. Variants: [{}]",
                     child.entity_name, variants.len(), child.item_port_name,
@@ -460,14 +468,6 @@ fn resolve_sub_geometry(idx: &EntityIndex, children: &mut [LoadoutNode]) {
 
     // Second pass: for unmatched children, assign the variant not claimed by siblings.
     for &ui in &unmatched {
-        if !should_use_unclaimed_sub_geometry_fallback(children[ui].geometry_path.as_deref()) {
-            log::debug!(
-                "  SubGeometry: {} kept default geometry {} after selector miss",
-                children[ui].entity_name,
-                children[ui].geometry_path.as_deref().unwrap_or("")
-            );
-            continue;
-        }
         let variants = idx.query_sub_geometry(&children[ui].record);
         let entity = children[ui].entity_name.clone();
         // Collect geometry paths already assigned to siblings with the same entity

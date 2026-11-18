@@ -186,6 +186,15 @@ pub fn worn_geometry(db: &Database, record: &Record, gender: &str, context: &[St
     })
 }
 
+/// The tint palette `record` is worn with by a wearer of `gender`: its
+/// `gender` sub-geometry node's (where armour pieces keep theirs: their
+/// top-level geometry is the storage crate), else its default — the same
+/// rule as `entity export --geometry-tag`.
+pub fn worn_palette(db: &Database, record: &Record, gender: &str) -> Option<crate::mtl::TintPalette> {
+    crate::pipeline::query_geometry_variant_palette(db, record, gender)
+        .or_else(|| crate::pipeline::query_tint_palette(db, record))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

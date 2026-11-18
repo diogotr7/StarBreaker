@@ -282,6 +282,7 @@ fn load_geometry_parts(
             rebase_mesh_submeshes_to_bone_space(&mut mesh, &skeleton_bones);
         }
     }
+    place_cdf_part(&mut mesh, &resolved.parts[0], &skeleton_bones);
 
     // Merge additional parts (CA_BONE/CA_SKIN attachments from CDF).
     let no_tex_opts = ExportOptions {
@@ -298,14 +299,7 @@ fn load_geometry_parts(
             use_model_bbox,
         ) {
             Ok((mut extra_mesh, _, _, _)) => {
-                if let Some(ref bone_name) = part.bone_name {
-                    if let Some(bone) = skeleton_bones
-                        .iter()
-                        .find(|b| b.name.eq_ignore_ascii_case(bone_name))
-                    {
-                        transform_mesh_by_bone(&mut extra_mesh, bone);
-                    }
-                }
+                place_cdf_part(&mut extra_mesh, part, &skeleton_bones);
                 mesh.merge_from(extra_mesh);
             }
             Err(e) => log::warn!("  CDF part '{}' failed: {e}", part.path),
@@ -368,6 +362,15 @@ pub(crate) fn load_skeleton(
         }
     }
     Vec::new()
+}
+
+/// Place a CDF part: a CA_BONE attachment (`BoneName`) moves onto its bone;
+/// a CA_SKIN part already shares the skeleton's space and stays put.
+fn place_cdf_part(mesh: &mut crate::Mesh, part: &GeometryPart, bones: &[crate::skeleton::Bone]) {
+    let Some(bone_name) = part.bone_name.as_deref() else { return };
+    if let Some(bone) = bones.iter().find(|b| b.name.eq_ignore_ascii_case(bone_name)) {
+        transform_mesh_by_bone(mesh, bone);
+    }
 }
 
 /// Move a CA_BONE attachment into its bone's frame and bind it rigidly to
@@ -486,7 +489,8 @@ pub(crate) fn resolve_geometry_files(
 }
 
 /// The parts of a CryXmlB character definition (`.cdf`): every `<Attachment>` `Binding`, with the `BoneName` a
-/// `CA_BONE` attachment is bound to, and the `<Model File>` skeleton. `geometry_path` names it in errors.
+/// `CA_BONE` attachment is bound to (or the model, when nothing is bound — [`character_parts`]), and the
+/// `<Model File>` skeleton. `geometry_path` names it in errors.
 pub(crate) fn parse_character_definition(
     geometry_path: &str,
     data: &[u8],
@@ -533,16 +537,24 @@ pub(crate) fn parse_character_definition(
         }
     }
 
-    if parts.is_empty() {
-        return Err(Error::Other(format!(
-            "CDF {geometry_path} has no attachments"
-        )));
-    }
+    character_parts(geometry_path, parts, skeleton_path)
+}
 
-    Ok(ResolvedGeometry {
-        parts,
-        skeleton_path,
-    })
+/// The geometry a CDF renders: its bound attachments or, when none binds a
+/// file (only empty sockets), the `<Model>` itself — the engine draws the
+/// model's own mesh, and a weapon `.cga` carries it.
+fn character_parts(
+    geometry_path: &str,
+    mut parts: Vec<GeometryPart>,
+    skeleton_path: Option<String>,
+) -> Result<ResolvedGeometry, Error> {
+    if parts.is_empty() {
+        let model = skeleton_path.clone().ok_or_else(|| {
+            Error::Other(format!("CDF {geometry_path} has no attachments and no model"))
+        })?;
+        parts.push(GeometryPart { path: model, bone_name: None, material_override: None });
+    }
+    Ok(ResolvedGeometry { parts, skeleton_path })
 }
 
 /// Load a single mesh file from the P4k, with LOD resolution and material/NMC/texture loading.
@@ -752,6 +764,38 @@ mod tests {
         let skin = mesh.skin.expect("rigid skin to the bone");
         assert_eq!(skin.joint_names, vec!["hand".to_string()]);
         assert!(skin.weights.iter().all(|w| w[0] == 1.0));
+    }
+
+    /// Every CDF part with a `BoneName` is placed on its bone — the primary
+    /// part too: a CDF whose `<Model>` is a skeleton-only `.cga` lists a
+    /// CA_BONE attachment first (an FPS launcher's optic on `sight`), and it
+    /// must not stay at the origin. A part without a bone is left in place.
+    #[test]
+    fn place_cdf_part_moves_bone_parts_and_leaves_skin_parts() {
+        let bones = [rotated_bone("sight")];
+        let part = |bone: Option<&str>| GeometryPart { path: "p.cgf".into(), bone_name: bone.map(str::to_owned), material_override: None };
+        let mut on_bone = tangent_triangle();
+        place_cdf_part(&mut on_bone, &part(Some("SIGHT")), &bones);
+        assert_eq!(on_bone.positions[0], [10.0, 0.0, 0.0]);
+        let mut skin = tangent_triangle();
+        place_cdf_part(&mut skin, &part(None), &bones);
+        assert_eq!(skin.positions, tangent_triangle().positions);
+        assert!(skin.skin.is_none());
+    }
+
+    /// A CDF whose attachments bind no geometry (only empty sockets, e.g. a
+    /// rifle's `bullet` bone) renders its `<Model>`: that `.cga` is the mesh.
+    #[test]
+    fn character_parts_fall_back_to_the_model_when_nothing_is_bound() {
+        let model = "objects/rifle.cga".to_string();
+        let resolved = character_parts("rifle.cdf", Vec::new(), Some(model.clone())).unwrap();
+        assert_eq!(resolved.parts.len(), 1);
+        assert_eq!((resolved.parts[0].path.as_str(), resolved.parts[0].bone_name.as_deref()), (model.as_str(), None));
+        assert_eq!(resolved.skeleton_path, Some(model));
+        let bound = GeometryPart { path: "optic.cgf".into(), bone_name: Some("sight".into()), material_override: None };
+        let resolved = character_parts("launcher.cdf", vec![bound], Some("launcher.cga".into())).unwrap();
+        assert_eq!(resolved.parts.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(), ["optic.cgf"]);
+        assert!(character_parts("empty.cdf", Vec::new(), None).is_err());
     }
 
     /// Rebasing into bone space rotates tangents with normals and keeps every
