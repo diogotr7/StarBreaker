@@ -44,6 +44,32 @@ fn armour_has_a_worn_mesh_per_gender() {
     assert!(worn_geometry(&db, ship, "Male", &["Male".into()]).is_none());
 }
 
+/// A worn piece takes the palette of the gender node it is worn as. A core's
+/// top-level geometry is its storage crate, with no palette; the set's
+/// colours are on its `Male`/`Female` nodes, the same palette the helmet
+/// carries at the top level.
+#[test]
+fn worn_pieces_carry_their_gender_node_palette() {
+    use starbreaker_3d::character::loadout::worn_palette;
+    let Some(p4k) = p4k() else { return };
+    let dcb = db_bytes(&p4k);
+    let db = Database::from_bytes(&dcb).unwrap();
+    let index = EntityIndex::new(&db);
+    let helmet = worn_palette(&db, index.find_record("kap_combat_light_helmet_01_01_01").unwrap(), "Male")
+        .expect("helmet palette");
+    for piece in ["kap_combat_light_core_01_01_01", "kap_combat_light_arms_01_01_01", "kap_combat_light_legs_01_01_01"] {
+        for gender in ["Male", "Female"] {
+            let palette = worn_palette(&db, index.find_record(piece).unwrap(), gender)
+                .unwrap_or_else(|| panic!("{piece} {gender}: no palette"));
+            assert_eq!(
+                (palette.primary, palette.secondary, palette.tertiary),
+                (helmet.primary, helmet.secondary, helmet.tertiary),
+                "{piece} {gender}: same set colours as the helmet"
+            );
+        }
+    }
+}
+
 fn export(p4k: &MappedP4k, db: &Database, name: &str, opts: &starbreaker_3d::ExportOptions) -> starbreaker_3d::ExportResult {
     let index = EntityIndex::new(db);
     let record = index.find_record(name).unwrap();

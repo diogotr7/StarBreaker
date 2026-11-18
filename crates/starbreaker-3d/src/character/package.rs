@@ -99,14 +99,14 @@ pub fn export_character_package(
     let mut root_mesh = rig.head_mesh()?;
     let (mut root_mtl, mut root_nmc) = (rig.head_materials(), rig.head_source.nmc.clone().filter(|_| !rig.head_hidden));
     let mut children = rig.part_payloads(name, |source| character_geometry_path(name, &source.skin_path))?;
-    // The body (undersuit) and garments carry their item's tint palette, as an
-    // entity export of the item does.
+    // The body (undersuit) and garments carry the tint palette they are worn
+    // with, as an entity export of the item with `--geometry-tag` does.
     let worn_items = outfit.body.iter().map(|b| (&b.item.geometry, &b.item.record))
         .chain(outfit.garments.iter().map(|g| (&g.garment.geometry, &g.garment.record)));
     for (geometry, record) in worn_items {
         let stem = super::shared::stem(geometry);
         if let Some(child) = children.iter_mut().find(|c| c.entity_name == stem) {
-            child.palette = db.record_by_id(record).and_then(|r| crate::pipeline::query_tint_palette(db, r));
+            child.palette = db.record_by_id(record).and_then(|r| super::loadout::worn_palette(db, r, gender));
         }
     }
 
