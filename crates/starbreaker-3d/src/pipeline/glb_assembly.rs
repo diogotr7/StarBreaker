@@ -126,6 +126,10 @@ pub fn assemble_glb_with_loadout_with_progress(
         root_bones,
         root_skeleton_source_path,
     ) = export_entity_payload(db, p4k, record, &payload_opts)?;
+    // A root entity that names no palette is drawn with its material's default.
+    if root_palette.is_none() {
+        root_palette = root_mtl.as_ref().and_then(|mtl| super::material_palette::query_material_default_palette(db, mtl));
+    }
     let root_nmc = select_root_nmc(resolved.nmc, exported_root_nmc);
     log::info!(
         "[timing] export_entity_payload: {:.2}s",

@@ -99,7 +99,10 @@ assets (`decomposed_physics.rs`):
   (only the root entity carries animations) and, in character packages,
   `character` (the resolved CHF material customization and HumanSkin_V2
   wrinkle-slot layout; written by `character/package.rs`), and with
-  `include_physics` `physics_grid` (vehicles; see Game physics). `mesh_asset` is
+  `include_physics` `physics_grid` (vehicles; see Game physics). The root's
+  `palette_id` is the entity's DataCore palette; an entity that names none
+  (the Javelin) takes the palette its root material file names as
+  `DefaultPalette`, and that palette is in palettes.json. `mesh_asset` is
   `null` when the root has no geometry (no vertices, no NMC nodes — e.g. a
   socpak scene root, or a character whose head a full helmet hides); the
   `.blend` then has no root mesh object and the package armature sits at the
