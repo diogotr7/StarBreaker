@@ -7,8 +7,10 @@
 //!
 //! - [`finish_variants_from_siblings`]: the siblings whose look (effective
 //!   palette and material) is not already one of the base's looks.
+//! - [`same_item`]: whether two `AttachDef`s are one item in two finishes
+//!   (same type, subtype, size and manufacturer).
 //! - [`enumerate_sibling_finishes`]: finds the siblings in DataCore (same
-//!   geometry file, same `AttachDef` type and subtype) and loads their materials.
+//!   geometry file, [`same_item`]) and loads their materials.
 
 use std::collections::HashMap;
 
@@ -97,6 +99,20 @@ pub(crate) fn finish_variants_from_siblings(
     variants
 }
 
+/// Whether `other` is the same item as `base` in another finish: the same
+/// `AttachDef` type, subtype and size, from the same manufacturer. Other
+/// items drawn with the same geometry file (a creature's weapon, another
+/// maker's gadget) are not finishes of it.
+pub(crate) fn same_item(base: &Value, other: &Value) -> bool {
+    let maker = |item: &Value| match get_value_field(item, "Manufacturer") {
+        Some(Value::Object { record_id, .. }) => *record_id,
+        _ => None,
+    };
+    maker(base).is_some()
+        && maker(base) == maker(other)
+        && ["Type", "SubType", "Size"].iter().all(|name| get_value_field(base, name) == get_value_field(other, name))
+}
+
 fn query_string(db: &Database, record: &Record, path: &str) -> Option<String> {
     db.compile_path::<String>(record.struct_id(), path)
         .ok()
@@ -110,8 +126,7 @@ fn short_name(db: &Database, record: &Record) -> String {
 }
 
 const GEOMETRY_PATH: &str = "Components[SGeometryResourceParams].Geometry.Geometry.Geometry.path";
-const ATTACH_TYPE: &str = "Components[SAttachableComponentParams].AttachDef.Type";
-const ATTACH_SUBTYPE: &str = "Components[SAttachableComponentParams].AttachDef.SubType";
+const ATTACH_DEF: &str = "Components[SAttachableComponentParams].AttachDef";
 const LOCALIZED_NAME: &str = "Components[SAttachableComponentParams].AttachDef.Localization.Name";
 
 fn localized_name(db: &Database, record: &Record, localization: &HashMap<String, String>) -> Option<String> {
@@ -120,8 +135,8 @@ fn localized_name(db: &Database, record: &Record, localization: &HashMap<String,
     localization.get(&key).cloned()
 }
 
-/// The finish variants of an item: other items of the same `AttachDef` type
-/// and subtype drawn with the same geometry file whose look is new. Vehicles
+/// The finish variants of an item: other items drawn with the same geometry
+/// file that are the same item ([`same_item`]) and whose look is new. Vehicles
 /// (their paints come through their paint port) and non-items have none.
 pub fn enumerate_sibling_finishes(
     db: &Database,
@@ -132,10 +147,13 @@ pub fn enumerate_sibling_finishes(
     if query_string(db, record, "Components[VehicleComponentParams].vehicleDefinition").is_some() {
         return Vec::new();
     }
-    let (Some(geometry), Some(item_type)) = (query_string(db, record, GEOMETRY_PATH), query_string(db, record, ATTACH_TYPE)) else {
+    let Ok(attach_def) = db.compile_path::<Value>(record.struct_id(), ATTACH_DEF) else {
         return Vec::new();
     };
-    let sub_type = query_string(db, record, ATTACH_SUBTYPE);
+    let attach = |r: &Record| db.query_single::<Value>(&attach_def, r).ok().flatten();
+    let (Some(geometry), Some(item)) = (query_string(db, record, GEOMETRY_PATH), attach(record)) else {
+        return Vec::new();
+    };
     let normalize = |p: &str| p.replace('\\', "/").to_ascii_lowercase();
     let geometry = normalize(&geometry);
     let Ok(geometry_rooted) = db.compile_rooted::<String>(&format!("EntityClassDefinition.{GEOMETRY_PATH}")) else {
@@ -157,10 +175,7 @@ pub fn enumerate_sibling_finishes(
             continue;
         }
         let name = short_name(db, other);
-        if name.eq_ignore_ascii_case(&own_name)
-            || !query_string(db, other, ATTACH_TYPE).is_some_and(|t| t.eq_ignore_ascii_case(&item_type))
-            || query_string(db, other, ATTACH_SUBTYPE) != sub_type
-        {
+        if name.eq_ignore_ascii_case(&own_name) || !attach(other).is_some_and(|o| same_item(&item, &o)) {
             continue;
         }
         found.push((name, geometry_components(db, other), other));
@@ -282,5 +297,40 @@ mod tests {
             Sibling { name: "weapon_gold_reward".into(), component: &gold_again },
         ];
         assert_eq!(names(&finish_variants_from_siblings(&base, &siblings, &|_| None)), ["weapon_gold"]);
+    }
+
+    fn attach(sub_type: &'static str, size: i32, manufacturer: Option<u8>) -> Value<'static> {
+        let manufacturer = match manufacturer {
+            Some(id) => Value::Object { type_name: "SCItemManufacturer", fields: vec![], record_id: Some(synthetic_guid(id)) },
+            None => Value::Null,
+        };
+        object(
+            "SItemDefinition",
+            vec![
+                ("Type", Value::Enum("WeaponPersonal")),
+                ("SubType", Value::Enum(sub_type)),
+                ("Size", Value::Int32(size)),
+                ("Manufacturer", manufacturer),
+            ],
+        )
+    }
+
+    fn synthetic_guid(id: u8) -> starbreaker_datacore::types::CigGuid {
+        let mut bytes = [0u8; 16];
+        bytes[0] = id;
+        starbreaker_datacore::types::CigGuid::from_bytes(bytes)
+    }
+
+    /// A finish is the same item: another maker's item, an item of another
+    /// size or subtype, or one with no maker is not, even on the same geometry.
+    #[test]
+    fn only_the_same_item_from_the_same_maker_is_a_finish() {
+        let base = attach("Medium", 2, Some(1));
+        assert!(same_item(&base, &attach("Medium", 2, Some(1))));
+        assert!(!same_item(&base, &attach("Medium", 1, None)), "a maker-less item of another size");
+        assert!(!same_item(&base, &attach("Medium", 2, None)), "no maker");
+        assert!(!same_item(&base, &attach("Medium", 2, Some(2))), "another maker");
+        assert!(!same_item(&base, &attach("Medium", 3, Some(1))), "another size");
+        assert!(!same_item(&base, &attach("Small", 2, Some(1))), "another subtype");
     }
 }

@@ -77,6 +77,15 @@ fn weapon_finish_entities_are_variants_of_the_base() {
     // Collector01 is a SubGeometry tag of the base: its entity adds no new look.
     assert!(!finishes.iter().any(|f| f.ends_with("_collector01")), "{finishes:?}");
 
+    // A creature's weapon drawn with the P4-AR's geometry (no maker, another
+    // size) is not a P4-AR finish.
+    let p4 = index.find_record("behr_rifle_ballistic_01").expect("P4-AR base");
+    let p4_finishes: Vec<String> = starbreaker_3d::enumerate_sibling_finishes(&db, &p4k, p4, &HashMap::new())
+        .into_iter()
+        .map(|v| v.subgeometry_tag.to_ascii_lowercase())
+        .collect();
+    assert!(!p4_finishes.iter().any(|f| f.starts_with("vlk_spewgun")), "{p4_finishes:?}");
+
     // A hull gets its paints through its paint port, not sibling entities.
     let hull = index.find_record("RSI_Apollo_Triage").expect("Apollo Triage");
     assert!(starbreaker_3d::enumerate_sibling_finishes(&db, &p4k, hull, &HashMap::new()).is_empty());
