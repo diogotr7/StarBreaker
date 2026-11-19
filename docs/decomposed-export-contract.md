@@ -10,7 +10,7 @@ Within that export root:
 - `Packages/<package name>/scene.json` describes the root entity, child attachments, interior placements, light definitions, and shared asset references. The package name is the cleaned entity label plus `_LOD<n>_TEX<m>` (e.g. `RSI Aurora Mk2_LOD0_TEX0`).
 - `Packages/<package name>/palettes.json` contains shared palette identities that scene instances reference by `palette_id`.
 - `Packages/<package name>/liveries.json` groups scene and material usage by shared palette identity.
-- `Packages/<package name>/paints.json` (only when the entity has paint variants) lists each variant's `subgeometry_tag`, `palette_id`, `display_name`, and `exterior_material_sidecar`. The addon treats it as optional.
+- `Packages/<package name>/paints.json` (only when the entity has paint variants) lists each variant's `subgeometry_tag`, `palette_id`, `display_name`, and `exterior_material_sidecar`. The addon treats it as optional. A hull's variants are its tagged `Geometry.SubGeometry[]` and `Material.materialVariants[]` entries that a paint item its paint port accepts selects by `@Tag` (the port's `requiredTags`, after the hull's vehicle-XML modification overrides, must all be on the item; the item the default loadout fits there always counts); `subgeometry_tag` is that `@Tag` whichever list holds it.
 - `Packages/<package name>/animations/<clip>.json` holds per-clip animation bodies (see [Animation Records](#animation-records)).
 - `Packages/<package name>/weapon_assembly_diagnostics.json` is written only for FPS weapon assemblies that produced diagnostics.
 - `Data/...` contains reusable mesh assets, material sidecars, and exported textures using canonical P4k-style paths rooted at `Data/`. Mesh assets are `.glb` with the Glb format and `.blend` with the Blend format (`mesh_asset_extension`); the Blend format also writes `Packages/<package name>/scene.blend`, which links the mesh `.blend` files.
@@ -525,7 +525,7 @@ Each `*.materials.json` sidecar preserves:
 - authored per-texture metadata, including nested child blocks such as `TexMod`
 - authored non-texture child blocks such as `VertexDeform`
 - material-set identity and palette-routing metadata
-- resolved paint-override selectors when equipped paints choose a palette or material through `SubGeometry` tag matching
+- resolved paint-override selectors when equipped paints choose a palette or material through `SubGeometry` or `materialVariants` tag matching (`subgeometry_index` is the position within whichever list matched)
 - variant-membership hints for palette-routed and layered materials
 
 ### Curated emission and decal semantics (material schema v2)

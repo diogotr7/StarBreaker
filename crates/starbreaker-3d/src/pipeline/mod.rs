@@ -49,6 +49,10 @@ pub(crate) use self::weapon_assembly::*;
 
 mod palette;
 pub use self::palette::*;
+mod paint_port;
+mod paint_variants;
+pub use self::paint_variants::enumerate_paint_variants_for_entity;
+pub(crate) use self::paint_variants::resolve_paint_override;
 mod interior_animation;
 pub(crate) mod interior_entities;
 pub(crate) use self::interior_animation::*;
