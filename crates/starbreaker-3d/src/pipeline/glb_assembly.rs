@@ -465,8 +465,9 @@ pub fn assemble_glb_with_loadout_with_progress(
         for palette in &mut available_palettes {
             populate_palette_display_name(palette, &paint_display_names);
         }
-        let paint_variants =
+        let mut paint_variants =
             enumerate_paint_variants_for_entity(db, p4k, record, &tree.root, &paint_display_names);
+        paint_variants.extend(super::enumerate_sibling_finishes(db, p4k, record, &localization));
         let decomposed_progress =
             progress.map(|progress| progress.sub(ASSEMBLY_STAGE_START, ASSEMBLY_STAGE_END));
 

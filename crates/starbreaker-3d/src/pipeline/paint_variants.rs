@@ -82,7 +82,7 @@ pub(crate) fn find_tagged_paint_node<'v, 'a>(component: &'v Value<'a>, tag: &str
     tagged_paint_nodes(component).into_iter().find(|n| n.tag.eq_ignore_ascii_case(tag))
 }
 
-fn geometry_components<'a>(db: &'a Database, record: &Record) -> Vec<Value<'a>> {
+pub(super) fn geometry_components<'a>(db: &'a Database, record: &Record) -> Vec<Value<'a>> {
     // The whole component Value: querying SubGeometry directly can truncate the array.
     db.compile_path::<Value>(record.struct_id(), "Components[SGeometryResourceParams]")
         .ok()
@@ -167,7 +167,7 @@ pub(crate) fn resolve_paint_override(
 /// and the canonical id without a `paint_` prefix.
 /// E.g. "Paint_Aurora_Mk2_Pink_Green_Purple" → ("paint_aurora_mk2_pink_green_purple",
 /// "aurora_mk2_pink_green_purple").
-fn paint_variant_ids(tag: &str) -> (String, String) {
+pub(super) fn paint_variant_ids(tag: &str) -> (String, String) {
     let sanitized: String = tag
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch.to_ascii_lowercase() } else { '_' })
