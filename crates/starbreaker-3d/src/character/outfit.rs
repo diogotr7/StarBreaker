@@ -8,6 +8,8 @@
 //!   drawn ([`super::clothing::hidden_zones`]: an undersuit covers the
 //!   body; visibility conditions test what is worn on other ports) and the CHF ports hidden with everything under them (a full
 //!   helmet hides `Head_ItemPort`: the head itself, its eyes, hair, brows, …).
+//!   The loadout's bone-attached props ([`super::props::Prop`]) are kept as
+//!   resolved for the package writer to place.
 //! - [`Outfit::with_body`]: just a body, nothing covered.
 //! - [`Outfit::wears`]: whether a CHF head item is worn (not on a hidden
 //!   port); [`Outfit::hides_geometry`]: whether a CHF item with that `.skin`
@@ -27,6 +29,7 @@ use super::clothing::{Worn, clothing_params, hidden_zones};
 use super::head_skin::{BindPoseSkeleton, HeadMesh};
 use super::items::{HeadItemMesh, load_skin_part};
 use super::loadout::{Garment, LoadoutEntry, pick_worn_variant, resolve_garments};
+use super::props::Prop;
 use super::part_source::{PartSource, geometry_path};
 use super::shared::{CharacterPart, stem};
 use super::gender_tag;
@@ -49,6 +52,9 @@ pub struct Outfit {
     /// Zone hashes of the body the garments cover.
     pub body_hidden_zones: HashSet<u32>,
     pub garments: Vec<GarmentMesh>,
+    /// Rigid items worn on bones ([`super::props`]); their meshes are loaded
+    /// by the package writer, which places them on the rig's bones.
+    pub props: Vec<Prop>,
     /// CHF ports (lowercase) hidden by a garment, with every port under them.
     hidden_chf_ports: HashSet<String>,
     /// The worn `.skin`s (DataCore paths, lowercase) of the CHF items on
@@ -115,7 +121,7 @@ impl Outfit {
                 pick_worn_variant(&variants, gender).map(|v| geometry_path(&v.geometry_path).to_lowercase())
             })
             .collect();
-        Self { body, body_hidden_zones, garments, hidden_chf_ports, hidden_chf_geometry }
+        Self { body, body_hidden_zones, garments, props: worn.props, hidden_chf_ports, hidden_chf_geometry }
     }
 
     /// Whether the CHF item `item` is worn (its port is not hidden).

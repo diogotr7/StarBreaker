@@ -6,7 +6,9 @@
 //! real materials. The meshes are the character rig's
 //! (`HeadAssets::character_rig`: DNA head, DNA eyes/teeth, wrapped
 //! eye-details, CHF items, and the body and a loadout's garments on the
-//! actor skeleton, zones they cover left out — [`super::outfit`]) — each
+//! actor skeleton, zones they cover left out — [`super::outfit`]; rigid
+//! props such as backpacks are rigid children on the root's bones,
+//! [`super::props`]) — each
 //! part's pipeline-loaded
 //! [`super::part_source::PartSource`] (submesh material ids, every vertex
 //! stream, the part's `.mtl`) reshaped to the neutral-identity shape, the
@@ -125,6 +127,9 @@ pub fn export_character_package(
             root_mesh = part.mesh; root_mtl = part.materials; root_geometry = part.geometry_path;
         }
     }
+
+    // Bone-attached props hang on the rig's bones, which the root carries.
+    children.extend(super::props::prop_payloads(p4k, db, &outfit.props, name, gender, opts));
 
     // (port, effective .mtl) per item and the body, for binding the CHF
     // material slots.

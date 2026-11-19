@@ -18,6 +18,7 @@ pub mod clips;
 pub mod clothing;
 pub mod loadout;
 pub mod outfit;
+pub mod props;
 pub mod wear;
 pub mod apply;
 pub mod blendshapes;

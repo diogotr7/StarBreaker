@@ -247,3 +247,33 @@ fn a_missing_body_record_is_an_error() {
     let err = dress_entries(&db, &chf, &[], &[ARMS.to_string()]).unwrap_err();
     assert!(err.to_string().contains("body"), "{err}");
 }
+
+/// A backpack hangs on its core's `backpack` bone port (not skinned: it has
+/// no `.skin`), as a prop on the port helper's bone with the item's helper
+/// that goes there; a Quirinus heavy core picks the sub-helper its backpack's
+/// tags select.
+#[test]
+fn backpacks_hang_on_their_cores_bone() {
+    use starbreaker_3d::character::loadout::resolve_garments;
+    use starbreaker_3d::character::wear::dress_entries;
+    let Some(p4k) = p4k() else { return };
+    let dcb = db_bytes(&p4k);
+    let db = Database::from_bytes(&dcb).unwrap();
+    let chf = chf(&p4k, "masculinedefault");
+    for (core, backpack, sub_helper) in [
+        ("cds_combat_medium_core_04_01_01", "cds_combat_medium_backpack_02_01_01", false),
+        ("qrt_utility_heavy_core_01_01_01", "qrt_utility_heavy_backpack_01_01_01", true),
+    ] {
+        let picked: Vec<String> = ["cds_undersuit_01_01_01", core, backpack].iter().map(|s| s.to_string()).collect();
+        let placed = dress_entries(&db, &chf, &[], &picked).unwrap();
+        assert!(placed.unplaced.is_empty(), "{backpack}: {:?}", placed.unplaced);
+        let worn = resolve_garments(&db, &placed.entries, "Male", "body_itemport");
+        assert!(worn.garments.iter().all(|g| g.item != backpack), "a backpack is not a garment");
+        let prop = worn.props.iter().find(|p| p.item == backpack).unwrap_or_else(|| panic!("{backpack}: no prop in {:?}", worn.props));
+        assert_eq!(prop.port, "backpack");
+        assert_eq!(prop.helper.bone, "backpack_attach_1_override");
+        assert_eq!(prop.helper.item_helper, "backpack_attach_1_loc");
+        assert!(prop.geometry.to_lowercase().ends_with(".cga"), "{}", prop.geometry);
+        assert_eq!(prop.helper.position != [0.0; 3], sub_helper, "{backpack}: {:?}", prop.helper);
+    }
+}
