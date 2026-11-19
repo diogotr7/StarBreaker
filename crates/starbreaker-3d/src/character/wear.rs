@@ -192,8 +192,10 @@ pub(crate) fn ports(db: &Database, record: &Record) -> Result<Vec<PortDef>, Char
     let Ok(path) = db.compile_path::<Value>(record.struct_id(), "Components[SItemPortContainerComponentParams].Ports") else {
         return Ok(Vec::new());
     };
+    // Ports are read from their inline fields: expanding the records they
+    // reference (default items, tags) can exceed the materialization limit.
     let values = db
-        .query::<Value>(&path, record)
+        .query_no_references(&path, record)
         .map_err(|e| CharacterError::Loadout(format!("item ports of {}: {e}", record.id)))?;
     Ok(values
         .iter()

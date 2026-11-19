@@ -277,3 +277,22 @@ fn backpacks_hang_on_their_cores_bone() {
         assert_eq!(prop.helper.position != [0.0; 3], sub_helper, "{backpack}: {:?}", prop.helper);
     }
 }
+
+/// SRVL helmets' item ports resolve: the port query must not expand every
+/// referenced record (it hit the DataCore materialization limit).
+#[test]
+fn srvl_helmets_resolve_their_ports() {
+    use starbreaker_3d::character::wear::{dress_entries, wearable};
+    let Some(p4k) = p4k() else { return };
+    let dcb = db_bytes(&p4k);
+    let db = Database::from_bytes(&dcb).unwrap();
+    let index = EntityIndex::new(&db);
+    for helmet in ["srvl_helmet_01_01_12", "srvl_helmet_01_06_01"] {
+        let w = wearable(&db, &index, helmet).unwrap_or_else(|e| panic!("{helmet}: {e}")).expect("a wearable");
+        assert_eq!(w.item_type, "Char_Armor_Helmet");
+    }
+    let chf = chf(&p4k, "masculinedefault");
+    let picked: Vec<String> = ["cds_undersuit_01_01_12", "srvl_helmet_01_06_01"].iter().map(|s| s.to_string()).collect();
+    let placed = dress_entries(&db, &chf, &[], &picked).unwrap();
+    assert!(placed.unplaced.is_empty(), "{:?}", placed.unplaced);
+}
