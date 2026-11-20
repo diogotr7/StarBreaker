@@ -14,9 +14,10 @@
 //! the piece word: `kap_combat_heavy_backpack_…` → `kap_combat_heavy_core_…`)
 //! when there is one, else one whose port is the prop's size (`MaxSize` 1 on
 //! light cores, 2 medium, 3 heavy; the prop's `AttachDef.Size`), else a
-//! larger one; in each, the `.skin` most cores of that group share (the
-//! line's or the weight class's usual mount), then by name. A core whose
-//! `.skin` lacks the bone is passed over.
+//! larger one; in each, the mount most cores of that group share (where
+//! their `.skin`s bind the bone, to the millimetre: the line's or the weight
+//! class's usual mount — many skins share one), then by skin and name. A
+//! core whose `.skin` lacks the bone is passed over.
 //!
 //! - [`place_with_stand_ins`]: placement ([`super::wear::place_items`]) that
 //!   adds a stand-in for each rigid item no free port took (pure);
@@ -53,6 +54,9 @@ pub struct Candidate {
     pub skin: String,
     pub max_size: Option<i32>,
     pub bone: String,
+    /// Where the `.skin` binds the bone ([`mount_key`]); `None` when not
+    /// read.
+    pub mount: Option<[i32; 7]>,
 }
 
 /// A stand-in core of a loadout resolved for a gender: the port it is on,
@@ -99,8 +103,13 @@ pub fn rank<'c>(candidates: &'c [Candidate], item: &str, size: Option<i32>) -> V
         _ => true,
     };
     let fitting: Vec<&Candidate> = candidates.iter().filter(fits).collect();
-    let shared = |c: &Candidate| fitting.iter().filter(|o| tier(o) == tier(c) && o.skin.eq_ignore_ascii_case(&c.skin)).count();
-    let key = |c: &Candidate| (tier(c), std::cmp::Reverse(shared(c)), c.skin.to_ascii_lowercase(), c.core.clone());
+    // One mount: the same bind of the bone (else, unread, the same skin).
+    let same = |a: &Candidate, b: &Candidate| match (a.mount, b.mount) {
+        (Some(a), Some(b)) => a == b,
+        _ => a.skin.eq_ignore_ascii_case(&b.skin),
+    };
+    let shared = |c: &Candidate| fitting.iter().filter(|o| tier(o) == tier(c) && same(o, c)).count();
+    let key = |c: &Candidate| (tier(c), std::cmp::Reverse(shared(c)), c.mount, c.skin.to_ascii_lowercase(), c.core.clone());
     let mut ranked = fitting.clone();
     ranked.sort_by_key(|c| key(c));
     ranked
@@ -221,6 +230,7 @@ pub(crate) fn candidates(
             skin: worn.geometry,
             max_size: port.max_size,
             bone: port.bone.as_ref().map(|b| b.bone.clone()).unwrap_or_default(),
+            mount: None,
         });
     }
     Ok(out)
@@ -232,9 +242,19 @@ pub fn skin_skeleton(p4k: &MappedP4k, geometry: &str) -> Result<BindPoseSkeleton
     super::head_skin::parse_skin_skeleton(&skin)
 }
 
+/// Where a bone sits in its `.skin`: its parent-relative bind, translation
+/// in millimetres and rotation in thousandths, so binds equal to the
+/// millimetre are one mount.
+pub fn mount_key(bone: &super::head_skin::Bone) -> [i32; 7] {
+    let t = bone.bind_translation.map(|v| (v * 1000.0).round() as i32);
+    let r = bone.bind_rotation.map(|v| (v * 1000.0).round() as i32);
+    [t[0], t[1], t[2], r[0], r[1], r[2], r[3]]
+}
+
 /// [`super::wear::dress_entries`] where a rigid item no port takes (a
 /// backpack with no core) goes on a stand-in core: the best ranked
-/// ([`rank`]) of the [`candidates`] whose `.skin` has its port's bone.
+/// ([`rank`]) of the [`candidates`] whose `.skin` has its port's bone,
+/// each with its mount read from the `.skin`.
 pub fn dress_with_stand_ins(
     p4k: &MappedP4k,
     db: &Database,
@@ -253,10 +273,16 @@ pub fn dress_with_stand_ins(
                     return None;
                 }
             };
-            let has_bone = |c: &Candidate| {
-                skin_skeleton(p4k, &c.skin).is_ok_and(|s| s.bones.iter().any(|b| b.name.eq_ignore_ascii_case(&c.bone)))
-            };
-            let core = rank(&found, &item.item, item.size).into_iter().find(|c| has_bone(c))?;
+            let mut skins: std::collections::HashMap<String, Option<BindPoseSkeleton>> = std::collections::HashMap::new();
+            let found: Vec<Candidate> = found
+                .into_iter()
+                .filter_map(|c| {
+                    let skin = skins.entry(c.skin.to_ascii_lowercase()).or_insert_with(|| skin_skeleton(p4k, &c.skin).ok());
+                    let bone = skin.as_ref()?.bones.iter().find(|b| b.name.eq_ignore_ascii_case(&c.bone))?;
+                    Some(Candidate { mount: Some(mount_key(bone)), ..c })
+                })
+                .collect();
+            let core = rank(&found, &item.item, item.size).into_iter().next()?;
             wearable(index.db, index, &core.core).ok().flatten()
         });
         failed.map_or(Ok(placement), Err)

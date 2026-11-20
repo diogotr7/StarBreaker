@@ -7,7 +7,24 @@ use crate::character::props::PortHelper;
 use crate::character::wear::PortType;
 
 fn candidate(core: &str, skin: &str, max_size: i32) -> Candidate {
-    Candidate { core: core.into(), skin: skin.into(), max_size: Some(max_size), bone: "mount".into() }
+    Candidate { core: core.into(), skin: skin.into(), max_size: Some(max_size), bone: "mount".into(), mount: None }
+}
+
+/// Many skins share one mount (where the bone sits): the mount most cores
+/// of the group share wins over the skin most of them share.
+#[test]
+fn the_common_mount_beats_the_common_skin() {
+    let at = |c: Candidate, mount: [i32; 7]| Candidate { mount: Some(mount), ..c };
+    let (usual, other) = ([80, -154, 0, 0, 707, 0, 707], [104, -155, 0, 0, 700, 50, 700]);
+    let candidates = [
+        at(candidate("eee_light_core_01_01_01", "shared.skin", 1), other),
+        at(candidate("fff_light_core_01_01_01", "shared.skin", 1), other),
+        at(candidate("ccc_light_core_01_01_01", "c.skin", 1), usual),
+        at(candidate("bbb_light_core_01_01_01", "b.skin", 1), usual),
+        at(candidate("ddd_light_core_01_01_01", "d.skin", 1), usual),
+    ];
+    let ranked: Vec<&str> = rank(&candidates, "zzz_line_light_backpack_01_01_01", Some(1)).iter().map(|c| c.core.as_str()).collect();
+    assert_eq!(ranked, ["bbb_light_core_01_01_01", "ccc_light_core_01_01_01", "ddd_light_core_01_01_01", "eee_light_core_01_01_01", "fff_light_core_01_01_01"]);
 }
 
 #[test]
