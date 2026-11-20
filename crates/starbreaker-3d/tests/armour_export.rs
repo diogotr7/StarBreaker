@@ -296,3 +296,100 @@ fn srvl_helmets_resolve_their_ports() {
     let placed = dress_entries(&db, &chf, &[], &picked).unwrap();
     assert!(placed.unplaced.is_empty(), "{:?}", placed.unplaced);
 }
+
+/// World transforms of a GLB's nodes by name (scene roots down).
+fn node_worlds(glb: &[u8]) -> std::collections::HashMap<String, glam::Mat4> {
+    fn walk(node: gltf::Node, parent: glam::Mat4, out: &mut std::collections::HashMap<String, glam::Mat4>) {
+        let world = parent * glam::Mat4::from_cols_array_2d(&node.transform().matrix());
+        if let Some(name) = node.name() {
+            out.insert(name.to_owned(), world);
+        }
+        for child in node.children() {
+            walk(child, world, out);
+        }
+    }
+    let (doc, ..) = gltf::import_slice(glb).unwrap();
+    let mut out = std::collections::HashMap::new();
+    for scene in doc.scenes() {
+        for node in scene.nodes() {
+            walk(node, glam::Mat4::IDENTITY, &mut out);
+        }
+    }
+    out
+}
+
+/// A backpack picked with no core hangs on a stand-in core: a core of the
+/// backpack's own line when there is one, else one of the backpack's size.
+/// The stand-in is flagged and not a garment (its mesh is not written); its
+/// `.skin`'s mount bone joins the skeleton exactly where wearing that core
+/// puts it, male and female.
+#[test]
+fn backpacks_without_a_core_hang_on_a_stand_in_core() {
+    use starbreaker_3d::character::loadout::resolve_garments;
+    use starbreaker_3d::character::outfit::Outfit;
+    use starbreaker_3d::character::stand_in::dress_with_stand_ins;
+    use starbreaker_3d::character::wear::{dress_entries, wearable};
+    use starbreaker_3d::character::{Gender, HeadIdentityContext, default_wearer_chf, gender_tag, items};
+    let Some(p4k) = p4k() else { return };
+    let dcb = db_bytes(&p4k);
+    let db = Database::from_bytes(&dcb).unwrap();
+    let index = EntityIndex::new(&db);
+    const SUIT: &str = "cds_undersuit_01_01_12";
+    const BONE: &str = "backpack_attach_1_override";
+    for gender in [Gender::Male, Gender::Female] {
+        let bytes = default_wearer_chf(&p4k, gender).unwrap();
+        let chf = starbreaker_chf::ChfFile::from_chf(&bytes).unwrap().parse().unwrap();
+        let tag = gender_tag(chf.dna.gender_hash);
+        let context = HeadIdentityContext::load(&p4k, chf.dna.gender_hash).unwrap();
+        let head_items = items::load_head_items(&p4k, &items::resolve_head_items(&db, &chf.itemport, tag));
+        for (backpack, own_line) in [("kap_combat_heavy_backpack_01_01_15", Some("kap_combat_heavy_core_")), ("cds_combat_superheavy_backpack_01_01_01", None)] {
+            let picked = [SUIT.to_string(), backpack.to_string()];
+            assert_eq!(dress_entries(&db, &chf, &[], &picked).unwrap().unplaced.len(), 1, "no core: no port without a stand-in");
+            let placed = dress_with_stand_ins(&p4k, &db, &chf, &[], &picked).unwrap();
+            assert!(placed.unplaced.is_empty(), "{tag} {backpack}: {:?}", placed.unplaced);
+            let core = placed.stand_ins.iter().find(|s| s.item == backpack).map(|s| s.core.clone()).unwrap_or_else(|| panic!("{tag} {backpack}: no stand-in"));
+            eprintln!("{tag} {backpack}: stand-in {core}");
+            match own_line {
+                Some(line) => assert!(core.starts_with(line), "{backpack}: {core} is not of its line"),
+                None => {
+                    let pack = starbreaker_3d::character::wear::Wearable { rigid: true, ..wearable(&db, &index, backpack).unwrap().unwrap() };
+                    let size = pack.size;
+                    let port = wearable(&db, &index, &core).unwrap().unwrap().ports.into_iter().find(|p| p.bone.is_some() && p.accepts(&pack)).unwrap();
+                    assert!(size.is_some() && port.max_size == size, "{core}: port size {:?}, backpack {size:?}", port.max_size);
+                }
+            }
+
+            let worn = resolve_garments(&db, &placed.entries, tag, "body_itemport");
+            assert!(worn.garments.iter().all(|g| g.item != core), "{core}: a stand-in is not a garment");
+            assert_eq!(worn.stand_ins.iter().map(|s| s.item.as_str()).collect::<Vec<_>>(), [core.as_str()]);
+            assert_eq!(worn.stand_ins[0].items, [backpack]);
+            assert_eq!(worn.stand_ins[0].bones, [BONE], "only the bone of the port the backpack is on");
+            let prop = worn.props.iter().find(|p| p.item == backpack).expect("the backpack is a prop");
+            assert_eq!(prop.helper.bone, BONE);
+
+            let outfit = Outfit::load(&p4k, &db, &chf, &placed.entries);
+            assert_eq!(outfit.mounts.len(), 1, "{core}: its mount bone");
+            let glb = context.build_character_glb(&chf.dna, &head_items, &outfit, &Default::default()).unwrap();
+            let stand_in_mount = node_worlds(&glb).get(BONE).copied().unwrap_or_else(|| panic!("{tag} {backpack}: no {BONE} in the skeleton"));
+
+            let real = dress_entries(&db, &chf, &[], &[SUIT.to_string(), core.clone(), backpack.to_string()]).unwrap();
+            assert!(real.unplaced.is_empty(), "{:?}", real.unplaced);
+            let real_outfit = Outfit::load(&p4k, &db, &chf, &real.entries);
+            let real_glb = context.build_character_glb(&chf.dna, &head_items, &real_outfit, &Default::default()).unwrap();
+            // The mount is where the core's own `.skin` binds the bone (glTF
+            // Y-up: CryEngine (x, y, z) is (x, z, -y)), not the undersuit's.
+            let skin = starbreaker_3d::character::stand_in::skin_skeleton(&p4k, &worn.stand_ins[0].geometry).unwrap();
+            let bound = skin.bones.iter().find(|b| b.name == BONE).unwrap().world_translation;
+            let expected = glam::Vec3::new(bound[0], bound[2], -bound[1]);
+            let (_, _, at) = stand_in_mount.to_scale_rotation_translation();
+            assert!(at.distance(expected) < 1e-3, "{tag} {backpack}: stand-in mount at {at}, {core}'s skin binds it at {expected}");
+            assert!(at.z > 0.1 && at.y > 1.2, "{tag} {backpack}: mount {at} is not on the back");
+
+            let core_meshes = real_outfit.garments.iter().find(|g| g.garment.item == core).map(|g| g.garment.geometry.clone()).unwrap();
+            let stem = core_meshes.rsplit('/').next().unwrap().trim_end_matches(".skin").to_lowercase();
+            let names = |glb: &[u8]| -> Vec<String> { gltf::import_slice(glb).unwrap().0.meshes().filter_map(|m| m.name().map(str::to_lowercase)).collect() };
+            assert!(names(&real_glb).iter().any(|n| n.starts_with(&stem)), "{stem}: the worn core's mesh: {:?}", names(&real_glb));
+            assert!(!names(&glb).iter().any(|n| n.starts_with(&stem)), "{stem}: the stand-in's mesh is written: {:?}", names(&glb));
+        }
+    }
+}

@@ -9,7 +9,8 @@
 //!   body; visibility conditions test what is worn on other ports) and the CHF ports hidden with everything under them (a full
 //!   helmet hides `Head_ItemPort`: the head itself, its eyes, hair, brows, …).
 //!   The loadout's bone-attached props ([`super::props::Prop`]) are kept as
-//!   resolved for the package writer to place.
+//!   resolved for the package writer to place, and a stand-in core's mount
+//!   bones ([`super::stand_in`]) for the rig's skeleton.
 //! - [`Outfit::with_body`]: just a body, nothing covered.
 //! - [`Outfit::wears`]: whether a CHF head item is worn (not on a hidden
 //!   port); [`Outfit::hides_geometry`]: whether a CHF item with that `.skin`
@@ -30,6 +31,7 @@ use super::head_skin::{BindPoseSkeleton, HeadMesh};
 use super::items::{HeadItemMesh, load_skin_part};
 use super::loadout::{Garment, LoadoutEntry, pick_worn_variant, resolve_garments};
 use super::props::Prop;
+use super::stand_in::{StandInCore, StandInMount, mount_skeleton, skin_skeleton};
 use super::part_source::{PartSource, geometry_path};
 use super::shared::{CharacterPart, stem};
 use super::gender_tag;
@@ -55,6 +57,9 @@ pub struct Outfit {
     /// Rigid items worn on bones ([`super::props`]); their meshes are loaded
     /// by the package writer, which places them on the rig's bones.
     pub props: Vec<Prop>,
+    /// Stand-in cores' mount bones ([`super::stand_in`]), which join the
+    /// actor skeleton (`CharacterRig::dress`); their meshes are not worn.
+    pub mounts: Vec<StandInMount>,
     /// CHF ports (lowercase) hidden by a garment, with every port under them.
     hidden_chf_ports: HashSet<String>,
     /// The worn `.skin`s (DataCore paths, lowercase) of the CHF items on
@@ -121,7 +126,8 @@ impl Outfit {
                 pick_worn_variant(&variants, gender).map(|v| geometry_path(&v.geometry_path).to_lowercase())
             })
             .collect();
-        Self { body, body_hidden_zones, garments, props: worn.props, hidden_chf_ports, hidden_chf_geometry }
+        let mounts = worn.stand_ins.iter().filter_map(|core| stand_in_mount(p4k, core)).collect();
+        Self { body, body_hidden_zones, garments, props: worn.props, mounts, hidden_chf_ports, hidden_chf_geometry }
     }
 
     /// Whether the CHF item `item` is worn (its port is not hidden).
@@ -152,6 +158,25 @@ impl Outfit {
             hidden_zones: g.hidden_zones.clone(),
         });
         body.chain(garments).collect()
+    }
+}
+
+/// A stand-in core's mount bones out of its `.skin`; `None` (reported) when
+/// the skin fails to load or lacks them.
+fn stand_in_mount(p4k: &MappedP4k, core: &StandInCore) -> Option<StandInMount> {
+    let skin = match skin_skeleton(p4k, &core.geometry) {
+        Ok(skin) => skin,
+        Err(e) => {
+            eprintln!("stand-in core {}: skipped ({e})", core.item);
+            return None;
+        }
+    };
+    match mount_skeleton(&skin, &core.bones) {
+        Some(skeleton) => Some(StandInMount { core: core.clone(), skeleton }),
+        None => {
+            eprintln!("stand-in core {}: {} has none of {:?}, skipped", core.item, core.geometry, core.bones);
+            None
+        }
     }
 }
 

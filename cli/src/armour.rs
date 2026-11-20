@@ -2,7 +2,8 @@
 //! whole set on one skeleton (spec
 //! `docs/superpowers/specs/2026-10-13-armour-export-design.md`). Pieces are
 //! picked by entity class name (`--wear`, placed on the ports that accept
-//! them — `character::wear`) and/or come from a loadout XML (`--loadout`);
+//! them — `character::wear`; a backpack with no core goes on a stand-in
+//! core's mount — `character::stand_in`) and/or come from a loadout XML (`--loadout`);
 //! the wearer is a CHF (`--chf`) or the game's default character of
 //! `--gender`. Output: a GLB, or a decomposed package (`.blend` meshes, or
 //! `.glb` with `--format glb`). Single pieces export with
@@ -71,10 +72,14 @@ impl ArmourCommand {
         let mut entries = load_loadout(&p4k, &character)?;
         if !wear.is_empty() {
             // Picked pieces go on the character's and the loadout's items.
-            let placed = starbreaker_3d::character::wear::dress_entries(&db, &parsed, &entries, &wear)
+            // A backpack with no core goes on a stand-in core's mount.
+            let placed = starbreaker_3d::character::stand_in::dress_with_stand_ins(&p4k, &db, &parsed, &entries, &wear)
                 .map_err(|e| CliError::InvalidInput(e.to_string()))?;
             for problem in &placed.unplaced {
                 eprintln!("not worn: {problem}");
+            }
+            for s in &placed.stand_ins {
+                eprintln!("stand-in: {} hangs on the mount of {} (no core worn; its mesh is not exported)", s.item, s.core);
             }
             if placed.unplaced.len() == wear.len() {
                 return Err(CliError::InvalidInput("none of the --wear pieces could be worn".into()));

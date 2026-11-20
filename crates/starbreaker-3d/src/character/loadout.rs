@@ -13,7 +13,10 @@
 //!   that its parent item hangs on a bone port is a [`Prop`] (a backpack on
 //!   its core); others are skipped. Ports an item lists in
 //!   `HiddenParts` ([`super::clothing`]) drop everything worn under them;
-//!   [`Garments::hidden_ports`] reports them for the CHF's own items.
+//!   [`Garments::hidden_ports`] reports them for the CHF's own items. A
+//!   stand-in core ([`LoadoutEntry::stand_in`], [`super::stand_in`]) is no
+//!   garment: it is resolved to its `.skin` and mount bones only, and hides
+//!   nothing.
 //! - [`worn_geometry`] / [`pick_worn_variant`]: the shared rule for what a
 //!   wearable item is worn as (its gendered `.skin` and material);
 //!   [`rigid_geometry`] / [`pick_rigid_variant`] the same for props. Single
@@ -38,6 +41,9 @@ pub struct LoadoutEntry {
     /// Entity class name; empty keeps what the character has there.
     pub item: String,
     pub children: Vec<LoadoutEntry>,
+    /// The item is a stand-in core ([`super::stand_in`]): worn only for the
+    /// mount bone its bone port hangs a prop on; its mesh is not written.
+    pub stand_in: bool,
 }
 
 /// Parse a loadout XML (CryXmlB) into its top-level entries.
@@ -57,7 +63,7 @@ fn items(xml: &starbreaker_cryxml::CryXml<'_>, node: &CryXmlNode) -> Vec<Loadout
         .flat_map(|list| xml.node_children(list).filter(|n| xml.node_tag(n) == "Item"))
         .map(|item| {
             let attr = |name: &str| xml.node_attributes(item).find(|(k, _)| *k == name).map(|(_, v)| v.to_owned()).unwrap_or_default();
-            LoadoutEntry { port: attr("portName"), item: attr("itemName"), children: items(xml, item) }
+            LoadoutEntry { port: attr("portName"), item: attr("itemName"), children: items(xml, item), stand_in: false }
         })
         .collect()
 }
@@ -86,6 +92,9 @@ pub struct Garments {
     pub props: Vec<Prop>,
     /// Every port a worn item hides (`HiddenParts`).
     pub hidden_ports: Vec<String>,
+    /// Stand-in cores ([`LoadoutEntry::stand_in`]): worn for their mount
+    /// bones only.
+    pub stand_ins: Vec<super::stand_in::StandInCore>,
 }
 
 /// The garments `entries` put on a character of `gender` whose root (body)
@@ -115,14 +124,23 @@ pub fn resolve_garments(db: &Database, entries: &[LoadoutEntry], gender: &str, r
             }
         })
         .collect();
+    // A stand-in core is not worn: its tags select nothing.
     let mut context = vec![gender.to_owned()];
-    for (_, _, _, record) in &records {
+    for (_, _, _, record) in records.iter().filter(|(_, e, _, _)| !e.stand_in) {
         context.extend(published_tags(&item_tags(db, record)));
     }
 
     let mut all: Vec<(&Vec<String>, Garment)> = Vec::new();
     let mut props: Vec<(&Vec<String>, Prop)> = Vec::new();
+    let mut stand_ins = Vec::new();
     for (path, entry, parent, record) in records {
+        if entry.stand_in {
+            match stand_in_core(db, entry, record, gender) {
+                Some(core) => stand_ins.push(core),
+                None => eprintln!("stand-in core {}: no {gender} .skin, skipped", entry.item),
+            }
+            continue;
+        }
         // A garment must fit the wearer: the other gender's mesh does not.
         let Some(worn) = worn_geometry(db, record, gender, &context).filter(|w| !w.other_gender) else {
             match worn_prop(db, &index, entry, parent, record, gender, &context) {
@@ -153,7 +171,38 @@ pub fn resolve_garments(db: &Database, entries: &[LoadoutEntry], gender: &str, r
     };
     let garments = all.into_iter().filter(|(path, g)| shown(path, &g.item)).map(|(_, g)| g).collect();
     let props = props.into_iter().filter(|(path, p)| shown(path, &p.item)).map(|(_, p)| p).collect();
-    Garments { garments, props, hidden_ports }
+    Garments { garments, props, hidden_ports, stand_ins }
+}
+
+/// The stand-in core `entry` resolved for `gender`: its `.skin` (for the
+/// mount bones), the bones of the bone ports items are worn on, and those
+/// items.
+fn stand_in_core(db: &Database, entry: &LoadoutEntry, record: &Record, gender: &str) -> Option<super::stand_in::StandInCore> {
+    let geometry = worn_geometry(db, record, gender, &[gender.to_owned()]).filter(|w| !w.other_gender)?.geometry;
+    fn bones(helper: &PortHelper, out: &mut Vec<String>) {
+        if !out.iter().any(|b| b.eq_ignore_ascii_case(&helper.bone)) {
+            out.push(helper.bone.clone());
+        }
+        helper.sub_helpers.iter().for_each(|sub| bones(sub, out));
+    }
+    // Only the ports something is worn on: the core's other bone ports
+    // (weapon, magazine holsters) carry nothing.
+    let mut mount = Vec::new();
+    for port in super::wear::ports(db, record).ok()? {
+        if !entry.children.iter().any(|c| c.port.eq_ignore_ascii_case(&port.name)) {
+            continue;
+        }
+        if let Some(helper) = &port.bone {
+            bones(helper, &mut mount);
+        }
+    }
+    Some(super::stand_in::StandInCore {
+        item: entry.item.clone(),
+        port: entry.port.clone(),
+        geometry,
+        bones: mount,
+        items: entry.children.iter().map(|c| c.item.clone()).filter(|i| !i.is_empty()).collect(),
+    })
 }
 
 /// `entry` worn as a rigid prop: its parent item's port it is on hangs it on

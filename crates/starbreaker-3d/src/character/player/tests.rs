@@ -233,13 +233,16 @@ fn wearer_identity_is_not_exported_again_as_loadout_clothing() {
                 port: "face".into(),
                 item: "synthetic_head".into(),
                 children: vec![],
+                stand_in: false,
             },
             LoadoutEntry {
                 port: "armour".into(),
                 item: "synthetic_gear".into(),
                 children: vec![],
+                stand_in: false,
             },
         ],
+        stand_in: false,
     }];
     let result = loadouts::equipment(&entries, &std::collections::BTreeSet::from(["face".into()]));
     assert_eq!(result[0].children.len(), 1);

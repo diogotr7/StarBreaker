@@ -16,7 +16,9 @@
 //!   ([`Seed`]); [`wearable`]: an item's type and ports from DataCore;
 //!   [`dress_entries`]: picked item names on a CHF character (its own items —
 //!   body, head — and a loadout's are the worn items); a pick the wearer's
-//!   gender has no mesh for is reported, not worn.
+//!   gender has no mesh for is reported, not worn; [`dress`] the same with
+//!   another placement ([`super::stand_in`]: a backpack with no core goes on
+//!   a stand-in core).
 
 use starbreaker_chf::{ChfData, ItemPort};
 use starbreaker_datacore::Database;
@@ -38,6 +40,10 @@ pub struct PortDef {
     pub types: Vec<PortType>,
     pub required_tags: Vec<String>,
     pub bone: Option<PortHelper>,
+    /// `MaxSize`: the largest item size the port takes (not a wear gate,
+    /// see [`PortDef::accepts`]; it picks a stand-in core's weight,
+    /// [`super::stand_in`]).
+    pub max_size: Option<i32>,
 }
 
 /// An item type a port accepts; `sub_types` empty accepts any subtype.
@@ -58,6 +64,8 @@ pub struct Wearable {
     pub tags: Vec<String>,
     pub ports: Vec<PortDef>,
     pub rigid: bool,
+    /// `AttachDef.Size`.
+    pub size: Option<i32>,
 }
 
 impl PortDef {
@@ -90,6 +98,10 @@ impl PortDef {
 pub struct Placement {
     pub entries: Vec<LoadoutEntry>,
     pub unplaced: Vec<String>,
+    /// The ports left free, in tree order.
+    pub free_ports: Vec<PortDef>,
+    /// Items worn on a stand-in core ([`super::stand_in`]).
+    pub stand_ins: Vec<super::stand_in::StandIn>,
 }
 
 /// What a character already wears, as a tree of items with their ports:
@@ -156,11 +168,14 @@ pub fn place_items(worn: &Seed, items: &[Wearable]) -> Placement {
             port: nodes[id].port.clone(),
             item: nodes[id].item.clone(),
             children: (0..nodes.len()).filter(|&c| nodes[c].parent == Some(id)).map(|c| build(nodes, c)).collect(),
+            stand_in: false,
         }
     }
     Placement {
         entries: vec![build(&nodes, 0)],
         unplaced: pending.iter().map(|w| format!("{}: no free port accepts {}", w.item, w.item_type)).collect(),
+        free_ports: slots.iter().filter(|s| !s.taken).map(|s| s.port.clone()).collect(),
+        stand_ins: Vec::new(),
     }
 }
 
@@ -178,6 +193,7 @@ pub fn wearable(db: &Database, index: &EntityIndex, name: &str) -> Result<Option
         tags: words(attach("Tags").as_deref()),
         ports: ports(db, record)?,
         rigid: false,
+        size: first_int(db, record, "Components[SAttachableComponentParams].AttachDef.Size"),
     }))
 }
 
@@ -227,7 +243,8 @@ pub(crate) fn ports(db: &Database, record: &Record) -> Result<Vec<PortDef>, Char
                 _ => Vec::new(),
             };
             let required_tags = words(field(port, "RequiredPortTags").and_then(text).as_deref());
-            Some(PortDef { name, types, required_tags, bone })
+            let max_size = field(port, "MaxSize").and_then(int);
+            Some(PortDef { name, types, required_tags, bone, max_size })
         })
         .collect())
 }
@@ -273,7 +290,24 @@ fn first_text(db: &Database, record: &Record, path: &str) -> Option<String> {
     db.query::<Value>(&compiled, record).ok()?.iter().find_map(text)
 }
 
-fn text(v: &Value) -> Option<String> {
+fn first_int(db: &Database, record: &Record, path: &str) -> Option<i32> {
+    let compiled = db.compile_path::<Value>(record.struct_id(), path).ok()?;
+    db.query::<Value>(&compiled, record).ok()?.iter().find_map(int)
+}
+
+fn int(v: &Value) -> Option<i32> {
+    match *v {
+        Value::Int8(i) => Some(i.into()),
+        Value::Int16(i) => Some(i.into()),
+        Value::Int32(i) => Some(i),
+        Value::UInt8(i) => Some(i.into()),
+        Value::UInt16(i) => Some(i.into()),
+        Value::UInt32(i) => i32::try_from(i).ok(),
+        _ => None,
+    }
+}
+
+pub(crate) fn text(v: &Value) -> Option<String> {
     match v {
         Value::String(s) | Value::Enum(s) if !s.is_empty() => Some((*s).to_owned()),
         _ => None,
@@ -295,6 +329,18 @@ fn field<'v, 'a>(v: &'v Value<'a>, name: &str) -> Option<&'v Value<'a>> {
 /// with no mesh for the character's gender, are reported in `unplaced`.
 /// Errors when DataCore lacks the CHF's body record or a query fails.
 pub fn dress_entries(db: &Database, chf: &ChfData, loadout: &[LoadoutEntry], items: &[String]) -> Result<Placement, CharacterError> {
+    dress(db, chf, loadout, items, |_, worn, wearables| Ok(place_items(worn, wearables)))
+}
+
+/// [`dress_entries`] with the placement `place` makes of the wearables on
+/// the worn tree (given the entity index).
+pub(crate) fn dress(
+    db: &Database,
+    chf: &ChfData,
+    loadout: &[LoadoutEntry],
+    items: &[String],
+    place: impl FnOnce(&EntityIndex, &Seed, &[Wearable]) -> Result<Placement, CharacterError>,
+) -> Result<Placement, CharacterError> {
     let index = EntityIndex::new(db);
     let gender = super::gender_tag(chf.dna.gender_hash);
     if db.record_by_id(&chf.itemport.id).is_none() {
@@ -328,7 +374,7 @@ pub fn dress_entries(db: &Database, chf: &ChfData, loadout: &[LoadoutEntry], ite
             }
         }
     }
-    let mut placement = place_items(&worn, &wearables);
+    let mut placement = place(&index, &worn, &wearables)?;
     placement.entries.extend(other_roots);
     placement.unplaced.extend(unwearable);
     Ok(placement)

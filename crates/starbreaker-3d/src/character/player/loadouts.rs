@@ -53,6 +53,7 @@ pub(super) fn entries(p4k: &MappedP4k, path: &str) -> Result<Vec<LoadoutEntry>> 
                 port: i.attr("portName").into(),
                 item: i.attr("itemName").into(),
                 children: walk(i),
+                stand_in: false,
             })
             .collect()
     }
@@ -188,6 +189,7 @@ pub(super) fn equipment(
             port: e.port.clone(),
             item: e.item.clone(),
             children: equipment(&e.children, identity_ports),
+            stand_in: e.stand_in,
         })
         .collect()
 }

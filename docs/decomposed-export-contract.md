@@ -98,7 +98,10 @@ assets (`decomposed_physics.rs`):
   `mesh_asset`, `material_sidecar`, `palette_id`, and optionally `animations`
   (only the root entity carries animations) and, in character packages,
   `character` (the resolved CHF material customization and HumanSkin_V2
-  wrinkle-slot layout; written by `character/package.rs`), and with
+  wrinkle-slot layout; written by `character/package.rs`; when a backpack
+  was worn with no core, `character.stand_in_cores` lists the stand-in cores
+  whose mount it hangs on — `core`, `port`, `skin`, `bones`, `items` — whose
+  meshes are not in the package, see `character/stand_in.rs`), and with
   `include_physics` `physics_grid` (vehicles; see Game physics). The root's
   `palette_id` is the entity's DataCore palette; an entity that names none
   (the Javelin) takes the palette its root material file names as

@@ -23,6 +23,9 @@
 //! (armature in scene.blend; a face clip's blendshapes as the head's shape
 //! keys, animated with the head asset).
 //!
+//! A backpack worn with no core hangs on a stand-in core's mount bone
+//! ([`super::stand_in`]); `character.stand_in_cores` records which.
+//!
 //! The root scene instance gains a `character` object: the resolved CHF
 //! material customization (skin tone, blemishes, makeup, eye and hair
 //! colours — see [`super::customization`]) and the HumanSkin_V2 wrinkle
@@ -198,7 +201,7 @@ pub fn export_character_package(
     }
 
     // Character metadata on the root scene instance.
-    let character = json!({
+    let mut character = json!({
         "source": "chf",
         "gender": gender,
         "customization": customization_json,
@@ -207,6 +210,14 @@ pub fn export_character_package(
             "slots": SLOT_LAYOUT.iter().map(|s| json!({"panel": s.panel, "channel": s.channel, "band": s.band, "tile": s.tile})).collect::<Vec<_>>(),
         },
     });
+    // Props hung on a stand-in core's mount, not on a worn core's.
+    if !outfit.mounts.is_empty() {
+        character["stand_in_cores"] = outfit
+            .mounts
+            .iter()
+            .map(|m| json!({"core": m.core.item, "port": m.core.port, "skin": m.core.geometry, "bones": m.core.bones, "items": m.core.items}))
+            .collect();
+    }
     let scene = export
         .files
         .iter_mut()

@@ -244,6 +244,28 @@ pub fn parse_skin_mesh(
     Ok((mesh, skeleton))
 }
 
+/// Parse just the bind-pose skeleton (`CompiledBonesIvo320`) of a `.skin`;
+/// the `.skinm` geometry is not needed.
+pub fn parse_skin_skeleton(skin_bytes: &[u8]) -> Result<BindPoseSkeleton, CharacterError> {
+    let cf = ChunkFile::from_bytes(skin_bytes).map_err(|e| CharacterError::HeadSkinParse {
+        context: "parse_skin_skeleton ChunkFile::from_bytes".into(),
+        message: format!("{e:?}"),
+    })?;
+    let ChunkFile::Ivo(ivo) = cf else {
+        return Err(CharacterError::HeadSkinParse { context: "parse_skin_skeleton".into(), message: ".skin must be IVO, got CrCh".into() });
+    };
+    let bones = ivo
+        .chunks()
+        .iter()
+        .find(|entry| entry.chunk_type == CHUNK_COMPILED_BONES_IVO320)
+        .map(|entry| ivo.chunk_data(entry))
+        .ok_or_else(|| CharacterError::HeadSkinParse {
+            context: "parse_skin_skeleton chunk lookup".into(),
+            message: format!("missing CompiledBonesIvo320 chunk (type 0x{:08X})", CHUNK_COMPILED_BONES_IVO320),
+        })?;
+    decode_bones_chunk(bones)
+}
+
 pub fn parse_head_skin(skin_bytes: &[u8], skinm_bytes: &[u8]) -> Result<HeadSkin, CharacterError> {
     let cf = ChunkFile::from_bytes(skin_bytes).map_err(|e| CharacterError::HeadSkinParse {
         context: "ChunkFile::from_bytes".into(),

@@ -19,6 +19,7 @@ pub mod clothing;
 pub mod loadout;
 pub mod outfit;
 pub mod props;
+pub mod stand_in;
 pub mod wear;
 pub mod apply;
 pub mod blendshapes;

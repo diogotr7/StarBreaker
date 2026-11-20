@@ -129,11 +129,16 @@ impl CharacterRig {
     }
 
     /// Dress the rig in `outfit`: the body's actor skeleton becomes the base
-    /// of [`Self::bones`], and the body and garments join the parts
+    /// of [`Self::bones`], with the stand-in cores' mount bones (a mesh-less
+    /// core's `backpack_attach` bone, [`super::stand_in`]) hung on it as a
+    /// worn core's would be, and the body and garments join the parts
     /// (skinned by joint name, covered zones hidden).
     pub(crate) fn dress(&mut self, outfit: &super::outfit::Outfit) {
         if let Some(body) = &outfit.body {
             self.actor = body.actor.clone();
+        }
+        for mount in &outfit.mounts {
+            append_missing_bones(&mut self.actor, &mount.skeleton);
         }
         self.parts.extend(outfit.parts());
     }
