@@ -393,3 +393,48 @@ fn backpacks_without_a_core_hang_on_a_stand_in_core() {
         }
     }
 }
+
+/// A worn core's backpack mount is the core's own: the undersuit's `.skin`
+/// carries a `backpack_attach_1_override` bone too (at the undersuit's
+/// back), and the bone of the core whose port the backpack is on wins over
+/// it. The same backpack then sits where its stand-in core puts it.
+#[test]
+fn a_worn_cores_mount_wins_over_the_undersuits() {
+    use starbreaker_3d::character::outfit::Outfit;
+    use starbreaker_3d::character::stand_in::{dress_with_stand_ins, skin_skeleton};
+    use starbreaker_3d::character::wear::dress_entries;
+    use starbreaker_3d::character::{Gender, HeadIdentityContext, default_wearer_chf, gender_tag, items};
+    let Some(p4k) = p4k() else { return };
+    let dcb = db_bytes(&p4k);
+    let db = Database::from_bytes(&dcb).unwrap();
+    const SUIT: &str = "cds_undersuit_01_01_12";
+    const CORE: &str = "kap_combat_heavy_core_01_01_01";
+    const BACKPACK: &str = "kap_combat_heavy_backpack_01_01_15";
+    const BONE: &str = "backpack_attach_1_override";
+    for gender in [Gender::Male, Gender::Female] {
+        let bytes = default_wearer_chf(&p4k, gender).unwrap();
+        let chf = starbreaker_chf::ChfFile::from_chf(&bytes).unwrap().parse().unwrap();
+        let tag = gender_tag(chf.dna.gender_hash);
+        let context = HeadIdentityContext::load(&p4k, chf.dna.gender_hash).unwrap();
+        let head_items = items::load_head_items(&p4k, &items::resolve_head_items(&db, &chf.itemport, tag));
+        let mount = |picked: &[&str], stand_in: bool| {
+            let picked: Vec<String> = picked.iter().map(|s| s.to_string()).collect();
+            let placed = if stand_in { dress_with_stand_ins(&p4k, &db, &chf, &[], &picked) } else { dress_entries(&db, &chf, &[], &picked) }.unwrap();
+            assert!(placed.unplaced.is_empty(), "{tag}: {:?}", placed.unplaced);
+            let outfit = Outfit::load(&p4k, &db, &chf, &placed.entries);
+            let glb = context.build_character_glb(&chf.dna, &head_items, &outfit, &Default::default()).unwrap();
+            (node_worlds(&glb)[BONE].to_scale_rotation_translation().2, outfit)
+        };
+        let (worn, outfit) = mount(&[SUIT, CORE, BACKPACK], false);
+        let bind = |item: &str| {
+            let g = outfit.garments.iter().find(|g| g.garment.item == item).unwrap();
+            let b = skin_skeleton(&p4k, &g.garment.geometry).unwrap().bones.into_iter().find(|b| b.name == BONE).unwrap().world_translation;
+            glam::Vec3::new(b[0], b[2], -b[1])
+        };
+        let (core_bind, suit_bind) = (bind(CORE), bind(SUIT));
+        assert!(core_bind.distance(suit_bind) > 0.05, "{tag}: the two skins' mounts differ: {core_bind} / {suit_bind}");
+        assert!(worn.distance(core_bind) < 1e-3, "{tag}: mount at {worn}, the core binds it at {core_bind} (the undersuit at {suit_bind})");
+        let (stood, _) = mount(&[SUIT, BACKPACK], true);
+        assert!(stood.distance(worn) < 1e-3, "{tag}: stand-in mount {stood} vs worn core {worn}");
+    }
+}

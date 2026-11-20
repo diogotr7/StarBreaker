@@ -87,6 +87,8 @@ pub struct Prop {
     pub record: CigGuid,
     /// Entity class name.
     pub item: String,
+    /// The item whose port it is on (entity class name).
+    pub on: String,
     pub port: String,
     pub helper: PortHelper,
     pub geometry: String,

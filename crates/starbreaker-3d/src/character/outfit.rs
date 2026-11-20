@@ -9,8 +9,9 @@
 //!   body; visibility conditions test what is worn on other ports) and the CHF ports hidden with everything under them (a full
 //!   helmet hides `Head_ItemPort`: the head itself, its eyes, hair, brows, …).
 //!   The loadout's bone-attached props ([`super::props::Prop`]) are kept as
-//!   resolved for the package writer to place, and a stand-in core's mount
-//!   bones ([`super::stand_in`]) for the rig's skeleton.
+//!   resolved for the package writer to place, with the bones they hang on
+//!   for the rig's skeleton: from the `.skin` of the garment whose port each
+//!   is on, or of a stand-in core ([`super::stand_in`]).
 //! - [`Outfit::with_body`]: just a body, nothing covered.
 //! - [`Outfit::wears`]: whether a CHF head item is worn (not on a hidden
 //!   port); [`Outfit::hides_geometry`]: whether a CHF item with that `.skin`
@@ -60,6 +61,11 @@ pub struct Outfit {
     /// Stand-in cores' mount bones ([`super::stand_in`]), which join the
     /// actor skeleton (`CharacterRig::dress`); their meshes are not worn.
     pub mounts: Vec<StandInMount>,
+    /// The bones the props hang on, from the `.skin` of the garment whose
+    /// port each is on ([`mount_skeleton`]): they join the actor skeleton
+    /// first, so a core's `backpack_attach_1_override` wins over the
+    /// same-named bone of the undersuit under it.
+    pub worn_mounts: Vec<BindPoseSkeleton>,
     /// CHF ports (lowercase) hidden by a garment, with every port under them.
     hidden_chf_ports: HashSet<String>,
     /// The worn `.skin`s (DataCore paths, lowercase) of the CHF items on
@@ -103,7 +109,7 @@ impl Outfit {
         layers.extend(garments.iter().map(|(g, ..)| Worn { port: &g.port, clothing: &g.clothing }));
         let mut hidden = hidden_zones(&layers).into_iter();
         let body_hidden_zones = hidden.next().unwrap_or_default();
-        let garments = garments
+        let garments: Vec<GarmentMesh> = garments
             .into_iter()
             .zip(hidden)
             .map(|((garment, mesh, skeleton, source), hidden_zones)| GarmentMesh {
@@ -127,7 +133,8 @@ impl Outfit {
             })
             .collect();
         let mounts = worn.stand_ins.iter().filter_map(|core| stand_in_mount(p4k, core)).collect();
-        Self { body, body_hidden_zones, garments, props: worn.props, mounts, hidden_chf_ports, hidden_chf_geometry }
+        let worn_mounts = prop_mounts(&worn.props, &garments);
+        Self { body, body_hidden_zones, garments, props: worn.props, mounts, worn_mounts, hidden_chf_ports, hidden_chf_geometry }
     }
 
     /// Whether the CHF item `item` is worn (its port is not hidden).
@@ -159,6 +166,19 @@ impl Outfit {
         });
         body.chain(garments).collect()
     }
+}
+
+/// The bone each prop hangs on (with its ancestors) out of the skeleton of
+/// the garment whose port it is on; none for a prop on a garment whose
+/// `.skin` lacks it (it hangs on whatever part has the bone).
+fn prop_mounts(props: &[Prop], garments: &[GarmentMesh]) -> Vec<BindPoseSkeleton> {
+    props
+        .iter()
+        .filter_map(|prop| {
+            let on = garments.iter().find(|g| g.garment.item.eq_ignore_ascii_case(&prop.on))?;
+            mount_skeleton(&on.skeleton, std::slice::from_ref(&prop.helper.bone))
+        })
+        .collect()
 }
 
 /// A stand-in core's mount bones out of its `.skin`; `None` (reported) when

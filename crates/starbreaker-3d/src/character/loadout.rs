@@ -219,7 +219,8 @@ fn worn_prop(
     gender: &str,
     context: &[String],
 ) -> Option<Prop> {
-    let parent = index.find_record(&parent?.item)?;
+    let parent_name = parent?.item.as_str();
+    let parent = index.find_record(parent_name)?;
     let ports = super::wear::ports(db, parent).ok()?;
     let bone = ports.into_iter().find(|p| p.name.eq_ignore_ascii_case(&entry.port))?.bone?;
     let geometry = rigid_geometry(index, record, gender, context)?;
@@ -228,6 +229,7 @@ fn worn_prop(
     Some(Prop {
         record: record.id,
         item: entry.item.clone(),
+        on: parent_name.to_owned(),
         port: entry.port.clone(),
         helper,
         geometry: geometry.geometry,
