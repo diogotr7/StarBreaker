@@ -472,6 +472,17 @@ pub fn assemble_glb_with_loadout_with_progress(
         let mut paint_variants =
             enumerate_paint_variants_for_entity(db, p4k, record, &tree.root, &paint_display_names);
         paint_variants.extend(super::enumerate_sibling_finishes(db, p4k, record, &localization));
+        // Finishes drawn from their own geometry file bring extra parts:
+        // children `paints.json` names per finish.
+        if opts.include_attachments {
+            child_payloads.extend(super::finish_geometry::finish_part_payloads(
+                p4k,
+                &paint_variants,
+                &resolved.entity_name,
+                root_palette.as_ref(),
+                &child_opts,
+            ));
+        }
         let decomposed_progress =
             progress.map(|progress| progress.sub(ASSEMBLY_STAGE_START, ASSEMBLY_STAGE_END));
 

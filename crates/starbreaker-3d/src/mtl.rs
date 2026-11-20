@@ -60,6 +60,25 @@ pub struct PaintVariant {
     pub material_path: Option<String>,
     /// Loaded material data for this variant.
     pub materials: Option<MtlFile>,
+    /// The variant's own geometry file (DataCore path), when its tagged node
+    /// names one other than the entity's (see `pipeline::finish_geometry`).
+    pub geometry_path: Option<String>,
+    /// Parts the variant's own geometry binds that the base does not; the
+    /// export adds each as a child shown only with this variant.
+    pub extra_parts: Vec<VariantPart>,
+}
+
+/// A part only a paint variant's own geometry binds: a CDF attachment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariantPart {
+    /// The child entity name the part is exported under.
+    pub entity_name: String,
+    /// The attachment's geometry file (DataCore path).
+    pub geometry_path: String,
+    /// The attachment's own material, if it names one.
+    pub material_path: Option<String>,
+    /// The bone a `CA_BONE` attachment hangs on; `None` for a `CA_SKIN`.
+    pub bone_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

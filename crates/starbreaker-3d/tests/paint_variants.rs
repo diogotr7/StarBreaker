@@ -90,3 +90,31 @@ fn weapon_finish_entities_are_variants_of_the_base() {
     let hull = index.find_record("RSI_Apollo_Triage").expect("Apollo Triage");
     assert!(starbreaker_3d::enumerate_sibling_finishes(&db, &p4k, hull, &HashMap::new()).is_empty());
 }
+
+/// Weapon finishes drawn from their own `.cdf` (the base's parts with the
+/// finish's material, plus parts of its own) carry that material and those
+/// parts; finishes on the base's own geometry carry no extra parts.
+#[test]
+fn finishes_with_their_own_geometry_bring_its_material_and_parts() {
+    let Some(p4k) = p4k() else { return };
+    let dcb = p4k.read_file(r"Data\Game2.dcb").or_else(|_| p4k.read_file(r"Data\Game.dcb")).unwrap();
+    let db = Database::from_bytes(&dcb).unwrap();
+    let index = EntityIndex::new(&db);
+    let record = index.find_record("volt_rifle_energy_01").expect("Parallax base");
+    let tree = resolve_loadout(&db, record);
+    let variants = enumerate_paint_variants_for_entity(&db, &p4k, record, &tree.root, &HashMap::new());
+    let find = |tag: &str| variants.iter().find(|v| v.subgeometry_tag.eq_ignore_ascii_case(tag)).unwrap_or_else(|| panic!("no {tag}"));
+
+    let gold = find("Black_gold01");
+    assert!(
+        gold.material_path.as_deref().is_some_and(|p| p.to_ascii_lowercase().ends_with("cosmetics/erfl_fps_volt_parallax_store_01_mat.mtl")),
+        "{:?}",
+        gold.material_path
+    );
+    assert!(gold.materials.is_some(), "the finish material is loaded");
+    assert!(gold.extra_parts.iter().any(|p| p.geometry_path.to_ascii_lowercase().ends_with("erfl_fps_volt_parallax_store_01_geo_a.cgf")));
+    assert!(gold.extra_parts.iter().all(|p| p.bone_name.is_some()), "every extra part hangs on a bone");
+
+    let camo = find("Camo01");
+    assert!(camo.extra_parts.is_empty(), "a finish on the base's geometry adds no parts: {:?}", camo.extra_parts);
+}

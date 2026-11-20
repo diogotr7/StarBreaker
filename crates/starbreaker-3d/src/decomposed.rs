@@ -1269,6 +1269,7 @@ pub(crate) fn write_decomposed_export(
             "palette_id": palette_id,
             "display_name": variant.display_name,
             "exterior_material_sidecar": sidecar_path,
+            "extra_parts": variant.extra_parts.iter().map(|part| part.entity_name.as_str()).collect::<Vec<_>>(),
         }));
     }
     if !paint_variant_json.is_empty() {
@@ -7251,6 +7252,8 @@ mod tests {
             display_name: Some("Vulture Heartthrob Livery".into()),
             material_path: None,
             materials: None,
+            geometry_path: None,
+            extra_parts: Vec::new(),
         };
 
         let palette_id = register_paint_variant_palette(&mut records, &variant)

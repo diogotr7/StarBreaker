@@ -444,6 +444,7 @@ pub(crate) fn rebase_mesh_submeshes_to_bone_space(
 /// Returns the `Binding` path of the first `CA_SKIN` attachment (the primary mesh).
 /// Falls back to the first attachment with any `Binding` if no `CA_SKIN` is found.
 /// A single geometry file to load, with optional bone attachment info.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct GeometryPart {
     pub(crate) path: String,
     /// Bone name from CDF attachment (for CA_BONE placement). None for CA_SKIN.

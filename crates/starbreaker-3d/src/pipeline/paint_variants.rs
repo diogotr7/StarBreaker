@@ -23,6 +23,7 @@ use starbreaker_p4k::MappedP4k;
 use crate::mtl;
 
 use super::datacore_path_to_p4k;
+use super::finish_geometry::{component_geometry_path, own_geometry_path, resolve_finish_geometry};
 use super::palette::{extract_subgeometry_palette, get_value_array, get_value_field, get_value_string, try_load_mtl};
 
 /// One tagged node: the `@Tag` that selects it, its position in its list, its
@@ -33,6 +34,9 @@ pub(crate) struct PaintNode<'v, 'a> {
     pub index: usize,
     pub material_path: Option<String>,
     pub palette_holder: Option<&'v Value<'a>>,
+    /// The node's own geometry file, when it names one other than the
+    /// component's ([`own_geometry_path`]); `materialVariants` entries have none.
+    pub geometry_path: Option<String>,
 }
 
 /// The tagged paint nodes of one `SGeometryResourceParams` component, in
@@ -53,7 +57,7 @@ pub(crate) fn tagged_paint_nodes<'v, 'a>(component: &'v Value<'a>) -> Vec<PaintN
             .resolve(&[tag.to_owned()])
             .filter(|p| !p.is_empty())
             .map(str::to_owned);
-        nodes.push(PaintNode { tag, index, material_path, palette_holder: Some(variant) });
+        nodes.push(PaintNode { tag, index, material_path, palette_holder: Some(variant), geometry_path: None });
     }
     nodes
 }
@@ -72,7 +76,8 @@ fn sub_geometry_paint_nodes<'v, 'a>(component: &'v Value<'a>) -> Vec<PaintNode<'
             .and_then(|m| get_value_string(m, "path"))
             .filter(|p| !p.is_empty())
             .map(str::to_owned);
-        nodes.push(PaintNode { tag, index, material_path, palette_holder: geometry });
+        let geometry_path = geometry.and_then(|g| own_geometry_path(component, g));
+        nodes.push(PaintNode { tag, index, material_path, palette_holder: geometry, geometry_path });
     }
     nodes
 }
@@ -206,6 +211,8 @@ pub(crate) fn paint_variants_from_components(
             // P4K-relative, stored with forward slashes for the output JSON.
             material_path: node.material_path.as_deref().map(|p| datacore_path_to_p4k(p).replace('\\', "/")),
             materials: None,
+            geometry_path: node.geometry_path.clone(),
+            extra_parts: Vec::new(),
         });
     }
     variants
@@ -238,6 +245,11 @@ pub fn enumerate_paint_variants_for_entity(
     }
     for variant in &mut variants {
         variant.materials = variant.material_path.as_deref().and_then(|p| try_load_mtl(p4k, &p.replace('/', "\\")));
+    }
+    if let Some(base) = components.iter().find_map(component_geometry_path) {
+        resolve_finish_geometry(p4k, base, &mut variants);
+    }
+    for variant in &variants {
         log::info!(
             "  paint variant: tag={:?}, material={:?}, palette_id={:?}, display={:?}",
             variant.subgeometry_tag, variant.material_path, variant.palette_id, variant.display_name,
@@ -316,6 +328,37 @@ mod tests {
 
     fn tags(variants: &[mtl::PaintVariant]) -> Vec<&str> {
         variants.iter().map(|v| v.subgeometry_tag.as_str()).collect()
+    }
+
+    /// A tagged node whose data names a geometry file of its own.
+    fn sub_geometry_with_file(tags: &'static str, file: &'static str) -> Value<'static> {
+        object(
+            "SGeometryNodeParams",
+            vec![
+                ("Tags", Value::String(tags)),
+                (
+                    "Geometry",
+                    object(
+                        "SGeometryDataParams",
+                        vec![
+                            ("Geometry", object("GlobalResourceGeometry", vec![("path", Value::String(file))])),
+                            ("Material", material("")),
+                            ("Palette", palette(Some("synthetic_gold"))),
+                        ],
+                    ),
+                ),
+            ],
+        )
+    }
+
+    /// A finish drawn from its own `.cdf` keeps that file on its variant, so
+    /// the export can take the finish's material and extra parts from it.
+    #[test]
+    fn a_sub_geometry_node_with_its_own_file_keeps_it() {
+        let c = component(vec![sub_geometry_with_file("Gold01", "gun/cosmetics/gun_gold.cdf"), sub_geometry("Red01", "", Some("synthetic_red"))], vec![]);
+        let variants = paint_variants_from_components(&[c], &HashMap::new());
+        assert_eq!(variants[0].geometry_path.as_deref(), Some("gun/cosmetics/gun_gold.cdf"));
+        assert_eq!(variants[1].geometry_path, None, "a palette-only node draws the base's geometry");
     }
 
     #[test]

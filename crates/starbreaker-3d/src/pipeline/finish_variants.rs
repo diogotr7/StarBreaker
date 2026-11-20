@@ -94,6 +94,8 @@ pub(crate) fn finish_variants_from_siblings(
             display_name,
             material_path: (!material.is_empty()).then(|| datacore_path_to_p4k(material).replace('\\', "/")),
             materials: None,
+            geometry_path: None,
+            extra_parts: Vec::new(),
         });
     }
     variants

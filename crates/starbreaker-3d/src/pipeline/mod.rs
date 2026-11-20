@@ -52,6 +52,7 @@ pub use self::palette::*;
 mod paint_port;
 mod paint_variants;
 mod finish_variants;
+mod finish_geometry;
 mod material_palette;
 pub use self::finish_variants::enumerate_sibling_finishes;
 pub use self::paint_variants::enumerate_paint_variants_for_entity;
