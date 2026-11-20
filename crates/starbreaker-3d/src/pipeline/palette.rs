@@ -1,9 +1,10 @@
 //! Material, paint, tint palette, and DataCore value helpers.
 //!
 //! `resolve_material` resolves an MTL path from a DataCore entity record.
-//! `query_tint_palette` / `query_related_tint_palettes` extract tint colour data.
-//! `resolve_paint_override` / `enumerate_paint_variants_for_entity` drive the paint
-//! variant system. `try_load_mtl` reads and parses a raw MTL file from the P4k.
+//! `query_tint_palette` / `query_related_tint_palettes` extract tint colour data;
+//! `extract_subgeometry_palette` reads a `Palette.RootRecord.root` tint palette from
+//! any node carrying one (the paint-variant code in `paint_variants.rs` uses it).
+//! `try_load_mtl` reads and parses a raw MTL file from the P4k.
 //! `query_animation_controller_source` reads the animation controller path.
 //! `load_localization_map`, `build_paint_display_name_map`, `populate_palette_display_name`
 //! localise paint/palette display names.
@@ -64,375 +65,8 @@ pub(crate) fn resolve_material(
     try_load_mtl(p4k, &mtl_p4k_path)
 }
 
-/// Resolve paint-based palette and material overrides from an equipped paint item.
-///
-/// Finds the paint item in the loadout (hardpoint_paint), extracts the `@Tag` from its
-/// AttachDef.Tags, matches it against the entity's SubGeometry entries, and returns the
-/// overridden palette and material. Falls through to the originals if no paint is found.
-pub(crate) fn resolve_paint_override(
-    db: &Database,
-    p4k: &MappedP4k,
-    entity_record: &Record,
-    root_node: &starbreaker_datacore::loadout::LoadoutNode,
-    default_palette: Option<mtl::TintPalette>,
-    default_mtl: Option<mtl::MtlFile>,
-) -> (Option<mtl::TintPalette>, Option<mtl::MtlFile>) {
-    // Find paint item in loadout children.
-    let paint_node = root_node
-        .children
-        .iter()
-        .find(|c| c.item_port_name.to_lowercase().contains("paint"));
-    let Some(paint_node) = paint_node else {
-        return (default_palette, default_mtl);
-    };
-
-    // Query the paint item's AttachDef.Tags to find the @SubGeometry selector.
-    let tags = db
-        .compile_path::<String>(
-            paint_node.record.struct_id(),
-            "Components[SAttachableComponentParams].AttachDef.Tags",
-        )
-        .ok()
-        .and_then(|c| {
-            db.query_single::<String>(&c, &paint_node.record)
-                .ok()
-                .flatten()
-        })
-        .unwrap_or_default();
-
-    // Extract @Tag from the tags string (e.g., "Paint_Gladius @GladiusPirate" → "GladiusPirate").
-    let subgeo_tag = tags.split_whitespace().find_map(|t| t.strip_prefix('@'));
-    let Some(subgeo_tag) = subgeo_tag else {
-        log::info!(
-            "  paint '{}' has no @Tag in '{tags}', using default palette",
-            paint_node.entity_name
-        );
-        return (default_palette, default_mtl);
-    };
-    log::info!(
-        "  paint '{}' selects SubGeometry tag '{subgeo_tag}'",
-        paint_node.entity_name
-    );
-
-    // Query SubGeometry entries via the full SGeometryResourceParams component Value tree
-    // (same approach as loadout.rs query_sub_geometry — querying SubGeometry directly
-    // can truncate the array).
-    use starbreaker_datacore::query::value::Value;
-    let compiled = match db.compile_path::<Value>(
-        entity_record.struct_id(),
-        "Components[SGeometryResourceParams]",
-    ) {
-        Ok(c) => c,
-        Err(_) => return (default_palette, default_mtl),
-    };
-    let components = db
-        .query::<Value>(&compiled, entity_record)
-        .unwrap_or_default();
-
-    for component in &components {
-        let geom_node = match get_value_field(component, "Geometry") {
-            Some(g) => g,
-            None => continue,
-        };
-        let sub_arr = match get_value_array(geom_node, "SubGeometry") {
-            Some(a) => a,
-            None => continue,
-        };
-
-        for (idx, sub) in sub_arr.iter().enumerate() {
-            let tag = get_value_string(sub, "Tags").unwrap_or("");
-            if !tag.eq_ignore_ascii_case(subgeo_tag) {
-                continue;
-            }
-            log::info!("  matched SubGeometry[{idx}] tag='{tag}'");
-
-            // Extract palette from this SubGeometry's Geometry.Palette.RootRecord.root.
-            let palette = get_value_field(sub, "Geometry").and_then(|geometry| {
-                extract_subgeometry_palette(geometry, Some(paint_node.entity_name.clone()))
-            });
-
-            if let Some(ref p) = palette {
-                log::info!(
-                    "  paint palette: primary=[{:.2},{:.2},{:.2}] secondary=[{:.2},{:.2},{:.2}]",
-                    p.primary[0],
-                    p.primary[1],
-                    p.primary[2],
-                    p.secondary[0],
-                    p.secondary[1],
-                    p.secondary[2],
-                );
-            }
-
-            // Extract material override.
-            let mtl_path = get_value_field(sub, "Geometry")
-                .and_then(|g| get_value_field(g, "Material"))
-                .and_then(|m| get_value_string(m, "path"))
-                .filter(|p| !p.is_empty());
-
-            let override_info = mtl::PaintOverrideInfo {
-                paint_item_name: paint_node.entity_name.clone(),
-                subgeometry_tag: tag.to_string(),
-                subgeometry_index: idx,
-                material_path: mtl_path.map(|path| datacore_path_to_p4k(path).replace('\\', "/")),
-            };
-
-            let mut mtl = if let Some(mtl_path) = mtl_path {
-                log::info!("  paint material override: {mtl_path}");
-                let p4k_path = datacore_path_to_p4k(mtl_path);
-                try_load_mtl(p4k, &p4k_path).or_else(|| default_mtl.clone())
-            } else {
-                default_mtl.clone()
-            };
-
-            if let Some(materials) = mtl.as_mut() {
-                materials.paint_override = Some(override_info);
-            }
-
-            return (palette.or(default_palette), mtl);
-        }
-    }
-
-    log::warn!("  paint tag '{subgeo_tag}' not found in SubGeometry entries");
-    (default_palette, default_mtl)
-}
-
-/// Enumerate all available paint variants for a ship entity by inspecting every
-/// SubGeometry entry that carries a @Tag.  For each entry we read the variant's
-/// material path and load the MTL file, then derive a stable `paint/…` ID from
-/// the sanitized tag string.  Entries without a tag (the default material) are
-/// skipped.  Duplicate tags (some entities repeat SubGeometry entries) are
-/// de-duplicated.
-pub(crate) fn enumerate_paint_variants_for_entity(
-    db: &Database,
-    p4k: &MappedP4k,
-    entity_record: &Record,
-    display_names: &HashMap<String, String>,
-) -> Vec<mtl::PaintVariant> {
-    use starbreaker_datacore::query::value::Value;
-
-    let compiled = match db.compile_path::<Value>(
-        entity_record.struct_id(),
-        "Components[SGeometryResourceParams]",
-    ) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    let components = db
-        .query::<Value>(&compiled, entity_record)
-        .unwrap_or_default();
-
-    let mut variants: Vec<mtl::PaintVariant> = Vec::new();
-
-    for component in &components {
-        let geom_node = match get_value_field(component, "Geometry") {
-            Some(g) => g,
-            None => continue,
-        };
-        let sub_arr = match get_value_array(geom_node, "SubGeometry") {
-            Some(a) => a,
-            None => continue,
-        };
-
-        for sub in sub_arr {
-            let tag = get_value_string(sub, "Tags").unwrap_or("").trim();
-            // Skip the default (no-paint) SubGeometry entry.
-            if tag.is_empty() {
-                continue;
-            }
-            // Skip duplicates — some entities repeat SubGeometry entries.
-            if variants
-                .iter()
-                .any(|v| v.subgeometry_tag.eq_ignore_ascii_case(tag))
-            {
-                continue;
-            }
-
-            // Derive the P4K-relative material path, normalised to backslashes for P4K lookup
-            // and stored with forward slashes for output JSON.
-            let p4k_mtl_path: Option<String> = get_value_field(sub, "Geometry")
-                .and_then(|g| get_value_field(g, "Material"))
-                .and_then(|m| get_value_string(m, "path"))
-                .filter(|p| !p.is_empty())
-                .map(|p| datacore_path_to_p4k(p));
-
-            // Load the material file for this variant using the backslash P4K path.
-            let materials = p4k_mtl_path.as_deref().and_then(|p| try_load_mtl(p4k, p));
-
-            // Store forward-slash version for output.
-            let material_path = p4k_mtl_path.map(|p| p.replace('\\', "/"));
-
-            // Derive a stable canonical palette_id directly from the SubGeometry tag.
-            // E.g. "Paint_Aurora_Mk2_Pink_Green_Purple" → "palette/aurora_mk2_pink_green_purple".
-            let sanitized_tag: String = tag
-                .chars()
-                .map(|ch| {
-                    if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                        ch.to_ascii_lowercase()
-                    } else {
-                        '_'
-                    }
-                })
-                .collect();
-            let canonical_tag = sanitized_tag
-                .strip_prefix("paint_")
-                .unwrap_or(sanitized_tag.as_str());
-            let palette_id = Some(format!("palette/{canonical_tag}"));
-            // Try to look up a localized display name using the sanitized tag.
-            let display_name = display_names.get(sanitized_tag.as_str()).cloned();
-            let palette = get_value_field(sub, "Geometry")
-                .and_then(|geometry| {
-                    extract_subgeometry_palette(geometry, Some(canonical_tag.to_string()))
-                })
-                .map(|mut palette| {
-                    if palette.display_name.is_none() {
-                        palette.display_name = display_name.clone();
-                    }
-                    palette
-                });
-
-            log::info!(
-                "  paint variant: tag={tag:?}, material={:?}, palette_id={:?}, display={:?}",
-                material_path,
-                palette_id,
-                display_name,
-            );
-
-            variants.push(mtl::PaintVariant {
-                subgeometry_tag: tag.to_string(),
-                palette_id,
-                palette,
-                display_name,
-                material_path,
-                materials,
-            });
-        }
-    }
-
-    extend_with_palette_only_paint_variants(db, entity_record, display_names, &mut variants);
-
-    variants
-}
-
-fn extend_with_palette_only_paint_variants(
-    db: &Database,
-    entity_record: &Record,
-    display_names: &HashMap<String, String>,
-    variants: &mut Vec<mtl::PaintVariant>,
-) {
-    use starbreaker_datacore::QueryResultExt;
-    use starbreaker_datacore::query::value::Value;
-
-    let family_keys = tint_palette_family_keys(db.resolve_string2(entity_record.name_offset));
-    if family_keys.is_empty() {
-        return;
-    }
-
-    let Ok(tags_compiled) = db
-        .compile_rooted::<String>(
-            "EntityClassDefinition.Components[SAttachableComponentParams].AttachDef.Tags",
-        )
-        .optional()
-    else {
-        return;
-    };
-    let Ok(geometry_compiled) = db
-        .compile_rooted::<Value>("EntityClassDefinition.Components[SGeometryResourceParams]")
-        .optional()
-    else {
-        return;
-    };
-
-    let mut seen_palette_ids: HashSet<String> = variants
-        .iter()
-        .filter_map(|variant| variant.palette_id.clone())
-        .collect();
-
-    for record in db.records_by_type_name("EntityClassDefinition") {
-        if !db.is_main_record(record) {
-            continue;
-        }
-        let file_path = db.resolve_string(record.file_name_offset).to_lowercase();
-        if !file_path.contains("entities/scitem/ships/paints/") {
-            continue;
-        }
-
-        let Some(tags) = tags_compiled
-            .as_ref()
-            .and_then(|compiled| db.query_single::<String>(compiled, record).ok().flatten())
-        else {
-            continue;
-        };
-        if !paint_attach_tags_match_family(&tags, &family_keys) {
-            continue;
-        }
-
-        let full_name = db.resolve_string2(record.name_offset);
-        let short_name = full_name
-            .rsplit('.')
-            .next()
-            .unwrap_or(full_name)
-            .to_lowercase();
-        let canonical_tag = short_name
-            .strip_prefix("paint_")
-            .unwrap_or(short_name.as_str())
-            .to_string();
-        let palette_id = format!("palette/{canonical_tag}");
-        if !seen_palette_ids.insert(palette_id.clone()) {
-            continue;
-        }
-
-        let display_name = display_names
-            .get(&short_name)
-            .cloned()
-            .or_else(|| display_names.get(&canonical_tag).cloned());
-        let components = geometry_compiled
-            .as_ref()
-            .and_then(|compiled| db.query::<Value>(compiled, record).ok())
-            .unwrap_or_default();
-        let palette = components
-            .iter()
-            .filter_map(|component| get_value_field(component, "Geometry"))
-            .find_map(|geometry| extract_subgeometry_palette(geometry, Some(canonical_tag.clone())))
-            .map(|mut palette| {
-                if palette.display_name.is_none() {
-                    palette.display_name = display_name.clone();
-                }
-                palette
-            });
-
-        if palette.is_none() {
-            continue;
-        }
-
-        let subgeometry_tag = tags
-            .split_whitespace()
-            .find_map(|token| token.strip_prefix('@'))
-            .map(str::to_string);
-
-        variants.push(mtl::PaintVariant {
-            subgeometry_tag: subgeometry_tag.unwrap_or_else(|| short_name.clone()),
-            palette_id: Some(palette_id),
-            palette,
-            display_name,
-            material_path: None,
-            materials: None,
-        });
-    }
-}
-
-fn paint_attach_tags_match_family(tags: &str, family_keys: &[String]) -> bool {
-    let tokens: HashSet<String> = tags
-        .split_whitespace()
-        .map(|token| token.to_lowercase())
-        .collect();
-    family_keys
-        .iter()
-        .map(|key| format!("paint_{key}"))
-        .any(|candidate| tokens.contains(&candidate))
-}
-
 /// Helper: get an object field from a DataCore Value.
-fn get_value_field<'v, 'a>(
+pub(super) fn get_value_field<'v, 'a>(
     val: &'v starbreaker_datacore::query::value::Value<'a>,
     name: &str,
 ) -> Option<&'v starbreaker_datacore::query::value::Value<'a>> {
@@ -444,7 +78,7 @@ fn get_value_field<'v, 'a>(
 }
 
 /// Helper: get a string field from a DataCore Value.
-fn get_value_string<'a>(
+pub(super) fn get_value_string<'a>(
     val: &starbreaker_datacore::query::value::Value<'a>,
     name: &str,
 ) -> Option<&'a str> {
@@ -477,7 +111,7 @@ pub fn query_animation_controller_source(
 }
 
 /// Helper: get an array field from a DataCore Value.
-fn get_value_array<'v, 'a>(
+pub(super) fn get_value_array<'v, 'a>(
     val: &'v starbreaker_datacore::query::value::Value<'a>,
     name: &str,
 ) -> Option<&'v Vec<starbreaker_datacore::query::value::Value<'a>>> {
@@ -523,7 +157,7 @@ fn get_value_glossiness(val: &starbreaker_datacore::query::value::Value) -> Opti
     }
 }
 
-fn extract_subgeometry_palette(
+pub(super) fn extract_subgeometry_palette(
     geometry: &starbreaker_datacore::query::value::Value,
     source_name: Option<String>,
 ) -> Option<mtl::TintPalette> {
@@ -808,7 +442,7 @@ pub(crate) fn build_paint_display_name_map(
     display_names
 }
 
-fn localization_key_from_value(value: &Value) -> Option<String> {
+pub(super) fn localization_key_from_value(value: &Value) -> Option<String> {
     let key = match value {
         Value::String(text) | Value::Locale(text) => text.to_string(),
         _ => return None,

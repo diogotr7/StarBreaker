@@ -6,7 +6,9 @@
 //! real materials. The meshes are the character rig's
 //! (`HeadAssets::character_rig`: DNA head, DNA eyes/teeth, wrapped
 //! eye-details, CHF items, and the body and a loadout's garments on the
-//! actor skeleton, zones they cover left out — [`super::outfit`]) — each
+//! actor skeleton, zones they cover left out — [`super::outfit`]; rigid
+//! props such as backpacks are rigid children on the root's bones,
+//! [`super::props`]) — each
 //! part's pipeline-loaded
 //! [`super::part_source::PartSource`] (submesh material ids, every vertex
 //! stream, the part's `.mtl`) reshaped to the neutral-identity shape, the
@@ -20,6 +22,9 @@
 //! [`CharacterAnimation`] the package carries its clip as Blender actions
 //! (armature in scene.blend; a face clip's blendshapes as the head's shape
 //! keys, animated with the head asset).
+//!
+//! A backpack worn with no core hangs on a stand-in core's mount bone
+//! ([`super::stand_in`]); `character.stand_in_cores` records which.
 //!
 //! The root scene instance gains a `character` object: the resolved CHF
 //! material customization (skin tone, blemishes, makeup, eye and hair
@@ -99,6 +104,16 @@ pub fn export_character_package(
     let mut root_mesh = rig.head_mesh()?;
     let (mut root_mtl, mut root_nmc) = (rig.head_materials(), rig.head_source.nmc.clone().filter(|_| !rig.head_hidden));
     let mut children = rig.part_payloads(name, |source| character_geometry_path(name, &source.skin_path))?;
+    // The body (undersuit) and garments carry the tint palette they are worn
+    // with, as an entity export of the item with `--geometry-tag` does.
+    let worn_items = outfit.body.iter().map(|b| (&b.item.geometry, &b.item.record))
+        .chain(outfit.garments.iter().map(|g| (&g.garment.geometry, &g.garment.record)));
+    for (geometry, record) in worn_items {
+        let stem = super::shared::stem(geometry);
+        if let Some(child) = children.iter_mut().find(|c| c.entity_name == stem) {
+            child.palette = db.record_by_id(record).and_then(|r| super::loadout::worn_palette(db, r, gender));
+        }
+    }
 
     // GLB parts carry their own complete bind rig and follow the package leader.
     // Promote a visible skinned part when clothing hides the head: a skeleton-only
@@ -115,6 +130,9 @@ pub fn export_character_package(
             root_mesh = part.mesh; root_mtl = part.materials; root_geometry = part.geometry_path;
         }
     }
+
+    // Bone-attached props hang on the rig's bones, which the root carries.
+    children.extend(super::props::prop_payloads(p4k, db, &outfit.props, name, gender, opts));
 
     // (port, effective .mtl) per item and the body, for binding the CHF
     // material slots.
@@ -183,7 +201,7 @@ pub fn export_character_package(
     }
 
     // Character metadata on the root scene instance.
-    let character = json!({
+    let mut character = json!({
         "source": "chf",
         "gender": gender,
         "customization": customization_json,
@@ -192,6 +210,14 @@ pub fn export_character_package(
             "slots": SLOT_LAYOUT.iter().map(|s| json!({"panel": s.panel, "channel": s.channel, "band": s.band, "tile": s.tile})).collect::<Vec<_>>(),
         },
     });
+    // Props hung on a stand-in core's mount, not on a worn core's.
+    if !outfit.mounts.is_empty() {
+        character["stand_in_cores"] = outfit
+            .mounts
+            .iter()
+            .map(|m| json!({"core": m.core.item, "port": m.core.port, "skin": m.core.geometry, "bones": m.core.bones, "items": m.core.items}))
+            .collect();
+    }
     let scene = export
         .files
         .iter_mut()

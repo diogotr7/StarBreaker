@@ -126,6 +126,10 @@ pub fn assemble_glb_with_loadout_with_progress(
         root_bones,
         root_skeleton_source_path,
     ) = export_entity_payload(db, p4k, record, &payload_opts)?;
+    // A root entity that names no palette is drawn with its material's default.
+    if root_palette.is_none() {
+        root_palette = root_mtl.as_ref().and_then(|mtl| super::material_palette::query_material_default_palette(db, mtl));
+    }
     let root_nmc = select_root_nmc(resolved.nmc, exported_root_nmc);
     log::info!(
         "[timing] export_entity_payload: {:.2}s",
@@ -465,8 +469,21 @@ pub fn assemble_glb_with_loadout_with_progress(
         for palette in &mut available_palettes {
             populate_palette_display_name(palette, &paint_display_names);
         }
-        let paint_variants =
-            enumerate_paint_variants_for_entity(db, p4k, record, &paint_display_names);
+        let mut paint_variants =
+            enumerate_paint_variants_for_entity(db, p4k, record, &tree.root, &paint_display_names);
+        paint_variants.extend(super::enumerate_sibling_finishes(db, p4k, record, &localization));
+        // Finishes drawn from their own geometry file bring extra parts:
+        // children `paints.json` names per finish.
+        if opts.include_attachments {
+            child_payloads.extend(super::finish_geometry::finish_part_payloads(
+                p4k,
+                &paint_variants,
+                &resolved.entity_name,
+                &root_bones,
+                root_palette.as_ref(),
+                &child_opts,
+            ));
+        }
         let decomposed_progress =
             progress.map(|progress| progress.sub(ASSEMBLY_STAGE_START, ASSEMBLY_STAGE_END));
 
