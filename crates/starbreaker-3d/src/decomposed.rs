@@ -4434,15 +4434,18 @@ fn has_base_color_source(
     material.diffuse_tex.is_some()
         || !material.layers.is_empty()
         || semantic_slots.iter().any(|binding| {
-            !binding.is_virtual
-                && matches!(
-                    binding.role,
-                    TextureSemanticRole::BaseColor
-                        | TextureSemanticRole::AlternateBaseColor
-                        | TextureSemanticRole::DecalSheet
-                        | TextureSemanticRole::Stencil
-                        | TextureSemanticRole::PatternMask
-                )
+            // A stencil decal draws the entity palette's decal texture: the slot is virtual
+            // (`$TintPaletteDecal`) because the palette, not the material, names the file.
+            binding.role == TextureSemanticRole::TintPaletteDecal
+                || (!binding.is_virtual
+                    && matches!(
+                        binding.role,
+                        TextureSemanticRole::BaseColor
+                            | TextureSemanticRole::AlternateBaseColor
+                            | TextureSemanticRole::DecalSheet
+                            | TextureSemanticRole::Stencil
+                            | TextureSemanticRole::PatternMask
+                    ))
         })
 }
 
@@ -7122,6 +7125,47 @@ mod tests {
         };
 
         assert_eq!(slot_source_path(None, &binding), "$TintPaletteDecal");
+    }
+
+    /// A stencil decal (a maker logo) takes its image from the entity palette's decal texture
+    /// through the virtual `$TintPaletteDecal` slot, so it has no texture file of its own.
+    fn palette_stencil_decal(slots: Vec<mtl::TextureSlotBinding>) -> SubMaterial {
+        let mut material = sample_submaterial();
+        material.name = "stencil_decal".into();
+        material.shader = "MeshDecal".into();
+        material.string_gen_mask = "%STENCIL_MAP%STENCIL_AS_STICKER".into();
+        material.diffuse_tex = None;
+        material.normal_tex = None;
+        material.layers.clear();
+        material.texture_slots = slots;
+        material
+    }
+
+    #[test]
+    fn a_palette_stencil_decal_is_active() {
+        let material = palette_stencil_decal(vec![mtl::TextureSlotBinding {
+            slot: "TexSlot7".into(),
+            path: "$TintPaletteDecal".into(),
+            is_virtual: true,
+        }]);
+        assert!(material.is_decal());
+
+        let slots = material.semantic_texture_slots();
+        assert_eq!(
+            material_activation_state(&material, &slots),
+            ("active", "visible")
+        );
+    }
+
+    #[test]
+    fn a_decal_with_no_image_source_stays_inactive() {
+        let material = palette_stencil_decal(Vec::new());
+
+        let slots = material.semantic_texture_slots();
+        assert_eq!(
+            material_activation_state(&material, &slots),
+            ("inactive", "missing_base_color_texture")
+        );
     }
 
     #[test]
