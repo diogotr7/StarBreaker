@@ -79,6 +79,8 @@ pub struct VariantPart {
     pub material_path: Option<String>,
     /// The bone a `CA_BONE` attachment hangs on; `None` for a `CA_SKIN`.
     pub bone_name: Option<String>,
+    /// Where the attachment sits against its bone.
+    pub(crate) pose: crate::pipeline::attachment_pose::AttachPose,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

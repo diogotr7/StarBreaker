@@ -10,7 +10,8 @@
 //! - [`variant_look`]: what that file changes against the base's parts — the
 //!   material it gives the parts both share, and the parts only it binds.
 //! - [`resolve_finish_geometry`]: applies that to the paint variants at export.
-//! - [`finish_part_payloads`]: the extra parts as child payloads on their bones.
+//! - [`finish_part_payloads`]: the extra parts as child payloads on their bones,
+//!   each moved into its bone's frame at its CDF pose (`pose_in_bone_frame`).
 
 use starbreaker_datacore::query::value::Value;
 use starbreaker_p4k::MappedP4k;
@@ -18,6 +19,7 @@ use starbreaker_p4k::MappedP4k;
 use crate::mtl;
 use crate::types::EntityPayload as ChildPayload;
 
+use super::attachment_pose::AttachPose;
 use super::datacore_path_to_p4k;
 use super::entity_export::{GeometryPart, export_entity_from_paths, resolve_geometry_files};
 use super::palette::{get_value_field, get_value_string, try_load_mtl};
@@ -117,6 +119,7 @@ pub(crate) fn resolve_finish_geometry(p4k: &MappedP4k, base_geometry: &str, vari
                 geometry_path: part.path,
                 material_path: part.material_override,
                 bone_name: part.bone_name,
+                pose: part.pose,
             })
             .collect();
         log::info!(
@@ -129,12 +132,14 @@ pub(crate) fn resolve_finish_geometry(p4k: &MappedP4k, base_geometry: &str, vari
 }
 
 /// One child payload per variant extra part, hung on its bone under
-/// `parent_entity`. A `CA_SKIN` part (no bone) shares the base skeleton and is
-/// not placed by this path; it is logged and left out.
+/// `parent_entity` at its CDF pose against `parent_bones`. A `CA_SKIN` part
+/// (no bone) shares the base skeleton and is not placed by this path; it is
+/// logged and left out.
 pub(crate) fn finish_part_payloads(
     p4k: &MappedP4k,
     variants: &[mtl::PaintVariant],
     parent_entity: &str,
+    parent_bones: &[crate::skeleton::Bone],
     palette: Option<&mtl::TintPalette>,
     opts: &ExportOptions,
 ) -> Vec<ChildPayload> {
@@ -146,7 +151,7 @@ pub(crate) fn finish_part_payloads(
                 continue;
             };
             let material = part.material_path.as_deref().unwrap_or("");
-            let (mesh, materials, _, nmc, _, geometry_path, material_path, bones, skeleton_source_path) =
+            let (mut mesh, materials, _, nmc, _, geometry_path, material_path, bones, skeleton_source_path) =
                 match export_entity_from_paths(p4k, &part.geometry_path, material, opts) {
                     Ok(loaded) => loaded,
                     Err(e) => {
@@ -154,6 +159,7 @@ pub(crate) fn finish_part_payloads(
                         continue;
                     }
                 };
+            pose_in_bone_frame(&mut mesh, &part.pose, &bone, parent_bones);
             let textures = if opts.material_mode.include_textures() {
                 materials.as_ref().map(|m| {
                     load_material_textures(
@@ -196,6 +202,19 @@ pub(crate) fn finish_part_payloads(
     payloads
 }
 
+/// Move a part hung on `bone_name` into that bone's frame, at its pose.
+fn pose_in_bone_frame(
+    mesh: &mut crate::Mesh,
+    pose: &AttachPose,
+    bone_name: &str,
+    bones: &[crate::skeleton::Bone],
+) {
+    match bones.iter().find(|b| b.name.eq_ignore_ascii_case(bone_name)) {
+        Some(bone) => mesh.transform(pose.bone_local(bone)),
+        None => log::warn!("  finish part bone '{bone_name}' is not in the skeleton; its pose is not applied"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +237,7 @@ mod tests {
             path: path.to_string(),
             bone_name: bone.map(str::to_string),
             material_override: material.map(str::to_string),
+            pose: crate::pipeline::attachment_pose::AttachPose::default(),
         }
     }
 
@@ -242,6 +262,32 @@ mod tests {
         let look = variant_look(&base, &finish);
         assert_eq!(look.material.as_deref(), Some("gun/cosmetics/gold.mtl"));
         assert_eq!(look.extras, vec![finish[3].clone(), finish[4].clone()]);
+    }
+
+    /// A part posed in model space, hung on its bone as a child, is moved into
+    /// the bone's frame, so the bone's own transform puts it back where it was
+    /// authored (a slide decal stays on the slide, not turned by the bone).
+    #[test]
+    fn a_model_space_part_is_moved_into_its_bones_frame() {
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        let bone = crate::skeleton::Bone {
+            name: "slide".to_string(),
+            parent_index: None,
+            object_node_index: None,
+            local_position: [10.0, 0.0, 0.0],
+            local_rotation: [h, 0.0, 0.0, h],
+            world_position: [10.0, 0.0, 0.0],
+            world_rotation: [h, 0.0, 0.0, h],
+            bind_world_position: [10.0, 0.0, 0.0],
+            bind_world_rotation: [h, 0.0, 0.0, h],
+        };
+        let mut mesh = crate::Mesh::empty();
+        mesh.positions = vec![[1.0, 2.0, 3.0]];
+        let pose = crate::pipeline::attachment_pose::AttachPose::Model(glam::Affine3A::IDENTITY);
+        pose_in_bone_frame(&mut mesh, &pose, "SLIDE", std::slice::from_ref(&bone));
+        let world = glam::Affine3A::from_mat4(crate::pipeline::nmc_bridge::bone_world_transform(&bone));
+        let back = world.transform_point3(glam::Vec3::from(mesh.positions[0]));
+        assert!((back - glam::Vec3::new(1.0, 2.0, 3.0)).abs().max_element() < 1e-5, "{back:?}");
     }
 
     #[test]

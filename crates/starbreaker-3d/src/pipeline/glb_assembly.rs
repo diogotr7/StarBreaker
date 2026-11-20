@@ -479,6 +479,7 @@ pub fn assemble_glb_with_loadout_with_progress(
                 p4k,
                 &paint_variants,
                 &resolved.entity_name,
+                &root_bones,
                 root_palette.as_ref(),
                 &child_opts,
             ));

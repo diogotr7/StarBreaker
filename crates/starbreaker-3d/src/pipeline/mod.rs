@@ -53,6 +53,7 @@ mod paint_port;
 mod paint_variants;
 mod finish_variants;
 mod finish_geometry;
+pub(crate) mod attachment_pose;
 mod material_palette;
 pub use self::finish_variants::enumerate_sibling_finishes;
 pub use self::paint_variants::enumerate_paint_variants_for_entity;
