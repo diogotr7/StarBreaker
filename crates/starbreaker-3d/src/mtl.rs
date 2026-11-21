@@ -1091,6 +1091,10 @@ fn classify_texture_role(
             }
             "TexSlot3" | "TexSlot9" => TextureSemanticRole::AlternateBaseColor,
             "TexSlot4" => TextureSemanticRole::SpecularSupport,
+            // A Layer .mtl binds its specular map to TexSlot6 (LayerBlend_V2 does not use it).
+            "TexSlot6" if matches!(family, ShaderFamily::Layer) => {
+                TextureSemanticRole::SpecularSupport
+            }
             "TexSlot5" if flags.has_iridescence || is_iridescence_like => {
                 TextureSemanticRole::Iridescence
             }
@@ -1747,6 +1751,34 @@ mod tests {
         }];
         assert!(material.decoded_string_gen_mask().has_decal);
         assert_eq!(material.semantic_texture_slots()[0].role, TextureSemanticRole::DecalSheet);
+    }
+
+    #[test]
+    fn layer_semantic_slots_read_specular_from_texslot6() {
+        // Layer .mtl files (a HardSurface layer's Path) bind their specular map to
+        // TexSlot6, e.g. vncl_plasmacannon_clean.mtl: TexSlot6 = vncl_plasmacannon_s8_spec.tif.
+        let mut material = dummy_submaterial("Layer", "");
+        material.texture_slots = vec![
+            TextureSlotBinding {
+                slot: "TexSlot1".into(),
+                path: "textures/layer_diff.tif".into(),
+                is_virtual: false,
+            },
+            TextureSlotBinding {
+                slot: "TexSlot6".into(),
+                path: "textures/layer_s.tif".into(),
+                is_virtual: false,
+            },
+        ];
+
+        let roles: Vec<TextureSemanticRole> = material
+            .semantic_texture_slots()
+            .into_iter()
+            .map(|binding| binding.role)
+            .collect();
+
+        assert_eq!(roles[0], TextureSemanticRole::BaseColor);
+        assert_eq!(roles[1], TextureSemanticRole::SpecularSupport);
     }
 
     #[test]

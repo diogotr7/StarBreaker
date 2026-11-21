@@ -319,6 +319,11 @@ Observed slot map:
 
 - `TexSlot1`: `base_color`
 - `TexSlot2`: `normal_gloss`
+- `TexSlot6`: `specular_support`
+  The layer `.mtl` files a HardSurface `MatLayers` entry points at bind their specular map here,
+  e.g. `vncl_plasmacannon_clean.mtl`: `TexSlot6=vncl_plasmacannon_s8_spec.tif`. In a 4.10.3 export of
+  198 ship weapons, 720 of the 792 layer TexSlot6 bindings are `*_spec` textures and no layer binds
+  TexSlot4.
 
 ## Eye
 
