@@ -139,6 +139,10 @@ pub enum P4kCommand {
         /// Regex pattern filter
         #[arg(long, group = "filter_mode")]
         regex: Option<String>,
+        /// Add each file's CRC32 (8 hex digits) as a third column, so two
+        /// archives can be compared without reading file contents
+        #[arg(long)]
+        crc: bool,
     },
 }
 
@@ -156,7 +160,7 @@ impl P4kCommand {
                 let flags = ConvertFlags::from_list(&convert);
                 extract(p4k, output, filter, regex, max_threads, flags)
             }
-            Self::List { p4k, filter, regex } => list(p4k, filter, regex),
+            Self::List { p4k, filter, regex, crc } => list(p4k, filter, regex, crc),
         }
     }
 }
@@ -468,6 +472,7 @@ fn list(
     p4k_path: Option<PathBuf>,
     filter: Option<String>,
     regex_pattern: Option<String>,
+    crc: bool,
 ) -> Result<()> {
     let p4k = load_p4k(p4k_path.as_deref())?;
     let re = regex_pattern
@@ -480,7 +485,7 @@ fn list(
 
     for entry in p4k.entries() {
         if matches_filter(&entry.name, filter.as_deref(), re.as_ref()) {
-            println!("{}\t{}", entry.name, entry.uncompressed_size);
+            println!("{}", list_line(entry, crc));
             count += 1;
         }
     }
@@ -492,6 +497,16 @@ fn list(
     }
 
     Ok(())
+}
+
+/// One `p4k list` output line: name and uncompressed size, tab-separated,
+/// plus the CRC32 as a third column when `crc` is set.
+fn list_line(entry: &P4kEntry, crc: bool) -> String {
+    if crc {
+        format!("{}\t{}\t{:08x}", entry.name, entry.uncompressed_size, entry.crc32)
+    } else {
+        format!("{}\t{}", entry.name, entry.uncompressed_size)
+    }
 }
 
 /// Print helpful suggestions when a glob filter matched nothing.
@@ -544,4 +559,45 @@ fn suggest_filter(filter: Option<&str>, entries: &[P4kEntry]) {
     eprintln!("  --filter '**/*.xml'                       all .xml files");
     eprintln!("  --filter 'Data/Objects/ships/aurora/*.dds' .dds directly in aurora/");
     eprintln!("  --filter 'Data/Objects/ships/aurora/**'    everything under aurora/");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, size: u64, crc32: u32) -> P4kEntry {
+        P4kEntry {
+            name: name.into(),
+            compressed_size: size,
+            uncompressed_size: size,
+            compression_method: 0,
+            is_encrypted: false,
+            offset: 0,
+            crc32,
+            last_modified: 0,
+            has_local_header: true,
+        }
+    }
+
+    #[test]
+    fn list_line_prints_name_and_size_by_default() {
+        assert_eq!(list_line(&entry("Data/a.dds", 12, 0xdead_beef), false), "Data/a.dds\t12");
+    }
+
+    #[test]
+    fn list_line_adds_the_crc_as_eight_hex_digits_when_asked() {
+        assert_eq!(list_line(&entry("Data/a.dds", 12, 0xbeef), true), "Data/a.dds\t12\t0000beef");
+    }
+
+    #[test]
+    fn list_accepts_the_crc_flag() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Args {
+            #[command(subcommand)]
+            cmd: P4kCommand,
+        }
+        let args = Args::try_parse_from(["test", "list", "--crc"]).unwrap();
+        assert!(matches!(args.cmd, P4kCommand::List { crc: true, .. }));
+    }
 }
