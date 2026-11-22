@@ -96,6 +96,8 @@ impl<'a> EntityIndex<'a> {
     }
 
     /// Query geometry and material paths, caching the compiled paths per struct_index.
+    /// The material is the entity's `Material` node's when it names one
+    /// ([`crate::material_variants::entity_material`]), else the geometry's.
     pub fn query_geometry_paths(&self, record: &Record) -> (Option<String>, Option<String>) {
         let si = record.struct_index;
         let sid = StructId(si);
@@ -135,7 +137,7 @@ impl<'a> EntityIndex<'a> {
             ),
             None => (None, None),
         };
-        (geom, mtl)
+        (geom, crate::material_variants::entity_material(self.db, record).or(mtl))
     }
 
     /// Query SubGeometry variants from an entity's SGeometryResourceParams.

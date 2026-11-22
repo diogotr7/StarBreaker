@@ -97,8 +97,8 @@ pub fn resolve_loadout_meshes(
         record.struct_id(),
         "Components[SGeometryResourceParams].Geometry.Geometry.Material.path",
     ).ok();
-    let material_path = mtl_compiled
-        .and_then(|c| db.query_single::<String>(&c, record).ok().flatten())
+    let material_path = starbreaker_datacore::material_variants::entity_material(db, record)
+        .or_else(|| mtl_compiled.and_then(|c| db.query_single::<String>(&c, record).ok().flatten()))
         .unwrap_or_default();
 
     let (geometry_path, material_path) = super::geometry_variant::resolve(
