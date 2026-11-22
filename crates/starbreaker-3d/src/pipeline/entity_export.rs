@@ -107,9 +107,10 @@ pub(crate) fn entity_geometry_paths(
             record_name: record_name(),
         })?;
 
-    let material_path = db
-        .query_single::<String>(&mtl_compiled, record)?
-        .unwrap_or_default();
+    let material_path = match starbreaker_datacore::material_variants::entity_material(db, record) {
+        Some(node_material) => node_material,
+        None => db.query_single::<String>(&mtl_compiled, record)?.unwrap_or_default(),
+    };
 
     let (geometry_path, material_path) = super::geometry_variant::resolve(
         db, record, opts.geometry_tag.as_deref(), geometry_path, material_path,

@@ -11,6 +11,8 @@
 //! - [`item_tags`]: an item record's `AttachDef.Tags`.
 //! - [`MaterialNode`] / [`material_node`]: the material tree and its
 //!   depth-first, first-match resolution against a tag context.
+//! - [`entity_material`]: the node's material with no tags, which overrides
+//!   the material the record's geometry names.
 
 use crate::database::Database;
 use crate::query::value::Value;
@@ -102,6 +104,17 @@ pub fn material_node(db: &Database, record: &Record) -> Option<MaterialNode> {
         .filter_map(|c| field(c, "Material"))
         .map(parse_node)
         .next()
+}
+
+/// The material an entity record draws with when no tags are in play: its
+/// `Material` node resolved with an empty tag context. It overrides the
+/// material the record's geometry names (`Geometry.Geometry.Material`): a
+/// record that sets both carries its template's material on the geometry and
+/// its own on the node (e.g. the pig lunar envelope's geometry names the dog
+/// envelope's material). `None` when the node names no material, so callers
+/// fall back to the geometry's.
+pub fn entity_material(db: &Database, record: &Record) -> Option<String> {
+    material_node(db, record)?.resolve(&[]).map(str::to_owned)
 }
 
 #[cfg(test)]

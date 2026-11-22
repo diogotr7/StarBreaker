@@ -966,8 +966,8 @@ pub(crate) fn resolve_guid_geometry(
         return None;
     }
 
-    let mtl_path = mtl_compiled
-        .and_then(|compiled| db.query_single::<String>(compiled, record).ok().flatten())
+    let mtl_path = starbreaker_datacore::material_variants::entity_material(db, record)
+        .or_else(|| mtl_compiled.and_then(|compiled| db.query_single::<String>(compiled, record).ok().flatten()))
         .or_else(|| {
             let compiled = db
                 .compile_path::<String>(
@@ -1191,8 +1191,8 @@ fn resolve_record_geometry(
         _ => return None,
     };
 
-    let mtl_path = mtl_compiled
-        .and_then(|compiled| db.query_single::<String>(compiled, record).ok().flatten())
+    let mtl_path = starbreaker_datacore::material_variants::entity_material(db, record)
+        .or_else(|| mtl_compiled.and_then(|compiled| db.query_single::<String>(compiled, record).ok().flatten()))
         .or_else(|| {
             let compiled = db
                 .compile_path::<String>(
