@@ -9,8 +9,9 @@
 //!
 //! - [`published_tags`]: the tags a `Tags` string publishes.
 //! - [`item_tags`]: an item record's `AttachDef.Tags`.
-//! - [`MaterialNode`] / [`material_node`]: the material tree and its
-//!   depth-first, first-match resolution against a tag context.
+//! - [`MaterialNode`] / [`material_node`]: the material tree (parsed from a
+//!   Value by [`MaterialNode::from_value`]) and its depth-first, first-match
+//!   resolution against a tag context.
 
 use crate::database::Database;
 use crate::query::value::Value;
@@ -69,13 +70,16 @@ fn string(value: &Value, name: &str) -> String {
     }
 }
 
-fn parse_node(value: &Value) -> MaterialNode {
-    let path = field(value, "Material").map(|m| string(m, "path")).unwrap_or_default();
-    let variants = match field(value, "materialVariants") {
-        Some(Value::Array(items)) => items.iter().map(parse_node).collect(),
-        _ => Vec::new(),
-    };
-    MaterialNode { tags: string(value, "Tags"), path, variants }
+impl MaterialNode {
+    /// Parse one `SMaterialNodeParams` Value and its nested variants.
+    pub fn from_value(value: &Value) -> Self {
+        let path = field(value, "Material").map(|m| string(m, "path")).unwrap_or_default();
+        let variants = match field(value, "materialVariants") {
+            Some(Value::Array(items)) => items.iter().map(MaterialNode::from_value).collect(),
+            _ => Vec::new(),
+        };
+        MaterialNode { tags: string(value, "Tags"), path, variants }
+    }
 }
 
 fn component<'a>(db: &'a Database, record: &Record, path: &str) -> Vec<Value<'a>> {
@@ -100,7 +104,7 @@ pub fn material_node(db: &Database, record: &Record) -> Option<MaterialNode> {
     component(db, record, "Components[SGeometryResourceParams]")
         .iter()
         .filter_map(|c| field(c, "Material"))
-        .map(parse_node)
+        .map(MaterialNode::from_value)
         .next()
 }
 

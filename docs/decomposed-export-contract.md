@@ -10,7 +10,7 @@ Within that export root:
 - `Packages/<package name>/scene.json` describes the root entity, child attachments, interior placements, light definitions, and shared asset references. The package name is the cleaned entity label plus `_LOD<n>_TEX<m>` (e.g. `RSI Aurora Mk2_LOD0_TEX0`).
 - `Packages/<package name>/palettes.json` contains shared palette identities that scene instances reference by `palette_id`.
 - `Packages/<package name>/liveries.json` groups scene and material usage by shared palette identity.
-- `Packages/<package name>/paints.json` (only when the entity has paint variants) lists each variant's `subgeometry_tag`, `palette_id`, `display_name`, and `exterior_material_sidecar`. The addon treats it as optional.
+- `Packages/<package name>/paints.json` (only when the entity has paint variants) lists each variant's `subgeometry_tag`, `palette_id`, `display_name`, `exterior_material_sidecar`, and `extra_parts`. The addon treats it as optional. A hull's variants are its tagged `Geometry.SubGeometry[]` and `Material.materialVariants[]` entries that a paint item its paint port accepts selects by `@Tag` (the port's `requiredTags`, after the hull's vehicle-XML modification overrides, must all be on the item; the item the default loadout fits there always counts); `subgeometry_tag` is that `@Tag` whichever list holds it. A non-vehicle item also lists its finish entities: other entity records with the same geometry, attach type, subtype, size and manufacturer whose own palette or material gives a look the base does not already carry. Their `subgeometry_tag` is the finish entity's record name, and `display_name` is the entity's localized name. A tagged `SubGeometry[]` node may name a `.cdf` of its own instead of the entity's: it binds the base's parts with the finish's material and may bind parts the base does not (a shell, glow cables, a charm). Such a variant's `exterior_material_sidecar` is the material the `.cdf` gives the parts it shares with the base (when the node names no material), and `extra_parts` lists the `entity_name`s of the scene children exported for the parts only it binds, each hung on its `CA_BONE` attachment's bone; a viewer shows those children only while that variant is selected. `extra_parts` is empty for every other variant. A tagged `SubGeometry[]` node that names no material and draws the entity's own geometry replaces the whole geometry node, so its `exterior_material_sidecar` is that geometry file's own material (its `MtlName`), not a material the entity root sets (an edition hull's baked livery); the paint the default loadout fits resolves the same way. A `materialVariants[]` entry that names no material has no sidecar and keeps the hull's material.
 - `Packages/<package name>/animations/<clip>.json` holds per-clip animation bodies (see [Animation Records](#animation-records)).
 - `Packages/<package name>/weapon_assembly_diagnostics.json` is written only for FPS weapon assemblies that produced diagnostics.
 - `Data/...` contains reusable mesh assets, material sidecars, and exported textures using canonical P4k-style paths rooted at `Data/`. Mesh assets are `.glb` with the Glb format and `.blend` with the Blend format (`mesh_asset_extension`); the Blend format also writes `Packages/<package name>/scene.blend`, which links the mesh `.blend` files.
@@ -98,8 +98,14 @@ assets (`decomposed_physics.rs`):
   `mesh_asset`, `material_sidecar`, `palette_id`, and optionally `animations`
   (only the root entity carries animations) and, in character packages,
   `character` (the resolved CHF material customization and HumanSkin_V2
-  wrinkle-slot layout; written by `character/package.rs`), and with
-  `include_physics` `physics_grid` (vehicles; see Game physics). `mesh_asset` is
+  wrinkle-slot layout; written by `character/package.rs`; when a backpack
+  was worn with no core, `character.stand_in_cores` lists the stand-in cores
+  whose mount it hangs on — `core`, `port`, `skin`, `bones`, `items` — whose
+  meshes are not in the package, see `character/stand_in.rs`), and with
+  `include_physics` `physics_grid` (vehicles; see Game physics). The root's
+  `palette_id` is the entity's DataCore palette; an entity that names none
+  (the Javelin) takes the palette its root material file names as
+  `DefaultPalette`, and that palette is in palettes.json. `mesh_asset` is
   `null` when the root has no geometry (no vertices, no NMC nodes — e.g. a
   socpak scene root, or a character whose head a full helmet hides); the
   `.blend` then has no root mesh object and the package armature sits at the
@@ -226,8 +232,10 @@ importers:
 - each target has `property_links[]`, preserving `effect_kind` (`tagEffects` or
   `triggerEffects`), `effect_index`, `property_link_index`, `submesh_name`,
   `parameter_record_id`, `tag_record_id`, and the ordered `modifiers[]` chain.
-  A modifier is `{kind:"multiplier", multiplier:...}` or
-  `{kind:"min_max", minimum:..., maximum:...}`. Unknown or malformed modifier
+  A modifier is `{kind:"multiplier", multiplier:...}`,
+  `{kind:"min_max", minimum:..., maximum:...}`, or
+  `{kind:"override_value", override_value:...}` (replaces the running value
+  with the authored constant; later modifiers act on it). Unknown or malformed modifier
   types fail export instead of silently producing a fabricated range
 - per-target `multiplier[]`, `minimum[]`, and `maximum[]` are parallel arrays
   aligned with `property_links[]`, so several tag effects retain separate values
@@ -523,7 +531,7 @@ Each `*.materials.json` sidecar preserves:
 - authored per-texture metadata, including nested child blocks such as `TexMod`
 - authored non-texture child blocks such as `VertexDeform`
 - material-set identity and palette-routing metadata
-- resolved paint-override selectors when equipped paints choose a palette or material through `SubGeometry` tag matching
+- resolved paint-override selectors when equipped paints choose a palette or material through `SubGeometry` or `materialVariants` tag matching (`subgeometry_index` is the position within whichever list matched)
 - variant-membership hints for palette-routed and layered materials
 
 ### Curated emission and decal semantics (material schema v2)

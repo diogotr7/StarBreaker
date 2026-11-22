@@ -42,6 +42,7 @@ pub use pipeline::{
     socpaks_to_decomposed_blend_with_progress, socpaks_to_glb, SocpakExportProgress,
     SocpakHierarchyNode,
     EntityLight, LightCatalogue, VehicleLightPort, entity_light_catalogue,
+    enumerate_paint_variants_for_entity, enumerate_sibling_finishes,
 };
 pub use types::Mesh;
 pub use validation::{ValidationReport, validate_decomposed_export};
