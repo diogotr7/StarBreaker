@@ -194,6 +194,7 @@ pub(crate) fn extract_animated_interior_children(
             detach_direction: [0.0; 3],
             port_flags: String::new(),
             ui_bindings: Vec::new(),
+            parent_index: None,
         });
     }
     children

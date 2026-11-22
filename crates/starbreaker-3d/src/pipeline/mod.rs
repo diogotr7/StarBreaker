@@ -1156,6 +1156,48 @@ mod tests {
     }
 
     #[test]
+    fn collect_child_payload_specs_records_the_parent_spec_of_same_named_mounts() {
+        // Two mounts share an entity name and each carries a gun on the same helper,
+        // so a name cannot tell which mount a gun hangs on; the spec index can.
+        let gimbal = |port: &str| {
+            resolved_node(
+                "mount_gimbal",
+                port,
+                true,
+                false,
+                vec![resolved_node("gun", "hardpoint_class_2", true, false, Vec::new())],
+            )
+        };
+        let proxy = resolved_node(
+            "proxy",
+            "hardpoint_proxy",
+            false,
+            false,
+            vec![resolved_node("weapon", "hardpoint_weapon", true, false, Vec::new())],
+        );
+
+        let mut specs = Vec::new();
+        collect_child_payload_specs(
+            &[gimbal("hardpoint_left"), gimbal("hardpoint_right"), proxy],
+            "root_ship",
+            None,
+            &mut specs,
+        );
+
+        let parents: Vec<Option<usize>> = specs.iter().map(|spec| spec.parent_spec).collect();
+        // A child of a part that makes no nodes hangs on that part's own parent.
+        assert_eq!(parents, vec![None, Some(0), None, Some(2), None, None]);
+    }
+
+    #[test]
+    fn kept_payload_parents_point_into_the_kept_list() {
+        // Spec 1 exports nothing, so its child (spec 2) hangs on no exported part, and
+        // later indices shift down past it; `base` offsets into an already-filled list.
+        let parents = kept_payload_parents(&[None, Some(0), Some(1), Some(0)], &[true, false, true, true], 5);
+        assert_eq!(parents, vec![None, None, Some(5)]);
+    }
+
+    #[test]
     fn tint_palette_family_keys_include_short_name_and_family_suffix() {
         let keys = tint_palette_family_keys("EntityClassDefinition.rsi_aurora_mk2");
 

@@ -163,6 +163,10 @@ struct SceneInstanceRecord {
     detach_direction: [f32; 3],
     port_flags: String,
     ui_bindings: Vec<UiBinding>,
+    /// This instance's position in scene.json `children`.
+    instance_id: usize,
+    /// `instance_id` of the child this one hangs on; `None` when it hangs on the root entity.
+    parent_instance_id: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -387,6 +391,7 @@ fn resolve_child_instance_transforms(input: &DecomposedInput) -> Vec<ResolvedChi
                 detach_direction: child.detach_direction,
                 port_flags: child.port_flags.clone(),
                 ui_bindings: child.ui_bindings.clone(),
+                parent_index: child.parent_index,
             },
             &scene_nodes,
             MaterialMode::None,
@@ -1472,6 +1477,8 @@ pub(crate) fn write_decomposed_export(
             detach_direction: child.detach_direction,
             port_flags: child.port_flags.clone(),
             ui_bindings,
+            instance_id: index,
+            parent_instance_id: child.parent_index,
         });
 
         if child_count > 0 {
@@ -2365,6 +2372,8 @@ fn scene_instance_json(instance: &SceneInstanceRecord) -> serde_json::Value {
         "port_flags": instance.port_flags,
         "item_type": instance.item_type,
         "ui_bindings": instance.ui_bindings.iter().map(ui_binding_json).collect::<Vec<_>>(),
+        "instance_id": instance.instance_id,
+        "parent_instance_id": instance.parent_instance_id,
     })
 }
 
@@ -7814,7 +7823,14 @@ mod tests {
             detach_direction: [0.0, 0.0, -1.0],
             port_flags: "invisible uneditable".into(),
             ui_bindings: Vec::new(),
+            instance_id: 4,
+            parent_instance_id: Some(2),
         };
+        assert_eq!(scene_instance_json(&child)["instance_id"], 4);
+        assert_eq!(scene_instance_json(&child)["parent_instance_id"], 2);
+        let on_root = SceneInstanceRecord { parent_instance_id: None, ..child.clone() };
+        assert!(scene_instance_json(&on_root).as_object().unwrap().contains_key("parent_instance_id"));
+        assert!(scene_instance_json(&on_root)["parent_instance_id"].is_null());
         assert!(scene_instance_json(&child).as_object().unwrap().contains_key("item_type"));
         assert_eq!(scene_instance_json(&child)["item_type"], "Seat");
         let unknown = SceneInstanceRecord { item_type: None, ..child.clone() };
@@ -8119,6 +8135,7 @@ mod tests {
             detach_direction: [0.0; 3],
             port_flags: String::new(),
             ui_bindings: Vec::new(),
+            parent_index: None,
         };
         assert!(should_export_engine_glow_targets(&child));
 
@@ -8272,6 +8289,7 @@ mod tests {
             detach_direction: [0.0; 3],
             port_flags: "Docking_Request_Accepting".to_string(),
             ui_bindings: Vec::new(),
+            parent_index: None,
         };
 
         let offset = docking_entity_attachment_offset(&builder, target_idx, &child)

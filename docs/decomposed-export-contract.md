@@ -123,6 +123,14 @@ Each `children[]` entry (`scene_instance_json`) carries:
 - the attachment relationship: `parent_node_name`, `parent_entity_name`,
   `offset_position`, `offset_rotation`, `no_rotation`, `detach_direction`
   (the port's detach direction in port-local source axes), and `port_flags`
+- `instance_id`: this entry's position in `children[]`, and `parent_instance_id`:
+  the `instance_id` of the child it hangs on, or null when it hangs on the root
+  entity (or on a part that exported nothing). Resolve the parent by
+  `parent_instance_id`, then find `parent_node_name` inside that child: a ship can
+  carry several children with the same `entity_name` (three `Mount_Gimbal_S3`,
+  each with a gun on its own `hardpoint_class_2`), so `parent_entity_name` alone
+  cannot say which one a gun belongs to. The id comes from the loadout tree, not
+  from names. Consumers of older manifests must accept the fields being absent.
 - the exporter-resolved transform: `source_transform_basis`,
   `local_transform_sc`, `resolved_no_rotation` (see
   [Transform Fields](#transform-fields))

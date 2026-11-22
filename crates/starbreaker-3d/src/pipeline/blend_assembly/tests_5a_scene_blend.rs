@@ -2226,6 +2226,7 @@ fn create_test_input(entity_name: &str, num_children: usize) -> DecomposedInput 
             detach_direction: [0.0, 0.0, 0.0],
             port_flags: String::new(),
             ui_bindings: Vec::new(),
+            parent_index: None,
         });
     }
 

@@ -1008,6 +1008,7 @@ mod tests {
             detach_direction: [0.0; 3],
             port_flags: String::new(),
             ui_bindings: Vec::new(),
+            parent_index: None,
         }
     }
 

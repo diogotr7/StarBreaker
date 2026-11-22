@@ -1,9 +1,10 @@
 //! Child entity payload loading and caching helpers.
 //!
 //! Loads child mesh assets for loadout children and inline entity attachments.
-//! `collect_child_payload_specs` gathers attachment specs from a loadout tree;
-//! `load_child_payload_asset` exports a single child CGF; `load_child_payloads`
-//! drives the full parallel load pipeline.
+//! `collect_child_payload_specs` gathers attachment specs from a loadout tree, each
+//! recording which spec it hangs on; `load_child_payload_asset` exports a single
+//! child CGF; `load_child_payloads` drives the full parallel load pipeline and
+//! `kept_payload_parents` turns spec parents into indices in the payload list.
 //! Also defines `LandingGearAsset` (cached landing gear geometry) and the path
 //! normalisation helpers used for decomposed export deduplication.
 
@@ -140,6 +141,9 @@ pub(crate) struct ChildPayloadSpec {
     pub(crate) parent_entity_name: String,
     pub(crate) parent_node_name: String,
     pub(crate) no_rotation: bool,
+    /// Index (in the same spec list) of the part this one hangs on; `None` when it hangs
+    /// on the root entity. Names cannot say this: a ship carries several same-named mounts.
+    pub(crate) parent_spec: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -183,6 +187,16 @@ pub(crate) fn collect_child_payload_specs(
     override_attachment: Option<(&str, bool)>,
     out: &mut Vec<ChildPayloadSpec>,
 ) {
+    collect_specs_under(children, parent_entity_name, None, override_attachment, out);
+}
+
+fn collect_specs_under(
+    children: &[crate::types::ResolvedNode],
+    parent_entity_name: &str,
+    parent_spec: Option<usize>,
+    override_attachment: Option<(&str, bool)>,
+    out: &mut Vec<ChildPayloadSpec>,
+) {
     for child in children {
         let (attach_name, no_rotation) = match override_attachment {
             Some((name, parent_no_rot)) => (name.to_string(), child.no_rotation || parent_no_rot),
@@ -190,23 +204,46 @@ pub(crate) fn collect_child_payload_specs(
         };
 
         let child_creates_nodes = child.has_geometry || child.nmc.is_some();
+        let index = out.len();
         out.push(ChildPayloadSpec {
             child: child.clone_payload_source(),
             parent_entity_name: parent_entity_name.to_string(),
             parent_node_name: attach_name,
             no_rotation,
+            parent_spec,
         });
         if child_creates_nodes {
-            collect_child_payload_specs(&child.children, &child.entity_name, None, out);
+            collect_specs_under(&child.children, &child.entity_name, Some(index), None, out);
         } else {
-            collect_child_payload_specs(
+            collect_specs_under(
                 &child.children,
                 parent_entity_name,
+                parent_spec,
                 Some((&child.attachment_name, child.no_rotation)),
                 out,
             );
         }
     }
+}
+
+/// Map each kept spec's parent to its position among the kept payloads, offset by `base`
+/// (how many payloads the list already held). A part whose parent exported nothing hangs
+/// on no exported part, so it gets `None`, as a root child does.
+pub(crate) fn kept_payload_parents(parent_specs: &[Option<usize>], kept: &[bool], base: usize) -> Vec<Option<usize>> {
+    let mut position = vec![None; kept.len()];
+    let mut next = base;
+    for (index, &is_kept) in kept.iter().enumerate() {
+        if is_kept {
+            position[index] = Some(next);
+            next += 1;
+        }
+    }
+    parent_specs
+        .iter()
+        .zip(kept)
+        .filter(|(_, is_kept)| **is_kept)
+        .map(|(parent, _)| parent.and_then(|p| position[p]))
+        .collect()
 }
 
 pub(crate) fn empty_child_mesh() -> crate::types::Mesh {
@@ -331,6 +368,7 @@ pub(crate) fn load_child_payloads(
     mesh_opts: &ExportOptions,
     final_material_mode: MaterialMode,
     existing_asset_paths: Option<&HashSet<String>>,
+    base: usize,
 ) -> Vec<crate::types::EntityPayload> {
     use rayon::prelude::*;
 
@@ -459,10 +497,11 @@ pub(crate) fn load_child_payloads(
         })
         .collect();
 
-    specs
+    let parent_specs: Vec<Option<usize>> = specs.iter().map(|spec| spec.parent_spec).collect();
+    let payloads: Vec<Option<crate::types::EntityPayload>> = specs
         .into_iter()
         .enumerate()
-        .filter_map(|(spec_index, spec)| {
+        .map(|(spec_index, spec)| {
             let child = &spec.child;
             let entity_category = entity_record_category(db, &child.record);
             let attach_def_type = entity_record_attach_def_type(db, &child.record);
@@ -566,6 +605,7 @@ pub(crate) fn load_child_payloads(
                     detach_direction: child.detach_direction,
                     port_flags: child.port_flags.clone(),
                     ui_bindings,
+                    parent_index: None,
                 })
             } else if child.nmc.is_some() {
                 Some(crate::types::EntityPayload {
@@ -589,11 +629,21 @@ pub(crate) fn load_child_payloads(
                     detach_direction: child.detach_direction,
                     port_flags: child.port_flags.clone(),
                     ui_bindings,
+                    parent_index: None,
                 })
             } else {
                 None
             }
         })
+        .collect();
+
+    let kept: Vec<bool> = payloads.iter().map(Option::is_some).collect();
+    let parents = kept_payload_parents(&parent_specs, &kept, base);
+    payloads
+        .into_iter()
+        .flatten()
+        .zip(parents)
+        .map(|(payload, parent_index)| crate::types::EntityPayload { parent_index, ..payload })
         .collect()
 }
 
