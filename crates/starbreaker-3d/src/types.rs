@@ -883,6 +883,10 @@ pub struct EntityPayload {
     pub port_flags: String,
     /// Screen/UI bindings discovered from this entity and any attached UI children.
     pub ui_bindings: Vec<UiBinding>,
+    /// Index, in the same children list, of the payload this one hangs on; `None` when
+    /// it hangs on the root entity or its parent is unknown. Unlike `parent_entity_name`
+    /// it tells same-named mounts apart.
+    pub parent_index: Option<usize>,
 }
 
 /// Authored group attachment metadata, independent of the group's display name.

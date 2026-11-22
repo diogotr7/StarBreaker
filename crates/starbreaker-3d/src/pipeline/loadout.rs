@@ -58,6 +58,7 @@ pub(crate) fn flatten_resolved_tree(
 ) {
     let mut specs = Vec::new();
     collect_child_payload_specs(children, parent_entity_name, override_attachment, &mut specs);
+    let base = out.len();
     out.extend(load_child_payloads(
         specs,
         db,
@@ -65,6 +66,7 @@ pub(crate) fn flatten_resolved_tree(
         mesh_opts,
         final_material_mode,
         existing_asset_paths,
+        base,
     ));
 }
 
