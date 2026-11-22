@@ -6,6 +6,8 @@
 //!
 //! - [`tagged_paint_nodes`] / [`find_tagged_paint_node`]: the tagged nodes of
 //!   one `SGeometryResourceParams` component Value.
+//! - [`node_material_path`]: the material a node draws with; a `SubGeometry`
+//!   node naming none takes its geometry file's own material, not the root's.
 //! - [`resolve_paint_override`]: the palette and material of the paint the
 //!   default loadout equips.
 //! - [`enumerate_paint_variants_for_entity`]: every paint variant of a hull
@@ -24,7 +26,9 @@ use crate::mtl;
 
 use super::datacore_path_to_p4k;
 use super::finish_geometry::{component_geometry_path, own_geometry_path, resolve_finish_geometry};
-use super::palette::{extract_subgeometry_palette, get_value_array, get_value_field, get_value_string, try_load_mtl};
+use super::palette::{
+    extract_subgeometry_palette, geometry_own_material_path, get_value_array, get_value_field, get_value_string, try_load_mtl,
+};
 
 /// One tagged node: the `@Tag` that selects it, its position in its list, its
 /// material path (DataCore form) and the node carrying its `Palette`.
@@ -37,6 +41,23 @@ pub(crate) struct PaintNode<'v, 'a> {
     /// The node's own geometry file, when it names one other than the
     /// component's ([`own_geometry_path`]); `materialVariants` entries have none.
     pub geometry_path: Option<String>,
+    /// A `Geometry.SubGeometry[]` entry (a whole geometry node), as opposed to
+    /// a `Material.materialVariants[]` entry.
+    pub from_sub_geometry: bool,
+}
+
+/// The material a paint node draws the hull with, as a P4k path with forward
+/// slashes: its own, or, for a `SubGeometry` node that names none and draws the
+/// component's geometry, that geometry file's own material
+/// (`geometry_own_material`). Such a node replaces the whole geometry node, so
+/// a material the root sets (an edition hull's baked livery) does not apply.
+/// `None` keeps the hull's material (a palette-only `materialVariants` entry).
+pub(crate) fn node_material_path(node: &PaintNode, geometry_own_material: Option<&str>) -> Option<String> {
+    match node.material_path.as_deref() {
+        Some(path) => Some(datacore_path_to_p4k(path).replace('\\', "/")),
+        None if node.from_sub_geometry && node.geometry_path.is_none() => geometry_own_material.map(str::to_owned),
+        None => None,
+    }
 }
 
 /// The tagged paint nodes of one `SGeometryResourceParams` component, in
@@ -57,7 +78,7 @@ pub(crate) fn tagged_paint_nodes<'v, 'a>(component: &'v Value<'a>) -> Vec<PaintN
             .resolve(&[tag.to_owned()])
             .filter(|p| !p.is_empty())
             .map(str::to_owned);
-        nodes.push(PaintNode { tag, index, material_path, palette_holder: Some(variant), geometry_path: None });
+        nodes.push(PaintNode { tag, index, material_path, palette_holder: Some(variant), geometry_path: None, from_sub_geometry: false });
     }
     nodes
 }
@@ -77,7 +98,7 @@ fn sub_geometry_paint_nodes<'v, 'a>(component: &'v Value<'a>) -> Vec<PaintNode<'
             .filter(|p| !p.is_empty())
             .map(str::to_owned);
         let geometry_path = geometry.and_then(|g| own_geometry_path(component, g));
-        nodes.push(PaintNode { tag, index, material_path, palette_holder: geometry, geometry_path });
+        nodes.push(PaintNode { tag, index, material_path, palette_holder: geometry, geometry_path, from_sub_geometry: true });
     }
     nodes
 }
@@ -149,16 +170,21 @@ pub(crate) fn resolve_paint_override(
         );
     }
 
+    let geometry_own_material = components
+        .iter()
+        .find_map(component_geometry_path)
+        .and_then(|geometry| geometry_own_material_path(p4k, geometry));
+    let material_path = node_material_path(&node, geometry_own_material.as_deref());
     let override_info = mtl::PaintOverrideInfo {
         paint_item_name: paint_node.entity_name.clone(),
         subgeometry_tag: node.tag.to_string(),
         subgeometry_index: node.index,
-        material_path: node.material_path.as_deref().map(|path| datacore_path_to_p4k(path).replace('\\', "/")),
+        material_path: material_path.clone(),
     };
-    let mut mtl = match node.material_path.as_deref() {
+    let mut mtl = match material_path.as_deref() {
         Some(mtl_path) => {
             log::info!("  paint material override: {mtl_path}");
-            try_load_mtl(p4k, &datacore_path_to_p4k(mtl_path)).or_else(|| default_mtl.clone())
+            try_load_mtl(p4k, &mtl_path.replace('/', "\\")).or_else(|| default_mtl.clone())
         }
         None => default_mtl.clone(),
     };
@@ -183,9 +209,11 @@ pub(super) fn paint_variant_ids(tag: &str) -> (String, String) {
 
 /// The paint variants of the tagged nodes of `components`, without their
 /// materials loaded. Duplicate tags (some entities repeat entries) keep the first.
+/// `geometry_own_material` is the component geometry's own material ([`node_material_path`]).
 pub(crate) fn paint_variants_from_components(
     components: &[Value],
     display_names: &HashMap<String, String>,
+    geometry_own_material: Option<&str>,
 ) -> Vec<mtl::PaintVariant> {
     let mut variants: Vec<mtl::PaintVariant> = Vec::new();
     for node in components.iter().flat_map(tagged_paint_nodes) {
@@ -209,7 +237,7 @@ pub(crate) fn paint_variants_from_components(
             palette,
             display_name,
             // P4K-relative, stored with forward slashes for the output JSON.
-            material_path: node.material_path.as_deref().map(|p| datacore_path_to_p4k(p).replace('\\', "/")),
+            material_path: node_material_path(&node, geometry_own_material),
             materials: None,
             geometry_path: node.geometry_path.clone(),
             extra_parts: Vec::new(),
@@ -236,7 +264,9 @@ pub fn enumerate_paint_variants_for_entity(
     display_names: &HashMap<String, String>,
 ) -> Vec<mtl::PaintVariant> {
     let components = geometry_components(db, entity_record);
-    let mut variants = paint_variants_from_components(&components, display_names);
+    let base = components.iter().find_map(component_geometry_path);
+    let geometry_own_material = base.and_then(|geometry| geometry_own_material_path(p4k, geometry));
+    let mut variants = paint_variants_from_components(&components, display_names, geometry_own_material.as_deref());
     let accepted = super::paint_port::accepted_paint_tags(db, p4k, entity_record, root_node);
     let before = variants.len();
     retain_accepted_paints(&mut variants, accepted.as_ref());
@@ -246,7 +276,7 @@ pub fn enumerate_paint_variants_for_entity(
     for variant in &mut variants {
         variant.materials = variant.material_path.as_deref().and_then(|p| try_load_mtl(p4k, &p.replace('/', "\\")));
     }
-    if let Some(base) = components.iter().find_map(component_geometry_path) {
+    if let Some(base) = base {
         resolve_finish_geometry(p4k, base, &mut variants);
     }
     for variant in &variants {
@@ -356,7 +386,7 @@ mod tests {
     #[test]
     fn a_sub_geometry_node_with_its_own_file_keeps_it() {
         let c = component(vec![sub_geometry_with_file("Gold01", "gun/cosmetics/gun_gold.cdf"), sub_geometry("Red01", "", Some("synthetic_red"))], vec![]);
-        let variants = paint_variants_from_components(&[c], &HashMap::new());
+        let variants = paint_variants_from_components(&[c], &HashMap::new(), None);
         assert_eq!(variants[0].geometry_path.as_deref(), Some("gun/cosmetics/gun_gold.cdf"));
         assert_eq!(variants[1].geometry_path, None, "a palette-only node draws the base's geometry");
     }
@@ -367,7 +397,7 @@ mod tests {
             vec![sub_geometry("", "", None), sub_geometry("HullPaint_Red", "hull/red.mtl", Some("synthetic_red")), sub_geometry("HullPaint_Red", "hull/dup.mtl", None)],
             vec![],
         );
-        let variants = paint_variants_from_components(&[c], &HashMap::new());
+        let variants = paint_variants_from_components(&[c], &HashMap::new(), None);
         assert_eq!(tags(&variants), ["HullPaint_Red"], "untagged and repeated entries are skipped");
         assert_eq!(variants[0].material_path.as_deref(), Some("Data/hull/red.mtl"));
         assert!(variants[0].palette.is_some());
@@ -381,7 +411,7 @@ mod tests {
             vec![],
             vec![material_variant("HullPaint_Blue", "hull/blue.mtl", None), material_variant("HullPaint_Gold", "hull/gold.mtl", Some("synthetic_gold"))],
         );
-        let variants = paint_variants_from_components(&[c], &HashMap::new());
+        let variants = paint_variants_from_components(&[c], &HashMap::new(), None);
         assert_eq!(tags(&variants), ["HullPaint_Blue", "HullPaint_Gold"]);
         assert_eq!(variants[0].material_path.as_deref(), Some("Data/hull/blue.mtl"));
         assert!(variants[0].palette.is_none(), "an unset RootRecord is no palette");
@@ -403,9 +433,31 @@ mod tests {
     #[test]
     fn a_palette_only_material_variant_has_no_material() {
         let c = component(vec![], vec![material_variant("HullPaint_Plain", "", Some("synthetic_plain"))]);
-        let variants = paint_variants_from_components(&[c], &HashMap::new());
+        let variants = paint_variants_from_components(&[c], &HashMap::new(), None);
         assert_eq!(variants[0].material_path, None);
         assert!(variants[0].palette.is_some());
+    }
+
+    /// A `SubGeometry` node that names no material draws its geometry with the
+    /// geometry file's own material, not the root's override: an edition hull
+    /// whose root names its own material takes the stock exterior again under
+    /// such a paint. A `materialVariants` entry with no material keeps the hull's.
+    #[test]
+    fn a_palette_only_sub_geometry_node_takes_the_geometry_own_material() {
+        let c = component(
+            vec![sub_geometry("HullPaint_Plain", "", Some("synthetic_plain")), sub_geometry("HullPaint_Own", "hull/own.mtl", None)],
+            vec![material_variant("HullPaint_Variant", "", Some("synthetic_variant"))],
+        );
+        let own = Some("Data/hull/exterior.mtl");
+        let variants = paint_variants_from_components(std::slice::from_ref(&c), &HashMap::new(), own);
+        assert_eq!(variants[0].material_path.as_deref(), Some("Data/hull/exterior.mtl"));
+        assert_eq!(variants[1].material_path.as_deref(), Some("Data/hull/own.mtl"), "the node's own material wins");
+        assert_eq!(variants[2].material_path, None, "a materialVariants entry keeps the hull's material");
+
+        let node = find_tagged_paint_node(&c, "hullpaint_plain").unwrap();
+        assert_eq!(node_material_path(&node, own).as_deref(), Some("Data/hull/exterior.mtl"));
+        let node = find_tagged_paint_node(&c, "hullpaint_variant").unwrap();
+        assert_eq!(node_material_path(&node, own), None);
     }
 
     /// Hulls sharing one geometry carry every sibling's tags; each lists only
@@ -422,7 +474,7 @@ mod tests {
                 material_variant("HullA_Paint", "a.mtl", None),
             ],
         );
-        let all = paint_variants_from_components(&[c], &HashMap::new());
+        let all = paint_variants_from_components(&[c], &HashMap::new(), None);
         let accepted: std::collections::HashSet<String> = ["hulla_red", "family_blue"].iter().map(|t| t.to_string()).collect();
 
         let mut kept = all.clone();

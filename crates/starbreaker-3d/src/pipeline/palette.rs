@@ -4,7 +4,8 @@
 //! `query_tint_palette` / `query_related_tint_palettes` extract tint colour data;
 //! `extract_subgeometry_palette` reads a `Palette.RootRecord.root` tint palette from
 //! any node carrying one (the paint-variant code in `paint_variants.rs` uses it).
-//! `try_load_mtl` reads and parses a raw MTL file from the P4k.
+//! `try_load_mtl` reads and parses a raw MTL file from the P4k;
+//! `geometry_own_material_path` is the material a geometry file names for itself.
 //! `query_animation_controller_source` reads the animation controller path.
 //! `load_localization_map`, `build_paint_display_name_map`, `populate_palette_display_name`
 //! localise paint/palette display names.
@@ -35,6 +36,15 @@ pub(crate) fn resolve_mtl_p4k_path(mtl_name: &str, p4k_geom_path: &str) -> Strin
         path.push_str(".mtl");
     }
     path
+}
+
+/// The material a geometry file names for itself (its metadata's `MtlName`),
+/// as a P4k path with forward slashes, whatever material an entity sets on it.
+pub(crate) fn geometry_own_material_path(p4k: &MappedP4k, datacore_geometry_path: &str) -> Option<String> {
+    let geometry = datacore_path_to_p4k(datacore_geometry_path);
+    let metadata = crate::socpak::read_geometry_file(p4k, &geometry)?;
+    let name = mtl::extract_mtl_name(&metadata)?;
+    Some(resolve_mtl_p4k_path(&name, &geometry).replace('\\', "/"))
 }
 
 /// Resolve and parse the .mtl material file for a mesh.
