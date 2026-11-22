@@ -629,12 +629,17 @@ pub(crate) fn query_tint_palette(db: &Database, record: &Record) -> Option<mtl::
         .unwrap_or(entity_name)
         .to_lowercase();
 
-    // Strategy 1: Query through the entity's Reference path.
-    // This follows Components[SGeometryResourceParams].Geometry.Geometry.Palette.RootRecord
-    // through the Reference to the TintPaletteTree and reads colors directly.
-    let base = "Components[SGeometryResourceParams].Geometry.Geometry.Palette.RootRecord.root";
-    if let Some(palette) = query_tint_from_path(db, record, base, Some(short_name.clone())) {
-        return Some(palette);
+    // Strategy 1: Query through the entity's Reference path, following a
+    // Palette.RootRecord to its TintPaletteTree and reading colors directly.
+    // The Material node's palette (SMaterialNodeParams) overrides the one the
+    // geometry names, as its material does (`material_variants::entity_material`).
+    for base in [
+        "Components[SGeometryResourceParams].Material.Palette.RootRecord.root",
+        "Components[SGeometryResourceParams].Geometry.Geometry.Palette.RootRecord.root",
+    ] {
+        if let Some(palette) = query_tint_from_path(db, record, base, Some(short_name.clone())) {
+            return Some(palette);
+        }
     }
 
     // Strategy 2: Find TintPaletteTree record by entity name convention.
@@ -1178,5 +1183,32 @@ mod tests {
         assert_eq!(palette.finish.primary.glossiness, Some(180.0 / 255.0));
         assert_eq!(palette.finish.secondary.glossiness, Some(250.0 / 255.0));
         assert_eq!(palette.finish.glass.glossiness, None);
+    }
+
+    /// Real data (skips without `Data.p4k`): the Syulen Executive's Material
+    /// node names the Executive Hangar reward palette; its geometry names the
+    /// base Syulen's. The node's wins, as its material does.
+    #[test]
+    fn material_node_palette_overrides_the_geometry_palette() {
+        let Ok(found) = starbreaker_common::discover::find_p4k() else {
+            eprintln!("Data.p4k not found, skipping");
+            return;
+        };
+        let p4k = MappedP4k::open(&found.path).expect("open p4k");
+        let dcb = p4k.read_file(r"Data\Game2.dcb").or_else(|_| p4k.read_file(r"Data\Game.dcb")).unwrap();
+        let db = Database::from_bytes(&dcb).unwrap();
+        let short = |r: &Record| db.resolve_string2(r.name_offset).rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
+        let tpt = db.struct_id("TintPaletteTree").unwrap();
+        let palette = |name: &str| {
+            let record = db.records_of_type(tpt).find(|r| short(r) == name).unwrap_or_else(|| panic!("no palette {name}"));
+            query_tint_from_record(&db, record, None).unwrap()
+        };
+        let ship = db.records().iter().find(|r| short(r) == "gama_syulen_exec_stealth").expect("no ship record");
+
+        let node = palette("reward_exec_hangar_syulen");
+        let geometry = palette("gama_syulen_white_bronze_red");
+        assert_ne!(node.primary, geometry.primary, "the two palettes must differ for this test to mean anything");
+        let got = query_tint_palette(&db, ship).expect("a palette");
+        assert_eq!((got.primary, got.secondary, got.tertiary), (node.primary, node.secondary, node.tertiary));
     }
 }
