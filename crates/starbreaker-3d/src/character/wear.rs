@@ -10,7 +10,8 @@
 //! clothing layers apply to picked items too.
 //!
 //! Bone ports flagged `body_attach` wear rigid props (a backpack on its core),
-//! which go on no skin port, as garments go on no bone port.
+//! which go on no skin port, as garments go on no bone port. Only an item with
+//! no `.skin` for either gender is a rigid prop ([`wear_as`]).
 //!
 //! - [`place_items`]: the placement (pure) onto what is already worn
 //!   ([`Seed`]); [`wearable`]: an item's type and ports from DataCore;
@@ -332,6 +333,29 @@ pub fn dress_entries(db: &Database, chf: &ChfData, loadout: &[LoadoutEntry], ite
     dress(db, chf, loadout, items, |_, worn, wearables| Ok(place_items(worn, wearables)))
 }
 
+/// How an item is put on a wearer: skinned to the body, as a rigid prop on a
+/// bone, or not at all (no mesh for the wearer's gender).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WearAs {
+    Skinned,
+    Rigid,
+    NoMesh,
+}
+
+/// [`WearAs`] for an item whose worn mesh for the wearer is `worn`
+/// ([`worn_geometry`]); `has_rigid` says whether it has rigid geometry.
+/// An item with a `.skin` for either gender is skinned: when the mesh is the
+/// other gender's, its non-skinned geometry (the storage crate a clothing
+/// record carries at its top level) is not a prop to wear instead.
+fn wear_as(worn: Option<super::loadout::WornGeometry>, has_rigid: impl FnOnce() -> bool) -> WearAs {
+    match worn {
+        Some(w) if !w.other_gender => WearAs::Skinned,
+        Some(_) => WearAs::NoMesh,
+        None if has_rigid() => WearAs::Rigid,
+        None => WearAs::NoMesh,
+    }
+}
+
 /// [`dress_entries`] with the placement `place` makes of the wearables on
 /// the worn tree (given the entity index).
 pub(crate) fn dress(
@@ -363,13 +387,12 @@ pub(crate) fn dress(
             Some(w) => {
                 let record = index.find_record(name).expect("wearable found it");
                 let context = [gender.to_owned()];
-                let fits = |g: Option<super::loadout::WornGeometry>| g.is_some_and(|g| !g.other_gender);
-                if fits(worn_geometry(db, record, gender, &context)) {
-                    wearables.push(w);
-                } else if rigid_geometry(&index, record, gender, &context).is_some() {
-                    wearables.push(Wearable { rigid: true, ..w });
-                } else {
-                    unwearable.push(format!("{name}: no {gender} mesh"));
+                match wear_as(worn_geometry(db, record, gender, &context), || {
+                    rigid_geometry(&index, record, gender, &context).is_some()
+                }) {
+                    WearAs::Skinned => wearables.push(w),
+                    WearAs::Rigid => wearables.push(Wearable { rigid: true, ..w }),
+                    WearAs::NoMesh => unwearable.push(format!("{name}: no {gender} mesh")),
                 }
             }
         }
@@ -545,6 +568,32 @@ mod tests {
     /// Rigid props go on bone ports only and skinned garments on skin ports
     /// only: a backpack is not skinned to the body, an undersuit is not hung
     /// on a bone.
+    fn worn(other_gender: bool) -> Option<crate::character::loadout::WornGeometry> {
+        Some(crate::character::loadout::WornGeometry {
+            geometry: "m_hat.skin".into(),
+            material: String::new(),
+            other_gender,
+        })
+    }
+
+    /// A garment with a `.skin` for the other gender only is not worn by this
+    /// one, even when its record also names a non-skinned model (the storage
+    /// crate every clothing record carries at its top level): it is a skinned
+    /// item, so the crate is not a rigid prop to put on a bone.
+    #[test]
+    fn a_skinned_item_without_this_genders_mesh_is_not_worn_rigid() {
+        assert_eq!(wear_as(worn(true), || true), WearAs::NoMesh);
+    }
+
+    /// Items with no `.skin` at all (backpacks) are worn rigid when they have
+    /// rigid geometry; items with this gender's `.skin` are skinned.
+    #[test]
+    fn items_without_a_skin_are_worn_rigid() {
+        assert_eq!(wear_as(None, || true), WearAs::Rigid);
+        assert_eq!(wear_as(None, || false), WearAs::NoMesh);
+        assert_eq!(wear_as(worn(false), || true), WearAs::Skinned);
+    }
+
     #[test]
     fn rigid_items_go_on_bone_ports_and_skinned_items_on_skin_ports() {
         let bone_port = PortDef { bone: Some(Default::default()), ..port("backpack", "Char_Armor_Backpack") };
