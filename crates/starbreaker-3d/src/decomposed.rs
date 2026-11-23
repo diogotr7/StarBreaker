@@ -1269,6 +1269,7 @@ pub(crate) fn write_decomposed_export(
             "palette_id": palette_id,
             "display_name": variant.display_name,
             "exterior_material_sidecar": sidecar_path,
+            "extra_parts": variant.extra_parts.iter().map(|part| part.entity_name.as_str()).collect::<Vec<_>>(),
         }));
     }
     if !paint_variant_json.is_empty() {
@@ -4433,15 +4434,18 @@ fn has_base_color_source(
     material.diffuse_tex.is_some()
         || !material.layers.is_empty()
         || semantic_slots.iter().any(|binding| {
-            !binding.is_virtual
-                && matches!(
-                    binding.role,
-                    TextureSemanticRole::BaseColor
-                        | TextureSemanticRole::AlternateBaseColor
-                        | TextureSemanticRole::DecalSheet
-                        | TextureSemanticRole::Stencil
-                        | TextureSemanticRole::PatternMask
-                )
+            // A stencil decal draws the entity palette's decal texture: the slot is virtual
+            // (`$TintPaletteDecal`) because the palette, not the material, names the file.
+            binding.role == TextureSemanticRole::TintPaletteDecal
+                || (!binding.is_virtual
+                    && matches!(
+                        binding.role,
+                        TextureSemanticRole::BaseColor
+                            | TextureSemanticRole::AlternateBaseColor
+                            | TextureSemanticRole::DecalSheet
+                            | TextureSemanticRole::Stencil
+                            | TextureSemanticRole::PatternMask
+                    ))
         })
 }
 
@@ -7123,6 +7127,47 @@ mod tests {
         assert_eq!(slot_source_path(None, &binding), "$TintPaletteDecal");
     }
 
+    /// A stencil decal (a maker logo) takes its image from the entity palette's decal texture
+    /// through the virtual `$TintPaletteDecal` slot, so it has no texture file of its own.
+    fn palette_stencil_decal(slots: Vec<mtl::TextureSlotBinding>) -> SubMaterial {
+        let mut material = sample_submaterial();
+        material.name = "stencil_decal".into();
+        material.shader = "MeshDecal".into();
+        material.string_gen_mask = "%STENCIL_MAP%STENCIL_AS_STICKER".into();
+        material.diffuse_tex = None;
+        material.normal_tex = None;
+        material.layers.clear();
+        material.texture_slots = slots;
+        material
+    }
+
+    #[test]
+    fn a_palette_stencil_decal_is_active() {
+        let material = palette_stencil_decal(vec![mtl::TextureSlotBinding {
+            slot: "TexSlot7".into(),
+            path: "$TintPaletteDecal".into(),
+            is_virtual: true,
+        }]);
+        assert!(material.is_decal());
+
+        let slots = material.semantic_texture_slots();
+        assert_eq!(
+            material_activation_state(&material, &slots),
+            ("active", "visible")
+        );
+    }
+
+    #[test]
+    fn a_decal_with_no_image_source_stays_inactive() {
+        let material = palette_stencil_decal(Vec::new());
+
+        let slots = material.semantic_texture_slots();
+        assert_eq!(
+            material_activation_state(&material, &slots),
+            ("inactive", "missing_base_color_texture")
+        );
+    }
+
     #[test]
     fn livery_manifest_groups_scene_entries_by_shared_palette() {
         let mut records = BTreeMap::new();
@@ -7251,6 +7296,8 @@ mod tests {
             display_name: Some("Vulture Heartthrob Livery".into()),
             material_path: None,
             materials: None,
+            geometry_path: None,
+            extra_parts: Vec::new(),
         };
 
         let palette_id = register_paint_variant_palette(&mut records, &variant)

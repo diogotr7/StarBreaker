@@ -16,6 +16,9 @@ use std::collections::HashMap;
 pub(crate) enum GlowModifier {
     Multiplier { multiplier: f32 },
     MinMax { minimum: f32, maximum: f32 },
+    /// Replaces the running value with an authored constant; later modifiers
+    /// act on that constant.
+    OverrideValue { override_value: f32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -135,6 +138,12 @@ fn modifiers(link: &Value) -> Result<Vec<GlowModifier>, Error> {
                 }
                 Ok(GlowModifier::MinMax { minimum, maximum })
             }
+            Value::Object {
+                type_name: "SEntityEffectSystem_OverrideValueModifier",
+                ..
+            } => Ok(GlowModifier::OverrideValue {
+                override_value: number(modifier, "overrideValue")?,
+            }),
             _ => Err(Error::Other(format!(
                 "unsupported Glow modifier: {modifier:?}"
             ))),
@@ -165,6 +174,10 @@ fn summarize(modifiers: &[GlowModifier]) -> (Option<f32>, Option<f32>, Option<f3
             } => {
                 minimum = Some(minimum.map_or(lo, |v: f32| v.clamp(lo, hi)));
                 maximum = Some(maximum.map_or(hi, |v: f32| v.clamp(lo, hi)));
+            }
+            GlowModifier::OverrideValue { override_value } => {
+                minimum = Some(override_value);
+                maximum = Some(override_value);
             }
         }
     }
@@ -440,6 +453,77 @@ mod tests {
                 GlowModifier::Multiplier { multiplier: -3.0 }
             ]),
             (Some(-3.0), Some(-51.0), Some(-6.0))
+        );
+    }
+    #[test]
+    fn override_value_replaces_the_running_value_before_later_modifiers() {
+        // Synthetic values: an override followed by a clamp, as authored on
+        // thrusters whose Glow ignores the input parameter's magnitude.
+        let link = object(
+            "Synthetic",
+            vec![(
+                "modifiers",
+                Value::Array(vec![
+                    object(
+                        "SEntityEffectSystem_OverrideValueModifier",
+                        vec![("overrideValue", Value::Float(13.0))],
+                    ),
+                    object(
+                        "SEntityEffectSystem_MinMaxModifier",
+                        vec![
+                            ("minimum", Value::Float(2.0)),
+                            ("maximum", Value::Float(9.0)),
+                        ],
+                    ),
+                ]),
+            )],
+        );
+        let chain = modifiers(&link).unwrap();
+        assert_eq!(
+            chain,
+            vec![
+                GlowModifier::OverrideValue {
+                    override_value: 13.0
+                },
+                GlowModifier::MinMax {
+                    minimum: 2.0,
+                    maximum: 9.0
+                },
+            ]
+        );
+        // The override pins both bounds; the later clamp then applies to it.
+        assert_eq!(summarize(&chain), (None, Some(9.0), Some(9.0)));
+        // An override discards bounds from earlier modifiers, and a later
+        // multiplier scales the overridden value.
+        assert_eq!(
+            summarize(&[
+                GlowModifier::MinMax {
+                    minimum: 2.0,
+                    maximum: 17.0
+                },
+                GlowModifier::OverrideValue {
+                    override_value: 5.0
+                },
+                GlowModifier::Multiplier { multiplier: 3.0 },
+            ]),
+            (Some(3.0), Some(15.0), Some(15.0))
+        );
+        assert_eq!(
+            serde_json::to_value(&chain[0]).unwrap(),
+            serde_json::json!({"kind": "override_value", "override_value": 13.0})
+        );
+        assert!(
+            modifiers(&object(
+                "Synthetic",
+                vec![(
+                    "modifiers",
+                    Value::Array(vec![object(
+                        "SEntityEffectSystem_OverrideValueModifier",
+                        vec![("overrideValue", Value::Float(f32::INFINITY))],
+                    )]),
+                )],
+            ))
+            .is_err()
         );
     }
     #[test]
