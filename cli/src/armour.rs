@@ -4,8 +4,10 @@
 //! picked by entity class name (`--wear`, placed on the ports that accept
 //! them — `character::wear`) and/or come from a loadout XML (`--loadout`);
 //! the wearer is a CHF (`--chf`) or the game's default character of
-//! `--gender`. Output: a GLB, or a decomposed `.blend` package. Single
-//! pieces export with `entity export <item> --geometry-tag Male|Female`.
+//! `--gender`. With neither `--wear` nor `--loadout` the bare character is
+//! exported ([`nothing_to_wear`]). Output: a GLB, or a decomposed `.blend`
+//! package. Single pieces export with
+//! `entity export <item> --geometry-tag Male|Female`.
 
 use std::path::PathBuf;
 
@@ -49,6 +51,14 @@ fn parse_gender(s: &str) -> std::result::Result<Gender, String> {
     s.parse()
 }
 
+/// Whether the export asked for clothes and got none. With no `--wear` and no
+/// `--loadout` the bare character is exported (its body, head and hair), the
+/// shared base that single items are worn on. Picked pieces that could not be
+/// worn are reported before this check.
+fn nothing_to_wear(asked_for_pieces: bool, asked_for_loadout: bool, entries: usize) -> bool {
+    (asked_for_pieces || asked_for_loadout) && entries == 0
+}
+
 impl ArmourCommand {
     pub fn run(self) -> Result<()> {
         let Self::Export { output, wear, gender, chf, kind, p4k, texture_mip, character } = self;
@@ -77,8 +87,8 @@ impl ArmourCommand {
             }
             entries = placed.entries;
         }
-        if entries.is_empty() {
-            return Err(CliError::InvalidInput("nothing to wear: give --wear and/or --loadout".into()));
+        if nothing_to_wear(!wear.is_empty(), character.asks_for_loadout(), entries.len()) {
+            return Err(CliError::InvalidInput("the loadout dresses the character in nothing".into()));
         }
 
         let (caf, body) = load_animation(&p4k, &character)?;
@@ -135,6 +145,17 @@ mod tests {
     fn the_chf_decides_the_gender() {
         assert!(Cli::try_parse_from(["t", "export", "o", "--wear", "a", "--chf", "x.chf", "--gender", "female"]).is_err());
         assert!(Cli::try_parse_from(["t", "export", "o", "--wear", "a", "--chf", "x.chf"]).is_ok());
+    }
+
+    #[test]
+    fn nothing_asked_for_exports_the_bare_character() {
+        assert!(!nothing_to_wear(false, false, 0));
+    }
+
+    #[test]
+    fn a_loadout_that_dresses_nothing_is_an_error() {
+        assert!(nothing_to_wear(false, true, 0));
+        assert!(!nothing_to_wear(false, true, 3));
     }
 
     #[test]
