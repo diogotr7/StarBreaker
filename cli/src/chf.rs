@@ -31,6 +31,13 @@ pub struct CharacterArgs {
     body_anim_clip: Option<String>,
 }
 
+impl CharacterArgs {
+    /// Whether `--loadout` was given.
+    pub(crate) fn asks_for_loadout(&self) -> bool {
+        self.loadout.is_some()
+    }
+}
+
 /// A p4k file by a path written with either slash.
 pub(crate) fn read_p4k(p4k: &starbreaker_p4k::MappedP4k, path: &str) -> std::result::Result<Vec<u8>, starbreaker_p4k::P4kError> {
     p4k.read_file(&path.replace('/', "\\"))
