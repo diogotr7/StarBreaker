@@ -174,6 +174,7 @@ fn test_phase_6b_export_aurora_mk2_full_integration() {
             geometry_tag: None,
             texture_container: starbreaker_3d::TextureContainer::Png,
             include_physics: false,
+            keep_covered_zones: false,
         };
 
         // Run the full export pipeline
@@ -258,6 +259,7 @@ fn test_phase_6b_aurora_mesh_file_count_and_headers() {
             geometry_tag: None,
             texture_container: starbreaker_3d::TextureContainer::Png,
             include_physics: false,
+            keep_covered_zones: false,
         };
 
         let result = starbreaker_3d::assemble_glb_with_loadout(
@@ -346,6 +348,7 @@ fn test_phase_6b_aurora_scene_json_valid() {
             geometry_tag: None,
             texture_container: starbreaker_3d::TextureContainer::Png,
             include_physics: false,
+            keep_covered_zones: false,
         };
 
         let result = starbreaker_3d::assemble_glb_with_loadout(
@@ -426,6 +429,7 @@ fn test_phase_6b_aurora_validation_framework() {
             geometry_tag: None,
             texture_container: starbreaker_3d::TextureContainer::Png,
             include_physics: false,
+            keep_covered_zones: false,
         };
 
         let result = starbreaker_3d::assemble_glb_with_loadout(
@@ -500,6 +504,7 @@ fn test_phase_6b_aurora_texture_export() {
             geometry_tag: None,
             texture_container: starbreaker_3d::TextureContainer::Png,
             include_physics: false,
+            keep_covered_zones: false,
         };
 
         let result = starbreaker_3d::assemble_glb_with_loadout(

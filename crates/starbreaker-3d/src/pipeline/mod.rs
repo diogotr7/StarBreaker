@@ -169,6 +169,12 @@ pub struct ExportOptions {
     /// `extras.sc_physics` (docs/decomposed-export-contract.md); false keeps upstream output unchanged.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub include_physics: bool,
+    /// Character packages write every clothing zone of the body and garments
+    /// as its own entity, covered ones included and marked, with the worn
+    /// items' clothing (docs/decomposed-export-contract.md); false writes
+    /// only what the outfit leaves visible.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep_covered_zones: bool,
     /// Worker threads for parallel export phases. 0 = auto/all available cores, 1 = sequential.
     pub threads: usize,
     /// Export animation clips into decomposed scene sidecars.
@@ -210,6 +216,7 @@ impl Default for ExportOptions {
             texture_mip: 2,
             texture_container: TextureContainer::Png,
             include_physics: false,
+            keep_covered_zones: false,
             threads: 0,
             include_animations: false,
             apply_default_animation_pose: true,

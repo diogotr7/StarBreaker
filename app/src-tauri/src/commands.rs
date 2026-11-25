@@ -1693,6 +1693,7 @@ pub async fn export_socpaks(
             geometry_tag: None,
             texture_container: starbreaker_3d::TextureContainer::Png,
             include_physics: false,
+            keep_covered_zones: false,
         };
         let output_root = PathBuf::from(&request.output_dir);
         let mut file_count = 0usize;
@@ -1978,6 +1979,7 @@ pub async fn start_export(
         geometry_tag: request.geometry_tag.clone(),
         texture_container: starbreaker_3d::TextureContainer::Png,
         include_physics: false,
+        keep_covered_zones: false,
     };
 
     log::info!(

@@ -21,6 +21,12 @@
 //! (armature in scene.blend; a face clip's blendshapes as the head's shape
 //! keys, animated with the head asset).
 //!
+//! With `ExportOptions::keep_covered_zones` the body and garments are
+//! written with every submesh, one entity per clothing zone
+//! (`CharacterRig::zone_payloads`, marked `clothing_zone`), and the
+//! `character` object lists the worn items' clothing (`outfit`), so a
+//! consumer can dress the character in any combination itself.
+//!
 //! The root scene instance gains a `character` object: the resolved CHF
 //! material customization (skin tone, blemishes, makeup, eye and hair
 //! colours — see [`super::customization`]) and the HumanSkin_V2 wrinkle
@@ -39,6 +45,7 @@ use super::items::{load_head_items, resolve_head_items};
 use super::part_source::{PartSource, geometry_path};
 use super::wrinkles::SLOT_LAYOUT;
 use super::clips::CharacterAnimation;
+use super::clothing::clothing_json;
 use super::loadout::LoadoutEntry;
 use super::outfit::Outfit;
 use super::{CharacterError, gender_tag};
@@ -54,6 +61,25 @@ fn character_geometry_path(character: &str, p4k_path: &str) -> String {
     let path = geometry_path(p4k_path);
     let file = path.rsplit('/').next().unwrap_or(&path);
     format!("Characters/{}/{file}", crate::decomposed::sanitize_identifier(character))
+}
+
+/// A zone entity of a package written with `keep_covered_zones`.
+struct ZoneEntity {
+    entity: String,
+    part: String,
+    zone: Option<u32>,
+    covered: bool,
+}
+
+/// Mark each zone entity of `scene` (a `scene.json`) with its part, zone
+/// hash and whether the outfit covers it (`clothing_zone`), and give the
+/// root's `character` the worn items' clothing (`outfit`).
+fn annotate_zones(scene: &mut serde_json::Value, zones: &[ZoneEntity], outfit: Vec<serde_json::Value>) {
+    for child in scene["children"].as_array_mut().into_iter().flatten() {
+        let Some(z) = zones.iter().find(|z| child["entity_name"] == z.entity.as_str()) else { continue };
+        child["clothing_zone"] = json!({"part": z.part, "hash": z.zone, "covered": z.covered});
+    }
+    scene["root_entity"]["character"]["outfit"] = serde_json::Value::Array(outfit);
 }
 
 /// Export a CHF character as a decomposed package (in memory; the caller
@@ -98,7 +124,19 @@ pub fn export_character_package(
     }
     let mut root_mesh = rig.head_mesh()?;
     let (mut root_mtl, mut root_nmc) = (rig.head_materials(), rig.head_source.nmc.clone().filter(|_| !rig.head_hidden));
-    let mut children = rig.part_payloads(name, |source| character_geometry_path(name, &source.skin_path))?;
+    let part_path = |source: &PartSource| character_geometry_path(name, &source.skin_path);
+    let mut zone_entities = Vec::new();
+    let mut children = if opts.keep_covered_zones {
+        let zones = rig.zone_payloads(name, part_path)?;
+        zone_entities = zones
+            .iter()
+            .filter(|z| z.zone.is_some())
+            .map(|z| ZoneEntity { entity: z.payload.entity_name.clone(), part: z.part.clone(), zone: z.zone, covered: z.covered })
+            .collect();
+        zones.into_iter().map(|z| z.payload).collect()
+    } else {
+        rig.part_payloads(name, part_path)?
+    };
 
     // GLB parts carry their own complete bind rig and follow the package leader.
     // Promote a visible skinned part when clothing hides the head: a skeleton-only
@@ -200,6 +238,14 @@ pub fn export_character_package(
     let mut value: serde_json::Value = serde_json::from_slice(&scene.bytes)
         .map_err(|e| CharacterError::Customization(format!("scene.json: {e}")))?;
     value["root_entity"]["character"] = character;
+    if opts.keep_covered_zones {
+        let outfit_json = outfit
+            .worn_clothing()
+            .into_iter()
+            .map(|(port, item, part, clothing)| json!({"port": port, "item": item, "part": part, "clothing": clothing_json(clothing)}))
+            .collect();
+        annotate_zones(&mut value, &zone_entities, outfit_json);
+    }
     scene.bytes = serde_json::to_vec_pretty(&value).expect("serialize scene.json");
     Ok(export)
 }
@@ -207,6 +253,23 @@ pub fn export_character_package(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Zone entities name their part, zone and whether the outfit covers
+    /// them; the root's character lists the worn items' clothing.
+    #[test]
+    fn zones_and_outfit_annotate_the_scene() {
+        let mut scene = json!({
+            "root_entity": {"entity_name": "c", "character": {"gender": "male"}},
+            "children": [{"entity_name": "suit_zone_00000007"}, {"entity_name": "hair"}],
+        });
+        let zones = [ZoneEntity { entity: "suit_zone_00000007".into(), part: "suit".into(), zone: Some(7), covered: true }];
+        let outfit = vec![json!({"port": "body_itemport", "part": "m_body"})];
+        annotate_zones(&mut scene, &zones, outfit.clone());
+        assert_eq!(scene["children"][0]["clothing_zone"], json!({"part": "suit", "hash": 7, "covered": true}));
+        assert!(scene["children"][1].get("clothing_zone").is_none(), "entities that are no zone stay as they are");
+        assert_eq!(scene["root_entity"]["character"]["outfit"], json!(outfit));
+        assert_eq!(scene["root_entity"]["character"]["gender"], "male");
+    }
 
     #[test]
     fn character_geometry_paths_are_per_character() {
