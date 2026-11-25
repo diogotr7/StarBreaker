@@ -8,7 +8,8 @@
 //!   drawn ([`super::clothing::hidden_zones`]: an undersuit covers the
 //!   body; visibility conditions test what is worn on other ports) and the CHF ports hidden with everything under them (a full
 //!   helmet hides `Head_ItemPort`: the head itself, its eyes, hair, brows, …).
-//! - [`Outfit::with_body`]: just a body, nothing covered.
+//! - [`Outfit::with_body`]: just a body, nothing covered. An empty loadout
+//!   loads the body alone, with its own clothing (the zones it claims).
 //! - [`Outfit::wears`]: whether a CHF head item is worn (not on a hidden
 //!   port); [`Outfit::hides_geometry`]: whether a CHF item with that `.skin`
 //!   sits on a hidden port (the DNA head is the item on `Head_ItemPort`);
@@ -69,8 +70,13 @@ impl Outfit {
     /// body). Garments that fail to load are reported on stderr and skipped.
     pub fn load(p4k: &MappedP4k, db: &Database, chf: &ChfData, loadout: &[LoadoutEntry]) -> Self {
         let body = load_chf_body(p4k, db, chf);
+        let body_clothing = body
+            .as_ref()
+            .and_then(|b| db.record_by_id(&b.item.record))
+            .map(|record| clothing_params(db, record))
+            .unwrap_or_default();
         if loadout.is_empty() {
-            return Self::with_body(body);
+            return Self { body_clothing, ..Self::with_body(body) };
         }
         let root_port = chf.itemport.name.to_string();
         let worn = resolve_garments(db, loadout, gender_tag(chf.dna.gender_hash), &root_port);
@@ -86,11 +92,6 @@ impl Outfit {
             })
             .collect();
 
-        let body_clothing = body
-            .as_ref()
-            .and_then(|b| db.record_by_id(&b.item.record))
-            .map(|record| clothing_params(db, record))
-            .unwrap_or_default();
         let mut layers = vec![Worn { port: &root_port, clothing: &body_clothing }];
         layers.extend(garments.iter().map(|(g, ..)| Worn { port: &g.port, clothing: &g.clothing }));
         let mut hidden = hidden_zones(&layers).into_iter();

@@ -218,3 +218,20 @@ fn an_armour_core_shows_its_backpack_mount_without_a_backpack() {
     assert_eq!(mount.zone, "omega_core_zone");
     assert!(!core.hidden_zones.contains(&zone_hash(&mount.zone)), "no backpack: the mount shows");
 }
+
+/// A body worn with nothing over it still carries its own clothing: the
+/// zones it claims at the body layer, which a bare-body package records so a
+/// composer can apply the rule against items exported apart from it.
+#[test]
+fn a_bare_body_keeps_its_clothing() {
+    use starbreaker_3d::character::outfit::Outfit;
+    let Some(p4k) = p4k() else { return };
+    let dcb = db_bytes(&p4k);
+    let db = Database::from_bytes(&dcb).unwrap();
+    let chf = chf(&p4k, "masculinedefault");
+    let bare = Outfit::load(&p4k, &db, &chf, &[]);
+    let worn = bare.worn_clothing();
+    assert_eq!(worn.len(), 1, "just the body");
+    assert!(!worn[0].3.chunks.is_empty(), "the body claims its zones");
+    assert!(bare.body_hidden_zones.is_empty(), "nothing worn covers nothing");
+}
