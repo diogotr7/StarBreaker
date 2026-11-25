@@ -143,6 +143,9 @@ dress the character in other combinations and apply the rule itself:
 - A zone child carries `clothing_zone`: `part` (the part's name), `hash` (the zone hash the mesh stores:
   FNV-1a-32 of the uppercase `EMeshChunks` name with its NUL) and `covered` (whether this package's own
   outfit hides it). Consumers showing this outfit hide covered zones.
+- When clothing hides the head (a full helmet), the GLB root takes over the first skinned part instead, which
+  is then no child: `root_entity.part_entity` names that part's entity and, when it is a zone,
+  `root_entity.clothing_zone` carries its mark. Without `part_entity` the root is the head.
 - `root_entity.character.outfit[]`: per worn item (the body first), `port`, `item` (entity class name; null
   for the body), `part` and `clothing`: its `chunks[]` (`zone`, `zone_hash`, `layer`, `visible_layers`,
   `conditions[].port_visibility[]` with `ports`, `disable`, `skip`, `active` tag GUIDs), `hidden_ports`,

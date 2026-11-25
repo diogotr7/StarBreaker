@@ -25,7 +25,9 @@
 //! written with every submesh, one entity per clothing zone
 //! (`CharacterRig::zone_payloads`, marked `clothing_zone`), and the
 //! `character` object lists the worn items' clothing (`outfit`), so a
-//! consumer can dress the character in any combination itself.
+//! consumer can dress the character in any combination itself. A part
+//! promoted to the root (clothing hides the head) is named on the root
+//! (`part_entity`) with its zone mark.
 //!
 //! The root scene instance gains a `character` object: the resolved CHF
 //! material customization (skin tone, blemishes, makeup, eye and hair
@@ -73,13 +75,26 @@ struct ZoneEntity {
 
 /// Mark each zone entity of `scene` (a `scene.json`) with its part, zone
 /// hash and whether the outfit covers it (`clothing_zone`), and give the
-/// root's `character` the worn items' clothing (`outfit`).
-fn annotate_zones(scene: &mut serde_json::Value, zones: &[ZoneEntity], outfit: Vec<serde_json::Value>) {
+/// root's `character` the worn items' clothing (`outfit`). `promoted` is the
+/// part entity the root took over when clothing hid the head: the root names
+/// it (`part_entity`) and keeps its zone mark.
+fn annotate_zones(scene: &mut serde_json::Value, zones: &[ZoneEntity], outfit: Vec<serde_json::Value>, promoted: Option<&str>) {
+    let mark = |entity: &str| {
+        zones.iter().find(|z| z.entity == entity).map(|z| json!({"part": z.part, "hash": z.zone, "covered": z.covered}))
+    };
     for child in scene["children"].as_array_mut().into_iter().flatten() {
-        let Some(z) = zones.iter().find(|z| child["entity_name"] == z.entity.as_str()) else { continue };
-        child["clothing_zone"] = json!({"part": z.part, "hash": z.zone, "covered": z.covered});
+        if let Some(m) = child["entity_name"].as_str().and_then(mark) {
+            child["clothing_zone"] = m;
+        }
     }
-    scene["root_entity"]["character"]["outfit"] = serde_json::Value::Array(outfit);
+    let root = &mut scene["root_entity"];
+    if let Some(entity) = promoted {
+        root["part_entity"] = json!(entity);
+        if let Some(m) = mark(entity) {
+            root["clothing_zone"] = m;
+        }
+    }
+    root["character"]["outfit"] = serde_json::Value::Array(outfit);
 }
 
 /// Export a CHF character as a decomposed package (in memory; the caller
@@ -143,6 +158,7 @@ pub fn export_character_package(
     // root is otherwise omitted by the decomposed writer.
     let glb = opts.format == crate::pipeline::ExportFormat::Glb;
     let mut root_geometry = character_geometry_path(name, assets.head_skin_path());
+    let mut promoted = None;
     if glb {
         for child in &mut children { child.bones = rig.bones(); child.nmc = None; }
         root_nmc = None;
@@ -150,6 +166,7 @@ pub fn export_character_package(
             let first = children.iter().position(|p| p.mesh.skin.is_some())
                 .ok_or_else(|| CharacterError::Loadout("character has no visible skinned part".into()))?;
             let part = children.remove(first);
+            promoted = Some(part.entity_name);
             root_mesh = part.mesh; root_mtl = part.materials; root_geometry = part.geometry_path;
         }
     }
@@ -244,7 +261,7 @@ pub fn export_character_package(
             .into_iter()
             .map(|(port, item, part, clothing)| json!({"port": port, "item": item, "part": part, "clothing": clothing_json(clothing)}))
             .collect();
-        annotate_zones(&mut value, &zone_entities, outfit_json);
+        annotate_zones(&mut value, &zone_entities, outfit_json, promoted.as_deref());
     }
     scene.bytes = serde_json::to_vec_pretty(&value).expect("serialize scene.json");
     Ok(export)
@@ -264,11 +281,29 @@ mod tests {
         });
         let zones = [ZoneEntity { entity: "suit_zone_00000007".into(), part: "suit".into(), zone: Some(7), covered: true }];
         let outfit = vec![json!({"port": "body_itemport", "part": "m_body"})];
-        annotate_zones(&mut scene, &zones, outfit.clone());
+        annotate_zones(&mut scene, &zones, outfit.clone(), None);
         assert_eq!(scene["children"][0]["clothing_zone"], json!({"part": "suit", "hash": 7, "covered": true}));
         assert!(scene["children"][1].get("clothing_zone").is_none(), "entities that are no zone stay as they are");
         assert_eq!(scene["root_entity"]["character"]["outfit"], json!(outfit));
         assert_eq!(scene["root_entity"]["character"]["gender"], "male");
+        assert!(scene["root_entity"].get("part_entity").is_none(), "the head is the root: no part promoted");
+    }
+
+    /// When clothing hides the head, a part is promoted to the root; the root
+    /// names that part and keeps its zone mark, so a consumer can hide it as
+    /// it would the child it was.
+    #[test]
+    fn a_promoted_root_keeps_its_part_and_zone() {
+        let mut scene = json!({"root_entity": {"entity_name": "c", "character": {}}, "children": [{"entity_name": "helmet"}]});
+        let zones = [ZoneEntity { entity: "body_zone_00000007".into(), part: "body".into(), zone: Some(7), covered: true }];
+        annotate_zones(&mut scene, &zones, Vec::new(), Some("body_zone_00000007"));
+        assert_eq!(scene["root_entity"]["part_entity"], "body_zone_00000007");
+        assert_eq!(scene["root_entity"]["clothing_zone"], json!({"part": "body", "hash": 7, "covered": true}));
+
+        let mut scene = json!({"root_entity": {"entity_name": "c", "character": {}}, "children": []});
+        annotate_zones(&mut scene, &zones, Vec::new(), Some("helmet"));
+        assert_eq!(scene["root_entity"]["part_entity"], "helmet");
+        assert!(scene["root_entity"].get("clothing_zone").is_none(), "a part that is no zone carries no mark");
     }
 
     #[test]
