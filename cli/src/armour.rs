@@ -40,6 +40,10 @@ pub enum ArmourCommand {
         /// Texture mip for packages (0 = full resolution)
         #[arg(long, default_value = "0")]
         texture_mip: u32,
+        /// Packages: write every clothing zone of the body and garments as its own entity, covered ones
+        /// included and marked, with the worn items' clothing, for viewers that dress the character themselves
+        #[arg(long)]
+        keep_covered_zones: bool,
         #[command(flatten)]
         character: CharacterArgs,
     },
@@ -51,7 +55,10 @@ fn parse_gender(s: &str) -> std::result::Result<Gender, String> {
 
 impl ArmourCommand {
     pub fn run(self) -> Result<()> {
-        let Self::Export { output, wear, gender, chf, kind, p4k, texture_mip, character } = self;
+        let Self::Export { output, wear, gender, chf, kind, p4k, texture_mip, keep_covered_zones, character } = self;
+        if keep_covered_zones && kind != "package" {
+            return Err(CliError::InvalidInput("--keep-covered-zones needs --kind package".into()));
+        }
         let (p4k, dcb_bytes) = load_dcb_bytes(p4k.as_deref(), None)?;
         let p4k = p4k.ok_or_else(|| CliError::InvalidInput("Data.p4k is required".into()))?;
         let db = starbreaker_datacore::Database::from_bytes(&dcb_bytes)?;
@@ -95,6 +102,7 @@ impl ArmourCommand {
             kind: starbreaker_3d::ExportKind::Decomposed,
             format: starbreaker_3d::ExportFormat::Blend,
             texture_mip,
+            keep_covered_zones,
             ..starbreaker_3d::ExportOptions::default()
         };
         let export = starbreaker_3d::character::package::export_character_package(&p4k, &db, &chf_bytes, &name, &opts, &clips, &entries)
@@ -135,6 +143,13 @@ mod tests {
     fn the_chf_decides_the_gender() {
         assert!(Cli::try_parse_from(["t", "export", "o", "--wear", "a", "--chf", "x.chf", "--gender", "female"]).is_err());
         assert!(Cli::try_parse_from(["t", "export", "o", "--wear", "a", "--chf", "x.chf"]).is_ok());
+    }
+
+    #[test]
+    fn packages_can_keep_covered_zones() {
+        let cli = Cli::try_parse_from(["t", "export", "o", "--wear", "a", "--kind", "package", "--keep-covered-zones"]).unwrap();
+        let ArmourCommand::Export { keep_covered_zones, .. } = cli.command;
+        assert!(keep_covered_zones);
     }
 
     #[test]

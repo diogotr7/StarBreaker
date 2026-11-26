@@ -23,6 +23,8 @@
 //! - [`Clothing`] / [`ClothingChunk`] / [`VisibilityCondition`] /
 //!   [`PortVisibility`]: an item's layers, tags and ports, from
 //!   [`clothing_params`]; [`Worn`]: an item on its port.
+//! - [`clothing_json`]: an item's clothing as a package records it, for
+//!   consumers that apply the rule themselves.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -205,6 +207,52 @@ pub fn hidden_zones(items: &[Worn<'_>]) -> Vec<HashSet<u32>> {
         }
     }
     hidden
+}
+
+/// `clothing` as a package carries it (`docs/decomposed-export-contract.md`):
+/// every input of [`hidden_zones`], each chunk's zone also by its
+/// [`zone_hash`], tags as GUID strings, so a consumer can apply the rule
+/// to any set of worn items.
+pub fn clothing_json(clothing: &Clothing) -> serde_json::Value {
+    let guids = |tags: &[CigGuid]| tags.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+    let chunks: Vec<_> = clothing
+        .chunks
+        .iter()
+        .map(|c| {
+            let conditions: Vec<_> = c
+                .conditions
+                .iter()
+                .map(|cond| {
+                    let entries: Vec<_> = cond
+                        .port_visibility
+                        .iter()
+                        .map(|e| {
+                            serde_json::json!({
+                                "ports": e.ports,
+                                "disable": guids(&e.disable),
+                                "skip": guids(&e.skip),
+                                "active": guids(&e.active),
+                            })
+                        })
+                        .collect();
+                    serde_json::json!({ "port_visibility": entries })
+                })
+                .collect();
+            serde_json::json!({
+                "zone": c.zone,
+                "zone_hash": zone_hash(&c.zone),
+                "layer": c.layer,
+                "visible_layers": c.visible_layers,
+                "conditions": conditions,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "chunks": chunks,
+        "hidden_ports": clothing.hidden_ports,
+        "tags": guids(&clothing.tags),
+        "ports": clothing.ports,
+    })
 }
 
 /// The clothing of an item record: its `SCItemClothingParams` (none when

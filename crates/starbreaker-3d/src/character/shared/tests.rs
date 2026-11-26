@@ -462,3 +462,34 @@ fn part_payloads_carry_materials_and_geometry_paths() {
     assert_eq!(p.mesh.submeshes.len(), 2);
     assert_eq!(p.mesh.positions, rig.parts[0].mesh.positions);
 }
+
+/// Keeping covered zones: every submesh is written, one entity per zone,
+/// each named after its part and zone, and marked covered when another
+/// worn item hides it.
+#[test]
+fn zone_payloads_write_each_zone_as_its_own_entity() {
+    let mut rig = zoned_rig();
+    rig.parts[0].hidden_zones = [7].into();
+    let zones = rig.zone_payloads("root", |s| format!("Characters/x/{}", s.skin_path)).unwrap();
+    assert_eq!(zones.len(), 2);
+    assert_eq!((zones[0].zone, zones[0].covered), (Some(7), true));
+    assert_eq!((zones[1].zone, zones[1].covered), (Some(8), false));
+    assert!(zones.iter().all(|z| z.part == "teeth"));
+    assert_eq!(zones[0].payload.entity_name, "teeth_zone_00000007");
+    assert_eq!(zones[0].payload.geometry_path, "Characters/x/teeth_zone_00000007.skin");
+    assert_eq!(zones[1].payload.mesh.positions[0], [2.0, 0.0, 1.0], "the second triangle's vertices");
+    assert!(zones.iter().all(|z| z.payload.mesh.submeshes.len() == 1 && z.payload.mesh.positions.len() == 3));
+}
+
+/// A part whose submeshes name no zone stays one entity under its own
+/// name, with every submesh.
+#[test]
+fn zone_payloads_keep_unzoned_parts_whole() {
+    let rig = pipeline_rig();
+    let zones = rig.zone_payloads("character", |s| format!("Characters/x/{}", s.skin_path)).unwrap();
+    assert_eq!(zones.len(), 1);
+    assert_eq!((zones[0].zone, zones[0].covered), (None, false));
+    assert_eq!(zones[0].payload.entity_name, "teeth");
+    assert_eq!(zones[0].payload.geometry_path, "Characters/x/teeth.skin");
+    assert_eq!(zones[0].payload.mesh.submeshes.len(), 2);
+}

@@ -8,12 +8,14 @@
 //!   drawn ([`super::clothing::hidden_zones`]: an undersuit covers the
 //!   body; visibility conditions test what is worn on other ports) and the CHF ports hidden with everything under them (a full
 //!   helmet hides `Head_ItemPort`: the head itself, its eyes, hair, brows, …).
-//! - [`Outfit::with_body`]: just a body, nothing covered.
+//! - [`Outfit::with_body`]: just a body, nothing covered. An empty loadout
+//!   loads the body alone, with its own clothing (the zones it claims).
 //! - [`Outfit::wears`]: whether a CHF head item is worn (not on a hidden
 //!   port); [`Outfit::hides_geometry`]: whether a CHF item with that `.skin`
 //!   sits on a hidden port (the DNA head is the item on `Head_ItemPort`);
 //!   `Outfit::parts`: the body and garments as rig parts with their covered
-//!   zones (`CharacterRig::dress`).
+//!   zones (`CharacterRig::dress`); [`Outfit::worn_clothing`]: each worn
+//!   item's clothing on its port, for packages that record it.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -23,7 +25,7 @@ use starbreaker_datacore::Database;
 use starbreaker_p4k::MappedP4k;
 
 use super::body::{Body, load_chf_body};
-use super::clothing::{Worn, clothing_params, hidden_zones};
+use super::clothing::{Clothing, Worn, clothing_params, hidden_zones};
 use super::head_skin::{BindPoseSkeleton, HeadMesh};
 use super::items::{HeadItemMesh, load_skin_part};
 use super::loadout::{Garment, LoadoutEntry, pick_worn_variant, resolve_garments};
@@ -48,6 +50,8 @@ pub struct Outfit {
     pub body: Option<Body>,
     /// Zone hashes of the body the garments cover.
     pub body_hidden_zones: HashSet<u32>,
+    /// The body item's clothing (its zones at layer 0).
+    pub body_clothing: Clothing,
     pub garments: Vec<GarmentMesh>,
     /// CHF ports (lowercase) hidden by a garment, with every port under them.
     hidden_chf_ports: HashSet<String>,
@@ -66,8 +70,13 @@ impl Outfit {
     /// body). Garments that fail to load are reported on stderr and skipped.
     pub fn load(p4k: &MappedP4k, db: &Database, chf: &ChfData, loadout: &[LoadoutEntry]) -> Self {
         let body = load_chf_body(p4k, db, chf);
+        let body_clothing = body
+            .as_ref()
+            .and_then(|b| db.record_by_id(&b.item.record))
+            .map(|record| clothing_params(db, record))
+            .unwrap_or_default();
         if loadout.is_empty() {
-            return Self::with_body(body);
+            return Self { body_clothing, ..Self::with_body(body) };
         }
         let root_port = chf.itemport.name.to_string();
         let worn = resolve_garments(db, loadout, gender_tag(chf.dna.gender_hash), &root_port);
@@ -83,11 +92,6 @@ impl Outfit {
             })
             .collect();
 
-        let body_clothing = body
-            .as_ref()
-            .and_then(|b| db.record_by_id(&b.item.record))
-            .map(|record| clothing_params(db, record))
-            .unwrap_or_default();
         let mut layers = vec![Worn { port: &root_port, clothing: &body_clothing }];
         layers.extend(garments.iter().map(|(g, ..)| Worn { port: &g.port, clothing: &g.clothing }));
         let mut hidden = hidden_zones(&layers).into_iter();
@@ -115,7 +119,7 @@ impl Outfit {
                 pick_worn_variant(&variants, gender).map(|v| geometry_path(&v.geometry_path).to_lowercase())
             })
             .collect();
-        Self { body, body_hidden_zones, garments, hidden_chf_ports, hidden_chf_geometry }
+        Self { body, body_hidden_zones, body_clothing, garments, hidden_chf_ports, hidden_chf_geometry }
     }
 
     /// Whether the CHF item `item` is worn (its port is not hidden).
@@ -127,6 +131,18 @@ impl Outfit {
     /// path) is on a hidden port.
     pub fn hides_geometry(&self, path: &str) -> bool {
         self.hidden_chf_geometry.contains(&geometry_path(path).to_lowercase())
+    }
+
+    /// What the clothing rule reads, per worn item: the body and each
+    /// garment as (port, item class name (none for the body), part name,
+    /// clothing); the part is the rig part the item's mesh becomes.
+    pub fn worn_clothing(&self) -> Vec<(&str, Option<&str>, String, &Clothing)> {
+        let body = self.body.iter().map(|b| (b.item.port.as_str(), None, stem(&b.item.geometry), &self.body_clothing));
+        let garments = self
+            .garments
+            .iter()
+            .map(|g| (g.garment.port.as_str(), Some(g.garment.item.as_str()), stem(&g.garment.geometry), &g.garment.clothing));
+        body.chain(garments).collect()
     }
 
     /// The body and the garments as rig parts, each with its covered zones.

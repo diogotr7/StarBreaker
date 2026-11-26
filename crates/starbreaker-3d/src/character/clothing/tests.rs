@@ -150,3 +150,26 @@ fn a_hidden_chunk_still_covers_lower_layers() {
     assert_eq!(hidden[1], set(&["theta_core_zone"]), "no helmet: the collar is hidden");
     assert_eq!(hidden[0], set(&["theta_core_zone"]), "and lists nothing to keep");
 }
+
+/// The JSON a package carries for a worn item: each chunk's zone by name
+/// and by the hash its meshes store, its layer, kept layers and conditions,
+/// and the item's tags and ports, everything [`hidden_zones`] reads.
+#[test]
+fn clothing_json_carries_what_the_rule_reads() {
+    let mut c = conditional("Armor_Helmet", vec![tag(1)]);
+    c.visible_layers = vec![0];
+    let clothing = Clothing { tags: vec![tag(3)], hidden_ports: vec!["Head_ItemPort".into()], ..suit_with(c) };
+    let json = clothing_json(&clothing);
+    let chunk = &json["chunks"][0];
+    assert_eq!(chunk["zone"], "theta_core_zone");
+    assert_eq!(chunk["zone_hash"], zone_hash("theta_core_zone"));
+    assert_eq!(chunk["layer"], 2);
+    assert_eq!(chunk["visible_layers"], serde_json::json!([0]));
+    let entry = &chunk["conditions"][0]["port_visibility"][0];
+    assert_eq!(entry["ports"], serde_json::json!(["Armor_Helmet"]));
+    assert_eq!(entry["active"], serde_json::json!([tag(1).to_string()]));
+    assert_eq!(entry["disable"], serde_json::json!([]));
+    assert_eq!(json["tags"], serde_json::json!([tag(3).to_string()]));
+    assert_eq!(json["ports"], serde_json::json!(["Armor_Helmet", "backpack"]));
+    assert_eq!(json["hidden_ports"], serde_json::json!(["Head_ItemPort"]));
+}

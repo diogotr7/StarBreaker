@@ -26,6 +26,9 @@
 //!   with the shared glTF writer (`MaterialMode::Colors`: the `.mtl`
 //!   materials without textures). It may carry animation clips
 //!   (`crate::clip::Clip`) over the same skeleton and morph targets.
+//!   [`CharacterRig::zone_payloads`] writes the parts with every submesh
+//!   instead, one entity per clothing zone ([`ZonePayload`]), for consumers
+//!   that apply the clothing rule themselves.
 //!   [`CharacterRig::hide_head`]: a worn item hides the head's port (a full
 //!   helmet) — the head is written without geometry (the skeleton's root
 //!   stays), and its CDF sub-meshes and blendshapes go.
@@ -63,6 +66,17 @@ impl CharacterPart {
     pub(crate) fn joint_names(&self) -> Vec<String> {
         joint_names(&self.skeleton)
     }
+}
+
+/// One clothing zone of a part, as [`CharacterRig::zone_payloads`] writes it.
+pub(crate) struct ZonePayload {
+    /// The part's name ([`stem`] of its source).
+    pub part: String,
+    /// The zone hash its submeshes name (none: submeshes naming no zone).
+    pub zone: Option<u32>,
+    /// Whether another worn item covers the zone.
+    pub covered: bool,
+    pub payload: EntityPayload,
 }
 
 /// One character at one pose (see the module docs).
@@ -189,6 +203,55 @@ impl CharacterRig {
             }
             let (materials, nmc) = (p.source.materials.clone(), p.source.nmc.clone());
             payloads.push(part_payload(root, p.name.clone(), geometry_path(&p.source), mesh, materials, nmc));
+        }
+        Ok(payloads)
+    }
+
+    /// Each part as child payloads of the root `root` with every submesh
+    /// kept: one payload per clothing zone (in the order the zones first
+    /// appear), named `<part>_zone_<hash>` with the geometry path
+    /// `geometry_path` derives suffixed the same way, and marked `covered`
+    /// when the part's `hidden_zones` hold it. Submeshes naming no zone
+    /// stay together under the part's own name. A consumer that dresses
+    /// the character itself applies the clothing rule to these.
+    pub(crate) fn zone_payloads(
+        &self,
+        root: &str,
+        geometry_path: impl Fn(&PartSource) -> String,
+    ) -> Result<Vec<ZonePayload>, CharacterError> {
+        let mut payloads = Vec::new();
+        for p in &self.parts {
+            let mesh = p.source.reshaped(&p.mesh, &p.joint_names())?;
+            let mut zones: Vec<(Option<u32>, Vec<usize>)> = Vec::new();
+            for i in 0..mesh.submeshes.len() {
+                let zone = p.source.zones.get(i).copied().flatten();
+                match zones.iter_mut().find(|(z, _)| *z == zone) {
+                    Some((_, subs)) => subs.push(i),
+                    None => zones.push((zone, vec![i])),
+                }
+            }
+            let path = geometry_path(&p.source);
+            for (zone, subs) in zones {
+                let (name, path, mesh) = match zone {
+                    Some(z) => {
+                        let suffix = format!("_zone_{z:08x}");
+                        let path = match path.rsplit_once('.') {
+                            Some((stem, ext)) => format!("{stem}{suffix}.{ext}"),
+                            None => format!("{path}{suffix}"),
+                        };
+                        (format!("{}{suffix}", p.name), path, mesh.subset(&subs).0)
+                    }
+                    None if subs.len() < mesh.submeshes.len() => (p.name.clone(), path.clone(), mesh.subset(&subs).0),
+                    None => (p.name.clone(), path.clone(), mesh.clone()),
+                };
+                let (materials, nmc) = (p.source.materials.clone(), p.source.nmc.clone());
+                payloads.push(ZonePayload {
+                    part: p.name.clone(),
+                    zone,
+                    covered: zone.is_some_and(|z| p.hidden_zones.contains(&z)),
+                    payload: part_payload(root, name, path, mesh, materials, nmc),
+                });
+            }
         }
         Ok(payloads)
     }

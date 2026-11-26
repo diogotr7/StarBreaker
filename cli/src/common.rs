@@ -144,6 +144,7 @@ impl From<&ExportOpts> for starbreaker_3d::ExportOptions {
             geometry_tag: opts.geometry_tag.clone(),
             texture_container: if opts.dds { starbreaker_3d::TextureContainer::Dds } else { starbreaker_3d::TextureContainer::Png },
             include_physics: false,
+            keep_covered_zones: false,
         }
     }
 }

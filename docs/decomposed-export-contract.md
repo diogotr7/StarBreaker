@@ -130,6 +130,27 @@ Each `children[]` entry (`scene_instance_json`) carries:
 
 `port_flags` is the raw source `SItemPortDef.Flags` string for the item port that attached a child. Importers can use this to preserve source visibility semantics; for example, Blender hides attachments by default when the source port includes `invisible` while keeping the objects present for inspection.
 
+### Clothing zones (`keep_covered_zones`)
+
+A character package normally leaves out the submeshes of the body and garments that other worn items cover
+(the engine's clothing rule, `character/clothing.rs::hidden_zones`). With `keep_covered_zones`
+(`armour export --kind package --keep-covered-zones`) every submesh is written instead, so a consumer can
+dress the character in other combinations and apply the rule itself:
+
+- Each body or garment part becomes one child per clothing zone its submeshes name, `<part>_zone_<hash>`
+  (`hash`: 8 lowercase hex digits), its mesh asset suffixed the same way. Submeshes naming no zone stay one
+  child under the part's own name.
+- A zone child carries `clothing_zone`: `part` (the part's name), `hash` (the zone hash the mesh stores:
+  FNV-1a-32 of the uppercase `EMeshChunks` name with its NUL) and `covered` (whether this package's own
+  outfit hides it). Consumers showing this outfit hide covered zones.
+- When clothing hides the head (a full helmet), the GLB root takes over the first skinned part instead, which
+  is then no child: `root_entity.part_entity` names that part's entity and, when it is a zone,
+  `root_entity.clothing_zone` carries its mark. Without `part_entity` the root is the head.
+- `root_entity.character.outfit[]`: per worn item (the body first), `port`, `item` (entity class name; null
+  for the body), `part` and `clothing`: its `chunks[]` (`zone`, `zone_hash`, `layer`, `visible_layers`,
+  `conditions[].port_visibility[]` with `ports`, `disable`, `skip`, `active` tag GUIDs), `hidden_ports`,
+  `tags` and `ports`: every input of the rule.
+
 ### Interior containers
 
 Each `interiors[]` entry (`interior_container_json`) carries `name`, optional
